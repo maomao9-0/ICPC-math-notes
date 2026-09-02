@@ -14,5 +14,6 @@ These notes assume the reader already has a comprehensive, tested competitive-pr
 
 - This is a Quarto website. Keep `_quarto.yml` navigation in sync with added or renamed pages.
 - Use `.qmd` paths for internal links and verify the site with `quarto render` after structural edits.
+- Use `$...$` and `$$...$$` for math; the current Pandoc configuration does not recognize `\(...\)` or `\[...\]` as math.
 - Prefer semantic Markdown, display math, tables, callouts, and diagrams over hand-written HTML. Reserve `assets/styles.css` for site-wide presentation.
 - Keep pages readable on narrow screens: avoid oversized tables, very long inline formulas, and layout-dependent prose.
