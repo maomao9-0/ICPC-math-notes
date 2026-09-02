@@ -1,0 +1,148 @@
+# 07 — Formal Power Series
+
+An FPS \(A(x)=\sum_{i\ge0}a_ix^i\) is algebra in \(R[[x]]\), not an analytic
+function. We never substitute a real `x`; we work modulo \(x^n\). This viewpoint
+makes every operation finite and makes Newton iteration natural.
+
+Let \(M(n)\) be polynomial multiplication time, \(O(n\log n)\) with NTT.
+All operations below truncate immediately to the requested precision.
+
+## 1. Differential toolkit and contracts
+
+\[
+A'=\sum_{i\ge1}ia_ix^{i-1},\qquad
+\int A=\sum_{i\ge0}\frac{a_i}{i+1}x^{i+1}.
+\]
+
+Over a prime field, integration through degree `n` needs `n < MOD`.
+
+| operation | required constant term | defining identity |
+|---|---|---|
+| `inv(A)` | \(a_0\ne0\) | \(AB=1\) |
+| `log(A)` | usually \(a_0=1\) | \((\log A)'=A'/A\) |
+| `exp(A)` | \(a_0=0\) | \(\log(\exp A)=A\) |
+| `pow(A,k)` | handle leading zeros | \(A^k\) |
+| `sqrt(A)` | valuation even; leading coefficient a square | \(B^2=A\) |
+| `compose(A,B)` | \(b_0=0\) for finite-prefix dependence | \(A(B(x))\) |
+| `revert(A)` | \(a_0=0,a_1\ne0\) | \(A(B(x))=x\) |
+
+## 2. Newton inversion
+
+Suppose \(AB\equiv1\pmod{x^m}\). Set
+\[
+B_{new}=B(2-AB)\pmod{x^{2m}}.
+\]
+If \(E=1-AB\) is divisible by \(x^m\), then
+\(1-AB_{new}=E^2\), divisible by \(x^{2m}\). Precision doubles; total cost is
+\(O(M(n))\).
+
+Precision doubling should operate on a truncated copy so that a caller's longer
+series is not accidentally destroyed.
+
+## 3. Logarithm and exponential
+
+The logarithm is immediate:
+
+\[
+ \log A=\int A'A^{-1}\,dx,
+\]
+
+in \(O(M(n))\). Its chosen constant is zero, hence the clean contract `A[0]=1`.
+
+For exponential, maintain \(B\equiv e^A\pmod{x^m}\) and correct by
+\[
+B_{new}=B(1+A-\log B)\pmod{x^{2m}}.
+\]
+
+The bracket is `1 mod x^m`, so known coefficients remain unchanged. Standard
+implementations are \(O(M(n))\), though careless repeated inversions may add a
+constant or logarithmic factor.
+
+## 4. Powers and square roots
+
+For \(A(0)=1\), \(A^k=\exp(k\log A)\). In general find the first nonzero term
+\(a_tx^t\):
+
+\[
+A^k=x^{tk}a_t^k\left(A/(a_tx^t)\right)^k.
+\]
+
+If `tk >= n`, the truncated answer is zero. This handles huge nonnegative `k`
+without reducing `k` when computing the shift; only exponent arithmetic in the
+field is reduced.
+
+For square root with invertible `2B`, Newton gives
+\[
+B_{new}=\frac12(B+A/B).
+\]
+Start with a modular square root of the leading coefficient (Tonelli--Shanks for
+an odd prime). Strip an even valuation first. Two roots differ by sign. Problems
+must specify which root, or accept either.
+
+## 5. Composition
+
+Naive composition computes powers \(1,B,B^2,\ldots\) in \(O(nM(n))\).
+Brent--Kung baby-step/giant-step chooses \(k\approx\sqrt n\):
+
+\[
+A(B)=\sum_q B^{qk}\left(\sum_{r<k}a_{qk+r}B^r\right).
+\]
+
+Precompute baby powers \(B^r\), form each block polynomial, then combine by
+Horner in \(B^k\). A straightforward realization costs roughly
+\(O(M(n)\sqrt n)\) time and \(O(n\sqrt n)\) memory. Faster algorithms exist, but
+this decomposition contains the main conceptual step.
+
+The condition `B[0]=0` ensures output coefficients below `n` depend only on
+input coefficients below `n`. With nonzero constant term, a finite FPS prefix
+does not generally determine the composition.
+
+## 6. Compositional inverse (reversion)
+
+For \(A(0)=0,A'(0)\ne0\), Newton solve \(A(B)-x=0\):
+
+\[
+B_{new}=B-\frac{A(B)-x}{A'(B)}\pmod{x^{2m}}.
+\]
+
+This needs composition plus multiplicative inversion. With Brent--Kung it is
+about \(O(M(n)\sqrt n)\). If only one or a structured set of coefficients is
+needed, Lagrange inversion (chapter 08) is usually better:
+
+\[
+[x^n]B(x)^k=\frac{k}{n}[t^{n-k}]\left(\frac{t}{A(t)}\right)^n.
+\]
+
+## 7. Sparse series
+
+Dense NTT is wasteful when only `K` coefficients of the defining series are
+nonzero. Coefficient recurrences from derivatives often give \(O(nK)\): for
+`B=exp(A)`, \(B'=A'B\), hence
+
+\[
+ nb_n=\sum_{i=1}^n i a_i b_{n-i}.
+\]
+
+Similarly `B=A^{-1}` uses \(b_n=-a_0^{-1}\sum_{i=1}^na_ib_{n-i}\).
+Choose sparse versus dense by estimated work, not merely by degree.
+
+## 8. Worked example and debugging invariants
+
+Let \(A=1-x\). Then
+`inv(A) = 1+x+x^2+...`, `log(A)=-x-x^2/2-x^3/3-...`, and
+`pow(A,k)` reproduces \(\sum_i(-1)^i{k\choose i}x^i\). This tiny example checks
+signs, integration inverses and truncation.
+
+When integrating these operations with your library, test algebraic identities on random small series:
+
+- `A*inv(A) == 1 mod x^n`;
+- `log(exp(A)) == A` when `A[0]=0`;
+- `exp(log(A)) == A` when `A[0]=1`;
+- `sqrt(A)^2 == A`;
+- `compose(A,revert(A)) == x`.
+
+## 9. Sources
+
+- [Codeforces FPS tutorial](https://codeforces.com/blog/entry/56422)
+- [AtCoder Library convolution](https://atcoder.github.io/ac-library/production/document_en/convolution.html)
+- [Practice sequence](exercises.qmd)
