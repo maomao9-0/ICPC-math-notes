@@ -4,6 +4,8 @@ Use this as a live document for you to update constantly and make sure future ag
 
 These notes assume the reader already has a comprehensive, tested competitive-programming library.
 
+- Keep every advanced chapter self-contained at the concept level: introduce the object in plain language, explain why its central formula or theorem is true, include a small illustrative example when useful, and state assumptions before the algorithmic contract.
+
 - Do not include standard implementation templates or classic code snippets (for example NTT/convolution, modular arithmetic, sieves, factorization, polynomial/FPS routines, transforms, or Gaussian elimination).
 - Include code only when it is non-standard and materially clarifies an idea that formulas, pseudocode, or a short invariant cannot explain as well.
 - Do not add practice problems whose main task is copying, adapting, or validating a standard library routine. Library Checker and “template” problems are normally excluded.
