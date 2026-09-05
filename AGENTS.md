@@ -15,6 +15,7 @@ These notes assume the reader already has a comprehensive, tested competitive-pr
 - Derive central formulas as a sequence of equalities or a double count, and say in words what each summand represents.  Do not use unexplained shorthands such as “IE yields”.
 - Give a small hand-checkable example for each new counting model or transform when it removes a likely ambiguity; then separate the mathematical idea from the implementation contract.
 - State local algebraic hypotheses beside any formula that divides: distinguish a unit in a general ring from a nonzero field element, and name characteristic or indexing limits when they matter.
+- For a fast transform or recurrence, state exact index boundaries and one invariant explaining why values are neither omitted nor counted twice.
 
 # Website conventions
 
