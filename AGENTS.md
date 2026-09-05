@@ -14,6 +14,7 @@ These notes assume the reader already has a comprehensive, tested competitive-pr
 - Write for a reader meeting the idea for the first time.  Before a formula, name the concrete objects being counted or transformed and the question the formula answers.
 - Derive central formulas as a sequence of equalities or a double count, and say in words what each summand represents.  Do not use unexplained shorthands such as “IE yields”.
 - Give a small hand-checkable example for each new counting model or transform when it removes a likely ambiguity; then separate the mathematical idea from the implementation contract.
+- State local algebraic hypotheses beside any formula that divides: distinguish a unit in a general ring from a nonzero field element, and name characteristic or indexing limits when they matter.
 
 # Website conventions
 
