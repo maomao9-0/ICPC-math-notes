@@ -1,109 +1,143 @@
 # 06 — Fast Polynomial Algorithms
 
-Polynomial multiplication is the engine behind the next two chapters. This
-chapter explains the contracts behind NTT, arbitrary-mod strategies, division, product
-trees, evaluation, interpolation and Taylor shift.
+A polynomial is a finite coefficient array, but it is useful to think of it as
+a compact description of size-indexed choices: $[x^k]A(x)$ is the answer for
+total size $k$. This chapter explains why the fast operations work and when
+their algebraic preconditions hold. It assumes your library already supplies
+tested convolution and basic polynomial operations.
 
-## 1. Convolution and transforms
+## 1. Multiplication is adding independent sizes
 
-For $C(x)=A(x)B(x)$, $c_k=\sum_{i+j=k}a_ib_j$. Evaluating at sufficiently
-many points turns multiplication into pointwise products; interpolation returns
-the coefficients. FFT uses complex roots of unity, NTT roots in a finite field.
+For $C(x)=A(x)B(x)$,
 
-For transform length $L=2^{s}$, a prime modulus $p$ must satisfy $L\mid p-1$
-and a primitive $L$th root must exist. With $998244353 = 119*2^{23}+1$, primitive
-root $3$, lengths through $2^{23}$ are available.
+$$c_k=\sum_{i+j=k}a_ib_j. \tag{1}$$
+
+Each summand chooses an $i$-sized object from $A$ and a $(k-i)$-sized object
+from $B$. This “split a total” meaning is why convolution occurs in counting,
+DP merging, and formal power series.
+
+The transform idea is simple: evaluate polynomials at a specially chosen set of
+points. At every point $z$, $(AB)(z)=A(z)B(z)$, so multiplication becomes
+pointwise. An FFT uses complex roots of unity; an NTT uses roots of unity in a
+finite field. Interpolation returns to coefficient form.
 
 ### Transform contract
 
-Complex FFT needs coefficient splitting and careful rounding. When the target
-modulus is arbitrary, use enough NTT-friendly primes to reconstruct each integer
-coefficient by CRT, then reduce modulo the target. The coefficient bound, not
-the target modulus, determines how many primes are enough; three primes are only
-a common choice when their product exceeds the proved bound. If only the result
-modulo $m$ matters, Garner reconstruction can avoid a huge integer. AtCoder
-Library's `convolution_ll` is a reliable reference for its stated signed-64-bit
-coefficient range.
+For an NTT of length $L=2^s$ modulo prime $p$, we need $L\mid p-1$ so the
+field has a primitive $L$th root of unity. The result length must cover every
+possible degree, so $L\ge |A|+|B|-1$. For example,
+$998244353=119\cdot2^{23}+1$ supports powers of two through $2^{23}$.
 
-Complexity is $O(n\log n)$ time and $O(n)$ memory.
+If the answer is modulo an arbitrary $m$, do not pretend one NTT prime computes
+it. Convolve under one or more NTT-friendly primes, reconstruct the integer
+coefficient by CRT (or use Garner directly modulo $m$), then reduce. The number
+of primes is determined by a proved bound on the *integer* coefficients. Three
+primes are a convention, not a proof. Complex FFT instead needs coefficient
+splitting and a rounding-error bound.
 
-## 2. Polynomial division
+## 2. Division: turn the high-degree end into a series inverse
 
-If $\deg A<\deg B$, return $Q=0$ and $R=A$. Otherwise, let
-$\operatorname{rev}_k(F)$ mean: reverse the full coefficient array of $F$,
-then truncate or pad the result to length $k$.
-For $A=BQ+R$, $\deg R<\deg B$, set $k=\deg(A)-\deg(B)+1$. Reversal gives
+Given $A=BQ+R$ with $\deg R<\deg B$, ordinary long division removes the
+highest remaining term one at a time. Reversal makes those highest terms become
+the low-degree terms of a formal power series, where inversion is fast.
 
-$$
- \operatorname{rev}_k(Q) \equiv
- \operatorname{rev}_k(A)\,\operatorname{rev}_k(B)^{-1}\pmod{x^k}.
-$$
-
-Compute the FPS inverse (chapter 07), reverse back, and set $R=A-BQ$. This costs
-$O(M(n))$. Preconditions: field coefficients and nonzero leading coefficient.
-
-## 3. Product tree, multipoint evaluation
-
-For points $x_i$, build a balanced tree
-$P_v(x)=\prod_{i\in v}(x-x_i)$. At the root compute `f mod P_root`; descend
-with `remainder mod P_child`. At leaf $i$, the constant remainder is $f(x_i)$.
-Fast division at every level yields $O(M(n)\log n)$.
-
-Naive Horner is better when the degree or number of points is small; fast
-algorithms have large constants.
-
-## 4. Interpolation
-
-For distinct $x_i$, let $P(x)=\prod_i(x-x_i)$. Lagrange basis gives
+Let $k=\deg A-\deg B+1$, and let $\operatorname{rev}_k(F)$ reverse the
+coefficient list and keep $k$ entries. Then
 
 $$
-f(x)=\sum_i y_i\frac{P(x)}{(x-x_i)P'(x_i)}.
+\operatorname{rev}_k(Q)
+\equiv \operatorname{rev}_k(A)\operatorname{rev}_k(B)^{-1}\pmod{x^k}. \tag{2}
 $$
 
-Evaluate $P'$ at all points with the product tree. Put
-$w_i=y_i/P'(x_i)$ at leaves and merge
+Why is this legal? The leading coefficient of $B$ becomes the constant
+coefficient of $\operatorname{rev}(B)$; it can be inverted precisely when the
+leading coefficient is nonzero in the coefficient field. Terms from $R$ land
+beyond the first $k$ reversed coefficients and disappear modulo $x^k$. Reverse
+the quotient back, then compute $R=A-BQ$.
 
-$$
-F_v=F_LP_R+F_RP_L.
-$$
+This costs $O(M(n))$ with fast multiplication. It is a field operation. Over a
+composite modulus a nonzero leading coefficient might not be invertible, so
+this division contract can fail.
 
-The root is $f$, in $O(M(n)\log n)$. Duplicated points make
-$P'(x_i)=0$; either reject inconsistent input or use Hermite interpolation.
+## 3. Product trees and multipoint evaluation
 
-For a polynomial of degree at most $n$ known at the consecutive points
-$0,\ldots,n$,
-evaluation at arbitrary $t$ can be done in $O(n)$ using prefix/suffix products
-and
-$$
-f(t)=\sum_i y_i\frac{\prod_{j\ne i}(t-j)}{i!(-1)^{n-i}(n-i)!}.
-$$
+To evaluate $f$ at points $x_0,\ldots,x_{m-1}$, build a balanced tree. A leaf
+stores $x-x_i$; an internal node stores the product of its children:
 
-## 5. Taylor shift
+$$P_v(x)=\prod_{i\text{ below }v}(x-x_i).$$
 
-Find coefficients of $f(x+c)$. Since
+At the root, replace $f$ by its remainder modulo $P_{root}$. A polynomial
+remainder modulo $x-x_i$ is its value at $x_i$, so recursively passing the
+remainder modulo each child reaches $f(x_i)$ at every leaf. This is the same
+divide-and-conquer idea as a segment tree: a node stores the polynomial that
+vanishes at all points in its interval.
 
-$$
-[x^k]f(x+c)=\sum_{i\ge k}a_i{i\choose k}c^{i-k},
-$$
+Fast division at each level costs $O(M(m)\log m)$ in the balanced case. For a
+small number of points, Horner's rule is simpler and often faster; use a product
+tree only when the asymptotic saving matters.
 
-multiply by $k!$ and rewrite as a convolution of reversed
-$A_i=a_i i!$ with $B_j=c^{j}/j!$, then divide the result by $k!$.
-This is $O(M(n))$, assuming factorials are invertible.
+## 4. Interpolation reverses evaluation
 
-## 6. Product of many polynomials
+Now suppose the distinct points $x_i$ and desired values $y_i$ are known. Let
 
-Use a priority queue or divide-and-conquer product tree, multiplying similar
-degrees first. For total output degree $N$, balanced multiplication is typically
-$O(M(N)\log k)$. Always truncate to the maximum requested degree; for knapsack
-factors this can save orders of magnitude.
+$$P(x)=\prod_i(x-x_i).$$
+
+The polynomial $P(x)/(x-x_i)$ vanishes at every $x_j$ except $x_i$. Dividing
+it by its value there, $P'(x_i)$, creates a basis polynomial that is $1$ at
+$x_i$ and $0$ at every other sample. Therefore
+
+$$f(x)=\sum_i y_i\frac{P(x)}{(x-x_i)P'(x_i)}. \tag{3}$$
+
+This formula is not magic: each summand is responsible for exactly one sample.
+Evaluate $P'$ at all points via the product tree, place $w_i=y_i/P'(x_i)$ at
+leaves, and merge children as
+
+$$F_v=F_LP_R+F_RP_L.$$
+
+At the root this is (3), in $O(M(n)\log n)$. If points repeat, $P'(x_i)=0$
+and ordinary interpolation is undefined; repeated-value data needs the
+stronger Hermite-interpolation problem.
+
+For values at consecutive points $0,\ldots,n$, the denominators simplify to
+$i!(-1)^{n-i}(n-i)!$. Prefix and suffix products of $(t-j)$ evaluate (3) at one
+arbitrary $t$ in $O(n)$. Factorials must be invertible, so normally $n<MOD$.
+
+## 5. Taylor shift: substitute $x+c$ in one convolution
+
+We want the coefficients of $f(x+c)$, not just its value at one point. Expanding
+each monomial gives
+
+$$[x^k]f(x+c)=\sum_{i\ge k}a_i\binom ikc^{i-k}. \tag{4}$$
+
+This says degree $i$ contributes to every lower degree $k$. Expand the binomial
+coefficient and reverse the $a_i i!$ array; (4) becomes one convolution with
+the array $c^j/j!$, followed by division by $k!$. The reversal lines up $i-k$
+as a convolution index. As with binomial transforms, the fast algorithm is
+factorial scaling plus a change of direction.
+
+## 6. Many factors: keep merge sizes balanced
+
+For $\prod_i A_i(x)$, multiplying factors one after another repeatedly makes a
+large polynomial absorb a tiny one. A divide-and-conquer product tree, or a
+priority queue that merges the two smallest degrees, keeps products balanced.
+For total output degree $N$, this is typically $O(M(N)\log k)$.
+
+If the question only asks through degree $D$, truncate after each merge. In a
+knapsack-style product such as $\prod_i(1+x^{w_i})$, coefficients above $D$
+can never influence lower coefficients later, so retaining them only wastes
+time and memory.
 
 ## 7. Failure checklist and sources
 
-- Transform length must divide `MOD-1`; it must also cover `a.size+b.size-1`.
-- Normalize negative residues before NTT.
-- CRT primes must support the same transform length.
-- Polynomial inverse requires nonzero constant coefficient; division instead
-  relies on the divisor's leading coefficient.
-- Multipoint interpolation requires distinct points.
-- [AtCoder Library convolution docs](https://atcoder.github.io/ac-library/production/document_en/convolution.html)
+- Before an NTT, verify both the required length and the root-of-unity condition.
+- Before a polynomial inverse, verify a nonzero/invertible constant term; before
+  division, verify the leading coefficient condition instead.
+- Normalize negative coefficients in the target ring.
+- For CRT convolution, prove the reconstruction range covers a coefficient.
+- Interpolation requires distinct sample points; consecutive-point formulas
+  additionally need nonzero factorial denominators.
+- Check a small product, quotient/remainder identity, and interpolation samples
+  independently of the fast routine.
+
+- [AtCoder Library convolution documentation](https://atcoder.github.io/ac-library/production/document_en/convolution.html)
 - [Practice sequence](exercises.qmd)
