@@ -28,4 +28,7 @@ These notes assume the reader already has a comprehensive, tested competitive-pr
 
 # Workflow
 
+- The audience is an expert programmer learning mathematics from definitions; do not require university mathematics as an entry gate.
+- Continue textbook work from `CONTENT_AUDIT.md`; preserve its complete baseline inventory and record chapter validation before advancing. Detailed audits and verification reports are part of the handoff.
+- Every substantial chapter needs prerequisites, objectives, derivations, worked successes and failures, algorithm contracts, solved exercises, a checklist, and a revision summary. Keep standard implementations in the reader's library.
 - Commit completed repository changes using a Conventional Commit message.

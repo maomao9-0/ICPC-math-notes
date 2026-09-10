@@ -27,7 +27,26 @@ each push to `main`. In the GitHub repository settings:
 After GitHub reports the public URL, add it as `website.site-url` in
 `_quarto.yml` so canonical and social metadata use the final address.
 
-## Structure
+## Editorial and validation workflow
+
+Start from `CONTENT_AUDIT.md` and `CURRICULUM.md`. Each chapter teaches objects
+before algorithms and supplies worked failures, solved exercises, and library
+contracts. See `AGENTS.md` for the concise policy.
+
+Run `python tests/audit_foundations_math.py`, `python tests/audit_middle_math.py`,
+`python tests/audit_models_math.py`, and `python tests/audit_frontier_math.py`,
+then `quarto render` and `python scripts/check_site.py`.
+`python scripts/check_external.py` reports external HTTP reachability separately.
+`VALIDATION_REPORT.md` records the latest findings and limitations.
+
+For optional browser checks, install Playwright outside the source tree, install
+its Chromium browser, serve `_site` on `127.0.0.1:8765`, and run
+`node scripts/check_browser.cjs` with Playwright resolvable in `NODE_PATH`.
+The checker visits every page at desktop and phone widths and writes sample
+screenshots under `/tmp`. It is a development dependency, not a site runtime
+dependency.
+
+## Source structure
 
 - `_quarto.yml` defines navigation, search, page navigation, and HTML options.
 - `index.qmd` is the landing page.
