@@ -36,9 +36,9 @@ const path = require('node:path');
     }
   }
   for (const [source, width, name] of [
-    ['00-prerequisite-audit/chapter.html', 1440, 'foundations-desktop'],
-    ['03-advanced-sieves/chapter.html', 390, 'sieves-mobile'],
-    ['16-set-power-series/chapter.html', 390, 'set-series-mobile'],
+    ['00-foundations/chapter.html', 1440, 'foundations-desktop'],
+    ['14-advanced-sieves/chapter.html', 390, 'sieves-mobile'],
+    ['11-set-power-series/chapter.html', 390, 'set-series-mobile'],
     ['index.html', 1440, 'index-desktop']
   ]) {
     await page.setViewportSize({width, height: 900});

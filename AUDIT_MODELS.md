@@ -1,5 +1,7 @@
 # Audit: linear models, probability, discrete sums, and capstones
 
+> Chapter numbers in this dated log predate the 2026-09-11 renumbering; see the mapping in `CONTENT_AUDIT.md`.
+
 Audit date: 2026-09-10. Scope: full source of chapters 10–14, 885 original
 lines. Status: **audited, rewritten, individually rendered** for all five
 chapters; global validation remains tracked centrally. No chapter is obsolete.
@@ -8,7 +10,7 @@ that every external link or theorem has already passed independent validation.
 
 ## Complete existing section inventory
 
-### 10 — Linear Algebra over Finite Fields (`10-linear-algebra/chapter.qmd`)
+### 10 — Linear Algebra over Finite Fields (`07-linear-algebra/chapter.qmd`)
 
 1. Gaussian elimination, rank, and determinants.
 2. XOR basis as elimination over F₂.
@@ -19,7 +21,7 @@ that every external link or theorem has already passed independent validation.
 7. Practice, in order: ABC141 F; ABC236 F; CF724 G.
 8. Further reading.
 
-### 11 — Probability and Expectation (`11-probability/chapter.qmd`)
+### 11 — Probability and Expectation (`12-probability/chapter.qmd`)
 
 1. Indicator variables and linearity.
 2. Conditioning and the law of total expectation.
@@ -30,7 +32,7 @@ that every external link or theorem has already passed independent validation.
 7. Practice, in order: DP J; CF280 C; ABC314 E; CF605 E; CF24 D.
 8. Further reading.
 
-### 12 — Discrete Sums and Diophantine Tools (`12-discrete-sums/chapter.qmd`)
+### 12 — Discrete Sums and Diophantine Tools (`13-discrete-sums/chapter.qmd`)
 
 1. Polynomial interpolation.
 2. Finite differences and polynomial sums.
@@ -44,7 +46,7 @@ that every external link or theorem has already passed independent validation.
 10. Practice, in order: CF622 F; ABC340 F; CF995 F; ARC182 E; Project Euler 66.
 11. Further reading.
 
-### 13 — Mixed Mathematics Capstones (`13-capstones/chapter.qmd`)
+### 13 — Mixed Mathematics Capstones (`15-capstones/chapter.qmd`)
 
 1. Recognition protocol.
 2. Timed-attempt rules.
@@ -60,7 +62,7 @@ that every external link or theorem has already passed independent validation.
    - Luogu P3768 — A Simple Math Problem.
 5. Completion criterion.
 
-### 14 — Modular Combinatorics and q-Analogues (`14-modular-combinatorics/chapter.qmd`)
+### 14 — Modular Combinatorics and q-Analogues (`04-modular-binomials/chapter.qmd`)
 
 1. Lucas and Kummer.
 2. Prime powers and composite moduli.

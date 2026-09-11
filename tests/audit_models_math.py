@@ -1,4 +1,4 @@
-"""Independent small exact oracles for chapters 10--14; no library templates."""
+"""Independent small exact oracles for chapters 04, 07, 12, 13, 15; no library templates."""
 from fractions import Fraction
 from itertools import combinations, permutations, product
 from math import comb, factorial, gcd, isqrt
@@ -47,7 +47,7 @@ def chapter10():
                 if 0 < mask < (1<<n)-1:
                     actual = max(actual, x+(total^x))
             assert actual == total+2*masked
-    print('chapter 10: exact field counts, XOR fibers, weighted trees, partition reduction passed')
+    print('chapter 07: exact field counts, XOR fibers, weighted trees, partition reduction passed')
 
 
 def chapter11():
@@ -65,7 +65,7 @@ def chapter11():
     # Exact geometric tails: bounded sum plus closed-form residual.
     for cutoff in range(1,20):
         assert sum(Fraction(1,2)**k for k in range(cutoff))+2*Fraction(1,2)**cutoff == 2
-    print('chapter 11: exact distributions, occupancy enumeration, cyclic moments, modular singularity passed')
+    print('chapter 12: exact distributions, occupancy enumeration, cyclic moments, modular singularity passed')
 
 
 def chapter12():
@@ -92,7 +92,7 @@ def chapter12():
         n=(x-1)//2
         assert x*x-8*m*m==1 and n*(n+1)//2==m*m
     assert [(x,y) for x,y in product(range(6),repeat=2) if 6*x+9*y==30]==[(2,2),(5,0)]
-    print('chapter 12: 23104 signed floor cases, threshold counts, sums, Pell and Diophantine checks passed')
+    print('chapter 13: 23104 signed floor cases, threshold counts, sums, Pell and Diophantine checks passed')
 
 
 def chapter13():
@@ -149,7 +149,7 @@ def chapter13():
         assert total==modeled
         if words==(1,2): assert total==32
         if words==(7,4,1): assert total==3520
-    print('chapter 13: exact convolution, colored graph orbits, weighted gcd recurrence and five-tuple models passed')
+    print('chapter 15: exact convolution, colored graph orbits, weighted gcd recurrence and five-tuple models passed')
 
 
 def chapter14():
@@ -212,7 +212,7 @@ def chapter14():
             if mask.bit_count()%2==0 and value==0:bad=True
         if not bad:by_size[len(words)]+=1
     assert by_size==[1,4,6,4,0]
-    print('chapter 14: Lucas/Kummer, prime-power unit recurrence, Gaussian statistics, rank and parity enumeration passed')
+    print('chapter 04: Lucas/Kummer, prime-power unit recurrence, Gaussian statistics, rank and parity enumeration passed')
 
 
 if __name__ == '__main__':

@@ -1,4 +1,14 @@
+# Renumbering — 2026-09-11
+
+- Renumbered every chapter so the number is the reading position; directories,
+  titles, navigation, cross-references, and reading tables now agree. Old URLs
+  are gone and are not redirected.
+- Old → new mapping is recorded in `CONTENT_AUDIT.md`; dated audit and
+  validation logs keep the old numbers.
+
 # Textbook revision — 2026-09-10
+
+> Chapter numbers in this dated log predate the 2026-09-11 renumbering; see the mapping in `CONTENT_AUDIT.md`.
 
 - Audited every original chapter and section; retained all 20 chapter routes
   and five exercise pages. Added a prerequisite roadmap for expert programmers

@@ -1,5 +1,7 @@
 # Final textbook validation report
 
+> Chapter numbers in this dated log predate the 2026-09-11 renumbering; see the mapping in `CONTENT_AUDIT.md`.
+
 Date: 2026-09-10. Framework: Quarto 1.10.18. Scope: 20 original chapters,
 five exercise pages, four guide/reference pages, navigation and reading assets.
 

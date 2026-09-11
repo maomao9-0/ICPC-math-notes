@@ -1,4 +1,4 @@
-"""Independent small exact oracles for the mathematics of chapters 04--09.
+"""Independent small exact oracles for the mathematics of chapters 03, 05--10.
 
 These enumerate mathematical objects; they are not library templates.
 Run with python3 tests/audit_middle_math.py.
@@ -201,4 +201,4 @@ if __name__ == "__main__":
     check_series()
     check_generating_functions()
     check_transforms()
-    print("Chapters 04--09 independent exact checks passed")
+    print("Chapters 03, 05--10 independent exact checks passed")

@@ -56,7 +56,7 @@ def binary_polynomials():
     assert pgcd(r, (1 << 4) ^ 2) == 7
     cube = pmul(pmul(3, 3), 3)
     assert next(k for k in range(1, 20) if pmod((1 << k) ^ 1, cube) == 0) == 4
-    print("chapter 15: binary irreducibility exhaustively checked through degree 7; examples passed")
+    print("chapter 17: binary irreducibility exhaustively checked through degree 7; examples passed")
 
 
 def submasks(s):
@@ -260,7 +260,7 @@ def capstones():
     for _ in range(200000):
         power = power*2 % 998244353
         assert power != 1
-    print("chapter 19: make-1 distinct/replacement enumeration, rectangular graph enumeration/DE, Grafy through n=5, carry pairs through n=6, q-units passed")
+    print("chapter 20: make-1 distinct/replacement enumeration, rectangular graph enumeration/DE, Grafy through n=5, carry pairs through n=6, q-units passed")
 
 
 def holonomic():
@@ -277,7 +277,7 @@ def holonomic():
         assert direct == involutions[n]
     assert involutions[:6] == [1, 1, 2, 4, 10, 26]
     assert comb(6, 3) % 3 == 2
-    print("chapter 18: binomial identities through n=29, involutions by permutation enumeration through n=7 passed")
+    print("chapter 19: binomial identities through n=29, involutions by permutation enumeration through n=7 passed")
 
 
 def graph_algebra():
@@ -291,7 +291,7 @@ def graph_algebra():
     for y in range(6):
         a = [[0, y, y*y, 0], [-y, 0, 0, y*y], [-y*y, 0, 0, y], [0, -y*y, -y, 0]]
         assert determinant(a) == (y*y-y**4)**2
-    print("chapter 17: Pfaffian identity checked on all 729 small alternating matrices; PIT/weighted examples passed")
+    print("chapter 18: Pfaffian identity checked on all 729 small alternating matrices; PIT/weighted examples passed")
 
 
 def set_series():
@@ -308,7 +308,7 @@ def set_series():
     assert partition_exp([0] + [1]*7)[7] == 5
     assert connected([1, 1, 1, 2, 1, 2, 2, 8])[7] == 4
     assert connected([1, 2, 2, 6])[3] == 2
-    print("chapter 16: ranked/direct convolution and partition inverse checked through n=4; examples passed")
+    print("chapter 11: ranked/direct convolution and partition inverse checked through n=4; examples passed")
 
 
 if __name__ == "__main__":

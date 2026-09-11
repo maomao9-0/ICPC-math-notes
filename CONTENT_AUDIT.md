@@ -2,6 +2,23 @@
 
 Baseline: 2026-09-10. All 29 source pages and their existing headings are inventoried below before rewriting. Existing generated HTML, search index, navigation, styles, and publishing configuration were inspected. Source routes are retained unless an explicit disposition is recorded. Generated `_site` output is not committed.
 
+## Numbering
+
+Chapters were renumbered on 2026-09-11 so that the number is the reading
+position. The status table and current pages use the new numbers; the dated
+audit and validation logs below and in `AUDIT_*.md` / `VALIDATION_*.md` were
+written earlier and keep the old ones. Old → new:
+
+| Old | New | Old | New | Old | New |
+|---|---|---|---|---|---|
+| 00 | 00 | 07 | 09 | 14 | 04 |
+| 01 | 01 | 08 | 10 | 15 | 17 |
+| 02 | 02 | 09 | 08 | 16 | 11 |
+| 03 | 14 | 10 | 07 | 17 | 18 |
+| 04 | 03 | 11 | 12 | 18 | 19 |
+| 05 | 05 | 12 | 13 | 19 | 20 |
+| 06 | 06 | 13 | 15 | 20 | 16 |
+
 ## Acceptance and milestones
 
 1. Complete source audit and prerequisite plan before chapter rewrites.
@@ -15,27 +32,27 @@ Status meanings: **inventoried** = not yet mathematically reviewed; **audited** 
 
 | Chapter | Status | Disposition / audit focus |
 |---|---|---|
-| [00](00-prerequisite-audit/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FOUNDATIONS.md. |
+| [00](00-foundations/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FOUNDATIONS.md. |
 | [01](01-modular-algebra/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FOUNDATIONS.md. |
 | [02](02-multiplicative-number-theory/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FOUNDATIONS.md. |
-| [03](03-advanced-sieves/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FOUNDATIONS.md. |
-| [04](04-combinatorics/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MIDDLE.md. |
+| [03](03-combinatorics/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MIDDLE.md. |
+| [04](04-modular-binomials/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MODELS.md. |
 | [05](05-group-actions/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MIDDLE.md. |
 | [06](06-polynomials/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MIDDLE.md. |
-| [07](07-formal-power-series/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MIDDLE.md. |
-| [08](08-generating-functions/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MIDDLE.md. |
-| [09](09-transforms/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MIDDLE.md. |
-| [10](10-linear-algebra/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MODELS.md. |
-| [11](11-probability/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MODELS.md. |
-| [12](12-discrete-sums/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MODELS.md. |
-| [13](13-capstones/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MODELS.md. |
-| [14](14-modular-combinatorics/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MODELS.md. |
-| [15](15-finite-field-polynomials/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FRONTIER.md. |
-| [16](16-set-power-series/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FRONTIER.md. |
-| [17](17-algebraic-graph-methods/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FRONTIER.md. |
-| [18](18-holonomic-methods/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FRONTIER.md. |
-| [19](19-frontier-capstones/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FRONTIER.md. |
-| [20](20-q-analogues/chapter.qmd) | validated | Split out of 14: Gaussian binomials, division-free recurrence, small characteristic, rank distributions. |
+| [07](07-linear-algebra/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MODELS.md. |
+| [08](08-transforms/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MIDDLE.md. |
+| [09](09-formal-power-series/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MIDDLE.md. |
+| [10](10-generating-functions/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MIDDLE.md. |
+| [11](11-set-power-series/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FRONTIER.md. |
+| [12](12-probability/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MODELS.md. |
+| [13](13-discrete-sums/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MODELS.md. |
+| [14](14-advanced-sieves/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FOUNDATIONS.md. |
+| [15](15-capstones/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_MODELS.md. |
+| [16](16-q-analogues/chapter.qmd) | validated | Split out of 04: Gaussian binomials, division-free recurrence, small characteristic, rank distributions. |
+| [17](17-finite-field-polynomials/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FRONTIER.md. |
+| [18](18-algebraic-graph-methods/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FRONTIER.md. |
+| [19](19-holonomic-methods/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FRONTIER.md. |
+| [20](20-frontier-capstones/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FRONTIER.md. |
 
 All five exercise pages are retained, expanded, and validated with their parent chapters. `index.qmd`, `STUDY_PLAN.qmd`, `NOTATION.qmd`, and `SOURCES.qmd` have been reviewed and revised. All original chapter routes are retained. No chapter remains unreviewed.
 
@@ -58,7 +75,7 @@ the detailed audit logs and `CHANGELOG.md`.
 
 Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDIT_MIDDLE.md), [10–14](AUDIT_MODELS.md), [15–19](AUDIT_FRONTIER.md); 00–03 and guides are recorded above. The curriculum decision is recorded in [CURRICULUM.md](CURRICULUM.md). All 20 chapter status rows now record completed mathematical checks and individual renders. The inventory below is the original baseline, not a list of unresolved tasks.
 
-### 00-prerequisite-audit/chapter.qmd
+### 00-foundations/chapter.qmd
 
 - Prerequisite audit
 - Library-contract fluency
@@ -108,7 +125,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - Miller–Rabin
 - Pollard–Rho
 
-### 03-advanced-sieves/chapter.qmd
+### 14-advanced-sieves/chapter.qmd
 
 - 03 — Advanced Summatory Sieves
 - 1. The $O(\sqrt{N})$ quotient-state space
@@ -126,7 +143,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - Derivation workflow
 - Mertens and totient prefixes
 
-### 04-combinatorics/chapter.qmd
+### 03-combinatorics/chapter.qmd
 
 - 04 — Advanced Combinatorics
 - 1. Recognition map
@@ -143,7 +160,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - Small example
 - Stirling numbers: partitions and permutation cycles
 
-### 04-combinatorics/exercises.qmd
+### 03-combinatorics/exercises.qmd
 
 - 04 · Practice — Advanced Combinatorics
 - 1. AtCoder ABC 172 E — NEQ (`Foundation`)
@@ -190,7 +207,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - 1. AtCoder ABC 196 F — Substring 2 (`Advanced`)
 - 2. AtCoder ABC 260 Ex — Colorfulness (`Mastery`)
 
-### 07-formal-power-series/chapter.qmd
+### 09-formal-power-series/chapter.qmd
 
 - 07 — Formal Power Series
 - 1. Differential toolkit and contracts
@@ -203,12 +220,12 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - 8. Worked example and debugging invariants
 - 9. Sources
 
-### 07-formal-power-series/exercises.qmd
+### 09-formal-power-series/exercises.qmd
 
 - 07 · Practice — Formal Power Series
 - 1. AtCoder ABC 289 Ex — Trio (`Advanced`)
 
-### 08-generating-functions/chapter.qmd
+### 10-generating-functions/chapter.qmd
 
 - 08 — Generating Functions and Coefficient Extraction
 - 1. OGF or EGF?
@@ -224,7 +241,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - Logarithmic derivative
 - Proof sketch via residues
 
-### 08-generating-functions/exercises.qmd
+### 10-generating-functions/exercises.qmd
 
 - 08 · Practice — Generating Functions
 - 1. AtCoder ABC 422 G — Balls and Boxes (`Foundation`)
@@ -233,7 +250,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - 4. Codeforces 960G — Bandit Blues (`Mastery`)
 - 5. Codeforces 1342F — Make It Ascending (`Capstone`)
 
-### 09-transforms/chapter.qmd
+### 08-transforms/chapter.qmd
 
 - 09 — Transforms on Subsets and Divisors
 - 1. Subset zeta and Möbius transforms
@@ -245,7 +262,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - Further reading
 - OR and AND convolution
 
-### 10-linear-algebra/chapter.qmd
+### 07-linear-algebra/chapter.qmd
 
 - 10 — Linear Algebra over Finite Fields
 - 1. Gaussian elimination, rank, and determinants
@@ -257,7 +274,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - 7. Practice, in order
 - Further reading
 
-### 11-probability/chapter.qmd
+### 12-probability/chapter.qmd
 
 - 11 — Probability and Expectation
 - 1. Indicator variables and linearity
@@ -269,7 +286,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - 7. Practice, in order
 - Further reading
 
-### 12-discrete-sums/chapter.qmd
+### 13-discrete-sums/chapter.qmd
 
 - 12 — Discrete Sums and Diophantine Tools
 - 1. Polynomial interpolation
@@ -284,7 +301,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - 9. Pitfalls
 - Further reading
 
-### 13-capstones/chapter.qmd
+### 15-capstones/chapter.qmd
 
 - 13 — Mixed Mathematics Capstones
 - Capstone circuit
@@ -301,7 +318,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - 7. Codeforces 914G — Sum the Fibonacci (`Capstone`)
 - 8. Luogu P3768 — A Simple Math Problem (`Capstone`)
 
-### 14-modular-combinatorics/chapter.qmd
+### 04-modular-binomials/chapter.qmd
 
 - 14 — Modular Combinatorics and q-Analogues
 - 1. Lucas and Kummer
@@ -312,7 +329,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - Ordered practice
 - Sources
 
-### 15-finite-field-polynomials/chapter.qmd
+### 17-finite-field-polynomials/chapter.qmd
 
 - 15 — Finite-Field Polynomial Algebra
 - 1. Euclidean algebra
@@ -323,7 +340,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - Ordered practice
 - Sources
 
-### 16-set-power-series/chapter.qmd
+### 11-set-power-series/chapter.qmd
 
 - 16 — Set Power Series
 - 1. Subset convolution as multiplication
@@ -333,7 +350,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - Ordered practice
 - Sources
 
-### 17-algebraic-graph-methods/chapter.qmd
+### 18-algebraic-graph-methods/chapter.qmd
 
 - 17 — Algebraic Graph Methods and Polynomial Randomization
 - 1. Pfaffians and hafnians
@@ -344,7 +361,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - Ordered practice
 - Sources
 
-### 18-holonomic-methods/chapter.qmd
+### 19-holonomic-methods/chapter.qmd
 
 - 18 — Holonomic (D-Finite and P-Recursive) Methods
 - 1. Translation between series and sequences
@@ -353,7 +370,7 @@ Whole-source audit completed before rewriting. Detailed findings: [04–09](AUDI
 - Ordered practice
 - Sources
 
-### 19-frontier-capstones/chapter.qmd
+### 20-frontier-capstones/chapter.qmd
 
 - 19 — Frontier Capstones
 - Postmortem template

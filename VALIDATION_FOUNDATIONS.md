@@ -1,5 +1,7 @@
 # Foundations validation
 
+> Chapter numbers in this dated log predate the 2026-09-11 renumbering; see the mapping in `CONTENT_AUDIT.md`.
+
 This log records chapter completion separately from the baseline audit.
 
 ## 00 — Foundations and proof

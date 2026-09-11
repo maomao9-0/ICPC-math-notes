@@ -1,5 +1,7 @@
 # Validation: chapters 04–09
 
+> Chapter numbers in this dated log predate the 2026-09-11 renumbering; see the mapping in `CONTENT_AUDIT.md`.
+
 This log records chapter-level work. Final site-wide route/link checks are
 tracked separately. External mathematical sources are evidence to evaluate,
 not authority to copy without checking.
