@@ -2,331 +2,475 @@
 title: "02 — Multiplicative Number Theory"
 ---
 
-## Why this topic matters
+## Counting with the wrong index
 
-This chapter is about changing the indexing of a sum: from integers to prime
-powers, from pairs to their gcd, or from every quotient to the $O(\sqrt n)$
-distinct values of $\lfloor n/i\rfloor$. The formulas are less important than
-the objects they regroup. Each section says what a new coordinate represents,
-so that it can be re-derived when the statement changes slightly.
+Suppose you must count the pairs $(x,y)$ with $1 \le x, y \le 10^7$ and
+$\gcd(x,y) = 1$. Iterating over pairs is $10^{14}$ operations. Iterating over
+*gcd values* is $10^7$. Same problem, different index, seven orders of
+magnitude.
+
+That is the whole subject of this chapter. Nothing here is about numbers being
+mysterious; everything is about **re-indexing a sum** so the work collapses:
+
+- from integers to their prime powers, because most quantities of interest are
+  determined independently at each prime;
+- from pairs to their gcd, turning an exact condition into a weighted sum over
+  divisors;
+- from all $n$ values of $\lfloor n/i \rfloor$ to the $O(\sqrt n)$ distinct
+  ones, because the quotient is constant on long stretches.
+
+Learn the three re-indexings and the formulas write themselves. Memorize the
+formulas instead and you will be stuck the moment a problem perturbs them.
 
 ## Prerequisites and learning objectives
 
-Use [unique factorization and double counting](../00-prerequisite-audit/chapter.qmd)
+You need [unique factorization and double counting](../00-prerequisite-audit/chapter.qmd)
 and [modular fields and valuations](../01-modular-algebra/chapter.qmd).
-After reading, you should be able to derive a function from its prime-power
-values, prove divisor inversion, convert gcd restrictions to frequency sums,
-and choose between a sieve over a bounded domain and factorization of sparse values.
+
+By the end you should be able to reconstruct an arithmetic function from its
+values on prime powers, prove Möbius inversion instead of quoting it, turn a
+gcd restriction into a sum over multiples, and decide between sieving a
+bounded domain and factoring a handful of large values.
 
 ## Definitions and notation
 
-An *arithmetic function* assigns a coefficient to each positive integer.
-Coefficients lie in the integers or a stated commutative ring; no division
-is assumed unless a unit condition is stated. The function $\mathbf1(n)=1$
-is constant one, $\operatorname{id}(n)=n$, and $\varepsilon$ is one at $n=1$
-and zero elsewhere. Products of function values differ from Dirichlet
-convolution, denoted $*$ below. The prime factorization
-$n=\prod_p p^{e_p}$ has only finitely many nonzero exponents; $1$ is the
-empty product. Zero is outside the divisor-transform domain.
+An **arithmetic function** assigns a coefficient to each positive integer —
+concretely, an array indexed from $1$. Coefficients live in the integers or in
+a stated commutative ring, and no division is assumed unless a unit condition
+is stated.
 
-## 1. Reliable 64-bit primality and factorization
+The standard cast: $\mathbf 1(n) = 1$ for all $n$; $\operatorname{id}(n) = n$;
+and $\varepsilon(n)$, which is $1$ at $n=1$ and $0$ elsewhere. Be careful to
+distinguish the pointwise product $f(n)g(n)$ from Dirichlet convolution $f*g$,
+introduced below; they are different operations and contest editorials rarely
+say which they mean.
 
-Factorization is useful because most arithmetic functions are determined by a
-number's prime powers. Trial division asks every small prime whether it divides
-$n$, which becomes too slow for large 64-bit inputs. For arbitrary unsigned
-64-bit integers, use deterministic Miller–Rabin to tell primes from composites
-and Pollard–Rho to split composites.
+A factorization $n = \prod_p p^{e_p}$ has finitely many nonzero exponents, and
+$1$ is the empty product. Zero is outside the domain of every divisor
+transform here.
 
-### Miller–Rabin
+## 1. Getting the prime factorization at all
 
-For odd $n$, write $n-1=d\cdot2^{s}$ with $d$ odd. If $n$ is prime and
-$a\not\equiv0\pmod n$, set $x=a^d$. Because $x^{2^s}=1$ and a field has only
-the two square roots $\pm1$ of $1$, the squaring chain must either start at $1$
-or reach $-1$ before it reaches $1$. A base that does neither is a **witness**
-that $n$ is composite. A base that passes is only evidence, which is why
-several bases are tested. After handling $n<4$ and reducing every base modulo
-$n$, testing bases
+Everything below assumes you can see a number's prime powers. For values up to
+$10^7$ a sieve does it. For isolated 64-bit values it does not, and trial
+division by all primes up to $2^{32}$ is far too slow. The standard pair of
+tools is Miller–Rabin to decide primality and Pollard–Rho to split composites.
+
+### Miller–Rabin: turning Fermat's test into a real test
+
+Fermat's little theorem says a prime $n$ satisfies $a^{n-1} \equiv 1$. The
+converse is false, so a naive Fermat test has false positives. Miller–Rabin
+extracts more information from the same exponentiation by looking at the
+*square roots* encountered along the way.
+
+Write $n - 1 = d \cdot 2^s$ with $d$ odd, and consider the chain
+
+$$a^d, \; a^{2d}, \; a^{4d}, \; \ldots, \; a^{2^s d} = a^{n-1}.$$
+
+If $n$ is prime, the last value is $1$, and in a *field* the only square roots
+of $1$ are $\pm 1$ (because $x^2 - 1 = (x-1)(x+1)$ has at most two roots).
+So the chain must either start at $1$ or hit $-1$ before it first hits $1$.
+A base $a$ whose chain does neither is a **witness**: it proves $n$ composite,
+with no probability attached.
+
+A base that passes is only evidence, so several bases are tried. For unsigned
+64-bit inputs the set
 
 $$\{2,\ 325,\ 9375,\ 28178,\ 450775,\ 9780504,\ 1795265022\}$$
 
-is deterministic for $0\le n<2^{64}$ with the usual small/even branches.
-A base that reduces to zero is skipped, not treated as a compositeness
-witness; other bases must still be tested. The finite-range certificate is
-recorded in the [SPRP base database](https://miller-rabin.appspot.com/).
-Complexity is $O(\log n)$ modular multiplications per base.
+is known to be sufficient — it has been verified exhaustively over the whole
+range, so the test is *deterministic* there, not probabilistic. (The
+certificate is catalogued in the [SPRP base
+database](https://miller-rabin.appspot.com/).) Handle $n < 4$ and even $n$
+first, reduce every base modulo $n$, and skip a base that reduces to zero
+rather than treating it as a witness. Cost: $O(\log n)$ modular
+multiplications per base.
 
-For example, $n=21$ has $n-1=5\cdot4$. For base $2$, the chain starts
-$2^5=11\bmod21$, then squares to $16$, then $4$; it neither starts at one
-nor reaches $-1=20$. Thus $2$ witnesses compositeness.
-Passing one base is weaker: $2047=23\cdot89$ passes base two.
+::: {.callout-note title="Both outcomes on small inputs"}
+$n = 21$: $n - 1 = 5 \cdot 4$, so $d = 5$, $s = 2$. With base $2$ the chain is
+$2^5 = 11$, then $11^2 = 121 \equiv 16$, then $16^2 = 256 \equiv 4$. It never
+starts at $1$ and never hits $20 = -1$, so $2$ witnesses that $21$ is
+composite.
 
-### Pollard–Rho
+$n = 2047 = 23 \cdot 89$ passes base $2$ completely. One base is never enough;
+this is the smallest counterexample and the reason for the base list above.
+:::
 
-Iterate a pseudo-random polynomial $f(x)=x²+c \bmod n$. Although the sequence
-is not visibly periodic modulo $n$, it eventually cycles modulo an unknown
-factor $p$. If two iterates $x,y$ agree modulo $p$, then $p\mid(x-y)$, and
-$\gcd(|x-y|,n)$ can reveal a nontrivial divisor without knowing $p$ first.
-Floyd/Brent cycle detection and batched gcds make this fast in practice. It is
-randomized with heuristic expected time about $O(p^{1/2})$ for a factor $p$,
-often described as $O(n^{1/4})$ for balanced semiprimes.
+### Pollard–Rho: finding a factor you cannot see
 
-**Pitfalls.** Handle $n<2$; use unsigned 128-bit multiplication; restart Rho when it returns $n$; recursion receives prime powers as well as semiprimes; randomized runtime has no strict worst-case guarantee.
+Iterate $f(x) = x^2 + c \bmod n$ from a random start. Modulo the unknown prime
+factor $p$, this sequence must cycle after about $\sqrt p$ steps by the
+birthday bound — but you cannot observe it modulo $p$, only modulo $n$.
 
-## 2. Multiplicative functions and the linear sieve
+The trick: if two iterates $x, y$ collide modulo $p$, then $p \mid (x - y)$,
+so $\gcd(|x-y|, n)$ is a nontrivial divisor of $n$ — computed without ever
+knowing $p$. Floyd or Brent cycle detection supplies the candidate pairs, and
+batching many differences into a single gcd makes it fast in practice. The
+expected time is heuristically $O(\sqrt p)$ for the smallest factor $p$,
+usually quoted as $O(n^{1/4})$ for a balanced semiprime.
 
-$f$ is multiplicative when $f(1)=1$ and $f(ab)=f(a)f(b)$ for coprime $a,b$.
-Prime factorization then says that $f(n)$ is the product of its values on the
-prime-power factors of $n$. It does **not** say $f(ab)=f(a)f(b)$ when $a,b$
-share a prime. For example $\varphi(2)\varphi(2)=1$ but $\varphi(4)=2$.
-Central examples are:
+**Pitfalls.** Handle $n < 2$ separately; use unsigned 128-bit multiplication;
+restart with a new $c$ when the gcd comes back as $n$ itself; remember the
+recursion receives prime powers as well as semiprimes, so re-test primality at
+each level; and accept that the runtime bound is heuristic, not worst-case.
 
-| $f(n)$ | prime-power value $f(p^{e})$ | interpretation |
+## 2. Multiplicative functions: local data determines global
+
+A function $f$ is **multiplicative** when $f(1) = 1$ and $f(ab) = f(a)f(b)$
+for *coprime* $a, b$. Combined with unique factorization, this says something
+strong and very usable:
+
+$$f(n) = \prod_p f(p^{e_p}).$$
+
+A multiplicative function is completely specified by its values on prime
+powers. That is why sieves that build $f$ one prime at a time are possible at
+all, and why "compute $f$ for all $n \le N$" is an $O(N)$ task rather than $N$
+independent factorizations.
+
+The coprimality hypothesis is not decoration. $f(ab) = f(a)f(b)$ can fail
+badly when $a$ and $b$ share a prime: $\varphi(2)\varphi(2) = 1$ while
+$\varphi(4) = 2$. Functions that do satisfy it unconditionally are called
+*completely multiplicative*; $\operatorname{id}$ is, $\varphi$ is not.
+
+| $f(n)$ | value at $p^e$ | what it counts |
 |---|---:|---|
-| $\varphi$ | $p^{e}-p^{e-1}$ | units modulo $n$ |
-| $\mu$ | $-1$ if $e=1$, else $0$ | inverse of constant-one function |
-| $τ$ | $e+1$ | number of divisors |
-| $\sigma_k$ | $1+p^{k}+…+p^{ek}$ | sum of kth powers of divisors |
+| $\varphi$ | $p^e - p^{e-1}$ | units modulo $n$ |
+| $\mu$ | $-1$ if $e = 1$, else $0$ | the Dirichlet inverse of $\mathbf 1$ |
+| $\tau$ | $e + 1$ | divisors of $n$ |
+| $\sigma_k$ | $1 + p^k + \cdots + p^{ek}$ | $k$-th powers of the divisors, summed |
 
-The totient prime-power formula follows by deleting the $p^{e-1}$ multiples
-of $p$ among $p^e$ residues. CRT pairs independent unit choices for coprime
-moduli, proving multiplicativity of $\varphi$. Divisor counts and sums factor
-because a divisor independently chooses each exponent $0,\ldots,e_p$.
-For $\mu$, define $\mu(1)=1$, $\mu(n)=0$ when any exponent exceeds one,
-and $\mu(n)=(-1)^r$ for a product of $r$ distinct primes. This is also
-multiplicative by independent prime choices.
+Each entry is a small count, and each is worth deriving once.
 
-The Euler/linear sieve visits each composite exactly once as $i\cdot p$, where
-$p$ is its least prime factor. The “stop when $p$ divides $i$” rule is what
-makes that representation unique. Keep enough information about the exponent
-of the least prime to distinguish, for example, whether adding another $p$
-makes $\mu$ zero or changes $\varphi(p^e)$ to $\varphi(p^{e+1})$. It computes
-primes, $\mu$, and $\varphi$ through $N$ in $O(N)$ time and memory.
-More precisely, process $i=2,\ldots,N$ and primes
-$p\le\operatorname{lpf}(i)$ while $ip\le N$, where $\operatorname{lpf}(i)$
-is the least prime factor. Every composite $x$ appears at
-$p=\operatorname{lpf}(x),i=x/p$ because $\operatorname{lpf}(i)\ge p$.
-Any other emitted representation would have a different least prime factor.
-If $p\nmid i$, then $\mu(ip)=-\mu(i)$ and
-$\varphi(ip)=(p-1)\varphi(i)$; if $p\mid i$, then $\mu(ip)=0$ and
-$\varphi(ip)=p\varphi(i)$. These follow directly from the local table.
+- **Totient at $p^e$:** among the $p^e$ residues, the non-units are exactly the
+  $p^{e-1}$ multiples of $p$. Multiplicativity across different primes is CRT:
+  a unit modulo $ab$ is exactly an independent pair of units modulo $a$ and
+  modulo $b$.
+- **Divisor count and divisor sums:** a divisor picks each exponent
+  independently from $0, \ldots, e_p$, which is a product over primes.
+- **Möbius:** define $\mu(1) = 1$, $\mu(n) = 0$ if any exponent exceeds one,
+  and $\mu(n) = (-1)^r$ for a product of $r$ distinct primes. Multiplicative,
+  again by independent choices per prime. Its meaning is inclusion–exclusion
+  signs, made explicit in Section 3.
+
+### The linear sieve, and its one clever rule
+
+Building all these up to $N$ in $O(N)$ rests on a single idea: **visit each
+composite exactly once, through its least prime factor.** Every composite $x$
+has a unique representation $x = i \cdot p$ where $p = \operatorname{lpf}(x)$
+and $i = x/p$, and this is the one the sieve emits.
+
+Concretely, loop $i = 2, \ldots, N$, and for each known prime
+$p \le \operatorname{lpf}(i)$ with $ip \le N$, emit $ip$. The famous "break
+when $p \mid i$" rule is exactly the condition $p \le \operatorname{lpf}(i)$;
+without it, composites are emitted several times and the running time
+degrades, but worse, the value updates become wrong.
+
+The updates need to know whether $p$ already divides $i$, because that decides
+whether the exponent of $p$ is fresh:
+
+- if $p \nmid i$: $\mu(ip) = -\mu(i)$ and $\varphi(ip) = (p-1)\varphi(i)$;
+- if $p \mid i$: $\mu(ip) = 0$ and $\varphi(ip) = p\,\varphi(i)$.
+
+Both lines are just the prime-power table applied locally. For a general
+multiplicative $f$ you additionally need to store, for each $i$, the exponent
+of its least prime (or the value $f$ takes on that prime power), since the
+local factor changes from $f(p^e)$ to $f(p^{e+1})$. Total cost: $O(N)$ time
+and memory, producing primes, $\mu$, $\varphi$, and any similar function
+simultaneously.
 
 ## 3. Dirichlet convolution and Möbius inversion
 
-For arithmetic functions, Dirichlet convolution combines two functions by
-splitting an integer into an ordered pair of divisors:
+Convolution of arrays combines indices by addition. There is an analogous
+operation for arithmetic functions that combines indices by *multiplication*:
 
-$$ (f*g)(n)=\sum_{d\mid n} f(d)g(n/d). $$
+$$(f*g)(n) = \sum_{d \mid n} f(d)\,g(n/d),$$
 
-For example $(1*1)(6)$ counts the divisors of $6$, because each divisor $d$
-chooses the factorization $6=d\cdot(6/d)$. It is associative and commutative,
-with identity $ε(1)=1$, $ε(n>1)=0$. Convolution preserves multiplicativity. Let
-$1(n)=1$; since $1*\mu=ε$,
+the sum over all ordered factorizations $n = d \cdot (n/d)$. For example
+$(\mathbf 1 * \mathbf 1)(6) = 4 = \tau(6)$, since each of the four divisors of
+$6$ chooses one factorization.
 
-$$F(n)=\sum_{d\mid n}f(d)\quad\Longleftrightarrow\quad
-f(n)=\sum_{d\mid n}\mu(d)F(n/d).$$
+Three structural facts, each with a one-line reason:
 
-This is not a formula to memorize in isolation. $F(n)$ is the sum of $f$ over
-divisors of $n$, so it says $F=f*1$; convolving both sides with $\mu$ cancels
-$1$ and recovers $f$. Useful identities follow immediately:
+- **Associative:** both $((f*g)*h)(n)$ and $(f*(g*h))(n)$ expand to
+  $\sum_{abc = n} f(a)g(b)h(c)$ — the same ordered triples, grouped
+  differently.
+- **Commutative:** swap the two factors of each factorization.
+- **Multiplicativity is preserved:** for coprime $u, v$, every divisor of $uv$
+  splits uniquely into a divisor of $u$ times a divisor of $v$, so the sum
+  factors.
 
-$$1*\varphi=\operatorname{id},\qquad \mu*\operatorname{id}=\varphi,
-\qquad 1*1=\tau.$$
+The identity element is $\varepsilon$, since $(f * \varepsilon)(n) = f(n)$.
 
-### Why convolution identities hold
+### The key identity, and what it means
 
-Associativity groups the same ordered triples $abc=n$:
-both $((f*g)*h)(n)$ and $(f*(g*h))(n)$ equal
-$\sum_{abc=n}f(a)g(b)h(c)$. Commutativity swaps the two factors.
-For coprime $u,v$, every divisor of $uv$ uniquely splits into a divisor
-of $u$ and a divisor of $v$, proving that convolution preserves multiplicativity.
+$$\mathbf 1 * \mu = \varepsilon .$$
 
-For $n$ with $r$ distinct prime factors, the divisors contributing nonzero
-$\mu$ correspond to subsets of those primes. Consequently
+*Proof.* For $n$ with $r \ge 1$ distinct prime factors, the divisors with
+$\mu \ne 0$ are exactly the products of subsets of those primes, and
+$\mu$ contributes $(-1)^{|S|}$:
 
-$$\sum_{d\mid n}\mu(d)=\sum_{S\subseteq[0,r)}(-1)^{|S|}
-=\prod_{i=0}^{r-1}(1-1)=\varepsilon(n).$$
+$$\sum_{d \mid n}\mu(d) = \sum_{S \subseteq [0,r)}(-1)^{|S|}
+= \prod_{i=0}^{r-1}(1 - 1) = 0 .$$
 
-For $n=1$ the empty product is one; otherwise cancellation gives zero.
-This proves the inverse identity that the earlier algebra uses.
-Likewise classify $1\le a\le n$ by $d=n/\gcd(a,n)$. Writing $a=(n/d)b$
-leaves exactly the $\varphi(d)$ values $1\le b\le d$ coprime to $d$.
-Every $a$ has one such class, so $\sum_{d\mid n}\varphi(d)=n$.
+For $n = 1$ the empty product gives $1$. So $\mu$ is precisely the sequence of
+inclusion–exclusion signs, packaged so that "sum over divisors" can be undone.
 
-### GCD counting pattern
+**Möbius inversion** is now pure algebra. If $F$ is the divisor-sum of $f$,
+then $F = f * \mathbf 1$; convolving both sides with $\mu$ cancels
+$\mathbf 1$ and returns $f$:
 
-If a condition asks for $\gcd(x,y)=1$, the following identity is a filter:
+$$F(n) = \sum_{d \mid n} f(d)
+\quad\Longleftrightarrow\quad
+f(n) = \sum_{d \mid n}\mu(d)\,F(n/d).$$
 
-$$[\gcd(x,y)=1]=\sum_{d\mid x,\ d\mid y}\mu(d).$$
+This is worth re-deriving rather than memorizing, because the same two lines
+handle every variant you meet (sums over multiples, sums over subsets, sums
+over a general poset).
 
-Why does it work? If $g=\gcd(x,y)$, the right side is $\sum_{d\mid g}\mu(d)$,
-which is $1$ when $g=1$ and $0$ otherwise. The pair sum becomes
-$\sum_d \mu(d) A_d B_d$, where $A_d,B_d$ count multiples of $d$. More generally,
-group pairs by their gcd, derive a divisor zeta relation, then invert.
+Some identities that follow, and which you will use constantly:
 
-**Worked example: ordered coprime pairs.** Count $(x,y)$ with
-$1\le x,y\le4$ and $\gcd(x,y)=1$. For a fixed divisor $d$, there are
-$\lfloor4/d\rfloor$ choices for each coordinate, so the filter gives
+$$\mathbf 1 * \varphi = \operatorname{id}, \qquad
+\mu * \operatorname{id} = \varphi, \qquad
+\mathbf 1 * \mathbf 1 = \tau.$$
 
-$$\sum_{d=1}^4\mu(d)\lfloor4/d\rfloor^2=16-4-1+0=11.$$
+*Why $\sum_{d \mid n}\varphi(d) = n$:* classify each $a \in \{1,\ldots,n\}$ by
+$d = n/\gcd(a,n)$. Writing $a = (n/d)b$, the valid $b$ are exactly the
+$\varphi(d)$ values in $\{1,\ldots,d\}$ coprime to $d$. Every $a$ lands in
+exactly one class, so the classes partition $n$ elements. The second identity
+is the first one inverted.
 
-The row counts by $x=1,2,3,4$ are $4,2,3,2$, also summing to $11$.
-For unordered *distinct* pairs, first remove the only coprime diagonal
-$(1,1)$ and then divide by two, giving $5$. Dividing $11$ by two first
-would combine an ordered/unordered error with a diagonal error.
+### The gcd filter: the workhorse pattern
 
-**Dynamic translation.** Maintain $C_d$, the number of active values divisible
-by $d$. Before inserting $x$, the number of new coprime unordered pairs is
-$\sum_{d\mid x}\mu(d)C_d$. Then increment these counts.
-For deletion, decrement first and use the same formula on the remaining set.
-Only square-free divisors matter, so a factorization with $r$ distinct primes
-gives $2^r$ terms. For active values $\{2,3\}$, inserting $6$ creates
-$2-1-1+0=0$ coprime pairs; inserting $5$ creates two.
-This is the reduction behind the first contest exercise.
+Here is the identity that solves the problem this chapter opened with:
 
-## 4. Divisor zeta/Möbius transforms
+$$[\gcd(x,y) = 1] = \sum_{d \mid x,\; d \mid y} \mu(d).$$
 
-For arrays on $[1,N]$, the divisor zeta transform replaces the value at $j$ by
-the sum of values stored at its divisors:
-$F[j]=\sum_{d\mid j}f[d]$. Direct non-in-place divisor loops cost
-$N(1+1/2+\cdots+1/N)=O(N\log N)$; inversion follows from the arithmetic
-Möbius formula. Prime-wise in-place updates compute the transform and its inverse
-in $O(N\log\log N)$. For each prime $p$, the divisor-zeta update
-$f[ip]\mathrel{+}=f[i]$ for $ip\le N$ must traverse $i$ upward so prime powers
-accumulate; its inverse uses the same pairs in downward $i$ order while
-subtracting. For example, the $p=2$ stage sends the contribution at $1$ first
-to $2$, then that accumulated contribution to $4$. After a set of prime stages,
-the value at $x$ has accumulated exactly the divisors obtained by lowering the
-exponents of those primes; this is the no-overcounting invariant. The multiple zeta transform
-$F[d]=\sum_{d\mid j}f[j]$ reverses the divisibility order: for each prime $p$,
-apply $f[i]\mathrel{+}=f[ip]$ with $i$ decreasing, and invert with subtraction
-while $i$ increases. Divisor zeta
-diagonalizes LCM convolution, while multiple zeta diagonalizes GCD convolution;
-the more general poset view appears in the transforms chapter.
+*Why:* the right side is $\sum_{d \mid g}\mu(d)$ for $g = \gcd(x,y)$, which is
+$1$ when $g = 1$ and $0$ otherwise — exactly $\varepsilon(g)$.
 
-The word “diagonalizes” is a double count. If
-$h[x]=\sum_{\operatorname{lcm}(a,b)=x}f[a]g[b]$, then
+The payoff is that an exact, entangled condition on a pair becomes a weighted
+sum of *independent* conditions. Summing over all pairs,
 
-$$
-\sum_{d\mid x}h[d]
-=\sum_{a\mid x}\sum_{b\mid x}f[a]g[b]
-=F[x]G[x].
-$$
+$$\#\{(x,y) : \gcd(x,y) = 1\} = \sum_d \mu(d)\,A_d B_d,$$
 
-The first equality holds because $\operatorname{lcm}(a,b)\mid x$ exactly when
-both $a\mid x$ and $b\mid x$. Reversing all divisibility signs gives the same
-proof for GCD convolution and the multiple transform.
+where $A_d$ and $B_d$ count multiples of $d$ in each coordinate — quantities
+that are usually trivial to compute. More generally, when the condition is
+"gcd equals $g$", group the pairs by gcd, write down the resulting divisor
+relation, and invert it.
 
-**Example.** If $f[1]=2,f[2]=3,f[3]=5$, then the transformed value at $6$ is
-$f[1]+f[2]+f[3]+f[6]$. This is the integer analogue of a subset zeta transform:
-“submask” becomes “divisor.” **Recognition.** If every operation replaces a
-set by all divisors, every query involves $\gcd$, or values are bounded while
-query count is large, transform the entire frequency vector instead of
-processing elements individually.
+::: {.callout-note title="Worked example: coprime pairs in a $4 \times 4$ box"}
+Count $(x,y)$ with $1 \le x,y \le 4$ and $\gcd(x,y) = 1$. For each $d$ there
+are $\lfloor 4/d\rfloor$ multiples in each coordinate, so
 
-## 5. Quotient grouping (harmonic lemma)
+$$\sum_{d=1}^{4}\mu(d)\left\lfloor\frac4d\right\rfloor^2
+= 16 - 4 - 1 + 0 = 11.$$
 
-The value $q=\lfloor n/l\rfloor$ does not change one index at a time. Once it
-has value $q$, it remains constant through
+Verify by hand: the rows $x = 1,2,3,4$ contribute $4, 2, 3, 2$, total $11$.
 
-$$r=\left\lfloor n/q\right\rfloor.$$
+Now a warning about what the number means. For *unordered pairs of distinct*
+values, first remove the one coprime diagonal entry $(1,1)$ and then halve:
+$(11-1)/2 = 5$. Halving $11$ directly would compound an ordered/unordered
+error with a diagonal error — and would not even be an integer.
+:::
 
-This works because $\lfloor n/i\rfloor=q$ exactly when
-$n/(q+1)<i\le n/q$. Thus a loop `for (l=1; l<=n; l=r+1)` has only
-$O(\sqrt n)$ iterations. The distinct quotients are precisely the small
-integers up to $\sqrt n$ plus values $\lfloor n/i\rfloor$ for small $i$.
+::: {.callout-note title="The dynamic version"}
+Maintain $C_d$, the number of currently active values divisible by $d$. Before
+inserting $x$, the number of active values coprime to it is
 
-For two or more floor terms, take the minimum end point: if a summand uses $\lfloor n/i\rfloor$ and $\lfloor m/i\rfloor$, then
-compute the end point for each nonzero current quotient and take their minimum.
-If the loop continues beyond one numerator, that quotient is zero and remains
-zero through the loop's final bound; do not evaluate `m/(m/l)` when `m/l` is
-zero. Pair this with prefix sums of $\mu$, $\varphi$, powers, or another
-arithmetic function.
+$$\sum_{d \mid x}\mu(d)\,C_d,$$
 
-A standard derivation is
+and only square-free $d$ contribute, so a value with $r$ distinct primes costs
+$2^r$ terms. Then increment $C_d$ for those divisors. Deletion is the exact
+algebraic inverse: decrement first, then apply the same formula to the
+remaining set.
 
-$$\sum_{i=1}^n \left\lfloor\frac ni\right\rfloor
-=\sum_{ab\le n}1=\sum_{k\le n}\tau(k),$$
+With active values $\{2,3\}$, inserting $6$ gives $2 - 1 - 1 + 0 = 0$ new
+coprime pairs; inserting $5$ gives $2$. This is the whole reduction behind the
+first contest exercise below.
+:::
 
-showing how a floor sum and a divisor sum are the same lattice-point count.
+## 4. Divisor transforms: sieving a whole array at once
 
-## 6. Dirichlet inverses and recurrence design
+When a problem is about *all* $n \le N$ simultaneously, do not process values
+individually — transform the entire array.
 
-If $f(1)≠0$ in a coefficient field, its Dirichlet inverse is the function $g$
-for which $f*g=ε$. The $n=1$ equation fixes $g(1)$; every larger $n$ equation
-has exactly one unknown term, $f(1)g(n)$, giving the recurrence
+The **divisor zeta transform** replaces each entry by the sum over its
+divisors, $F[j] = \sum_{d \mid j} f[d]$. Looping over divisor–multiple pairs
+directly costs $N(1 + \tfrac12 + \cdots) = O(N \log N)$, which is often fine.
+The faster route mirrors a multidimensional prefix sum, one prime at a time:
 
-$$g(1)=1/f(1),\qquad
-g(n)=-\frac1{f(1)}\sum_{\substack{d\mid n\\d>1}}f(d)g(n/d).$$
+> For each prime $p$: for $i$ *increasing* with $ip \le N$, do
+> `f[i*p] += f[i]`.
 
-In prefix-sum problems, search for an easy convolution identity $f*g=h$. Summing for $n≤N$ and swapping divisors yields
+Cost $O(N \log\log N)$. The invariant that makes it correct: after processing
+a set of primes, $f[x]$ holds the sum over exactly those divisors of $x$
+obtained by lowering the exponents of the processed primes, each counted once.
+Ascending $i$ order is what lets a contribution travel up a whole prime-power
+chain ($1 \to 2 \to 4 \to 8$), and that is exactly why the inverse transform
+uses the *same pairs in descending order with subtraction*.
 
-$$\sum_{n\le N}h(n)=\sum_{d\le N}f(d)\,G(\lfloor N/d\rfloor).$$
+The **multiple zeta transform** reverses the divisibility direction:
+$F[d] = \sum_{d \mid j} f[j]$, computed with `f[i] += f[i*p]` for $i$
+decreasing, and inverted by subtracting with $i$ increasing.
 
-If the $d=1$ term contains the unknown prefix $G(N)$, isolate it. Quotient grouping then turns the rest into $O(\sqrt{N})$ states. This is the bridge to Du Jiao sieve in [Chapter 03](../03-advanced-sieves/chapter.qmd).
+Which one you need depends on the operation you are trying to diagonalize:
+divisor zeta linearizes **LCM convolution**, multiple zeta linearizes **GCD
+convolution**. The general poset statement appears in
+[Chapter 09](../09-transforms/chapter.qmd).
 
-## 7. Gaussian integers and two squares
+**"Diagonalizes" means a double count.** If
+$h[x] = \sum_{\operatorname{lcm}(a,b) = x} f[a]g[b]$, then
 
-The Gaussian integers $\mathbb Z[i]$ are numbers $a+bi$ with integer
-coordinates. Their norm $N(a+bi)=a^{2}+b^{2}$ is nonnegative and, crucially,
-multiplicative: $N(zw)=N(z)N(w)$. They admit Euclidean
-division by rounding a complex quotient to nearby integer coordinates.  Hence
-gcd, units, associates, and unique factorization behave much like the integers.
-Use exact integer arithmetic to test the few rounding candidates; floating point
-may select the wrong quotient for large coordinates.
+$$\sum_{d \mid x} h[d]
+= \sum_{a \mid x}\sum_{b \mid x} f[a]g[b]
+= F[x]\,G[x],$$
 
-For a positive integer $n$, Fermat's two-square theorem says $n$ is a sum of
-two squares iff every prime
-$p=3 \bmod 4$ has even exponent.  For $p=1 \bmod 4$, find a square root of $-1 \bmod p$
-and run Cornacchia/Euclidean descent to obtain $p=x^{2}+y^{2}$. The local
-representation of $p^e$ is then $(x+yi)^e$: it is important to raise the
-Gaussian integer, not merely the integer coordinates. The other local cases
-are explicit: $2^e=N((1+i)^e)$, and a $3\bmod4$ prime with exponent $2e$
-contributes $p^{2e}=(p^e)^2+0^2$. Multiply local representations with
+where the first equality holds because $\operatorname{lcm}(a,b) \mid x$ is
+*equivalent* to ($a \mid x$ and $b \mid x$). So: transform, multiply
+pointwise, transform back. Flip every divisibility sign and the same proof
+gives GCD convolution with the multiple transform.
 
-$$ (a^{2}+b^{2})(c^{2}+d^{2})=(ac-bd)^{2}+(ad+bc)^{2}, $$
+**Example.** With $f[1] = 2$, $f[2] = 3$, $f[3] = 5$, the transformed value at
+$6$ is $f[1] + f[2] + f[3] + f[6]$. This is the integer analogue of the subset
+zeta transform, with "submask" replaced by "divisor".
 
-Normalize signs/order only after constructing the result.
+**Recognition.** Reach for these when every operation replaces a value by all
+its divisors, when queries involve $\gcd$ or $\operatorname{lcm}$, or when
+values are bounded while the number of queries is large.
 
-### Why the two-square criterion is true
+## 5. Quotient grouping: only $O(\sqrt n)$ distinct floors
 
-For $z=a+bi$, complex conjugation sends it to $\bar z=a-bi$, and
-$N(z)=z\bar z$. Hence $N(zw)=N(z)N(w)$.
-To divide Gaussian integers $\alpha$ by nonzero $\beta$, round each
-coordinate of $\alpha/\beta$ to a nearest integer. The squared distance
-is at most $1/2$, so the remainder has norm at most $N(\beta)/2$.
-Euclid and the Bézout argument therefore work in this ring. Its units
-are the elements of norm one: $\pm1,\pm i$; associates differ by a unit.
-As for ordinary integers, Euclid's divisibility lemma proves unique
-factorization into irreducible Gaussian integers.
+Sums like $\sum_{i=1}^{n} \lfloor n/i \rfloor$ look like $n$ separate terms,
+but the quotient takes only about $2\sqrt n$ distinct values — it changes
+rarely for large $i$ and is large-but-few for small $i$.
 
-If $p\equiv3\pmod4$ divides $a^2+b^2$ and $p\nmid b$, then $(a/b)^2=-1$
-in $\mathbb F_p$. Euler's criterion rules this out because
-$(-1)^{(p-1)/2}=-1$. Thus $p\mid b$ and also $p\mid a$.
-Removing $p^2$ and repeating proves that such primes have even valuation.
+Precisely: $\lfloor n/i \rfloor = q$ exactly when $n/(q+1) < i \le n/q$, so
+once the quotient equals $q$ at position $l$, it stays constant up to
 
-If $p\equiv1\pmod4$, cyclicity supplies $t$ with $t^2=-1\bmod p$.
-Let $\delta=\gcd(p,t+i)$ in the Gaussian integers. It is not a unit:
-otherwise a Bézout equation multiplied by $t-i$ would force $p\mid t-i$,
-contradicting its imaginary coordinate $-1$. It is not associated to $p$
-either, since $p$ does not divide the imaginary coordinate of $t+i$.
-Because $\delta\mid p$, its norm divides $p^2$, and the two excluded
-possibilities are norm one and norm $p^2$. Therefore $N(\delta)=p$.
-Together with $2=N(1+i)$ and multiplication of norms, this proves sufficiency.
+$$r = \left\lfloor \frac{n}{q} \right\rfloor,\qquad q = \left\lfloor\frac nl\right\rfloor.$$
 
-For $65=5\cdot13$, multiply $(2+i)(3+2i)=4+7i$, giving
-$65=4^2+7^2$. Multiplying coordinates separately would give
-$6^2+2^2=40$, which does not preserve norms.
-This construction finds a representation; counting all representations
-requires separately tracking conjugate-factor choices and symmetries.
+Hence the loop `for (l = 1; l <= n; l = r + 1)` performs $O(\sqrt n)$
+iterations, each handling a whole block. Combine it with prefix sums of $\mu$,
+$\varphi$, powers, or whatever function the summand carries.
+
+With two numerators in the same summand, compute the block end for each and
+take the minimum. Watch the degenerate case: once a quotient reaches zero it
+stays zero for the rest of the loop, and evaluating `m/(m/l)` with a zero
+quotient divides by zero.
+
+A derivation worth internalizing, because it shows the two pictures are the
+same object:
+
+$$\sum_{i=1}^{n}\left\lfloor\frac ni\right\rfloor
+= \#\{(a,b) : ab \le n\}
+= \sum_{k \le n}\tau(k).$$
+
+The middle expression counts lattice points under a hyperbola; the left counts
+them column by column, the right by the product.
+
+## 6. Dirichlet inverses and designing a prefix-sum recurrence
+
+If $f(1)$ is invertible in the coefficient ring, $f$ has a Dirichlet inverse
+$g$ with $f * g = \varepsilon$. It is computed greedily: the $n=1$ equation
+determines $g(1)$, and each larger equation contains exactly one new unknown,
+namely the $d = 1$ term $f(1)g(n)$. Solving for it,
+
+$$g(1) = \frac{1}{f(1)}, \qquad
+g(n) = -\frac{1}{f(1)}\sum_{\substack{d \mid n \\ d > 1}} f(d)\,g(n/d).$$
+
+This is the mechanism behind a family of sublinear prefix-sum algorithms. Here
+is the design pattern. You want $G(N) = \sum_{n \le N} g(n)$ for a hard $g$.
+Find an easy convolution identity $f * g = h$ with $f$ and $h$ both easy to
+sum. Then summing over $n \le N$ and grouping by the $f$-factor,
+
+$$\sum_{n \le N} h(n) = \sum_{d \le N} f(d)\, G\!\left(\left\lfloor \frac Nd \right\rfloor\right).$$
+
+The $d = 1$ term is $f(1)G(N)$ — the unknown you want. Move it to the left,
+and evaluate the remaining sum by quotient grouping, which needs $G$ only at
+the $O(\sqrt N)$ distinct quotients. Memoize and recurse. That is the Du Jiao
+sieve, developed in [Chapter 03](../03-advanced-sieves/chapter.qmd).
+
+## 7. Gaussian integers and sums of two squares
+
+A different flavour of factorization, and a good illustration that
+"factorization" is a property of a ring rather than of numbers.
+
+The **Gaussian integers** $\mathbb Z[i]$ are the complex numbers $a + bi$ with
+integer coordinates. Their **norm** $N(a+bi) = a^2 + b^2$ is a nonnegative
+integer and is *multiplicative*: $N(zw) = N(z)N(w)$, because
+$N(z) = z\bar z$ and conjugation respects products. Multiplicativity of the
+norm is precisely what makes "is $n$ a sum of two squares?" a question about
+factorization.
+
+$\mathbb Z[i]$ also supports Euclidean division: to divide $\alpha$ by nonzero
+$\beta$, round each coordinate of the complex quotient $\alpha/\beta$ to a
+nearest integer. Each coordinate is off by at most $1/2$, so the remainder has
+norm at most $N(\beta)/2 < N(\beta)$. With division-with-remainder come Euclid,
+Bézout, and — as in [Chapter 00](../00-prerequisite-audit/chapter.qmd) — unique
+factorization into irreducibles. The units are the four elements of norm one,
+$\pm 1, \pm i$. In code, test the few rounding candidates with exact integer
+arithmetic; floating point picks the wrong quotient for large coordinates.
+
+**Fermat's two-square theorem.** A positive integer $n$ is a sum of two
+squares exactly when every prime $p \equiv 3 \pmod 4$ occurs in $n$ with an
+even exponent.
+
+::: {.callout-note collapse="true" title="Why the criterion is true"}
+*Necessity.* Suppose $p \equiv 3 \pmod 4$ divides $a^2 + b^2$ with
+$p \nmid b$. Then $(a/b)^2 = -1$ in $\mathbb F_p$, so $-1$ is a quadratic
+residue — but Euler's criterion from
+[Chapter 01](../01-modular-algebra/chapter.qmd) gives
+$(-1)^{(p-1)/2} = -1$ for $p \equiv 3 \pmod 4$. Contradiction, so $p \mid b$
+and then $p \mid a$. Remove $p^2$ and repeat: the exponent of $p$ must be
+even.
+
+*Sufficiency.* For $p \equiv 1 \pmod 4$, cyclicity of $\mathbb F_p^\times$
+supplies $t$ with $t^2 \equiv -1$. Put $\delta = \gcd(p, t+i)$ in
+$\mathbb Z[i]$. It is not a unit: otherwise Bézout multiplied by $t - i$ would
+force $p \mid t - i$, impossible since the imaginary coordinate is $-1$. It is
+not an associate of $p$ either, since $p \nmid t+i$. As $\delta \mid p$, its
+norm divides $p^2$, and we just excluded norms $1$ and $p^2$; hence
+$N(\delta) = p$, i.e. $p$ is a sum of two squares. Together with
+$2 = N(1+i)$, even powers of $3 \bmod 4$ primes, and multiplicativity of the
+norm, every allowed $n$ is representable.
+:::
+
+**Constructing a representation.** For $p \equiv 1 \pmod 4$, find a square
+root of $-1$ modulo $p$ (Tonelli–Shanks) and run Cornacchia's Euclidean
+descent to obtain $p = x^2 + y^2$. For $p^e$, raise the *Gaussian integer*:
+$(x + yi)^e$, not the coordinates separately. The remaining local cases are
+explicit: $2^e = N((1+i)^e)$, and a $3 \bmod 4$ prime with exponent $2e$
+contributes $p^{2e} = (p^e)^2 + 0^2$. Combine local pieces with the
+Brahmagupta–Fibonacci identity, which is nothing but $N(zw) = N(z)N(w)$
+written out:
+
+$$(a^2+b^2)(c^2+d^2) = (ac - bd)^2 + (ad + bc)^2 .$$
+
+Normalize signs and ordering only at the very end.
+
+**Worked example.** $65 = 5 \cdot 13$ with $5 = N(2+i)$ and $13 = N(3+2i)$.
+Multiply in $\mathbb Z[i]$: $(2+i)(3+2i) = 4 + 7i$, giving $65 = 4^2 + 7^2$.
+Multiplying coordinates separately would give $6^2 + 2^2 = 40$, which is not
+even the right number — norms multiply, coordinates do not.
+
+This construction produces *a* representation. Counting all representations is
+a separate task requiring you to track the choice of conjugate at each prime
+and quotient by the unit symmetries.
 
 ## Contest checklist
 
-- Multiplicative is not completely multiplicative: $\varphi(p²)≠\varphi(p)²$.
-- Decide whether a divisor formula uses $f(d)$ or $f(n/d)$ before coding.
-- $\mu(n)=0$ whenever a prime square divides $n$.
-- Frequency transforms require a bounded value domain; factorization-based inclusion–exclusion may be better for sparse large values.
-- Quotient blocks must use 64-bit division; for multiple floors, update the end point for each one.
-- Pollard–Rho factor lists contain repetitions; compress them before enumerating divisors or inclusion–exclusion subsets.
+- Multiplicative is not completely multiplicative: $\varphi(p^2) \ne
+  \varphi(p)^2$.
+- Decide whether your divisor formula uses $f(d)$ or $f(n/d)$ before you code
+  it; the two differ whenever $f$ is not symmetric in that swap.
+- $\mu(n) = 0$ as soon as a prime square divides $n$; only square-free
+  divisors ever contribute.
+- Frequency transforms need a bounded value domain. For a few large values,
+  factor them and do inclusion–exclusion over their prime subsets instead.
+- Quotient blocks must use 64-bit division, and with several floors the block
+  end is the minimum over all of them.
+- Pollard–Rho returns a multiset of factors with repetitions; compress it
+  before enumerating divisors or subsets.
 
 ## Ordered practice
 
@@ -406,74 +550,107 @@ Recomputing a full inversion for every upper bound would be too slow.
 
 ### 1. A multiplicativity trap — concept check
 
-Compute $\tau(12)$, $(\mu*\mathbf1)(12)$, and $\varphi(12)$ from prime powers.
-Why is $\tau(12)\ne\tau(6)\tau(2)$?
+Compute $\tau(12)$, $(\mu * \mathbf 1)(12)$, and $\varphi(12)$ from prime
+powers. Then explain why $\tau(12) \ne \tau(6)\tau(2)$.
 
 ::: {.callout-tip collapse="true" title="Hint and solution"}
-Since $12=2^2\cdot3$, $\tau(12)=3\cdot2=6$ and
-$\varphi(12)=(4-2)(3-1)=4$. The square-free divisor signs give
-$1-1-1+1=0$. But $\tau(6)\tau(2)=4\cdot2=8$; multiplying values requires
-coprime arguments, whereas $6,2$ share a prime.
+*Hint:* check the coprimality hypothesis before using multiplicativity.
+
+From $12 = 2^2 \cdot 3$: $\tau(12) = 3 \cdot 2 = 6$ and
+$\varphi(12) = (4-2)(3-1) = 4$. The square-free divisors of $12$ are
+$1, 2, 3, 6$ with signs $1, -1, -1, +1$, so $(\mu * \mathbf 1)(12) = 0$, as
+$\mathbf 1 * \mu = \varepsilon$ predicts.
+
+But $\tau(6)\tau(2) = 4 \cdot 2 = 8 \ne 6$. Multiplicativity applies only to
+coprime arguments, and $6$ and $2$ share the prime $2$. Splitting at a shared
+prime double-counts that prime's exponent choices.
 :::
 
 ### 2. Recover an arithmetic function — derivation
 
-Suppose $\sum_{d\mid n}f(d)=n^2$ for every positive $n$. Find $f(p^e)$
-and $f(12)$.
+Suppose $\sum_{d \mid n} f(d) = n^2$ for every positive $n$. Find $f(p^e)$ and
+$f(12)$.
 
 ::: {.callout-tip collapse="true" title="Hint and solution"}
-At a prime power, subtract the equations at $p^e$ and $p^{e-1}$:
-$f(p^e)=p^{2e}-p^{2e-2}$ for $e\ge1$, with $f(1)=1$.
-Inversion says $f=\mu*\operatorname{id}^2$, hence it is multiplicative.
-Thus $f(12)=(16-4)(9-1)=96$.
-It counts ordered pairs of residues modulo $n$ whose coordinates and $n$
-have joint gcd one, by excluding pairs both divisible by each prime.
+*Hint:* at a prime power, subtract consecutive equations.
+
+At $p^e$ the divisors are $1, p, \ldots, p^e$, so subtracting the equation at
+$p^{e-1}$ from the one at $p^e$ leaves $f(p^e) = p^{2e} - p^{2e-2}$ for
+$e \ge 1$, with $f(1) = 1$.
+
+Möbius inversion says $f = \mu * \operatorname{id}^2$, a convolution of two
+multiplicative functions, hence multiplicative. Therefore
+$f(12) = f(4)f(3) = (16-4)(9-1) = 96$.
+
+Interpretation: $f(n)$ counts ordered pairs of residues modulo $n$ such that
+the pair and $n$ have joint gcd one — the prime-by-prime exclusion of pairs
+both divisible by $p$ is exactly the factor $p^{2e} - p^{2e-2}$.
 :::
 
 ### 3. Equal gcd with a fixed value — modelling
 
-For positive integers $m,k$, count $1\le x\le m$ with $\gcd(x,k)=d$.
-Express the answer using only square-free divisors.
+For positive integers $m, k$, count the $1 \le x \le m$ with $\gcd(x,k) = d$,
+using only square-free divisors.
 
 ::: {.callout-tip collapse="true" title="Hint and solution"}
-If $d\nmid k$, the answer is zero. Otherwise write $x=dy$;
-we need $y\le\lfloor m/d\rfloor$ and $\gcd(y,k/d)=1$.
-Apply the filter:
-$\sum_{e\mid k/d}\mu(e)\lfloor m/(de)\rfloor$.
-For $m=10,k=12,d=2$, it is $5-2-1+0=2$, represented by $x=2,10$.
-Enumerating only square-free $e$ takes $O(2^{\omega(k/d)})$ terms after
-factorization, where $\omega$ counts distinct primes.
+*Hint:* substitute $x = dy$ to turn "gcd equals $d$" into "gcd equals $1$".
+
+If $d \nmid k$ the answer is $0$. Otherwise $x = dy$ with
+$y \le \lfloor m/d \rfloor$ and $\gcd(y, k/d) = 1$. Applying the gcd filter,
+
+$$\sum_{e \mid k/d}\mu(e)\left\lfloor \frac{m}{de} \right\rfloor .$$
+
+For $m = 10$, $k = 12$, $d = 2$: $5 - 2 - 1 + 0 = 2$, realized by $x = 2$ and
+$x = 10$.
+
+Only square-free $e$ contribute, so after factoring $k/d$ this is
+$O(2^{\omega(k/d)})$ terms, where $\omega$ counts distinct primes.
 :::
 
 ### 4. Regroup a floor sum — synthesis
 
-Derive $\sum_{i=1}^N i\lfloor N/i\rfloor=\sum_{n=1}^N\sigma_1(n)$
-and obtain an $O(\sqrt N)$ arithmetic-operation algorithm.
+Derive $\sum_{i=1}^{N} i\lfloor N/i \rfloor = \sum_{n=1}^{N}\sigma_1(n)$, then
+give an algorithm using $O(\sqrt N)$ arithmetic operations.
 
 ::: {.callout-tip collapse="true" title="Hint and solution"}
-Each left summand gives weight $i$ to every pair $(i,j)$ with $ij\le N$.
-Grouping by $n=ij$ sums all divisors $i$ of $n$, giving $\sigma_1(n)$.
-On a quotient block $[l,r]$ with quotient $q$, the contribution is
-$q(l+r)(r-l+1)/2$. The division is exact in integers; divide an even
-factor before modular reduction when two is not a unit.
-For $N=5$, the value is $5+4+3+4+5=21$.
+*Hint:* both sides count weighted lattice points under a hyperbola.
+
+The left side gives weight $i$ to each pair $(i,j)$ with $ij \le N$. Group
+those pairs by the product $n = ij$: the weights are the divisors $i$ of $n$,
+summing to $\sigma_1(n)$. Hence the two sides agree.
+
+For the algorithm, use quotient grouping: on a block $[l,r]$ where the
+quotient is the constant $q$, the contribution is
+$q \cdot (l+r)(r-l+1)/2$. That division by $2$ is exact over the integers —
+divide the even factor *before* reducing modulo anything, since $2$ need not
+be a unit.
+
+Check at $N = 5$: $5 + 4 + 3 + 4 + 5 = 21$, and
+$\sigma_1(1..5) = 1+3+4+7+6 = 21$.
 :::
 
 ## Summary and reference sheet
 
-Prime-power values determine a multiplicative function, but shared primes
-prevent naive multiplication. Dirichlet convolution enumerates factorizations
-$n=ab$; $\mathbf1*\mu=\varepsilon$ follows from cancellation over prime subsets.
-The gcd filter converts exact coprimality into weighted counts of multiples.
-Divisor zeta uses increasing prime-power updates; multiple zeta uses decreasing
-updates. Their inverses reverse those directions.
-
-A linear sieve costs $O(N)$ arithmetic operations and storage; direct divisor
-sums cost $O(N\log N)$, prime-wise transforms $O(N\log\log N)$, and floor
-quotient grouping uses $O(\sqrt N)$ blocks. Factorization of isolated 64-bit
-values has a deterministic primality contract and a heuristic randomized
-splitting runtime. Positive two-square representations exist exactly when
-every $3\bmod4$ prime has even valuation.
+- A multiplicative function is determined by its prime-power values; that is
+  what makes $O(N)$ sieves and prime-by-prime derivations possible. Shared
+  primes break naive splitting.
+- Dirichlet convolution sums over factorizations $n = ab$. It is associative,
+  commutative, has identity $\varepsilon$, and preserves multiplicativity.
+- $\mathbf 1 * \mu = \varepsilon$ is inclusion–exclusion over prime subsets;
+  Möbius inversion is that identity plus associativity, not a separate fact.
+- The gcd filter $[\gcd = 1] = \sum_{d \mid \gcd}\mu(d)$ converts an exact
+  entangled condition into independent counts of multiples.
+- Divisor zeta ascends prime-power chains, multiple zeta descends; each
+  inverse reverses the direction and subtracts. They diagonalize LCM and GCD
+  convolution respectively.
+- Costs: linear sieve $O(N)$; direct divisor sums $O(N\log N)$; prime-wise
+  transforms $O(N \log\log N)$; quotient grouping $O(\sqrt N)$ blocks.
+- 64-bit factorization has a *deterministic* primality contract
+  (Miller–Rabin with the fixed base set) and a *heuristic* splitting runtime
+  (Pollard–Rho).
+- $n$ is a sum of two squares exactly when every prime $\equiv 3 \pmod 4$ has
+  even exponent; build representations by multiplying Gaussian integers, never
+  coordinates.
 
 ## Further reading
 
