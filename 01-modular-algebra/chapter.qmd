@@ -2,340 +2,654 @@
 title: "01 — Modular Algebra and Finite Fields"
 ---
 
-## Why this topic matters
+## The world inside a modulus
 
-This chapter turns congruences into algorithms. The recurring contest signal is
-that values are huge but only their residue, multiplicative order, or
-compatibility across several moduli matters. A congruence is an equality after
-we deliberately forget multiples of a modulus; it is not ordinary arithmetic
-with a mysterious `%` attached. Work through the sections in order; the final
-four topics assume factorization from [Chapter 02](../02-multiplicative-number-theory/chapter.qmd).
+Almost every hard counting problem ends with the words *modulo $998244353$*,
+and almost every programmer's first reaction is to treat that as a formatting
+requirement: compute the answer, slap a `%` on it, done. That reflex works
+until the moment you need to *divide*, or to reduce an exponent, or to take a
+square root — and then it produces answers that are confidently, silently
+wrong.
 
-For every division below, first ask one question: *is the denominator a unit in
-this ring?* In modular arithmetic, that question is the difference between a
-valid derivation and a plausible-looking wrong answer.
+The fix is to stop thinking of `%` as an operation applied at the end, and
+start thinking of the residues modulo $m$ as a **number system in their own
+right**: a finite world with its own addition, its own multiplication, and its
+own rules about what you are allowed to divide by. Most of the familiar rules
+survive the move. A few do not, and those few are the entire content of this
+chapter.
+
+Here is the one question to keep in your head for the next twenty pages.
+Before dividing by anything, ask:
+
+> Is this denominator *invertible* in the world I am working in?
+
+Modulo a prime, every nonzero value is. Modulo a composite, most are not.
+Getting this wrong is not a subtle numerical issue; it turns a correct
+derivation into a plausible-looking wrong answer that passes every small test
+you will think to write.
+
+This chapter builds, in order: congruences and when you may divide; merging
+constraints from several moduli; the structure of the multiplicative world
+modulo a prime; how to measure divisibility by high prime powers; how to undo
+exponentiation (discrete logarithms); how to take roots; and how to evaluate
+absurd exponent towers. The last few sections assume you can factor an
+integer, which [Chapter 02](../02-multiplicative-number-theory/chapter.qmd)
+explains how to do.
 
 ## Prerequisites and learning objectives
 
-Read [proofs and Bézout](../00-prerequisite-audit/chapter.qmd). This chapter
-teaches you to derive linear-congruence and CRT conditions, distinguish rings
-from fields, prove exponent-period facts, and select a root or logarithm
-algorithm with an explicit domain. Factorization is treated as supplied data
-when needed; [Chapter 02](../02-multiplicative-number-theory/chapter.qmd)
-explains how to obtain it.
+Read [proofs and Bézout](../00-prerequisite-audit/chapter.qmd) first —
+Bézout's identity is the engine behind essentially everything here.
+
+After this chapter you should be able to derive the solvability condition for
+a linear congruence and for a CRT merge, explain in one sentence the
+difference between a ring and a field and why it matters for your code, prove
+that exponents may be reduced modulo an element's order (and see why that
+needs coprimality), and choose between BSGS, Pohlig–Hellman, Tonelli–Shanks,
+and a general $k$-th root reduction knowing each one's exact domain.
+
+Factorization is treated here as data someone hands you.
 
 ## Definitions and notation
 
-Throughout, $m\ge1$ is an integer modulus, $p$ is prime, and exponents in
-algorithmic queries are nonnegative unless stated otherwise. A *residue class*
-modulo $m$ contains all integers with the same remainder; its representative
-is chosen in $[0,m)$. Modulo one there is just one class, so return zero
-directly rather than passing it to field algorithms.
+Throughout, $m \ge 1$ is a modulus, $p$ denotes a prime, and exponents in
+algorithmic queries are nonnegative unless stated otherwise.
 
-A *commutative ring* supports addition, subtraction, and multiplication with
-their familiar associative, commutative, and distributive laws, and identities
-$0,1$. A *unit* has a multiplicative inverse. A *field* is a nonzero
-commutative ring where every nonzero element is a unit. The ring
-$\mathbb Z/m\mathbb Z$ records residues; it is a field exactly when $m$ is prime.
-A *group* has an associative operation, an identity, and inverses for all
-elements; the units of any ring form a group under multiplication.
+A **residue class** modulo $m$ is the set of all integers leaving the same
+remainder; we name it by its representative in $[0,m)$. Modulo $1$ there is a
+single class, so return $0$ immediately rather than feeding $m = 1$ into any
+field algorithm — it is the most common crash in otherwise correct code.
 
-## 1. Congruences as algebra
+Four words will keep recurring, so here they are in the order of increasing
+strength:
 
-For a positive modulus $m$, write $a ≡ b \pmod{m}$ when $m \mid (a-b)$:
-$a$ and $b$ leave the same remainder after division by $m$. Thus
-$17≡5\pmod {12}$, and replacing one by
-the other cannot change a later sum or product modulo $12$. Addition and
-multiplication descend to residue classes, but division is conditional: $a$ has
-an inverse modulo $m$ exactly when $\gcd(a,m)=1$. Extended Euclid gives integers $x,y$ with
+- A **commutative ring** has addition, subtraction, and multiplication obeying
+  the usual associative, commutative, and distributive laws, with identities
+  $0$ and $1$. The residues modulo any $m$ form one; call it
+  $\mathbb Z/m\mathbb Z$.
+- A **unit** is an element with a multiplicative inverse. Units are exactly
+  the things you may divide by.
+- A **field** is a nonzero commutative ring in which *every* nonzero element
+  is a unit. $\mathbb Z/m\mathbb Z$ is a field exactly when $m$ is prime, and
+  we then write $\mathbb F_p$.
+- A **group** has one associative operation, an identity, and inverses for
+  everything. The units of any ring form a group under multiplication; that
+  group is where orders and discrete logarithms live.
 
-$$ax+my=\gcd(a,m).$$
+The practical translation: *ring* means "arithmetic works, division might
+not"; *field* means "division works except by zero".
 
-This identity explains division: when $g=1$, it reads $ax+my=1$, so $ax≡1$
-and $x$ is the inverse of $a$. More generally, the values of $ax$ modulo $m$
-are exactly the multiples of $g=\gcd(a,m)$. Therefore $ax ≡ b \pmod{m}$ has no
-solution if $g∤b$; otherwise divide by $g$, invert $a/g$ modulo $m/g$, and
-obtain one residue class modulo $m/g$ (hence $g$ solutions modulo $m$).
+## 1. Congruences, and when division is legal
 
-**Example.** $6x≡8\pmod {14}$ becomes $3x≡4\pmod7$, so $x≡6\pmod7$.
-Modulo $14$ this means the two solutions $6$ and $13$. By contrast,
-$6x≡5\pmod {14}$ is impossible because every left side is even modulo $14$.
+For a positive modulus $m$, write $a \equiv b \pmod m$ when $m \mid (a-b)$ —
+equivalently, when $a$ and $b$ leave the same remainder. So $17 \equiv 5
+\pmod{12}$, and substituting one for the other cannot change any later sum or
+product modulo $12$. That substitution property is what makes modular
+arithmetic usable at all: you may reduce whenever you like.
 
-**Recognition.** A repeated step on a cycle, synchronized clocks, or an equation with a coefficient that may not be invertible is a linear congruence, not “ordinary modular division.”
+Addition, subtraction, and multiplication descend to residue classes without
+conditions. Division does not. Here is exactly when it works.
 
-## 2. CRT, including non-coprime moduli
+Bézout (from [Chapter 00](../00-prerequisite-audit/chapter.qmd)) gives
+integers $x, y$ with
 
-To merge $x≡a \pmod{m}$ and $x≡b \pmod{n}$, start from the first statement:
-every such integer has the form $x=a+mt$. Substituting it into the second gives
+$$ax + my = \gcd(a,m).$$
 
-$$mt\equiv b-a\pmod n.$$
+Read this modulo $m$: the term $my$ vanishes, so $ax \equiv \gcd(a,m)$. Two
+consequences follow immediately.
 
-It is solvable iff $\gcd(m,n) \mid b-a$; all solutions form one class modulo
-$\operatorname{lcm}(m,n)$. This is a consistency check, not an optional
-optimization. For example, $x≡1\pmod6$ and $x≡3\pmod8$ are compatible because
-$2\mid(3-1)$; substituting gives $6t≡2\pmod8$, then $t≡3\pmod4$, hence
-$x≡19\pmod {24}$. The pair $x≡1\pmod6$, $x≡2\pmod8$ is impossible: their
-parities already disagree. Fold constraints one at a time, normalize each
-merged residue, and guard the LCM against overflow.
+- If $\gcd(a,m) = 1$, then $ax \equiv 1$, so $x$ is the inverse of $a$. This
+  is exactly the extended-Euclid inverse your library already implements.
+- In general, the set of values $ax$ can take modulo $m$ is precisely the set
+  of multiples of $g = \gcd(a,m)$ — no more, because $g$ divides every $ax +
+  my$; no less, because scaling the Bézout identity reaches every multiple.
 
-For pairwise coprime prime powers, CRT is a ring isomorphism
-$\mathbb Z/(\prod_i p_i^{e_i})\mathbb Z \cong
-\prod_i \mathbb Z/(p_i^{e_i})\mathbb Z$. This is why composite-modulus
-equations should often be solved locally and recombined.
+So $ax \equiv b \pmod m$ is **solvable if and only if $g \mid b$**. When it is
+solvable, divide the whole congruence through by $g$: the equation $(a/g)x
+\equiv b/g \pmod{m/g}$ has an invertible coefficient, hence exactly one
+solution modulo $m/g$ — which unfolds into $g$ distinct solutions modulo $m$.
 
-## 3. Finite fields and multiplicative order
+::: {.callout-note title="Small instance"}
+$6x \equiv 8 \pmod{14}$. Here $g = \gcd(6,14) = 2$ and $2 \mid 8$, so
+solutions exist. Divide by $2$: $3x \equiv 4 \pmod 7$. Since $3^{-1} \equiv 5
+\pmod 7$, we get $x \equiv 20 \equiv 6 \pmod 7$, i.e. the two residues $6$ and
+$13$ modulo $14$.
 
-For prime $p$, every nonzero residue is invertible, so the nonzero residues form
-a multiplicative group $\mathbb F_p^\times$. This group happens to be cyclic:
-there is a generator $g$ whose powers list every nonzero residue once, and its
-order is $p-1$. Consequently:
+Contrast $6x \equiv 5 \pmod{14}$: every value of $6x$ is even modulo $14$,
+while $5$ is odd, and indeed $2 \nmid 5$. No solution exists. A solver that
+blindly "inverts $6$" will happily return nonsense here.
+:::
 
-- Fermat: $a^{p-1}=1$ for $a≠0$.
-- $\operatorname{ord}_p(a) \mid p-1$.
+**Recognition.** You are looking at a linear congruence, not at ordinary
+modular division, whenever a problem features a repeated step around a cycle,
+clocks or periodic events that must synchronize, or an equation whose
+coefficient is not guaranteed coprime to the modulus.
+
+## 2. Chinese remaindering, including the non-coprime case
+
+Suppose a quantity is constrained modulo several different numbers: it is
+$\equiv 1$ modulo $6$ and $\equiv 3$ modulo $8$. Can both hold at once, and if
+so, what exactly is the set of such integers?
+
+Derive it rather than memorizing it. The first constraint says every candidate
+has the shape $x = a + mt$. Substituting into the second constraint,
+$a + mt \equiv b \pmod n$, i.e.
+
+$$mt \equiv b - a \pmod n.$$
+
+This is a linear congruence in $t$, and Section 1 already told us everything:
+it is solvable exactly when $\gcd(m,n) \mid (b-a)$, and its solutions for $t$
+form one residue class, which pushes $x$ into one residue class modulo
+$\operatorname{lcm}(m,n)$.
+
+Two things are worth emphasizing. First, the divisibility test is a real
+consistency check, not an optimization you may skip: incompatible constraints
+are a legitimate input, and the answer is "impossible". Second, coprimality is
+*not* required — only compatibility.
+
+::: {.callout-note title="Both outcomes, by hand"}
+$x \equiv 1 \pmod 6$ and $x \equiv 3 \pmod 8$: here $\gcd = 2$ divides
+$3 - 1 = 2$, so they are compatible. Substituting $x = 1 + 6t$ gives
+$6t \equiv 2 \pmod 8$, then $3t \equiv 1 \pmod 4$, so $t \equiv 3 \pmod 4$ and
+$x \equiv 19 \pmod{24}$.
+
+$x \equiv 1 \pmod 6$ and $x \equiv 2 \pmod 8$: the first forces $x$ odd, the
+second forces $x$ even. And indeed $\gcd = 2$ does not divide $2 - 1 = 1$.
+:::
+
+In code, fold the constraints one at a time, normalize each merged residue
+into $[0, \operatorname{lcm})$, and watch the lcm for overflow — it grows
+multiplicatively and is the usual source of undefined behaviour in otherwise
+correct CRT routines.
+
+**The structural statement.** For pairwise coprime prime powers, CRT is not
+merely a solving technique but a *ring isomorphism*
+
+$$\mathbb Z\big/\textstyle\prod_i p_i^{e_i}\mathbb Z \;\cong\;
+\prod_i \mathbb Z/p_i^{e_i}\mathbb Z,$$
+
+meaning that addition and multiplication can be carried out independently in
+each coordinate. This is the licence for the strategy used again and again
+later: solve a hard modular problem separately modulo each prime power, where
+the structure is clean, then recombine.
+
+## 3. Life modulo a prime: fields, orders, generators
+
+Modulo a prime $p$, every nonzero residue is invertible, so the nonzero
+residues form a group under multiplication, written $\mathbb F_p^\times$, with
+$p - 1$ elements. This group turns out to have a remarkably rigid structure:
+it is **cyclic**, meaning some single element $g$ — a *primitive root* — has
+the property that $g, g^2, g^3, \ldots$ eventually lists every nonzero residue
+exactly once before returning to $1$.
+
+That single fact is the reason multiplicative problems modulo a prime become
+*additive* problems about exponents, which is why they are tractable at all.
+Its immediate consequences:
+
+- **Fermat's little theorem:** $a^{p-1} = 1$ for every $a \ne 0$.
+- The **order** of $a$ — the smallest $d > 0$ with $a^d = 1$ — divides $p-1$.
 - A nonzero polynomial of degree $d$ over a field has at most $d$ roots.
-- $x^{k}=a$ can be converted into a linear congruence in exponents after choosing a primitive root.
+- The equation $x^k = a$ becomes a *linear congruence in exponents* once
+  everything is written as a power of $g$.
 
-For composite moduli, nonzero does **not** imply invertible, polynomial root bounds may fail, and the unit group need not be cyclic. Always identify where primality is used.
+Modulo a composite, every one of these can fail: nonzero elements need not be
+invertible, the polynomial root bound collapses ($x^2 - 1$ has four roots
+modulo $8$: $1, 3, 5, 7$), and the unit group need not be cyclic. Whenever you
+use one of the facts above, be able to point at where primality entered.
 
-The order of $a$ is the first positive exponent $d$ for which $a^d=1$; it is
-the length of the cycle $1,a,a^2,\ldots$. For example, $2$ modulo $7$ has order
-$3$ because $2,4,1$ repeat. Assuming $\gcd(a,m)=1$, start at $\varphi(m)$ (or
-the Carmichael exponent $\lambda(m)$) and remove a prime factor $q$ whenever
-$a^{\operatorname{ord}/q}=1$. A primitive root has order $\varphi(m)$;
-for $m\ge2$, primitive roots exist exactly for
-$m\in\{2,4,p^{k},2p^{k}\}$ with odd prime $p$ and $k\ge1$. Some sources add
-$m=1$ by a vacuous convention; it has no relevance to modular algorithms.
+### Orders, concretely
 
-To understand the classification, lift a generator modulo odd $p$ to one
-modulo $p^2$. Among its $p$ lifts, at most one has $(p-1)$st power one
-modulo $p^2$: expanding $(g+tp)^{p-1}$ makes the next digit a nonconstant
-linear function of $t$. Choose another lift. The valuation formula proved
-in the next section shows its order modulo $p^k$ is $p^{k-1}(p-1)$.
-CRT identifies units modulo $2p^k$ with those modulo $p^k$.
-Conversely, two distinct odd-prime components, or an odd-prime component
-and a factor four, have even-sized unit groups: no element of their product
-can have order equal to the product of the sizes, because its order divides
-their smaller lcm. Modulo $2^k$ for $k\ge3$, the four distinct roots
-$1,-1,1+2^{k-1},-1+2^{k-1}$ of $x^2=1$ rule out cyclicity, since a cyclic
-even-order group has exactly two such elements. Moduli two and four are
-checked directly.
+The order of $a$ is the length of the cycle $1, a, a^2, \ldots$ before it
+repeats. Modulo $7$, the powers of $2$ are $2, 4, 1$, so $\operatorname{ord}_7(2)
+= 3$. Modulo $7$, the powers of $3$ are $3, 2, 6, 4, 5, 1$: all six nonzero
+residues, so $3$ is a primitive root.
 
-### Why the group and root facts hold
+To *compute* an order when $\gcd(a,m) = 1$: start from a known multiple of it —
+$\varphi(m)$, or the smaller Carmichael exponent $\lambda(m)$ — and repeatedly
+try to remove a prime factor $q$, replacing the candidate by candidate$/q$
+whenever $a^{\text{candidate}/q} = 1$. This works because the order divides
+any exponent that sends $a$ to $1$ (proved below), so stripping primes as long
+as the identity survives lands exactly on the order.
 
-A nonzero degree-$d$ polynomial over a field has at most $d$ distinct roots.
-A root $r$ permits division by the monic polynomial $x-r$, leaving zero
-remainder. Every other root is a root of the quotient because $x-r$ is
-nonzero there and can be cancelled. Induct on the degree. Modulo $8$, however,
-the degree-two polynomial $x^2-1$ has four roots $1,3,5,7$: field hypotheses matter.
+A **primitive root** is an element of order $\varphi(m)$, i.e. a generator of
+the whole unit group. For $m \ge 2$ these exist exactly for
 
-For a unit $a$ of order $d$, the powers $1,a,\ldots,a^{d-1}$ are distinct.
-Every element in a finite group belongs to a block obtained by multiplying
-these $d$ elements by some $b$. Two blocks coincide or are disjoint:
-one common element lets us cancel and express one multiplier through the
-other. Thus $d$ divides the group size. If $a^e=1$, division of $e$ by $d$
-shows its remainder must be zero, so $d\mid e$.
+$$m \in \{2, 4, p^k, 2p^k\}, \qquad p \text{ an odd prime}, \; k \ge 1.$$
 
-Here is a proof of cyclicity. Let $G$ be a finite subgroup of the nonzero
-elements of a field, and let $D$ be the lcm of its element orders. For each
-prime power $q^e$ dividing $D$ exactly, some element has order divisible by
-$q^e$; raising it to the other factor of its order gives an element of order
-$q^e$. Products of commuting elements of coprime orders have order equal
-to the product: a common power of the two elements has order dividing both,
-so must be the identity. Repeating this constructs an element of order $D$.
-Every element of $G$ is a root of $x^D-1$, so $|G|\le D$ by the root bound;
-the constructed cyclic subgroup has $D$ elements, so $D\le |G|$.
-Equality proves a generator exists. For $\mathbb F_p^\times$, its order is $p-1$.
+(Some references also list $m = 1$ by a vacuous convention; it never matters
+algorithmically.)
 
-The Euler totient $\varphi(m)$ counts units modulo $m$. Multiplication by
-a unit permutes them; multiplying all entries and cancelling their product
-proves $a^{\varphi(m)}=1$. The Carmichael exponent $\lambda(m)$ is the lcm
-of all unit orders, hence the least positive exponent giving one for every
-unit. It divides $\varphi(m)$, so using $\varphi(m)$ is always a valid
-alternative when a smaller period is unnecessary.
+::: {.callout-note collapse="true" title="Why exactly those moduli — the classification"}
+*Prime powers.* Take a generator $g$ modulo an odd prime $p$ and lift it to
+modulus $p^2$. Among the $p$ lifts $g + tp$, at most one satisfies
+$(g+tp)^{p-1} \equiv 1 \pmod{p^2}$, because expanding the binomial makes the
+$p$-digit a nonconstant linear function of $t$. Choose a different lift; the
+valuation formula of Section 4 then shows its order modulo $p^k$ is
+$p^{k-1}(p-1) = \varphi(p^k)$.
 
-## 4. Valuations and lifting
+*Twice a prime power.* CRT identifies the units modulo $2p^k$ with those
+modulo $p^k$, so cyclicity transfers.
 
-The $p$-adic valuation $v_p(n)$ is the exponent of $p$ in the prime
-factorization of a nonzero integer $n$: for instance $v_2(40)=3$. It is useful
-to set $v_p(0)=+\infty$ when comparing valuations of sums. It turns a question
-about a large product into a question about addition of exponents:
+*Why nothing else works.* If the modulus has two distinct odd prime factors —
+or an odd prime factor and a factor of $4$ — then both corresponding unit
+groups have even size. Any element's order divides the lcm of the two group
+sizes, which is strictly smaller than their product, so no element can
+generate the whole thing.
 
-$$v_p(ab)=v_p(a)+v_p(b),\qquad
-v_p(n!)=\sum_{j\ge1}\left\lfloor n/p^j\right\rfloor.$$
+*Powers of two.* Modulo $2^k$ with $k \ge 3$, the equation $x^2 = 1$ has four
+solutions: $1, -1, 1 + 2^{k-1}, -1 + 2^{k-1}$. A cyclic group of even order
+has exactly two. Moduli $2$ and $4$ are checked by hand.
+:::
 
-For sums, $v_p(a+b)≥\min(v_p(a),v_p(b))$, with equality if the two valuations
-differ: factor out the smaller power, and the remaining sum is nonzero modulo
-$p$. LTE supplies sharper forms when cancellation needs to be measured. The
-most used one is: for an odd prime $p$, positive integer $n$, distinct integers
-$x,y$, $p\mid(x-y)$, and $p\nmid xy$,
+### Why the group facts are true
 
-$$v_p(x^{n}-y^{n})=v_p(x-y)+v_p(n).$$
+These three proofs are short, and reconstructing them is the best test of
+whether the vocabulary has landed.
 
-**Why the factorial sum holds.** There are $\lfloor n/p\rfloor$ multiples
-contributing at least one $p$, $\lfloor n/p^2\rfloor$ contributing an additional
-$p$, and so on. Each integer of valuation $e$ is counted exactly $e$ times;
-stop once $p^j>n$.
+**A degree-$d$ nonzero polynomial over a field has at most $d$ roots.** If $r$
+is a root, divide by the monic polynomial $x - r$; the remainder is a constant
+and evaluating at $r$ shows it is zero, so $f = (x-r)q$ with $\deg q = d - 1$.
+Any other root $s \ne r$ satisfies $(s - r)q(s) = 0$, and since $s - r$ is a
+nonzero element of a *field* it can be cancelled, so $q(s) = 0$. Induct.
 
-**Proof sketch for the stated LTE form.** Write $x=y+p^t u$ with
-$t=v_p(x-y)\ge1$ and $p\nmid u$. For positive $s$ coprime to $p$, the
-binomial expansion of $x^s-y^s$ has first term $s y^{s-1}p^t u$ of
-valuation $t$ and all other terms of larger valuation. For exponent $p$,
-the first term has valuation $t+1$, intermediate terms have valuation at
-least $2t+1$, and the last has valuation $pt>t+1$ for odd $p$.
-Thus exponent $p$ raises the valuation by one. Write $n=p^e s$ and repeat.
-The odd-prime hypothesis prevents a tie at $p=2,t=1$.
+The field hypothesis is doing real work: modulo $8$, $x^2 - 1$ factors as
+$(x-1)(x+1)$, yet $3$ is a root even though neither factor vanishes — because
+$2 \cdot 4 = 0$ is possible in that ring.
 
-Use valuations when divisibility by a huge power or the number of trailing prime factors is asked. For binomial coefficients,
+**The order of an element divides the size of the group** (Lagrange, in the
+only case we need). Let $a$ have order $d$, so $1, a, \ldots, a^{d-1}$ are
+distinct. For any $b$, the block $\{b, ba, \ldots, ba^{d-1}\}$ also has $d$
+elements. Two blocks are equal or disjoint: a shared element lets you cancel
+and rewrite one multiplier in terms of the other. The blocks therefore
+partition the group into pieces of size $d$, so $d$ divides the group size.
+And if $a^e = 1$, write $e = qd + r$ with $0 \le r < d$; then $a^r = 1$, so
+$r = 0$ by minimality — that is, $d \mid e$.
 
-$$v_p\binom nk=\sum_{j\ge1}\left(\lfloor n/p^{j}\rfloor-\lfloor k/p^{j}\rfloor-\lfloor(n-k)/p^{j}\rfloor\right),$$
+**Finite multiplicative subgroups of a field are cyclic.** Let $G$ be such a
+group and let $D$ be the lcm of all element orders. For each prime power $q^e$
+dividing $D$ exactly, some element has order divisible by $q^e$; raising it to
+the cofactor of its order produces an element of order exactly $q^e$.
+Multiplying together such elements for distinct primes gives an element of
+order $D$, because commuting elements of coprime orders multiply to an element
+whose order is the product (a common power kills both factors, so it must be
+the identity). Now every element of $G$ is a root of $x^D - 1$, so the root
+bound gives $|G| \le D$; the cyclic subgroup we just built has $D$ elements,
+so $D \le |G|$. Equality forces $G$ to be that cyclic subgroup. Applied to
+$\mathbb F_p^\times$, whose size is $p-1$, this gives the primitive root.
 
-equivalently the number of carries when adding $k$ and $n-k$ in base $p$ (Kummer).
+**Euler and Carmichael.** The totient $\varphi(m)$ counts units modulo $m$.
+Multiplying every unit by a fixed unit $a$ permutes them, so the product of
+all units is unchanged except for a factor $a^{\varphi(m)}$; cancelling the
+product (it is a unit) gives Euler's theorem $a^{\varphi(m)} = 1$. The
+Carmichael exponent $\lambda(m)$ is the lcm of all unit orders, hence the
+*smallest* exponent that works for every unit simultaneously. It divides
+$\varphi(m)$, so using $\varphi(m)$ is always safe when you do not need the
+tightest period.
 
-For an integer polynomial $f\in\mathbb Z[x]$, Hensel lifting upgrades a root
-modulo $p^{k}$ to modulo $p^{k+1}$. We only need
-to decide its next base-$p$ digit, so try $r'=r+t p^{k}$ with $t\in\{0,\ldots,p-1\}$.
-If $f(r)≡0\pmod {p^k}$, the first-order expansion gives
+## 4. Valuations: measuring divisibility by a prime power
 
-$$\frac{f(r)}{p^k}+t f'(r)\equiv0\pmod p.$$
+Some problems do not care about a number's value at all, only about how many
+times a prime divides it: how many trailing zeros does $n!$ have, is
+$\binom{n}{k}$ divisible by $p$, does this huge power vanish modulo $p^r$?
 
-The quotient is an integer because $r$ was already a root modulo $p^k$. If
-$f'(r)\not\equiv0\pmod p$, this linear equation has one $t$, hence one lift.
-If the derivative vanishes, it has either no solution or every $t$ is a
-solution, giving zero or $p$ lifts—never assume uniqueness.
+The tool is the **$p$-adic valuation** $v_p(n)$: the exponent of $p$ in the
+factorization of a nonzero $n$. So $v_2(40) = 3$ because $40 = 2^3 \cdot 5$.
+Setting $v_p(0) = +\infty$ makes statements about sums come out right. Its
+value is that it turns multiplication into addition:
 
-## 5. Discrete logarithms
+$$v_p(ab) = v_p(a) + v_p(b), \qquad
+v_p(n!) = \sum_{j \ge 1} \left\lfloor \frac{n}{p^j} \right\rfloor.$$
 
-Given $a^{x}≡b \pmod{m}$ with $a$ a unit, baby-step giant-step (BSGS) searches an exponent by
-writing the representative $0\le x<\operatorname{ord}(a)$ as $x=q+nj$, where
-$0\le q<n$ and $n=\lceil\sqrt{\operatorname{ord}(a)}\rceil$. Then
-$a^q=b(a^{-n})^j$. Store all small “baby” powers $a^q$ and scan the “giant”
-right sides; an equality gives $x=q+nj$. Retain the smallest baby exponent for
-each stored value and verify every reported candidate. If the order is not known, taking
-$n=\lceil\sqrt m\rceil$ is safe for a unit modulo $m$, since the order is at
-most $\varphi(m)<m$. This group version needs $\gcd(a,m)=1$ and costs
-$O(\sqrt{\operatorname{ord}(a)})$ time and memory when the order is used. It is
-a meet-in-the-middle search, not a logarithm in the numerical sense. If giant
-steps are scanned by increasing $j$, the table retains the smallest $q$ for
-each value, and candidates $q+nj\ge\operatorname{ord}(a)$ are discarded, the
-first verified collision is the smallest nonnegative solution. Other scan or
-hash conventions should collect and minimize the normalized candidates.
+*Why the factorial sum is right:* among $1, \ldots, n$ there are $\lfloor n/p
+\rfloor$ multiples of $p$, each contributing at least one factor;
+$\lfloor n/p^2 \rfloor$ of them contribute a second; and so on. An integer of
+valuation $e$ is counted in exactly $e$ of these terms, which is precisely
+what we want. The sum stops once $p^j > n$.
 
-The search succeeds only when $b$ belongs to the cyclic subgroup generated by
-$a$. For example, modulo $7$ the powers of $2$ are $1,2,4$; therefore
-$2^x\equiv3\pmod 7$ has no solution even though both sides are units.
+For sums, $v_p(a+b) \ge \min(v_p(a), v_p(b))$, with **equality whenever the
+two valuations differ**: factor out the smaller power and the remaining sum is
+nonzero modulo $p$. The interesting case is a tie, where cancellation can push
+the valuation up by an unpredictable amount — and that is exactly what the
+lifting-the-exponent lemma measures. Its most used form: for an odd prime $p$,
+a positive integer $n$, and distinct integers $x, y$ with $p \mid (x-y)$ and
+$p \nmid xy$,
 
-When $\gcd(a,m)>1$, ordinary BSGS cannot invert $a$. The extension maintains
-$k a^{x-t}\equiv b\pmod m$ for the still-unexamined exponents $x\ge t$;
-initially $k=1,t=0$. First test $k=b$ for $x=t$. For $x>t$, set
-$g=\gcd(a,m)$: if $g\nmid b$, no remaining exponent works.
-Otherwise divide $m,b$ by $g$, update $k\leftarrow k(a/g)\bmod m$ using
-the old $g$, and increase $t$. These are integer divisions of the equation,
-so the invariant is preserved. When the reduced modulus becomes one,
-the smallest remaining exponent works. When $\gcd(a,m)=1$, $k$ is also
-a unit: any prime shared with the original base has by then been removed
-from the modulus. Solve $a^{x-t}=b/k$ using ordinary BSGS.
-Always check exponent zero first, including $a=0$; the convention here is
-$a^0=1$ even for zero. The stripping phase takes at most $O(\log m)$ steps.
+$$v_p(x^n - y^n) = v_p(x-y) + v_p(n).$$
 
-Pohlig–Hellman is better when the known order $L=\prod_i q_i^{e_i}$ has
-small prime factors. Raise $a,b$ to $L/q_i^{e_i}$ to project to order
-$q_i^{e_i}$. If the low $j$ base-$q_i$ digits of the logarithm are known,
-divide away their contribution and raise to $q_i^{e_i-1-j}$; this leaves
-a logarithm in the subgroup of order $q_i$, revealing the next digit.
-CRT recombines the exponent residues. BSGS for each digit gives
-$O(\sum_i e_i(\log L+\sqrt{q_i}))$ group operations and reusable
-$O(\max_i\sqrt{q_i})$ table space, excluding factorization. The largest
-prime factor matters, but the digit and exponentiation costs also count.
+::: {.callout-note collapse="true" title="Proof sketch for LTE, and why $p$ must be odd"}
+Write $x = y + p^t u$ with $t = v_p(x-y) \ge 1$ and $p \nmid u$.
 
-## 6. Modular roots
+For an exponent $s$ coprime to $p$, expand $x^s - y^s$ binomially: the leading
+term $s\,y^{s-1}p^t u$ has valuation exactly $t$, and every other term carries
+at least $p^{2t}$. So a coprime exponent does not change the valuation.
 
-For odd prime $p$ and $a\ne0$, a *quadratic residue* is a value $a$ for which
-some $x$ satisfies $x^2=a$. Euler's criterion gives
-$a^{(p-1)/2}\equiv1\pmod p$ exactly for residues, and $-1$ for non-residues.
-Tonelli–Shanks writes $p-1=q\cdot2^{s}$ with odd
-$q$, finds a quadratic non-residue, then cancels the current error inside the
-$2$-power subgroup. Given a non-residue, it runs in
-$O(\log p+s^{2})$ modular multiplications; random sampling finds one in expected
-constant trials.
+For exponent exactly $p$: the $j = 1$ term has valuation $t + 1$; the middle
+terms $\binom pj y^{p-j}(p^tu)^j$ with $1 < j < p$ have valuation at least
+$1 + 2t$, because $p \mid \binom pj$ there; and the last term $(p^tu)^p$ has
+valuation $pt$. Since $t \ge 1$ and $p \ge 3$, both $1 + 2t$ and $pt$ exceed
+$t+1$, so the minimum is attained once and the total valuation is exactly
+$t+1$. Raising to the $p$-th power adds exactly one.
 
-Euler's criterion follows from a generator $g$: $a=g^t$ is a square iff $t$
-is even, and $g^{(p-1)/2}=-1$ because it has order two. Thus the criterion
-has no false positives in an odd prime field.
+Now write $n = p^e s$ with $p \nmid s$ and combine: $e$ increments plus no
+change, giving $t + e = v_p(x-y) + v_p(n)$.
 
-For the Tonelli–Shanks invariant, put
-$r=a^{(q+1)/2}$, $t=a^q$, $c=z^q$, and $M=s$, where $z$ is a non-residue.
-Then $r^2=at$, $c$ has order $2^M$, and $t$ has order dividing $2^{M-1}$
-when $a$ is a square. If $t\ne1$, find the least $i$ with $t^{2^i}=1$;
-then $1\le i<M$. Put $b=c^{2^{M-i-1}}$ and replace
-$(r,t,c,M)$ by $(rb,tb^2,b^2,i)$. The relation $r^2=at$ is preserved.
-Both $t$ and $b^2$ have $2^{i-1}$st power $-1$, so their product has order
-dividing $2^{i-1}$; $c$ now has order $2^i$. Thus the invariant holds with
-a strictly smaller $M$, and termination at $t=1$ gives a root.
-The repeated squarings over decreasing $M$ cost $O(s^2)$.
-Sampling a non-residue adds expected $O(\log p)$ multiplications, since
-half the nonzero field elements are non-residues.
+At $p = 2$, $t = 1$ the terms tie and the argument breaks; the $p = 2$ case
+genuinely has a different statement, which is why the hypothesis is there.
+:::
 
-For example, $a=10,p=13$ has $q=3,s=2$, and $z=2$ is a non-residue.
-Initially $r=9,t=12,c=8$. The least $i$ is one, so $b=8$ and the new
-$r=7,t=1$. The roots are $7$ and $6$; their squares are $10$ modulo $13$.
+**Binomial coefficients.** Combining the factorial formula,
 
-For the excluded prime $p=2$, the nonzero multiplicative group has one element,
-and both field elements $0$ and $1$ are their own square roots. Euler's
-criterion and Tonelli--Shanks are not needed there.
+$$v_p\binom nk = \sum_{j\ge1}\left(
+\left\lfloor \frac{n}{p^j}\right\rfloor -
+\left\lfloor \frac{k}{p^j}\right\rfloor -
+\left\lfloor \frac{n-k}{p^j}\right\rfloor\right),$$
 
-For a positive integer $k$, first separate $a=0$ in
-$x^{k}=a \pmod{p}$: its only
-root in a field is $x=0$. For nonzero $a$, write values as powers of a primitive
-root: $g^{kt}=a$. A discrete logarithm converts this to
-$kt≡\log_g(a) \pmod{p-1}$. It has $\gcd(k,p-1)$ solutions if compatible.
-Specialized root algorithms avoid a full discrete log; use them when
-constraints exceed BSGS.
+and each bracket is $0$ or $1$ — it is $1$ exactly when adding $k$ and $n-k$
+in base $p$ produces a carry out of position $j-1$. So $v_p\binom nk$ is the
+**number of carries** when adding $k$ and $n-k$ in base $p$ (Kummer's
+theorem), and in particular $p \nmid \binom nk$ exactly when the addition is
+carry-free. [Chapter 14](../14-modular-combinatorics/chapter.qmd) turns this
+into working algorithms.
 
-## 7. Exponent towers and efficient k-th roots
+### Hensel lifting: growing a root one digit at a time
 
-Euler reduction $a^{e} \bmod m = a^{e \bmod \varphi(m)} \bmod m$ is valid without
-qualification only when $\gcd(a,m)=1$: otherwise reducing a large exponent can
-turn a multiple of a prime into a nonmultiple. For example, $2^4≡0\pmod4$ but
-$2^{4\bmod\varphi(4)}=2^0≡1\pmod4$. For a tower, recurse through the Carmichael
-chain $m, \lambda(m), \lambda(\lambda(m)), \ldots$, but a residue alone is not
-enough: the caller must also know whether the true exponent exceeds a requested
-small cap. Compute that fact with saturating arithmetic instead of inferring it
-from the reduced residue. For a
-prime-power modulus $p^r$, first separate $e=0$, which gives $1$. If
-$p^r\mid a$ and $e>0$, the residue is $0$. Otherwise write $a=p^v u$ with
-$p\nmid u$ and $0\le v<r$. If $v=0$, reduce the exponent modulo
-$\lambda(p^r)$. If $v>0$, then $a^e\equiv0\pmod{p^r}$ as
-soon as $e\ge\lceil r/v\rceil$; below that threshold the exponent is small
-enough to retain exactly. Solve this independently for every $p^r\mid m$ and
-combine the residues by CRT. This local rule is the reason the extra
-"is the exponent large enough?" information is necessary.
+Suppose you know a root of an integer polynomial $f$ modulo $p^k$ and want one
+modulo $p^{k+1}$. Since a root modulo $p^{k+1}$ reduces to a root modulo
+$p^k$, the only freedom is the next base-$p$ digit: try $r' = r + tp^k$ for
+$t \in \{0,\ldots,p-1\}$.
 
-For $x^k=a\bmod p$ with $a\ne0$, existence is equivalent to
-$a^{(p-1)/g}=1$, where $g=\gcd(k,p-1)$. Indeed, writing $a=u^b$ for a
-generator $u$, both conditions say $g\mid b$. If $g=1$, invert $k$ modulo
-$p-1$ and return $a^{k^{-1}\bmod(p-1)}$. If $g>1$, the general discrete-log
-reduction is valid, but one must not assume the relevant subgroup is smooth:
-$g$ may contain a large prime. Specialized root extraction needs its own
-proved contract; it is not obtained merely by splitting off the gcd.
+Expand to first order. All terms beyond the linear one carry $p^{2k}$, which
+vanishes modulo $p^{k+1}$ for $k \ge 1$, so
 
-### Worked synthesis: a composite-modulus exponent
+$$f(r + tp^k) \equiv f(r) + t p^k f'(r) \pmod{p^{k+1}}.$$
 
-Compute $6^{\,2^{10}}\bmod72$. Factor $72=8\cdot9$. Modulo $8$, the base has
-valuation $v_2(6)=1$, so any exponent at least three gives zero. Modulo $9$,
-$v_3(6)=1$, so any exponent at least two gives zero. Since $2^{10}$ exceeds
-both caps, CRT gives zero modulo $72$ without storing the power of six.
-The tempting reduction modulo $\varphi(8)=4$ changes the exponent to zero
-and would incorrectly return one modulo $8$. The missing information is
-the exponent's size relative to the valuation threshold.
+Dividing by $p^k$ — legal, since $f(r)$ is already a multiple of $p^k$ — the
+condition on $t$ becomes the linear congruence
 
-For a height-$h$ tower of nonnegative integer bases, define $0^0=1$ locally
-if zero bases are allowed. A capped evaluator returns $\min(E,C)$, where
-$E$ is the true exponent and $C$ the requested cap. Repeated multiplication
-stops as soon as the cap is reached; for base at least two, only
-$O(\log C)$ multiplications are needed at a level. Bases zero and one need
-explicit branches. Combine these size certificates with modular recursion;
-the work depends on the tower height and the factorization/period chain,
-not on writing the enormous tower value.
+$$\frac{f(r)}{p^k} + t f'(r) \equiv 0 \pmod p.$$
+
+Now Section 1 answers everything. If $f'(r) \not\equiv 0 \pmod p$, the
+coefficient is invertible and there is **exactly one** lift. If the derivative
+vanishes modulo $p$, the equation has either no solution or all $p$ of them —
+so a root can die out or split into $p$ children. Never assume uniqueness
+without checking the derivative; that assumption is the classic bug in
+prime-power root solvers.
+
+## 5. Discrete logarithms: undoing exponentiation
+
+Modular exponentiation is fast. Its inverse — given $a$ and $b$, find $x$ with
+$a^x \equiv b \pmod m$ — is believed to be hard, which is exactly why
+cryptography rests on it. In contests, $m$ is small enough that a
+meet-in-the-middle search wins.
+
+### Baby-step giant-step
+
+Let $a$ be a unit and let $N$ bound the exponent range (the order of $a$, or
+$m$ itself if you know nothing better). Write the unknown exponent in "mixed
+radix" with block size $n = \lceil \sqrt N \rceil$:
+
+$$x = q + nj, \qquad 0 \le q < n.$$
+
+Then $a^{q+nj} = b$ rearranges to
+
+$$a^q = b \,(a^{-n})^j.$$
+
+The left side takes only $n$ values — precompute them all into a hash table
+("baby steps"). The right side is a sequence you can walk one multiplication
+at a time ("giant steps"). The first match gives $x = q + nj$. Cost:
+$O(\sqrt N)$ time and memory.
+
+Two habits make this reliable. Keep, for each stored value, the *smallest*
+baby exponent $q$; and always verify a reported candidate by exponentiating.
+If the problem demands the smallest nonnegative solution, scan giant steps by
+increasing $j$, discard candidates with $q + nj \ge \operatorname{ord}(a)$, and
+the first verified match is minimal. Under any other scan order, collect the
+candidates and minimize explicitly.
+
+**The search can legitimately fail.** $a^x$ only ever visits the cyclic
+subgroup generated by $a$. Modulo $7$, the powers of $2$ are $1, 2, 4$, so
+$2^x \equiv 3 \pmod 7$ has no solution even though $3$ is perfectly
+invertible. "No solution" is an output, not a bug.
+
+### When the base shares a factor with the modulus
+
+If $\gcd(a,m) = g > 1$, then $a$ is not a unit and $a^{-n}$ does not exist, so
+plain BSGS cannot even start. The repair strips the shared primes out of the
+modulus while keeping track of what has been removed.
+
+Maintain the invariant that, for the still-unexamined exponents $x \ge t$,
+
+$$k\,a^{\,x-t} \equiv b \pmod m,$$
+
+starting from $k = 1$, $t = 0$. First test $x = t$ directly by comparing
+$k$ with $b$. Otherwise let $g = \gcd(a,m)$; if $g \nmid b$ no remaining
+exponent can work, since the left side is a multiple of $g$. If it does
+divide, divide $m$ and $b$ by $g$, multiply $k$ by $a/g$, and increment $t$.
+Each step is an honest integer division of the whole congruence, so the
+invariant survives.
+
+Two facts finish the argument: the modulus shrinks by a factor of at least $2$
+each time, so at most $O(\log m)$ steps occur (and if it reaches $1$, the
+smallest remaining exponent is the answer); and once $\gcd(a,m) = 1$ the
+accumulated $k$ is a unit too, since every prime shared with the base has
+already been removed from the modulus. Then solve $a^{\,x-t} = b/k$ with
+ordinary BSGS.
+
+Always test exponent zero first, including the degenerate $a = 0$, under the
+convention $a^0 = 1$.
+
+### Pohlig–Hellman: exploit a smooth order
+
+When the order $L = \prod_i q_i^{e_i}$ of $a$ is known and its prime factors
+are small, do not search the whole group. Raise both $a$ and $b$ to the power
+$L/q_i^{e_i}$: this projects into the subgroup of order $q_i^{e_i}$, where the
+logarithm is only the residue of $x$ modulo $q_i^{e_i}$. Inside that subgroup,
+recover the base-$q_i$ digits of the logarithm one at a time — knowing the low
+$j$ digits, divide away their contribution and raise to $q_i^{e_i-1-j}$, which
+lands in the subgroup of order $q_i$, where a tiny BSGS reveals the next
+digit. Finally, CRT the residues modulo each $q_i^{e_i}$ back into $x$ modulo
+$L$.
+
+Cost: $O\!\left(\sum_i e_i(\log L + \sqrt{q_i})\right)$ group operations and
+$O(\max_i \sqrt{q_i})$ reusable table space, excluding the factorization of
+$L$. The largest prime factor dominates, but do not forget the exponentiation
+and digit-loop terms when the order has many factors.
+
+## 6. Modular square roots and $k$-th roots
+
+Now the question the chapter opened with. Given $a$ and a prime $p$, find $x$
+with
+
+$$x^2 \equiv a \pmod p.$$
+
+Over the reals you would call `sqrt`. Modulo $p$ there is no order and no
+approximation to iterate, so the problem is genuinely different: it asks
+whether $a$ lies in the image of the squaring map on $\mathbb F_p$, and if so
+to invert that map. Such an $a$ is called a **quadratic residue**.
+
+It comes up more often than you would guess: solving a quadratic congruence,
+inverting a two-term recurrence, taking a square root of a formal power series
+whose constant term is not $1$, and building complex-like extensions of
+$\mathbb F_p$ all need it.
+
+### Step 1: does a root exist?
+
+**Euler's criterion.** For odd prime $p$ and $a \ne 0$,
+
+$$a^{(p-1)/2} \equiv \begin{cases} +1 & a \text{ is a square},\\
+-1 & a \text{ is not.}\end{cases}$$
+
+*Why:* write $a = g^t$ for a primitive root $g$. Then $a$ is a square exactly
+when $t$ is even (if $t = 2s$ then $a = (g^s)^2$; conversely a square
+$g^{2s}$ has even exponent because exponents are well defined modulo the even
+number $p-1$). Meanwhile $g^{(p-1)/2}$ has order $2$, so it equals $-1$, the
+unique element of order two. Therefore $a^{(p-1)/2} = (g^{(p-1)/2})^t =
+(-1)^t$, which is $+1$ exactly for even $t$.
+
+Notice this also proves that exactly half of the $p-1$ nonzero residues are
+squares — a fact we will need in a moment.
+
+### Step 2: Tonelli–Shanks, and the idea behind it
+
+Sometimes existence is all you need, but usually you want the root itself.
+When $p \equiv 3 \pmod 4$ there is a one-liner: $x = a^{(p+1)/4}$ works,
+because squaring it gives $a^{(p+1)/2} = a \cdot a^{(p-1)/2} = a$. The
+exponent $(p+1)/4$ is an integer only in that case, and for $p \equiv 1
+\pmod 4$ — including the contest favourite $998244353$ — no such shortcut
+exists. **Tonelli–Shanks is the algorithm that handles every odd prime.**
+
+The idea is worth stating before the mechanics, because the pseudocode looks
+mysterious otherwise. Write
+
+$$p - 1 = q \cdot 2^s, \qquad q \text{ odd}.$$
+
+Because $p - 1$ has this shape, the multiplicative group splits into an
+odd-order part and a "$2$-power part" of size $2^s$. The odd part is easy:
+raising to an odd power is invertible there, so square roots in it are a
+single exponentiation. All the difficulty is concentrated in the $2$-power
+part.
+
+So the algorithm makes an initial guess that is correct up to an error living
+entirely in that $2$-power subgroup, and then repeatedly halves the order of
+the error until the error is $1$. Concretely it maintains four values
+
+$$r = a^{(q+1)/2}, \quad t = a^{q}, \quad c = z^{q}, \quad M = s,$$
+
+where $z$ is any quadratic non-residue, with the invariants
+
+$$r^2 = a\,t, \qquad \operatorname{ord}(c) = 2^M, \qquad t^{2^{M-1}} = 1 .$$
+
+Read the first invariant as "$r$ is the answer, times an error $t$". If ever
+$t = 1$, then $r^2 = a$ and we are done.
+
+Otherwise find the least $i$ with $t^{2^i} = 1$; the invariants force
+$1 \le i < M$. Set $b = c^{2^{\,M-i-1}}$ and update
+
+$$(r, t, c, M) \;\longleftarrow\; (rb,\; tb^2,\; b^2,\; i).$$
+
+The relation $r^2 = at$ survives, since both sides gain a factor $b^2$. The
+new error has strictly smaller two-power order: $t$ and $b^2$ both have
+$2^{i-1}$-st power equal to $-1$, so their product's $2^{i-1}$-st power is
+$(-1)^2 = 1$. And $c$ now has order exactly $2^i$, restoring the second
+invariant with a smaller $M$. Since $M$ strictly decreases, the loop
+terminates — with $t = 1$ and therefore a genuine square root.
+
+**Where the non-residue $z$ comes from.** It cannot be produced by a formula;
+we sample random values and test with Euler's criterion. Half of all nonzero
+residues work, so the expected number of trials is $2$. This makes
+Tonelli–Shanks a Las Vegas algorithm: always correct, randomized only in
+running time. Total cost $O(\log p + s^2)$ modular multiplications, the $s^2$
+coming from the repeated squarings over decreasing $M$.
+
+::: {.callout-note title="Run it by hand: $\sqrt{10}$ modulo $13$"}
+$p - 1 = 12 = 3 \cdot 2^2$, so $q = 3$, $s = 2$. Check existence:
+$10^{6} \equiv 1 \pmod{13}$, so a root exists. Take $z = 2$, which is a
+non-residue since $2^6 \equiv 12 \equiv -1$.
+
+Initialize $r = 10^{2} = 9$, $t = 10^{3} = 12$, $c = 2^{3} = 8$, $M = 2$.
+Check the invariant: $r^2 = 81 \equiv 3$ and $a t = 10 \cdot 12 = 120 \equiv
+3$. Good.
+
+$t \ne 1$, and the least $i$ with $t^{2^i} = 1$ is $i = 1$ (since
+$12^2 = 144 \equiv 1$). So $b = c^{2^{0}} = 8$, and the update gives
+$r = 9 \cdot 8 = 72 \equiv 7$, $t = 12 \cdot 64 \equiv 12 \cdot 12 \equiv 1$.
+
+Done: $r = 7$, and $7^2 = 49 \equiv 10 \pmod{13}$. The other root is
+$-7 \equiv 6$, and $6^2 = 36 \equiv 10$ as well.
+:::
+
+**The excluded prime.** For $p = 2$ there is nothing to do: $0$ and $1$ are
+each their own square root. Euler's criterion and Tonelli–Shanks assume an odd
+prime throughout.
+
+### Step 3: general $k$-th roots
+
+For $x^k \equiv a \pmod p$, first dispose of $a = 0$: in a field its only
+root is $x = 0$. For $a \ne 0$, write everything in terms of a primitive root
+$g$. Putting $x = g^t$ and $a = g^{\ell}$ turns the multiplicative equation
+into the linear congruence
+
+$$k\,t \equiv \ell \pmod{p-1},$$
+
+which Section 1 solves completely: solvable exactly when $\gcd(k, p-1) \mid
+\ell$, with $\gcd(k, p-1)$ solutions. This is conceptually complete, but it
+costs a discrete logarithm. Section 7 gives the cheaper route when you only
+need existence or one root.
+
+## 7. Exponent towers and efficient $k$-th roots
+
+### Reducing enormous exponents
+
+The rule everyone half-remembers is $a^e \bmod m = a^{\,e \bmod \varphi(m)}
+\bmod m$. Unqualified, **it is false**. It requires $\gcd(a,m) = 1$.
+
+Counterexample, small enough to keep in mind: modulo $4$, $2^4 = 16 \equiv 0$,
+but $4 \bmod \varphi(4) = 4 \bmod 2 = 0$, and $2^0 = 1$. Reducing the exponent
+turned a multiple of the modulus's prime into a non-multiple.
+
+The correct local rule works prime power by prime power. For modulus $p^r$:
+
+- if $e = 0$, the answer is $1$;
+- if $p^r \mid a$ and $e > 0$, the answer is $0$;
+- otherwise write $a = p^v u$ with $p \nmid u$ and $0 \le v < r$.
+  - If $v = 0$, then $a$ is a unit and you may reduce the exponent modulo
+    $\lambda(p^r)$.
+  - If $v > 0$, then $a^e \equiv 0 \pmod{p^r}$ as soon as
+    $e \ge \lceil r/v \rceil$; below that threshold $e$ is tiny and can be
+    used exactly.
+
+Then CRT the prime-power answers together.
+
+Look at what the third case needs: not the value of $e$ modulo anything, but
+whether $e$ **exceeds a small threshold**. This is why a tower evaluator must
+return more than a residue. Recursing through the Carmichael chain
+$m, \lambda(m), \lambda(\lambda(m)), \ldots$ gives you $e$ modulo the right
+number, but you must *separately* know whether the true $e$ was large. Compute
+that with saturating arithmetic — a capped evaluator returning
+$\min(E, C)$ for the true exponent $E$ and a requested cap $C$ — never by
+guessing from the reduced residue.
+
+::: {.callout-note title="Worked synthesis: $6^{\,2^{10}} \bmod 72$"}
+Factor $72 = 8 \cdot 9$ and work locally.
+
+Modulo $8$: $v_2(6) = 1$, so any exponent $\ge 3$ gives $0$.
+Modulo $9$: $v_3(6) = 1$, so any exponent $\ge 2$ gives $0$.
+
+The exponent $2^{10} = 1024$ clears both thresholds, so the answer is $0$
+modulo $8$ and $0$ modulo $9$, hence $0$ modulo $72$ — obtained without ever
+touching the astronomical power.
+
+The tempting shortcut fails loudly: $\varphi(8) = 4$ and $2^{10} \bmod 4 = 0$,
+so the naive reduction would compute $6^0 = 1$ modulo $8$. The information it
+threw away was not the exponent's residue but its *size*.
+:::
+
+For a height-$h$ tower of nonnegative integer bases, fix a local convention
+$0^0 = 1$ if zero bases are allowed, and give bases $0$ and $1$ their own
+branches. A capped evaluator stops multiplying as soon as it reaches the cap,
+so for base at least $2$ only $O(\log C)$ multiplications happen per level.
+Combine those size certificates with the modular recursion above; the total
+work depends on the tower height and the length of the factorization/period
+chain, never on the size of the tower's value.
+
+### $k$-th roots without a discrete logarithm
+
+For $x^k = a$ in $\mathbb F_p$ with $a \ne 0$ and $g = \gcd(k, p-1)$, a root
+exists if and only if
+
+$$a^{(p-1)/g} = 1 .$$
+
+*Why:* writing $a = u^\beta$ for a generator $u$, the left condition says
+$(p-1) \mid \beta (p-1)/g$, i.e. $g \mid \beta$, which Section 6 already
+identified as the solvability condition. The point is that this test is a
+single exponentiation — no logarithm needed.
+
+When $g = 1$ you also get the root for free: $k$ is invertible modulo $p-1$,
+so $x = a^{\,k^{-1} \bmod (p-1)}$. When $g > 1$ the discrete-log reduction is
+valid but may be expensive, and — this is the trap — you cannot assume the
+relevant subgroup is smooth, because $g$ may contain a large prime.
+Specialized root-extraction algorithms exist, but each needs its own proved
+contract; splitting off the gcd is not by itself an algorithm.
 
 ## Contest translation: algorithm contracts
 
@@ -343,30 +657,37 @@ not on writing the enormous tower value.
 |---|---|---|
 | Linear congruence | $m>0$, test $\gcd(a,m)\mid b$ | $O(\log m)$ integer divisions |
 | CRT merge | Positive moduli, consistency test, enough integer width | One Euclidean solve per merge |
-| Element order | A unit, a factored known multiple of its order | One modular power per attempted factor removal |
-| BSGS | A unit and an order bound $L$ | Expected $O(\sqrt L)$ time with hashing, $O(\sqrt L)$ memory |
-| Tonelli–Shanks | Odd prime, nonzero quadratic residue | Expected $O(\log p+s^2)$ modular multiplications |
-| Hensel digit | Integer polynomial, root modulo $p^j$, $j\ge1$ | One linear congruence per root branch |
+| Element order | A unit, plus a factored known multiple of its order | One modular power per attempted factor removal |
+| BSGS | A unit and an order bound $L$ | Expected $O(\sqrt L)$ time, $O(\sqrt L)$ memory |
+| Tonelli–Shanks | Odd prime, nonzero quadratic residue | Expected $O(\log p + s^2)$ modular multiplications |
+| Hensel digit | Integer polynomial, root modulo $p^j$, $j \ge 1$ | One linear congruence per root branch |
 
-Sorting rather than hashing BSGS entries adds a logarithmic lookup/sort factor.
-Finding a primitive root requires the factorization of $p-1$ and tests
-$g^{(p-1)/q}\ne1$ for every distinct prime $q\mid p-1$; these tests suffice
-because every proper divisor of $p-1$ divides at least one $(p-1)/q$.
-The cost includes the number of candidates tried.
+Sorting instead of hashing the BSGS table adds a logarithmic factor. Finding a
+primitive root modulo $p$ needs the factorization of $p-1$ and the tests
+$g^{(p-1)/q} \ne 1$ for every distinct prime $q \mid p-1$; those tests suffice
+because every proper divisor of $p-1$ divides at least one $(p-1)/q$. The cost
+also includes however many candidates you try.
 
 ## Contest checklist and pitfalls
 
-- Normalize negative residues; C++ `%` may be negative.
-- Never use Fermat inversion unless the modulus is prime and the denominator nonzero.
-- Protect multiplication and LCM with `__int128`; check promised bounds before casting back.
-- CRT consistency is a divisibility test, not pairwise coprimality.
-- Distinguish a primitive root of the whole multiplicative group from an $n$th root of unity.
-- In BSGS, clarify whether the smallest solution is required and handle $x=0$, $a=0$, and non-coprime cases.
-- Hensel's derivative-zero branch and $p=2$ require separate analysis.
+- Normalize negative residues: C++ `%` can return a negative value.
+- Never use Fermat inversion unless the modulus is prime and the value nonzero.
+- Guard products and lcms with `__int128`, and check the promised bound before
+  casting back.
+- CRT consistency is a divisibility test. Pairwise coprimality is a special
+  case, not the requirement.
+- Distinguish a primitive root of the whole group from an $n$-th root of
+  unity; NTT needs the latter.
+- In BSGS, decide whether the smallest solution is required, and handle
+  $x = 0$, $a = 0$, and non-coprime bases explicitly.
+- Hensel's zero-derivative branch and the prime $2$ need separate analysis.
+- $m = 1$ is a legal input to almost every routine here and breaks most of
+  them; special-case it.
 
 ## Ordered practice
 
-Levels are curriculum-relative: **Foundation**, **Advanced**, **Mastery**, **Capstone**. Try each problem before opening its hints.
+Levels are curriculum-relative: **Foundation**, **Advanced**, **Mastery**,
+**Capstone**. Try each problem before opening its hints.
 
 ### 1. [Throne](https://atcoder.jp/contests/abc186/tasks/abc186_e) — AtCoder ABC186 E
 
@@ -436,61 +757,96 @@ $M!$ to be invertible. For indices crossing the characteristic, use the
 
 ### 1. Roots can branch — concept check
 
-Lift all roots of $x^2=1$ modulo $4$ to modulus $8$. Why does the
+Lift all roots of $x^2 = 1$ modulo $4$ to modulus $8$. Why does the
 simple-root Hensel rule not apply?
 
 ::: {.callout-tip collapse="true" title="Hint and solution"}
-The roots modulo four are $1,3$. Their candidate lifts are $1,5$ and $3,7$;
-all four square to one modulo eight. The derivative $2x$ vanishes modulo
-two, so each existing root can have either zero or two lifts. By contrast,
-$x^2=3$ has a root modulo two but none modulo four.
+*Hint:* compute the derivative modulo $2$ before trying to lift.
+
+The roots modulo $4$ are $1$ and $3$. Their candidate lifts are $1, 5$ and
+$3, 7$, and all four square to $1$ modulo $8$ — so each root split into two.
+
+That is allowed precisely because $f'(x) = 2x$ vanishes modulo $2$, putting us
+in the degenerate branch where a root has either $0$ or $p$ lifts. The other
+outcome occurs too: $x^2 = 3$ has the root $1$ modulo $2$, but no root at all
+modulo $4$.
 :::
 
 ### 2. Root counting through exponents — derivation
 
-Find all solutions of $x^4=4$ modulo $7$, and explain why there are exactly two.
+Find all solutions of $x^4 = 4$ modulo $7$, and explain why there are exactly
+two.
 
 ::: {.callout-tip collapse="true" title="Hint and solution"}
-The primitive root $3$ has powers $1,3,2,6,4,5$. Thus $4=3^4$, and
-$4t\equiv4\pmod6$ gives $t\equiv1\pmod3$: $t=1,4$.
-The roots are $3,4$. The count is $\gcd(4,6)=2$; zero is not a root.
+*Hint:* convert to exponents using a primitive root.
+
+The primitive root $3$ has powers $3^1,\ldots,3^6 = 3, 2, 6, 4, 5, 1$, so
+$4 = 3^4$. Writing $x = 3^t$, the equation becomes $4t \equiv 4 \pmod 6$,
+i.e. $2t \equiv 2 \pmod 3$, i.e. $t \equiv 1 \pmod 3$: so $t \in \{1, 4\}$ and
+$x \in \{3, 4\}$.
+
+The count $\gcd(4, 6) = 2$ matches the general rule. Zero is not a root since
+$4 \ne 0$.
 :::
 
 ### 3. Synchronization with a deadline — modelling
 
-A machine is ready at times $t\equiv1\pmod6$ and another at
-$t\equiv3\pmod8$. Find the first common ready time at least $50$.
+A machine is ready at times $t \equiv 1 \pmod 6$ and another at
+$t \equiv 3 \pmod 8$. Find the first common ready time that is at least $50$.
 
 ::: {.callout-tip collapse="true" title="Hint and solution"}
-CRT gives $t=19+24k$. Impose $19+24k\ge50$, so
-$k\ge\lceil31/24\rceil=2$ and the answer is $67$.
-Choosing the normalized CRT residue alone answers a different question.
-For a time window $[A,B]$, the feasible $k$ interval is
-$[\lceil(A-19)/24\rceil,\lfloor(B-19)/24\rfloor]$.
+*Hint:* CRT gives a residue class; the deadline picks a member of it.
+
+CRT gives $t \equiv 19 \pmod{24}$, i.e. $t = 19 + 24k$. Imposing
+$19 + 24k \ge 50$ gives $k \ge \lceil 31/24 \rceil = 2$, so the answer is
+$t = 67$.
+
+Reporting the normalized residue $19$ would answer a different question. For a
+general window $[A,B]$, the feasible $k$ range is
+$[\lceil (A-19)/24 \rceil, \lfloor (B-19)/24 \rfloor]$, which is also how you
+count solutions rather than just find one.
 :::
 
 ### 4. Count valid exponents without a logarithm — synthesis
 
-For prime $p$ and a unit $a$ of known order $d$, count integers
-$0\le x<X$ satisfying $a^{kx}=1$, where $k\ge1$ and $X\ge0$.
+For a prime $p$ and a unit $a$ of known order $d$, count the integers
+$0 \le x < X$ with $a^{kx} = 1$, where $k \ge 1$ and $X \ge 0$.
 
 ::: {.callout-tip collapse="true" title="Hint and solution"}
-The condition is $d\mid kx$, hence $d/\gcd(d,k)\mid x$.
-Let $D=d/\gcd(d,k)$. For $X=0$ the count is zero; otherwise it is
-$1+\lfloor(X-1)/D\rfloor$. No discrete logarithm is needed because the target
-is the identity. With $a=2,p=7,d=3,k=2,X=10$, valid exponents are $0,3,6,9$.
+*Hint:* the target is the identity, so only divisibility matters.
+
+$a^{kx} = 1$ holds exactly when $d \mid kx$. Writing $D = d/\gcd(d,k)$, this
+is equivalent to $D \mid x$. For $X = 0$ the count is $0$; otherwise it is
+$1 + \lfloor (X-1)/D \rfloor$.
+
+No discrete logarithm is needed — that is the point. With $a = 2$, $p = 7$,
+$d = 3$, $k = 2$, $X = 10$: $D = 3$ and the valid exponents are
+$0, 3, 6, 9$, four of them, matching $1 + \lfloor 9/3 \rfloor$.
 :::
 
 ## Summary and reference sheet
 
-Division modulo $m$ means inversion of a unit. Linear congruences are
-solvable iff their gcd obstruction vanishes; compatible CRT constraints form
-one class modulo the lcm. Field polynomial root bounds imply cyclicity of
-finite multiplicative subgroups. Exponents reduce modulo an element's order
-only for units. Valuations turn prime-power vanishing into an exponent threshold.
-Hensel chooses the next digit by a derivative congruence; a zero derivative
-requires a branching test. Match the required answer—existence, one root,
-all roots, or the smallest exponent—to the algorithm's output contract.
+- Division modulo $m$ is multiplication by an inverse, and inverses exist
+  exactly for units. Modulo a prime that means "nonzero"; modulo a composite
+  it means "coprime to $m$".
+- $ax \equiv b \pmod m$ is solvable iff $\gcd(a,m) \mid b$, and then has
+  exactly $\gcd(a,m)$ solutions modulo $m$.
+- Two congruences merge iff $\gcd(m,n)$ divides the difference of the
+  residues; the merged constraint lives modulo $\operatorname{lcm}(m,n)$.
+- Modulo a prime, the nonzero residues form a cyclic group, which is why
+  multiplicative equations turn into linear congruences on exponents.
+- Exponents may be reduced modulo an element's order only when that element is
+  a unit; otherwise use the prime-power valuation threshold and keep a
+  *saturating* record of the exponent's size.
+- Valuations convert "divisible by a big prime power" into arithmetic on
+  exponents; Kummer reads $v_p\binom nk$ off base-$p$ carries.
+- Hensel picks the next base-$p$ digit by solving a linear congruence; a
+  vanishing derivative means $0$ or $p$ lifts, never "the" lift.
+- Tonelli–Shanks takes square roots modulo any odd prime by isolating the
+  error inside the $2$-power subgroup and halving its order each round; for
+  $p \equiv 3 \pmod 4$, one exponentiation suffices instead.
+- Always match the required output — existence, one root, all roots, the
+  smallest exponent — against what your chosen algorithm actually guarantees.
 
 ## Further reading
 
