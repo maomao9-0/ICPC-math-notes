@@ -2,284 +2,352 @@
 title: "06 — Fast Polynomial Algorithms"
 ---
 
-A polynomial is a finite coefficient array, but it is useful to think of it as
-a compact description of size-indexed choices: $[x^k]A(x)$ is the answer for
-total size $k$. This chapter explains why the fast operations work and when
-their algebraic preconditions hold. It assumes your library already supplies
-tested convolution and basic polynomial operations.
+## A polynomial is a DP table that knows how to merge
+
+Here is a familiar situation. You have a DP array `f[k]` = number of ways to
+reach total size $k$ using the first group of items, and `g[k]` for the second
+group. Combining the groups means
+
+$$h[k] = \sum_{i+j=k} f[i]\,g[j],$$
+
+which is $\Theta(n^2)$ if you write the double loop — and is *exactly*
+polynomial multiplication if you call `f` and `g` polynomials. Doing it in
+$O(n\log n)$ instead is often the entire difficulty of a problem.
+
+That is the point of view of this chapter: a polynomial is a compact
+description of size-indexed choices, $[x^k]A(x)$ is the answer at total size
+$k$, and multiplication is "split a total between two independent parts". Once
+you see convolution in a merge, a dozen fast operations become available —
+evaluation at many points, division, shifting the variable, multiplying
+thousands of small factors — and each one has an **algebraic precondition**
+that quietly decides whether your submission is correct.
+
+We assume your library already contains a tested convolution routine. What
+this chapter supplies is why the operations work and when they are legal.
 
 ## Prerequisites, notation, and learning objectives
 
 Read [fields and modular units](../01-modular-algebra/chapter.qmd) and
-[counting products](../04-combinatorics/chapter.qmd). You should learn to
-justify transform multiplication, prove the division/remainder invariant,
-recover a polynomial from samples, and recognize correlations and shifts.
+[counting products](../04-combinatorics/chapter.qmd).
 
-Write $A(x)=\sum_{i=0}^{a}a_ix^i$, where $x$ is an indeterminate and $a_i$
-belong to a commutative coefficient ring $R$. The degree is the largest index
-with nonzero coefficient; the zero polynomial has no ordinary finite degree.
-We use $\deg0=-\infty$ when comparing degrees. A polynomial equality means
-coefficientwise equality; it need not mean equality as functions on a finite
-field (for example $x^p-x$ vanishes everywhere in $\mathbb F_p$).
+You should finish able to justify transform-based multiplication, prove the
+division/remainder invariant, recover a polynomial from samples, recognize a
+correlation or a shift hiding in a statement, and state the exact condition
+each of those needs.
 
-Let $M(n)$ be the arithmetic-operation cost of multiplying polynomials with at
-most $n$ coefficients. For FFT-compatible lengths, $M(n)=O(n\log n)$.
-Complexity estimates assume $M(n)/n$ is nondecreasing and costs over
-doubling sizes sum to $O(M(n))$, as with schoolbook or FFT multiplication.
-Field operations have unit cost here; integer bit complexity is a separate cost.
+Write $A(x) = \sum_{i=0}^{a}a_i x^i$ with coefficients in a commutative ring
+$R$. The degree is the largest index with a nonzero coefficient; we use
+$\deg 0 = -\infty$ when comparing. **Polynomial equality means coefficientwise
+equality** — not equality as functions, a distinction that bites over finite
+fields, where $x^p - x$ vanishes at every point of $\mathbb F_p$ without being
+the zero polynomial.
 
-## 1. Multiplication is adding independent sizes
+Let $M(n)$ be the number of ring operations to multiply polynomials with at
+most $n$ coefficients; $M(n) = O(n\log n)$ for FFT-friendly settings. All
+complexity claims assume $M(n)/n$ is nondecreasing and that costs over
+doubling sizes sum to $O(M(n))$, which holds for schoolbook and FFT
+multiplication alike. Ring operations cost $1$; integer bit complexity is a
+separate accounting.
 
-For $C(x)=A(x)B(x)$,
+## 1. Multiplication by evaluation
 
-$$c_k=\sum_{i+j=k}a_ib_j. \tag{1}$$
+For $C = AB$,
 
-Each summand chooses an $i$-sized object from $A$ and a $(k-i)$-sized object
-from $B$. This “split a total” meaning is why convolution occurs in counting,
-DP merging, and formal power series.
+$$c_k = \sum_{i+j=k}a_ib_j. \tag{1}$$
 
-The transform idea is simple: evaluate polynomials at a specially chosen set of
-points. At every point $z$, $(AB)(z)=A(z)B(z)$, so multiplication becomes
-pointwise. An FFT uses complex roots of unity; an NTT uses roots of unity in a
-finite field. Interpolation returns to coefficient form.
+Each summand takes an $i$-sized object from $A$ and a $(k-i)$-sized object
+from $B$. That "split a total" reading is why convolution shows up in
+counting, DP merging, and formal power series.
 
-### Why evaluation at roots is invertible and fast
+The fast algorithm rests on one observation: **at any point $z$,
+$(AB)(z) = A(z)B(z)$.** In *value* form multiplication is pointwise and
+linear-time. So: evaluate both polynomials at a well-chosen set of points,
+multiply the values, and interpolate back. The whole trick is choosing points
+at which evaluation and interpolation are themselves fast. FFT uses complex
+roots of unity; NTT uses roots of unity inside a finite field.
 
-Work over a field containing a primitive $L$th root $w$, with $L$ invertible.
-Primitive means $w^L=1$ and $w^d\ne1$ for $1\le d<L$. For an integer $t$,
+### Why roots of unity, exactly
 
-$$\sum_{j=0}^{L-1}w^{jt}=\begin{cases}L,&L\mid t,\\0,&L\nmid t.\end{cases}$$
+Work over a field containing a primitive $L$-th root of unity $w$ — meaning
+$w^L = 1$ and $w^d \ne 1$ for $1 \le d < L$ — with $L$ invertible. The one
+fact everything follows from is
 
-In the second case multiplication of the sum by $1-w^t$ telescopes to
-$1-w^{Lt}=0$; its multiplier is a nonzero field element and hence invertible.
-If $\widehat a_j=A(w^j)$ and $\deg A<L$, this proves
+$$\sum_{j=0}^{L-1}w^{jt} =
+\begin{cases}L, & L \mid t,\\ 0, & L \nmid t.\end{cases}$$
 
-$$\frac1L\sum_{j=0}^{L-1}\widehat a_jw^{-jk}
-=\sum_{i=0}^{L-1}a_i\frac1L\sum_{j=0}^{L-1}w^{j(i-k)}=a_k,
-\qquad 0\le k<L.$$
+*Why the second case:* multiply the sum by $1 - w^t$; it telescopes to
+$1 - w^{Lt} = 0$, and $1 - w^t$ is a nonzero field element, hence invertible,
+so the sum is $0$.
 
-Each coefficient survives only its matching frequency sum. To evaluate fast
-when $L$ is a power of two, split even and odd coefficient indices:
-$A(x)=A_e(x^2)+xA_o(x^2)$. The point squares $w^{2j}$ have only $L/2$
-distinct values, and the pair $w^j,w^{j+L/2}$ combines the same two recursive
-values with opposite signs. At each stage every coefficient is in exactly one
-even or odd child. Thus $T(L)=2T(L/2)+O(L)=O(L\log L)$; inverse evaluation
-uses the same recursion with $w^{-1}$ and final scaling by $L^{-1}$.
+With $\widehat a_j = A(w^j)$ and $\deg A < L$, this gives the inversion
+formula
 
-For example, over $\mathbb F_{17}$, $w=4$ has order four. The values of
-$1+2x$ at $1,4,16,13$ are $3,9,16,10$. The inverse formula recovers
-coefficients $(1,2,0,0)$. This is exact finite-field arithmetic, unlike FFT
-rounding over complex numbers.
+$$\frac1L\sum_{j=0}^{L-1}\widehat a_j w^{-jk}
+= \sum_{i=0}^{L-1}a_i\left(\frac1L\sum_{j=0}^{L-1}w^{j(i-k)}\right) = a_k .$$
 
-### Transform contract
+Each coefficient survives only at its matching frequency, and everything else
+cancels. So evaluation at the $L$ powers of $w$ is an invertible change of
+representation — and its inverse is the *same* computation with $w^{-1}$ plus
+a final scaling by $L^{-1}$.
 
-For an NTT of length $L=2^s$ modulo prime $p$, we need $L\mid p-1$ so the
-field has a primitive $L$th root of unity. The result length must cover every
-possible degree, so $L\ge |A|+|B|-1$. For example,
-$998244353=119\cdot2^{23}+1$ supports powers of two through $2^{23}$.
+It is also fast when $L$ is a power of two. Split by parity of index,
+$A(x) = A_e(x^2) + x A_o(x^2)$. The squares $w^{2j}$ take only $L/2$ distinct
+values, so both halves are the same problem at half the size, and the pair
+$w^j, w^{j+L/2}$ combines the two recursive values with opposite signs. Every
+coefficient lands in exactly one child, so nothing is lost or duplicated:
+$T(L) = 2T(L/2) + O(L) = O(L\log L)$.
 
-If the answer is modulo an arbitrary $m$, do not pretend one NTT prime computes
-it. Convolve under one or more NTT-friendly primes, reconstruct the integer
-coefficient by CRT (or use Garner to perform the same reconstruction directly
-modulo $m$ when the bounded coefficients are nonnegative), then reduce. Garner
-avoids storing a huge reconstructed integer; it does not remove the
-reconstruction-range requirement. For signed coefficients, centered CRT must
-also determine whether the representative means $c$ or $c-P$, where $P$ is the
-product of auxiliary primes; a direct Garner residue needs the corresponding
-sign correction modulo $m$. The number
-of primes is determined by a proved bound on the *integer* coefficients: for a
-signed coefficient of absolute value at most $B$, centered CRT needs a product
-of moduli greater than $2B$. Three primes are a convention, not a proof.
-Complex FFT instead needs coefficient splitting and a rounding-error bound.
+::: {.callout-note title="A transform you can check by hand"}
+Over $\mathbb F_{17}$, $w = 4$ has order $4$ ($4^2 = 16$, $4^4 = 1$). The
+points are $1, 4, 16, 13$, and $1+2x$ evaluates to $3, 9, 16, 10$. Running the
+inverse formula returns $(1,2,0,0)$ — exactly, with no rounding, which is the
+practical reason NTT is preferred over complex FFT when the answer is modular.
+:::
 
-### Worked failure: insufficient padding
+### The transform contract
 
-For $A=B=1+x$, the true product is $1+2x+x^2$. A length-two transform knows
-only values at roots of $x^2=1$, so it recovers $2+2x$: the $x^2$ coefficient
-wraps into the constant term. Evaluation multiplies in $R[x]/(x^L-1)$.
-Padding until $\deg(AB)<L$ makes this cyclic product equal the desired ordinary
-product. Empty arrays should return the zero polynomial before choosing $L$.
+For an NTT of length $L = 2^s$ modulo a prime $p$:
 
-## 2. Division: turn the high-degree end into a series inverse
+- **Root exists:** $L \mid p - 1$, so that $\mathbb F_p^\times$ (cyclic of
+  order $p-1$) contains an element of order $L$. This is why
+  $998244353 = 119\cdot 2^{23} + 1$ is the contest favourite: it supports every
+  power of two up to $2^{23}$.
+- **Length is enough:** $L \ge |A| + |B| - 1$, covering every possible output
+  degree.
 
-Assume $B\ne0$ and its leading coefficient is a unit. The zero dividend has
-quotient and remainder zero; a unit constant divisor has zero remainder.
+If the required modulus $m$ is *not* NTT-friendly, do not pretend a single
+transform computes the answer. Convolve modulo one or more NTT primes,
+reconstruct the true integer coefficient by CRT (or use Garner to produce it
+directly modulo $m$ without materializing a huge integer), then reduce. Garner
+saves memory; it does **not** remove the range requirement. For signed
+coefficients, centered CRT must also decide whether a representative means $c$
+or $c - P$, where $P$ is the product of the auxiliary primes, and a Garner
+residue needs the matching sign correction modulo $m$.
 
-Given $A=BQ+R$ with $\deg R<\deg B$, ordinary long division removes the
-highest remaining term one at a time. Reversal makes those highest terms become
-the low-degree terms of a formal power series, where inversion is fast. If
-$\deg A<\deg B$, there is nothing to divide: return $Q=0,R=A$.
+The number of primes is decided by a *proved* bound on the integer
+coefficients: a signed coefficient bounded by $B$ in absolute value needs a
+modulus product exceeding $2B$. "Three primes" is a convention, not a proof.
+Complex FFT needs coefficient splitting plus a rounding-error bound instead.
 
-Let $k=\deg A-\deg B+1$. Define $\operatorname{rev}_k(F)$ by reading from
-$F$'s actual leading coefficient downward, retaining $k$ coefficients and
-padding with zeros only after its constant term. Then
+### Worked failure: forgetting to pad
 
-$$
-\operatorname{rev}_k(Q)
-\equiv \operatorname{rev}_k(A)\operatorname{rev}_k(B)^{-1}\pmod{x^k}. \tag{2}
-$$
+Take $A = B = 1 + x$, so $AB = 1 + 2x + x^2$. Run a length-$2$ transform: the
+points are the roots of $x^2 = 1$, and the result comes back as $2 + 2x$. The
+$x^2$ coefficient **wrapped around** into the constant term.
 
-Why is this legal? The leading coefficient of $B$ becomes the constant
-coefficient of $\operatorname{rev}_k(B)$; it can be inverted precisely when the
-leading coefficient is a unit (equivalently nonzero over a field). Terms from $R$ land
-beyond the first $k$ reversed coefficients and disappear modulo $x^k$. Reverse
-the quotient back, then compute $R=A-BQ$.
+The reason is worth remembering: evaluation at the $L$-th roots of unity
+computes the product in $R[x]/(x^L - 1)$, i.e. a *cyclic* convolution. It
+equals the ordinary product only when $\deg(AB) < L$. Pad accordingly, and
+handle empty inputs by returning the zero polynomial before choosing $L$.
 
-For example, $A=x^3+2x+1$ and $B=x+1$ give $k=3$.
-Their reversed prefixes are $1+2x^2$ and $1+x$. Modulo $x^3$,
-$(1+x)^{-1}=1-x+x^2$, so the reversed quotient is $1-x+3x^2$.
-Reversing yields $Q=x^2-x+3$ and $R=-2$. Multiplying $BQ+R$ recovers $A$.
-The inverse used here follows from the geometric series; general fast inversion
-is derived in [formal power series](../07-formal-power-series/chapter.qmd).
+## 2. Division: reverse the polynomial, invert a series
 
-This costs $O(M(n))$ with fast multiplication. Over a general ring it requires
-the leading coefficient of $B$ to be a unit. In particular, modulo a composite
-number a nonzero leading coefficient might not be invertible, so this division
-contract can fail.
+Assume $B \ne 0$ with a **unit leading coefficient**. Given $A$, we want
+$A = BQ + R$ with $\deg R < \deg B$. (Degenerate cases: $A = 0$ gives
+$Q = R = 0$; $\deg A < \deg B$ gives $Q = 0$, $R = A$; a unit constant divisor
+gives $R = 0$.)
+
+Long division peels off the highest-degree term repeatedly, which is
+inherently sequential. The trick is to **reverse** the coefficient arrays: the
+highest-degree end becomes the low-degree end of a power series, and low-degree
+work is where fast inversion lives.
+
+Let $k = \deg A - \deg B + 1$ (the number of quotient coefficients), and let
+$\operatorname{rev}_k(F)$ read $F$ from its leading coefficient downward,
+keeping $k$ coefficients. Then
+
+$$\operatorname{rev}_k(Q) \equiv \operatorname{rev}_k(A)\operatorname{rev}_k(B)^{-1} \pmod{x^k}. \tag{2}$$
+
+Two things make this legal. First, reversal turns the leading coefficient of
+$B$ into the *constant* coefficient of $\operatorname{rev}_k(B)$, and a power
+series is invertible exactly when its constant term is a unit — which is the
+hypothesis on $B$. Second, the remainder $R$ has low degree, so after reversal
+it sits beyond the first $k$ coefficients and vanishes modulo $x^k$. Reverse
+the result back to get $Q$, then $R = A - BQ$.
+
+::: {.callout-note title="Hand-worked division"}
+$A = x^3 + 2x + 1$, $B = x + 1$, so $k = 3$. Reversed prefixes:
+$\operatorname{rev}_3(A) = 1 + 2x^2$ and $\operatorname{rev}_3(B) = 1 + x$.
+Modulo $x^3$, $(1+x)^{-1} = 1 - x + x^2$, so
+
+$$\operatorname{rev}_3(Q) = (1 + 2x^2)(1 - x + x^2) \equiv 1 - x + 3x^2 .$$
+
+Reversing gives $Q = x^2 - x + 3$, and $R = A - BQ = -2$. Check:
+$(x+1)(x^2-x+3) - 2 = x^3 + 2x + 1$. ✓
+:::
+
+Cost is $O(M(n))$ with fast multiplication and fast series inversion (derived
+in [formal power series](../07-formal-power-series/chapter.qmd); the geometric
+series sufficed above). Over a general ring the unit-leading-coefficient
+hypothesis is real: modulo a composite number, a *nonzero* leading coefficient
+may still be non-invertible and the whole contract collapses.
 
 ## 3. Product trees and multipoint evaluation
 
-To evaluate $f$ at points $x_0,\ldots,x_{m-1}$, build a balanced tree. A leaf
-stores $x-x_i$; an internal node stores the product of its children:
+Evaluating $f$ at $m$ points costs $O(nm)$ by Horner. To do better, reuse the
+remainder identity: **$f \bmod (x - x_i)$ is the constant $f(x_i)$.**
 
-$$P_v(x)=\prod_{i\text{ below }v}(x-x_i).$$
+Build a balanced binary tree over the points. A leaf holds $x - x_i$; an
+internal node holds the product of its children,
 
-At the root, replace $f$ by its remainder modulo $P_{root}$. A polynomial
-remainder modulo $x-x_i$ is its value at $x_i$, so recursively passing the
-remainder modulo each child reaches $f(x_i)$ at every leaf. This is the same
-divide-and-conquer idea as a segment tree: a node stores the polynomial that
-vanishes at all points in its interval.
+$$P_v(x) = \prod_{i \text{ below } v}(x - x_i).$$
 
-If $\deg f=O(m)$, fast division at each level costs $O(M(m)\log m)$ in the
-balanced case. For a higher-degree $f$, first reducing it modulo $P_{root}$
-adds the cost of that division. For a small number of points, Horner's rule is
-simpler and often faster; use a product tree only when the asymptotic saving
-matters.
+Reduce $f$ modulo the root product, then push each remainder down: at a child,
+reduce again modulo that child's product. Every leaf ends up holding
+$f \bmod (x - x_i) = f(x_i)$. It is the segment-tree idea with "the polynomial
+vanishing on this interval of points" stored at each node — and correctness is
+just the fact that reducing modulo a product and then modulo a factor is the
+same as reducing modulo the factor.
+
+With $\deg f = O(m)$ and a balanced tree, the divisions cost
+$O(M(m)\log m)$ total. A higher-degree $f$ pays an extra division at the root.
+For few points, Horner is simpler and usually faster — use the tree only when
+the asymptotics actually matter.
 
 ## 4. Interpolation reverses evaluation
 
-Given $m$ samples, we seek a polynomial of degree less than $m$. This bound
-is essential: adding any multiple of $\prod_i(x-x_i)$ preserves all samples.
+Given $m$ samples, we want a polynomial of degree less than $m$. That degree
+bound is not a stylistic choice: adding any multiple of $\prod_i(x - x_i)$
+leaves every sample unchanged, so without the bound there are infinitely many
+answers.
 
-Now suppose the points $x_i$ are pairwise distinct in the coefficient field and
-the desired values $y_i$ are known. Let
+Assume the $x_i$ are pairwise distinct and set $P(x) = \prod_i(x - x_i)$. The
+polynomial $P(x)/(x - x_i)$ vanishes at every sample point *except* $x_i$,
+where it takes the value $P'(x_i)$. Dividing by that gives a basis polynomial
+which is $1$ at $x_i$ and $0$ elsewhere, so
 
-$$P(x)=\prod_i(x-x_i).$$
+$$f(x) = \sum_i y_i\,\frac{P(x)}{(x - x_i)\,P'(x_i)} . \tag{3}$$
 
-The polynomial $P(x)/(x-x_i)$ vanishes at every $x_j$ except $x_i$. Dividing
-it by its value there, $P'(x_i)$, creates a basis polynomial that is $1$ at
-$x_i$ and $0$ at every other sample. Therefore
+There is nothing magical here — each summand is responsible for exactly one
+sample and invisible at the others.
 
-$$f(x)=\sum_i y_i\frac{P(x)}{(x-x_i)P'(x_i)}. \tag{3}$$
+To compute it fast: get all $P'(x_i)$ by multipoint evaluation, put
+$w_i = y_i / P'(x_i)$ at the leaves of the same product tree, and merge with
 
-This formula is not magic: each summand is responsible for exactly one sample.
-Evaluate $P'$ at all points via the product tree, place $w_i=y_i/P'(x_i)$ at
-leaves, and merge children as
+$$F_v = F_L P_R + F_R P_L .$$
 
-$$F_v=F_LP_R+F_RP_L.$$
+The invariant is that $F_v$ equals the sum, over leaves $i$ below $v$, of
+$w_i \prod_{j \text{ below } v,\, j \ne i}(x - x_j)$: a left-subtree term is
+missing exactly the right product, and vice versa, so nothing is dropped or
+double-counted. The root is (3), at cost $O(M(n)\log n)$.
 
-The merge invariant is that $F_v$ is the sum of all leaf terms
-$w_i\prod_{j\text{ below }v,j\ne i}(x-x_j)$. Left terms need exactly the
-missing right product and vice versa, so no leaf is lost or repeated.
+**Uniqueness.** Over a field with distinct points, a nonzero polynomial of
+degree $< m$ cannot vanish at $m$ points, since dividing out each root factor
+would force the degree up to $m$. So (3) is *the* answer, not *an* answer.
+Over a general ring, require every difference $x_i - x_j$ to be a unit.
 
-At the root this is (3), in $O(M(n)\log n)$. If points repeat, $P'(x_i)=0$
-and this formula is undefined. Repeated samples with identical values can be
-deduplicated; contradictory values admit no solution. **Hermite interpolation**
-adds derivative data at repeated points and is a different contract.
-For distinct points over a field, a nonzero polynomial of degree below $m$
-cannot have $m$ roots: division by each root factor would force its degree to
-be at least $m$. Thus the formula gives the unique permitted polynomial.
-Over a general ring, require every difference $x_i-x_j$ to be a unit.
+**Repeated points break it:** $P'(x_i) = 0$ and (3) is undefined. Duplicate
+samples with equal values can be deduplicated; contradictory values have no
+solution at all. Prescribing derivatives at repeated points is *Hermite*
+interpolation, a different contract.
 
-For values at the $n+1$ consecutive points $0,\ldots,n$, the denominators simplify to
-$i!(-1)^{n-i}(n-i)!$. Prefix and suffix products of $(t-j)$ evaluate (3) at one
-arbitrary $t$ in $O(n)$. Factorials must be invertible, so normally $n<MOD$.
+**The common special case.** For values at the consecutive points
+$0, 1, \ldots, n$, the denominators collapse to $i!\,(-1)^{n-i}(n-i)!$, and
+prefix/suffix products of $(t - j)$ evaluate (3) at a single arbitrary $t$ in
+$O(n)$. This is the standard way to jump to a huge argument of a
+polynomial-valued DP — it needs the factorials to be invertible, so normally
+$n < p$.
 
-## 5. Taylor shift: substitute $x+c$ in one convolution
+## 5. Taylor shift: substituting $x + c$ in one convolution
 
-We want the coefficients of $f(x+c)$, not just its value at one point. Expanding
-each monomial gives
+Sometimes you need the whole coefficient list of $f(x + c)$, not one value.
+Expanding each monomial,
 
-$$[x^k]f(x+c)=\sum_{i\ge k}a_i\binom ikc^{i-k}. \tag{4}$$
+$$[x^k]f(x+c) = \sum_{i \ge k}a_i\binom ik c^{\,i-k}. \tag{4}$$
 
-This says degree $i$ contributes to every lower degree $k$. Expand the binomial
-coefficient and reverse the $a_i i!$ array; (4) becomes one convolution with
-the array $c^j/j!$, followed by division by $k!$. If $n=\deg f$, put
-$u_{n-i}=a_i i!$ and $v_j=c^j/j!$. Then
+Degree $i$ feeds every lower degree $k$, and the coupling depends only on
+$i - k$ — which is the signature of a convolution, once the binomial
+coefficient is broken into factorials.
 
-$$\frac{(u*v)_{n-k}}{k!}=
-\sum_{i\ge k}a_i\binom ikc^{i-k},$$
+Put $u_{n-i} = a_i\,i!$ (note the reversal, which turns $i - k$ into a
+convolution index) and $v_j = c^{\,j}/j!$ with $n = \deg f$. Then
 
-so $(u*v)_{n-k}$ is $k!$ times the shifted coefficient of $x^k$; the final
-division by $k!$ is essential. For example, if $f(x)=x^2$ and $c=1$, then the
-convolution entries at indices $2,1,0$ are $1,2,2$, and division by
-$0!,1!,2!$ gives the coefficients $1,2,1$ of $(x+1)^2$.
-The reversal lines up $i-k$ as a convolution index. As with binomial transforms,
-this needs the factorials through the working degree to be units; it is normally
-used over a prime modulus larger than that degree.
+$$\frac{(u * v)_{n-k}}{k!} = \sum_{i \ge k}a_i\binom ik c^{\,i-k},$$
 
-The arrays in the shift have indices $0,\ldots,n$. For output index
-$0\le k\le n$, only convolution terms with $u_{n-i}$ and $v_{i-k}$,
-$k\le i\le n$, enter index $n-k$. For $f=1+3x+2x^2$ and $c=2$,
-the shifted polynomial is $15+11x+2x^2$.
+so one convolution plus a final division by $k!$ produces every shifted
+coefficient. Only terms with $k \le i \le n$ contribute to output index
+$n - k$, so the index ranges take care of themselves.
 
-## 6. Many factors: keep merge sizes balanced
+*Check:* $f(x) = x^2$, $c = 1$. The convolution entries at indices $2,1,0$ are
+$1, 2, 2$; dividing by $0!, 1!, 2!$ gives $1, 2, 1$, the coefficients of
+$(x+1)^2$. Larger check: $f = 1 + 3x + 2x^2$ with $c = 2$ gives
+$15 + 11x + 2x^2$, which you can confirm by direct substitution.
 
-For $\prod_i A_i(x)$, multiplying factors one after another repeatedly makes a
-large polynomial absorb a tiny one. A divide-and-conquer product tree, or a
-priority queue that merges the two smallest degrees, keeps products balanced.
-For $k$ positive-degree factors of total degree $N$, a product tree balanced
-by number of factors has at most $\lceil\log_2 k\rceil$ levels; total degrees
-per level are at most $N$. Under the multiplication assumptions above, it
-costs $O(M(N)\log(k+1))$. Degree-balanced merging is often faster when sizes
-vary widely. Absorb constants separately in $O(k)$ operations and stop
-if a factor is zero; arbitrarily many constants still incur input cost.
+As with the binomial transform of
+[Chapter 04](../04-combinatorics/chapter.qmd), this needs factorials through
+the working degree to be units — in practice, a prime modulus larger than the
+degree.
 
-If the question only asks through degree $D$, truncate after each merge. In a
-knapsack-style product such as $\prod_i(1+x^{w_i})$, coefficients above $D$
-can never influence lower coefficients later, so retaining them only wastes
-time and memory.
+## 6. Multiplying many factors: keep the merges balanced
 
-## 7. Worked contest translation: all string alignments
+Computing $\prod_i A_i(x)$ left to right is a trap: a huge accumulated product
+is repeatedly multiplied by a tiny factor, so the cost is quadratic in the
+total degree.
 
-Let a binary text have length $n$ and a pattern length $m\le n$. We want the
-Hamming distance at every start $0\le s\le n-m$. Define text indicator
-$a_i=[\text{text}_i=1]$ and reversed pattern indicator
-$b_{m-1-j}=[\text{pattern}_j=1]$. Then
+Merge with a divide-and-conquer tree instead — or with a priority queue that
+always combines the two smallest current degrees. For $k$ factors of positive
+degree and total degree $N$, a tree balanced by factor count has
+$\lceil \log_2 k\rceil$ levels, each holding total degree at most $N$, for
+$O(M(N)\log(k+1))$ overall. Degree-balanced merging usually wins when factor
+sizes vary a lot. Absorb constant factors separately in $O(k)$, and
+short-circuit if any factor is zero.
 
-$$[x^{s+m-1}]A(x)B(x)=\sum_{j=0}^{m-1}a_{s+j}[\text{pattern}_j=1].$$
+If the question only asks for coefficients through degree $D$, **truncate
+after every merge.** In a knapsack-style product like $\prod_i(1 + x^{w_i})$,
+a coefficient above $D$ can never influence a coefficient at or below $D$
+later, so keeping it wastes both time and memory.
 
-This counts aligned pairs of ones: $i+(m-1-j)=s+m-1$ forces $i=s+j$.
-If $u_s$ and $v$ count ones in the text window and pattern, mismatches equal
-$u_s+v-2[x^{s+m-1}]AB$. Prefix sums give all $u_s$ in linear time and one
-convolution gives all correlations. For text 10110 and pattern 110,
-the one-one correlations are $(1,1,2)$ and the distances are $(2,2,0)$.
-The pattern reversal is justified by the index equation. Complexity is
-$O(M(n+m))$ and linear storage; exact convolution needs coefficient range
-through at least $m$.
+## 7. Worked contest translation: all alignments at once
+
+Given a binary text of length $n$ and a pattern of length $m \le n$, compute
+the Hamming distance at every start position $0 \le s \le n - m$. Naively
+$O(nm)$; one convolution suffices.
+
+The obstacle is that convolution pairs indices summing to a constant, whereas
+alignment pairs indices with a constant *difference*. Reversing one array
+converts one into the other. Let $a_i = [\text{text}_i = 1]$ and
+$b_{m-1-j} = [\text{pattern}_j = 1]$. Then
+
+$$[x^{s+m-1}]A(x)B(x) = \sum_{j=0}^{m-1}a_{s+j}\,[\text{pattern}_j = 1],$$
+
+because $i + (m-1-j) = s + m - 1$ forces exactly $i = s + j$. That coefficient
+counts the aligned $(1,1)$ pairs. With $u_s$ the number of ones in the text
+window and $v$ the number in the pattern, the mismatch count is
+
+$$u_s + v - 2\,[x^{s+m-1}]AB,$$
+
+since positions counted in both $u_s$ and $v$ are precisely the aligned
+one-one pairs, and everything else contributes one mismatch. Prefix sums give
+all $u_s$ in linear time.
+
+*Check:* text `10110`, pattern `110`. The correlations are $(1,1,2)$ and the
+distances $(2,2,0)$ — the last window matches exactly. Cost: $O(M(n+m))$ time,
+linear memory, with the coefficient range needing to reach only $m$.
 
 ## 8. Failure checklist and reference
 
-- Before an NTT, verify both the required length and the root-of-unity condition.
-- Before a polynomial inverse, verify a nonzero/invertible constant term; before
-  division, verify the leading coefficient condition instead.
-- Normalize negative coefficients in the target ring.
-- For CRT convolution, prove the reconstruction range covers a coefficient.
-- Interpolation requires distinct sample points; consecutive-point formulas
-  additionally need nonzero factorial denominators.
-- Check a small product, quotient/remainder identity, and interpolation samples
-  independently of the fast routine.
+- Before an NTT: check both the padded length **and** the root-of-unity
+  condition on the modulus.
+- Before a series inverse: check the constant term is a unit. Before a
+  division: check the *leading* coefficient instead — different condition.
+- Normalize negative coefficients into the target ring.
+- For CRT-based convolution: prove the reconstruction range actually covers
+  the largest possible coefficient.
+- Interpolation needs distinct sample points; the consecutive-point shortcut
+  additionally needs invertible factorials.
+- Verify a small product, a quotient/remainder identity, and a few
+  interpolation samples against a slow routine before trusting the fast one.
 
 | Operation | Cost | Contract |
 |---|---|---|
-| Multiplication | $M(n)$ | Padded length and exact arithmetic/rounding |
-| Division | $O(M(n))$ | Nonzero divisor with unit leading coefficient |
-| Multipoint evaluation | $O(M(n)\log n)$ for comparable degree and sample count | Monic product-tree divisors |
-| Interpolation | $O(M(n)\log n)$ | Degree < sample count; unit point differences |
-| One consecutive-point query | $O(n)$ | Distinct nodes 0,…,n; unit factorials |
-| Taylor shift | $O(M(n))$ | Unit factorials through the degree |
+| Multiplication | $M(n)$ | padded length; exact arithmetic or a rounding bound |
+| Division | $O(M(n))$ | nonzero divisor with unit leading coefficient |
+| Multipoint evaluation | $O(M(n)\log n)$ | comparable degree and sample count; monic tree divisors |
+| Interpolation | $O(M(n)\log n)$ | degree < sample count; unit point differences |
+| One consecutive-point query | $O(n)$ | nodes $0,\ldots,n$; unit factorials |
+| Taylor shift | $O(M(n))$ | unit factorials through the degree |
 
-The [solved exercise sequence](exercises.qmd) checks these contracts through
+The [solved exercise sequence](exercises.qmd) tests these contracts through
 modelling and counterexamples.
 
 ## 9. Sources
