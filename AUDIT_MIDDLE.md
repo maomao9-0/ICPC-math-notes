@@ -1,5 +1,7 @@
 # Initial content audit: chapters 04–09
 
+> Chapter numbers in this dated log predate the 2026-09-11 renumbering; see the mapping in `CONTENT_AUDIT.md`.
+
 Audit date: 2026-09-10. All 1,413 original source lines across the eleven pages
 below were read. Current status for every page: **reviewed, expanded, tested,
 and individually rendered**. The section inventory and findings below record
@@ -16,17 +18,17 @@ practice sequence because the claimed technique and hints were unrelated.
 
 ## Complete original section inventory
 
-- `04-combinatorics/chapter.qmd` (296 lines): 1 Recognition map; 2 Inclusion–exclusion: correcting overcounting (Example: functions that use every target; Exactly r satisfied conditions); 3 Three recurring object families (Stirling numbers: partitions and permutation cycles; Catalan objects: an independent first split; Integer partitions: choose a multiplicity for each part size); 4 Fast binomial transforms by factorial scaling; 5 Rook polynomials: IE for forbidden permutations (Small example); 6 A derivation habit and failure checks; 7 Sources and next step.
-- `04-combinatorics/exercises.qmd` (59 lines): ABC 172 E NEQ; CF 932E Team Work; CF 559C Gerald and Giant Chess; AGC 005 F Many Easy Problems; CF 995F Cowmpany Cowmpensation. Each has three hint blocks and an external editorial link.
+- `03-combinatorics/chapter.qmd` (296 lines): 1 Recognition map; 2 Inclusion–exclusion: correcting overcounting (Example: functions that use every target; Exactly r satisfied conditions); 3 Three recurring object families (Stirling numbers: partitions and permutation cycles; Catalan objects: an independent first split; Integer partitions: choose a multiplicity for each part size); 4 Fast binomial transforms by factorial scaling; 5 Rook polynomials: IE for forbidden permutations (Small example); 6 A derivation habit and failure checks; 7 Sources and next step.
+- `03-combinatorics/exercises.qmd` (59 lines): ABC 172 E NEQ; CF 932E Team Work; CF 559C Gerald and Giant Chess; AGC 005 F Many Easy Problems; CF 995F Cowmpany Cowmpensation. Each has three hint blocks and an external editorial link.
 - `05-group-actions/chapter.qmd` (171 lines): 1 From an equivalence relation to an action; 2 Burnside's lemma: average fixed objects, not raw objects (Example: necklaces); 3 Pólya: remember color counts while averaging; 4 Constraints belong inside the fixed-point count; 5 Symmetric groups and conjugacy classes; 6 Arithmetic and modelling checks; 7 Sources.
 - `05-group-actions/exercises.qmd` (43 lines): UVA 10294 Arif in Dhaka (First Love Part 2); ABC 198 F Cube; CSES 2210 Counting Grids; ABC 284 Ex Count Unlabeled Graphs. Each has three hints; UVA points to a derivation rather than an official solution.
 - `06-polynomials/chapter.qmd` (166 lines): 1 Multiplication is adding independent sizes (Transform contract); 2 Division: turn the high-degree end into a series inverse; 3 Product trees and multipoint evaluation; 4 Interpolation reverses evaluation; 5 Taylor shift: substitute x+c in one convolution; 6 Many factors: keep merge sizes balanced; 7 Failure checklist and sources.
 - `06-polynomials/exercises.qmd` (24 lines): ABC 196 F Substring 2; ABC 260 Ex Colorfulness. Three hints each.
-- `07-formal-power-series/chapter.qmd` (201 lines): 1 Differential toolkit and contracts; 2 Newton inversion; 3 Logarithm and exponential; 4 Powers and square roots; 5 Composition; 6 Compositional inverse (reversion); 7 Sparse series; 8 Worked example and debugging invariants; 9 Sources.
-- `07-formal-power-series/exercises.qmd` (11 lines): ABC 289 Ex Trio, three hints.
-- `08-generating-functions/chapter.qmd` (211 lines): 1 OGF or EGF?; 2 Recurrences become algebra; 3 Bostan–Mori; 4 Functional equations; 5 Lagrange–Bürmann inversion (Proof sketch via residues); 6 Coefficient techniques beyond dense FPS (Diagonal / constant term; Logarithmic derivative; Differential equations); 7 Modulus and modelling pitfalls; 8 Sources.
-- `08-generating-functions/exercises.qmd` (51 lines): ABC 422 G Balls and Boxes; ABC 300 Ex Fibonacci: Revisited; CF 438E The Child and Binary Tree; CF 960G Bandit Blues; CF 1342F Make It Ascending. Three hints each.
-- `09-transforms/chapter.qmd` (180 lines): 1 Subset zeta and Möbius transforms (OR and AND convolution); 2 XOR convolution and FWT; 3 Subset convolution; 4 Divisor-poset transforms; 5 Pitfalls and decision guide; 6 Practice, in order (CF 165E Compatible Numbers; CF 449D Jzzhu and Numbers; ABC 212 H Nim Counting; CF 914G Sum the Fibonacci, each with three hints); Further reading.
+- `09-formal-power-series/chapter.qmd` (201 lines): 1 Differential toolkit and contracts; 2 Newton inversion; 3 Logarithm and exponential; 4 Powers and square roots; 5 Composition; 6 Compositional inverse (reversion); 7 Sparse series; 8 Worked example and debugging invariants; 9 Sources.
+- `09-formal-power-series/exercises.qmd` (11 lines): ABC 289 Ex Trio, three hints.
+- `10-generating-functions/chapter.qmd` (211 lines): 1 OGF or EGF?; 2 Recurrences become algebra; 3 Bostan–Mori; 4 Functional equations; 5 Lagrange–Bürmann inversion (Proof sketch via residues); 6 Coefficient techniques beyond dense FPS (Diagonal / constant term; Logarithmic derivative; Differential equations); 7 Modulus and modelling pitfalls; 8 Sources.
+- `10-generating-functions/exercises.qmd` (51 lines): ABC 422 G Balls and Boxes; ABC 300 Ex Fibonacci: Revisited; CF 438E The Child and Binary Tree; CF 960G Bandit Blues; CF 1342F Make It Ascending. Three hints each.
+- `08-transforms/chapter.qmd` (180 lines): 1 Subset zeta and Möbius transforms (OR and AND convolution); 2 XOR convolution and FWT; 3 Subset convolution; 4 Divisor-poset transforms; 5 Pitfalls and decision guide; 6 Practice, in order (CF 165E Compatible Numbers; CF 449D Jzzhu and Numbers; ABC 212 H Nim Counting; CF 914G Sum the Fibonacci, each with three hints); Further reading.
 
 ## Shared editorial findings
 

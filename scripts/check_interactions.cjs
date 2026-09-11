@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 (async () => {
   const browser = await chromium.launch();
   const page = await browser.newPage({viewport: {width: 390, height: 900}});
-  await page.goto('http://127.0.0.1:8765/00-prerequisite-audit/chapter.html', {waitUntil: 'networkidle'});
+  await page.goto('http://127.0.0.1:8765/00-foundations/chapter.html', {waitUntil: 'networkidle'});
   await page.getByRole('button', {name: 'Toggle sidebar navigation'}).click();
   assert.equal(await page.getByRole('button', {name: 'Toggle sidebar navigation'}).getAttribute('aria-expanded'), 'true');
   await page.getByRole('button', {name: 'Toggle sidebar navigation'}).click();

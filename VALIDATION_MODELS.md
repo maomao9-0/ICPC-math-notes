@@ -1,5 +1,7 @@
 # Validation log: chapters 10–14
 
+> Chapter numbers in this dated log predate the 2026-09-11 renumbering; see the mapping in `CONTENT_AUDIT.md`.
+
 This records actual checks as chapters are completed. Whole-site and external
 link validation remain the integrator's responsibility. Numerical oracles do
 not substitute for the local proofs and hypotheses in the chapters.
@@ -15,7 +17,7 @@ not substitute for the local proofs and hypotheses in the chapters.
 - `python tests/audit_models_math.py 10` passed exact field counts, uniform XOR
   fibers, weighted determinant, and exhaustive partition-objective comparisons
   for 2–5 inputs with values 0–3.
-- `quarto render 10-linear-algebra/chapter.qmd --output-dir /tmp/icpc-models-site`
+- `quarto render 07-linear-algebra/chapter.qmd --output-dir /tmp/icpc-models-site`
   passed. Inspected generated HTML for TOC/navigation, MathJax display wrappers,
   rank–nullity content, and collapsed solution blocks. No browser screenshot
   inspection has been performed in this per-chapter pass.

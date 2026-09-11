@@ -1,5 +1,7 @@
 # Frontier chapter audit
 
+> Chapter numbers in this dated log predate the 2026-09-11 renumbering; see the mapping in `CONTENT_AUDIT.md`.
+
 Audit date: 2026-09-10. Read every line of chapters 15–19 and the navigation configuration. This is the initial audit, not a claim that chapters have been rewritten or validated. All five routes remain in scope; none is obsolete. No chapter source was changed during this audit.
 
 ## Complete section inventory
@@ -8,11 +10,11 @@ The following lists preserve every existing second-level section; these files ha
 
 | Chapter and route | Existing sections | Initial status |
 |---|---|---|
-| 15, `15-finite-field-polynomials/chapter.qmd` | 1. Euclidean algebra; 2. Remove multiplicities first; 3. Degree decomposition; 4. Root finding and certification; Implementation contract; Ordered practice; Sources | Read; substantial expansion and certification correction required |
-| 16, `16-set-power-series/chapter.qmd` | 1. Subset convolution as multiplication; 2. Functions of a set series; 3. Recognition patterns; 4. Pitfalls; Ordered practice; Sources | Read; incorrect intermediate-layer instruction must be corrected |
-| 17, `17-algebraic-graph-methods/chapter.qmd` | 1. Pfaffians and hafnians; 2. Tutte matrix; 3. Schwartz–Zippel and PIT; 4. Determinant polynomials and updates; A safe randomized workflow; Ordered practice; Sources | Read; proofs, exact weighted contract, and examples required |
-| 18, `18-holonomic-methods/chapter.qmd` | 1. Translation between series and sequences; 2. Closure and recognition; 3. Guessing and fast evaluation; Ordered practice; Sources | Read; closure hypotheses, certification, and examples required |
-| 19, `19-frontier-capstones/chapter.qmd` | Problems and learning route; Postmortem template | Read; currently duplicated hints, needs guided synthesis and solutions |
+| 15, `17-finite-field-polynomials/chapter.qmd` | 1. Euclidean algebra; 2. Remove multiplicities first; 3. Degree decomposition; 4. Root finding and certification; Implementation contract; Ordered practice; Sources | Read; substantial expansion and certification correction required |
+| 16, `11-set-power-series/chapter.qmd` | 1. Subset convolution as multiplication; 2. Functions of a set series; 3. Recognition patterns; 4. Pitfalls; Ordered practice; Sources | Read; incorrect intermediate-layer instruction must be corrected |
+| 17, `18-algebraic-graph-methods/chapter.qmd` | 1. Pfaffians and hafnians; 2. Tutte matrix; 3. Schwartz–Zippel and PIT; 4. Determinant polynomials and updates; A safe randomized workflow; Ordered practice; Sources | Read; proofs, exact weighted contract, and examples required |
+| 18, `19-holonomic-methods/chapter.qmd` | 1. Translation between series and sequences; 2. Closure and recognition; 3. Guessing and fast evaluation; Ordered practice; Sources | Read; closure hypotheses, certification, and examples required |
+| 19, `20-frontier-capstones/chapter.qmd` | Problems and learning route; Postmortem template | Read; currently duplicated hints, needs guided synthesis and solutions |
 
 ## Cross-cutting editorial gaps
 

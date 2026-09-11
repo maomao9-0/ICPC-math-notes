@@ -1,11 +1,13 @@
 # Frontier validation log
 
+> Chapter numbers in this dated log predate the 2026-09-11 renumbering; see the mapping in `CONTENT_AUDIT.md`.
+
 ## Chapter 15 — completed
 
 - Replaced survey with definitions, quotient-field/Frobenius proofs, exact square-free and degree-loop invariants, both random splitters, Berlekamp kernel meaning, and deterministic irreducibility certification.
 - Corrected reconstruction-only certification; supplied prime-field hypotheses and a conservative derived complexity contract. Removed the unspecified length-60 variant; retained the verified official CF1698G statement with length <=35.
 - `python tests/audit_frontier_math.py`: exhaustive binary irreducibility comparison against trial division through degree seven, plus inverse, degree-factor and repeated-order examples; passed.
-- `quarto render 15-finite-field-polynomials/chapter.qmd --output-dir /tmp/icpc-frontier-site`: passed. Inspected generated HTML for mathematical display markup, section structure and the preserved `degree-decomposition` anchor. Browser-level visual inspection remains a whole-site integration check.
+- `quarto render 17-finite-field-polynomials/chapter.qmd --output-dir /tmp/icpc-frontier-site`: passed. Inspected generated HTML for mathematical display markup, section structure and the preserved `degree-decomposition` anchor. Browser-level visual inspection remains a whole-site integration check.
 - SymPy is unavailable; validation uses exact standard-library oracles and adds no package dependency.
 
 ## Chapter 16 — completed

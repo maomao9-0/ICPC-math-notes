@@ -1,4 +1,4 @@
-"""Independent small-instance checks for chapters 00–03; not library templates."""
+"""Independent small-instance checks for chapters 00–02 and 14; not library templates."""
 from itertools import combinations, product
 from math import comb, gcd, isqrt, lcm
 
@@ -153,7 +153,7 @@ def check_sieves():
             count -= mu(e)*(root-1)
         assert len(perfect) == count
         assert sum(len([d for d in range(1,n+1) if n%d == 0]) for n in range(1,N+1)) == sum(sum(2**len(factors(n)) for n in range(1,N//(a*a)+1)) for a in range(1,isqrt(N)+1))
-    print('03: prime-power prime sums, Min_25 decomposition, Mertens recurrence, perfect powers and sparse support through 100 passed')
+    print('14: prime-power prime sums, Min_25 decomposition, Mertens recurrence, perfect powers and sparse support through 100 passed')
 
 
 if __name__ == '__main__':

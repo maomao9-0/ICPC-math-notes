@@ -1,0 +1,321 @@
+---
+title: "09 — Formal Power Series"
+---
+
+## Infinitely many coefficients, finitely much work
+
+Suppose a counting problem gives you the equation
+
+$$B(x) = 1 + x\,B(x)^2$$
+
+and asks for the coefficient of $x^{n}$. There is no closed form to plug in,
+no DP transition to write down, and $B$ has infinitely many coefficients. Yet
+the answer is completely determined, and computable in $O(n\log n)$.
+
+The reason is that **coefficients of low degree never depend on coefficients
+of high degree.** If you only want the first $n$ coefficients, everything
+beyond $x^{n}$ is irrelevant and can be discarded at every step. That single
+observation turns "solve an equation between infinite sequences" into a finite
+computation — and, better, it means a *partially correct* answer can be
+improved: if a candidate is right in the first $m$ coefficients, one
+multiplication can make it right in the first $2m$. That is Newton iteration,
+and it is the engine of this whole chapter.
+
+A formal power series $A(x) = \sum_{i\ge 0}a_ix^i$ is an element of $R[[x]]$:
+algebra on an infinite coefficient sequence. It is **not** a function. We
+never substitute a real number for $x$, never ask about convergence, and
+$A \equiv B \pmod{x^n}$ means only that the first $n$ coefficients agree.
+
+## Why this topic matters, prerequisites, and objectives
+
+Recognition signals are equations between whole coefficient sequences: an
+inverse that undoes a convolution, an exponential that assembles labelled
+components, or an implicit equation like the one above whose low coefficients
+determine the higher ones.
+
+Read [polynomial operations](../06-polynomials/chapter.qmd) and
+[units in rings](../01-modular-algebra/chapter.qmd); the counting
+interpretations are developed in
+[generating functions](../10-generating-functions/chapter.qmd).
+
+You should finish able to prove that precision doubles, state existence and
+uniqueness conditions, track leading zeros through an operation, and decide
+between a sparse recurrence and a dense operation.
+
+**Notation.** $R$ is commutative with identity, and $R[[x]]$ is all sequences
+$(a_0,a_1,\ldots)$ under coefficientwise addition and convolution — each
+product coefficient is a *finite* sum, which is why no analysis is needed. The
+**valuation** $v(A)$ is the index of the first nonzero coefficient, with
+$v(0) = \infty$. Over a field $v(AB) = v(A) + v(B)$; over a ring with zero
+divisors only $v(AB) \ge v(A) + v(B)$ is automatic, which is still enough for
+the error-squaring arguments below.
+
+**The precision contract.** $A \equiv B \pmod {x^n}$ means $A - B = x^nC$.
+Multiplying by anything preserves that agreement. Differentiation *loses* one
+coefficient of precision; integration with zero constant *gains* one, when its
+divisions are legal. Track this like you would track array bounds.
+
+Finally, a series is a **unit** exactly when $a_0$ is: solve $b_0 = a_0^{-1}$
+in $AB = 1$ and each later $b_j$ follows from earlier ones.
+
+Let $M(n)$ denote polynomial multiplication cost, $O(n\log n)$ with NTT. Every
+operation below truncates immediately to the requested precision.
+
+## 1. The differential toolkit and its contracts
+
+$$A' = \sum_{i\ge1}ia_ix^{i-1}, \qquad \int A = \sum_{i\ge0}\frac{a_i}{i+1}x^{i+1}.$$
+
+These are defined coefficientwise — no limits involved. For
+$A = 1+2x+3x^2$, $A' = 2 + 6x$. Note what integration needs: to produce
+coefficients below degree $n$ over $\mathbb F_p$ it divides by
+$1, \ldots, n-1$, so it requires $n \le p$. Over a general ring, read every
+"nonzero" below as "invertible".
+
+| operation | required constant term | defining identity |
+|---|---|---|
+| $\operatorname{inv}(A)$ | $a_0$ a unit | $AB = 1$ |
+| normalized $\log A$ | $a_0$ a unit and $1,\ldots,n-1$ units | $(\log A)' = A'/A$, constant term $0$ |
+| $\exp(A)$ | $a_0 = 0$; integration denominators units | $\log(\exp A) = A$ |
+| $\operatorname{pow}(A,k)$ | handle leading zeros separately | $A^k$ |
+| $\sqrt A$ | even valuation; leading coefficient a square (odd characteristic) | $B^2 = A$ |
+| $\operatorname{compose}(A,B)$ | $b_0 = 0$ for finite-prefix dependence | $A(B(x))$ |
+| $\operatorname{revert}(A)$ | $a_0 = 0$, $a_1$ a unit | $A(B(x)) = x$ |
+
+## 2. Newton inversion: squaring the error
+
+Suppose $B$ is a *partial* inverse, $AB \equiv 1 \pmod{x^m}$. The error
+$E = 1 - AB$ has valuation at least $m$. Instead of solving for the next
+coefficients one by one, fix all $m$ of them at once:
+
+$$B_{\text{new}} = B(2 - AB) \pmod{x^{2m}}.$$
+
+Why it doubles: $AB_{\text{new}} = AB(2-AB) = (1-E)(1+E) = 1 - E^2$, and
+$v(E^2) \ge 2m$. The error *squares*. Starting from $B = a_0^{-1}$ at
+precision $1$ and doubling, the total cost telescopes to $O(M(n))$ — the last
+multiplication dominates everything before it.
+
+::: {.callout-note title="Two doublings by hand"}
+$A = 1 - x - x^2$, start $B = 1$.
+
+Modulo $x^2$: $AB = 1 - x$, so $2 - AB = 1 + x$ and $B \leftarrow 1 + x$.
+
+Modulo $x^4$: $AB = (1-x-x^2)(1+x) = 1 - 2x^2 - x^3$, so
+$B \leftarrow (1+x)(1 + 2x^2 + x^3) = 1 + x + 2x^2 + 3x^3$.
+
+Those are Fibonacci numbers, as they must be: $1/(1-x-x^2)$ is the Fibonacci
+generating function.
+:::
+
+The invariant is "$AB \equiv 1$ at the current precision" at every step;
+nothing is ever guessed. On the final step use $\min(2m, n)$ so that a
+non-power-of-two request has exact boundaries. Work on a truncated *copy*, or
+you will clobber a caller's longer series.
+
+## 3. Logarithm and exponential
+
+There is no analytic content here; $\log$ and $\exp$ are defined by the
+identities that make them useful, and they exist because of the precision
+contract.
+
+For a series with $a_0 = 1$, define the logarithm as the unique series with
+constant term zero whose derivative is $A'/A$:
+
+$$\log A = \int A'A^{-1}\,dx,$$
+
+computable in $O(M(n))$. Two conditions are hiding here. The integral
+discards the scalar $A[0]$, so this is a *normalized* logarithm and
+$\exp(\log A) = A$ only when $A[0] = 1$ (otherwise you get $A/A[0]$). And
+integration divides by $1,\ldots,n-1$, which must be units.
+
+For the exponential the defining identity is $\log B = A$. If $B$ is already
+correct below degree $m$, then $E = A - \log B$ has valuation at least $m$, so
+
+$$B_{\text{new}} = B\,(1 + A - \log B) \pmod{x^{2m}}.$$
+
+*Why this preserves what is known and fixes what is not:* the bracket is
+$1 \bmod x^m$, so known coefficients are untouched; and at precision $2m$
+every $E^j$ with $j \ge 2$ vanishes, so $\log(1+E) \equiv E$ and
+
+$$\log\bigl(B(1+E)\bigr) \equiv \log B + E = A \pmod{x^{2m}} .$$
+
+(The product rule for $\log$ follows by differentiating both sides and
+matching zero constant terms, again needing the integers through the working
+degree to be units.) Standard implementations are $O(M(n))$, though a careless
+one that re-inverts from scratch each round adds a factor.
+
+::: {.callout-note title="Where the characteristic bites"}
+Over the rationals, $\exp(x + x^2) = 1 + x + \tfrac32x^2 + \tfrac76x^3 + \cdots$,
+read off from $B' = (1+2x)B$: $b_1 = 1$, $2b_2 = b_1 + 2b_0 = 3$,
+$3b_3 = b_2 + 2b_1 = \tfrac72$.
+
+Over $\mathbb F_5$ the same prefix is $(1, 1, 4, 2)$. But at degree five the
+recurrence needs to divide by $5 \equiv 0$: the operation simply does not
+exist at that precision. This is not an implementation detail — it is why
+problems with $\exp$ come with $n < p$.
+:::
+
+## 4. Powers and square roots
+
+When the $\log/\exp$ contracts hold and $A(0) = 1$,
+
+$$A^k = \exp(k\log A),$$
+
+because $\log$ turns multiplication into addition. ($k = 0$ is the separate
+identity case.)
+
+For a general nonnegative $k$ and a series with first nonzero term $a_tx^t$
+whose coefficient $a_t$ is a **unit** (over a field, nonzero suffices; over a
+general ring it does not):
+
+$$A^k = x^{tk}\,a_t^{\,k}\,\exp\!\left(k \log \frac{A}{a_tx^t}\right).$$
+
+Two practical points. If $tk \ge n$ the truncated answer is zero — check this
+*before* anything else, since $k$ may be astronomically large. And the shift
+$tk$ must be computed from the true $k$, while only the scalar $k$ multiplying
+$\log A$ may be reduced modulo the characteristic. Negative powers need a unit
+series and are a different contract.
+
+**Square roots.** Over a field of odd characteristic, solving $B^2 - A = 0$ by
+Newton gives the familiar
+
+$$B_{\text{new}} = \tfrac12\left(B + A/B\right),$$
+
+started from a scalar square root of $a_0$ — supplied by
+[Tonelli–Shanks](../01-modular-algebra/chapter.qmd) over an odd prime field.
+A unit series has a root exactly when $a_0$ is a quadratic residue, and then
+exactly two, differing by sign. For a non-unit $A$, strip an even valuation
+$2t$ first and take the root of the remaining unit series; an odd finite
+valuation makes a root impossible.
+
+### Worked failure: how many roots does a truncated series have?
+
+Over $\mathbb F_5$, take $A = x^2 \pmod{x^5}$ and look for
+$B = b_1x + b_2x^2 + b_3x^3 + b_4x^4$. Comparing degrees two, three, and four:
+
+$$b_1^2 = 1, \qquad 2b_1b_2 = 0, \qquad b_2^2 + 2b_1b_3 = 0 .$$
+
+So $b_1 = \pm1$ and $b_2 = b_3 = 0$ — but $b_4$ is completely free, because
+$b_4x^4$ only affects $B^2$ from degree five onward. There are **ten** roots,
+$B = \pm x + cx^4$, even though the exact equation $B^2 = x^2$ in $R[[x]]$ has
+only two solutions.
+
+The lesson generalizes: whenever $v(A) = 2t > 0$, the top $t$ coefficients of
+$B$ are invisible modulo $x^n$. A problem must either specify a canonical root
+or accept any valid one; for the zero series, take the all-zero root unless
+told otherwise.
+
+## 5. Composition
+
+Computing $A(B(x))$ naively via the powers $1, B, B^2, \ldots$ costs
+$O(nM(n))$. Brent–Kung's baby-step/giant-step decomposition takes
+$k \approx \sqrt n$ and writes
+
+$$A(B) = \sum_q B^{qk}\left(\sum_{r<k}a_{qk+r}B^r\right),$$
+
+precomputing the baby powers $B^r$, forming each inner block, then combining
+by Horner in $B^k$.
+
+Be honest about the cost: building every dense block as a separate linear
+combination is still $O(n^2)$. The real algorithm batches those combinations
+into rectangular matrix multiplications, giving the classical
+$O((n\log n)^{3/2})$ field-operation bound. **The block decomposition is the
+idea, not a proof of a fast implementation** — the practical cost depends on
+your polynomial and matrix routines.
+
+*Why $B[0] = 0$ is required:* it makes $v(B^r) \ge r$, so a coefficient below
+degree $n$ can depend only on $a_0, \ldots, a_{n-1}$. With a nonzero constant
+term, arbitrarily high powers of $B$ feed back into the constant coefficient,
+and no finite prefix of $A$ determines the answer. (A finite *polynomial* $A$
+is fine either way — the restriction is about unknown infinite outer series.)
+
+## 6. Compositional inverse (reversion)
+
+If $A(0) = 0$ and $A'(0)$ is a unit, there is exactly one series $B$ starting
+with $x/A'(0)$ such that $A(B(x)) = x$. Newton's method on $A(B) - x = 0$
+gives the familiar tangent step
+
+$$B_{\text{new}} = B - \frac{A(B) - x}{A'(B)} \pmod{x^{2m}},$$
+
+whose denominator stays a unit because $A'(B)$ has constant term $A'(0)$.
+Cost is dominated by composition, so do not bill reversion at multiplication
+cost.
+
+*Small check:* for $A = x + x^2$, writing $B = x + b_2x^2 + b_3x^3 + \cdots$
+and imposing $B + B^2 = x$ gives $b_2 = -1$, then $b_3 + 2b_2 = 0$ so
+$b_3 = 2$. Hence $B = x - x^2 + 2x^3 - \cdots$.
+
+When you need only one coefficient — or a structured family of them —
+**Lagrange inversion** ([Chapter 10](../10-generating-functions/chapter.qmd))
+is far cheaper than a full reversion. For $1 \le k \le n$,
+
+$$[x^n]B(x)^k = \frac kn\,[t^{\,n-k}]\left(\frac{t}{A(t)}\right)^n .$$
+
+The division by $n$ means the coefficient field must make $n$ invertible; in
+small characteristic use a division-free variant.
+
+## 7. Sparse series: don't pay for zeros
+
+If the defining series has only $K$ nonzero coefficients, a dense NTT is
+mostly multiplying zeros. Differentiating the defining identity gives a
+coefficient recurrence costing $O(nK)$ instead.
+
+For $B = \exp(A)$, from $B' = A'B$:
+
+$$n\,b_n = \sum_{i=1}^{n}i\,a_i\,b_{n-i},$$
+
+which touches only the nonzero $a_i$. For $B = A^{-1}$, after
+$b_0 = a_0^{-1}$,
+
+$$b_n = -a_0^{-1}\sum_{i=1}^{n}a_ib_{n-i} .$$
+
+The exponential version divides by $n$, so it is valid only while
+$1, \ldots, n$ are units; the inverse version has no such restriction. Choose
+sparse versus dense by estimated work — $nK$ against $n\log n$ — not by
+degree alone.
+
+## 8. Debugging invariants
+
+Take $A = 1 - x$. Then $\operatorname{inv}(A) = 1 + x + x^2 + \cdots$,
+$\log A = -x - x^2/2 - x^3/3 - \cdots$, and $\operatorname{pow}(A,k)$
+reproduces $\sum_i(-1)^i\binom kix^i$. This one example catches sign errors,
+integration mistakes, and truncation bugs.
+
+More generally, every operation here is *defined* by an identity, so you can
+test it without knowing the implementation. On random small series check:
+
+- $A\cdot\operatorname{inv}(A) \equiv 1 \pmod {x^n}$;
+- $\log(\exp A) = A$ when $A[0] = 0$;
+- $\exp(\log A) = A$ when $A[0] = 1$;
+- $\bigl(\sqrt A\bigr)^2 = A$;
+- $\operatorname{compose}(A, \operatorname{revert}(A)) = x$.
+
+## 9. Contest checklist and reference
+
+Before calling an operation, fix: the output indices $0,\ldots,n-1$, the
+coefficient ring, the constant-term normalization, the valuation, and which
+integer divisions will occur. For powers, handle $k = 0$ and the zero series
+before hunting for a leading coefficient. For logarithms, decide whether you
+mean $A$ or $A/A(0)$. For composition, distinguish a finite outer polynomial
+from an unknown infinite outer series — only the latter needs $B[0] = 0$.
+
+| Operation to precision $n$ | Typical cost | Invariant or restriction |
+|---|---|---|
+| Inverse | $O(M(n))$ | $AB = 1$; $a_0$ a unit |
+| Log / exp | $O(M(n))$ | integers $1,\ldots,n-1$ units |
+| Nonnegative power via log | $O(M(n))$ + scalar power | preserve the integer shift $kv(A)$ |
+| Unit square root | $O(M(n))$ + scalar root | root of $a_0$ must exist; $2$ a unit |
+| Sparse inverse / exp | $O(nK)$ | $K$ nonzero defining coefficients |
+| Composition / reversion | depends on the composition routine | dense block assembly is a real cost |
+
+The classical [Brent–Kung result](https://maths-people.anu.edu.au/~brent/pub/pub045.html)
+gives $O((n\log n)^{3/2})$ operations for general composition and reversion;
+the baby-step decomposition alone does not establish that bound.
+
+Work the [solved exercises](exercises.qmd) to practice the contracts.
+
+## 10. Sources
+
+- [Codeforces FPS tutorial](https://codeforces.com/blog/entry/56422)
+- [AtCoder Library convolution](https://atcoder.github.io/ac-library/production/document_en/convolution.html)
+- [Brent and Kung, fast composition and reversion](https://maths-people.anu.edu.au/~brent/pub/pub045.html)
+- [Practice sequence](exercises.qmd)

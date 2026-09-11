@@ -1,0 +1,206 @@
+---
+title: "11 — Set Power Series"
+---
+
+## Counting with labels that cannot be reused
+
+Here is a task that looks like it should be a standard subset DP, and is not:
+**count the connected labelled graphs on $n$ vertices.** Counting *all* graphs
+is trivial — $2^{\binom n2}$. Connectivity is the hard part, because a graph
+splits into components whose vertex sets are specific subsets, and different
+subsets induce different graphs.
+
+The fix is to work with a product that remembers *which* labels each factor
+used. A polynomial product remembers only a size: combining a structure of
+size $3$ with one of size $2$ gives size $5$, whatever labels were involved.
+Here we want a product that refuses to combine two structures sharing a
+vertex. Then "all objects" is the exponential of "connected objects", exactly
+as in [Chapter 10](../10-generating-functions/chapter.qmd) — and a logarithm
+turns the easy count into the hard one.
+
+That product is **subset convolution**, and the algebra it lives in is the set
+power series. Two things make the chapter work: a trick that computes the
+product in $O(n^22^n)$ instead of $3^n$, and a division-free way to take the
+logarithm so that the method survives small characteristic.
+
+Prerequisites: [partitions and counting](../03-combinatorics/chapter.qmd), [subset transforms](../08-transforms/chapter.qmd), and the exp/log analogy from [formal series](../09-formal-power-series/chapter.qmd). You should know how subset zeta and Möbius transforms respectively sum over subsets and undo that sum.
+
+The objectives are to derive fast subset convolution, prove the connected-component identities, identify exactly when factorial division is legal, and implement the mathematical contracts using your own transform library.
+
+## Definitions: a polynomial whose labels cannot repeat
+
+Let $U=\{0,\ldots,n-1\}$ and let $R$ be a commutative ring with identity. A set series is a table $f[S]\in R$ for every $S\subseteq U$. For $S\subseteq U$, write $x^S=\prod_{i\in S}x_i$; this is a monomial, not an ordinary integer power. We impose $x_i^2=0$ for each label. The resulting algebra is
+
+$$R[x_0,\ldots,x_{n-1}]/(x_0^2,\ldots,x_{n-1}^2).$$
+
+Multiplying $x^Ax^B$ returns $x^{A\cup B}$ if $A,B$ are disjoint, and zero otherwise. For example, $x^{\{0,1\}}x^{\{1,2\}}=0$, but $x^{\{0\}}x^{\{1,2\}}=x^{\{0,1,2\}}$. The empty-set coefficient is the constant term. The multiplicative identity has coefficient one at the empty set and zero elsewhere.
+
+Suppose $f[T]$ counts a first structure on labels $T$, and $g[S\setminus T]$ counts a second structure on the remaining labels. Summing over the choice of the first label set gives **subset convolution**:
+
+$$ (f*g)[S]=\sum_{T\subseteq S}f[T]g[S\setminus T]. $$
+
+Every label is assigned to exactly one of the two structures. Over all masks, the naive cost is $\sum_S2^{|S|}=3^n$: each label is outside $S$, in the first part, or in the second part.
+
+**Example.** On $\{0,1\}$, suppose $f[\{0\}]=2$, $f[\{1\}]=3$, $g[\{0\}]=5$, $g[\{1\}]=7$, with all other coefficients zero. Then $(f*g)[\{0,1\}]=2\cdot7+3\cdot5=29$. An ordinary size polynomial would also combine two structures using the same label, which is forbidden here.
+
+## Ranked convolution and the overlap invariant
+
+The naive $3^n$ is already better than brute force, but the transforms of
+[Chapter 08](../08-transforms/chapter.qmd) handle *union* convolution in
+$O(n2^n)$ — they just do not enforce disjointness. The trick is to track
+cardinality alongside the union, and let arithmetic detect overlaps: if
+$A \cup B = S$ and $|A| + |B| = |S|$, then $A$ and $B$ must be disjoint.
+
+Separate a series by cardinality before applying the subset zeta transform:
+
+$$\widehat f_k[S]=\sum_{\substack{A\subseteq S\\|A|=k}}f[A],
+\qquad 0\le k\le n.$$
+
+For each $S$, multiply the rank polynomials and retain ranks $0$ through $n$:
+
+$$H_k[S]=\sum_{i=0}^k\widehat f_i[S]\widehat g_{k-i}[S]
+=\sum_{\substack{A,B\subseteq S\\|A|+|B|=k}}f[A]g[B].$$
+
+These pairs may overlap. Now Möbius-invert each rank layer. For a fixed pair $(A,B)$, its contribution to inverted entry $S$ is multiplied by
+
+$$\sum_{A\cup B\subseteq T\subseteq S}(-1)^{|S\setminus T|}
+=\begin{cases}1,&A\cup B=S,\\0,&A\cup B\ne S.\end{cases}$$
+
+Indeed, every element of $S\setminus(A\cup B)$ can be included or excluded, producing $(1-1)^{|S\setminus(A\cup B)|}$. Thus the inverted layer is
+
+$$h_k[S]=\sum_{\substack{A\cup B=S\\|A|+|B|=k}}f[A]g[B].$$
+
+Finally take $k=|S|$. Since $|A|+|B|=|A\cup B|+|A\cap B|$, this equality forces $A\cap B=\varnothing$. Therefore $h_{|S|}[S]=(f*g)[S]$.
+
+::: {.callout-warning title="Do not clear intermediate overlap layers"}
+Input layers above $|S|$ are zero. Product layers above $|S|$ can be necessary: Möbius inversion needs them to cancel overlaps. On $U=\{0,1\}$, let $f[\{0\}]=g[\{0\}]=1$. Then $H_2[\{0\}]=H_2[U]=1$. Inversion subtracts the first from the second and correctly returns zero. Clearing $H_2[\{0\}]$ prematurely creates a false disjoint pair on $U$.
+:::
+
+There are $n+1$ zeta/inverse transforms, each costing $O(n2^n)$ additions/subtractions, and $O(n^2)$ rank products for each mask. The total is $O(n^22^n)$ ring operations and $O(n2^n)$ coefficient storage. A ring with subtraction suffices; factorials and field division play no role in this multiplication algorithm. OR convolution differs: it keeps overlap and does not enforce $|A|+|B|=|S|$.
+
+## Functions of a set series {#functions-of-a-set-series}
+
+With a fast product in hand, we can run the whole exp/log story from
+[Chapter 09](../09-formal-power-series/chapter.qmd) here — and this is where
+connected-component counting actually happens.
+
+Let $g[\varnothing]=0$. Any product of more than $n$ copies of $g$ must repeat a label, so $g^{n+1}=0$. This property is **nilpotence**. It makes substitution into an infinite formal series finite.
+
+When $1,2,\ldots,n$ are units in $R$, define
+
+$$\exp(g)=\sum_{k=0}^n\frac{g^k}{k!},\qquad
+\log(1+g)=\sum_{k=1}^n(-1)^{k-1}\frac{g^k}{k}.$$
+
+Over $\mathbb F_p$, the sufficient local condition is $p>n$. The usual finite formal identities show these operations are inverse. We will also derive partition recurrences that work without dividing by these integers.
+
+What does $g^k/k!$ count? A term of $g^k[S]$ chooses an **ordered** list of $k$ disjoint nonempty blocks covering $S$, with weight equal to the product of their $g$-values. Each unordered partition has exactly $k!$ orders, because its nonempty blocks have distinct label sets. Hence
+
+$$[x^S]\exp(g)=\sum_{\pi\text{ a partition of }S}\prod_{B\in\pi}g[B].$$
+
+The empty set has one partition with no blocks; its product is one. This finite partition sum makes sense over any commutative ring even when the displayed factorial quotients do not.
+
+**Three-label example.** If $g[B]=1$ for every nonempty $B$, the contributions on three labels are one one-block partition, three two-block partitions, and one three-block partition. The answer is five. If singleton blocks have weight $a$ and larger blocks have weight zero, the answer on any $S$ is $a^{|S|}$: only the singleton partition survives.
+
+### Connected objects and a division-free recurrence
+
+Let $A[S]$ count all objects on $S$ and $C[S]$ count connected ones. Assume every object has a unique partition into nonempty connected components, and the allowed choices and weights factor across that partition. Then $A=\exp(C)$, so $C=\log(A)$ where the quotient formulas are legal.
+
+For a formula valid over any coefficient ring, choose the least label $v\in S$. Its component has one uniquely determined label set $T$ containing $v$. Therefore
+
+$$A[S]=\sum_{\substack{T\subseteq S\\v\in T}}C[T]A[S\setminus T],
+\qquad
+C[S]=A[S]-\sum_{\substack{T\subsetneq S\\v\in T}}C[T]A[S\setminus T].$$
+
+Use $A[\varnothing]=1$ and process nonempty masks by increasing size. The second formula isolates the term $T=S$. Each object appears once because its component containing $v$ is unique. Enumerating these transitions costs $O(3^n)$ operations and $O(2^n)$ storage.
+
+**Graph example.** For all simple graphs on a fixed vertex subset, $A[S]=2^{\binom{|S|}{2}}$. Two vertices have $A=2$, so $C=2-1=1$. Three vertices have $A=8$: subtract the all-singleton graph and three graphs with a connected pair plus an isolated vertex, leaving $C=8-1-3=4$. They are the three paths and the triangle.
+
+## Fast exp, inverse, and log without factorial division
+
+The special relation $x_i^2=0$ supplies a short recurrence. Split off one label, writing a series as $f=f_0+x_{n-1}f_1$, where both parts use only the other $n-1$ labels. The coefficient $f_1[S]$ equals the old coefficient at $S\cup\{n-1\}$.
+
+For $g[\varnothing]=0$, let $E_0$ be its partition exponential on the smaller universe. The distinguished label belongs to exactly one component; choosing its other labels gives
+
+$$E(g_0+x_{n-1}g_1)=E(g_0)+x_{n-1}\bigl(E(g_0)*g_1\bigr).$$
+
+Compute $E(g_0)$ recursively and perform one subset convolution. With the ranked multiplier the recurrence is $T(n)=T(n-1)+O(n^22^n)$, giving $T(n)=O(n^22^n)$. This operation equals the factorial exponential wherever that formula exists and supplies its combinatorial extension otherwise.
+
+An ordinary multiplicative inverse requires only that $f[\varnothing]$ be a unit. If $u=f_0^{-1}$, direct multiplication and $x_{n-1}^2=0$ give
+
+$$f^{-1}=u-x_{n-1}(u*u*f_1).$$
+
+This is another $O(n^22^n)$ recursion. Finally, for $A[\varnothing]=1$, connected extraction obeys
+
+$$L(A_0+x_{n-1}A_1)=L(A_0)+x_{n-1}(A_0^{-1}*A_1).$$
+
+This follows by inverting the exponential split: $A_1=A_0*C_1$. Recompute smaller inverses if desired; the geometric sum of their $O(k^22^k)$ costs is still $O(n^22^n)$. The resulting $L$ is the inverse of the partition exponential over any ring, and agrees with the displayed formal logarithm when its denominators are units. It is not permission to evaluate $1/k$ in small characteristic.
+
+## Composition and power projection
+
+For an ordinary polynomial $F(z)=\sum_{k=0}^m a_kz^k$, substitution $F(g)=\sum_{k=0}^{\min(m,n)}a_kg^k$ is defined whenever $g[\varnothing]=0$. Successive subset multiplications give the explicit bound $O(n^32^n)$ when $m\le n$. More specialized composition algorithms improve this; do not infer their cost from a single convolution. For an EGF $\sum F_kz^k/k!$, use unit factorials or interpret coefficients by the corresponding weighted partition sums.
+
+**Power projection** reverses the question. Given weights $w[S]$, compute
+
+$$b_k=\sum_{S\subseteq U}w[S]\,[x^S]g^k\qquad(0\le k\le n).$$
+
+For fixed $g$, composition is a linear map from $(a_k)$ to the subset table. Its transpose maps $w$ to $(b_k)$, because
+
+$$\sum_S w[S]\,[x^S]F(g)=\sum_k a_kb_k.$$
+
+This equality explains the word “transpose” without an extra combinatorial assumption. Computing successive powers gives the same $O(n^32^n)$ baseline. A transposed implementation of a faster linear composition circuit can share its asymptotic operation count; that is an additional library contract, not an unexplained property of the basic multiplier.
+
+## Contest translation: coloured bipartite graphs
+
+For [Lights Out on Connected Graph, ARC105 F](https://atcoder.jp/contests/arc105/tasks/arc105_f?lang=en), assign a bit $s_v$ to whether vertex $v$ is flipped an odd number of times. An edge $uv$ becomes blue exactly when $s_u+s_v=1$ in $\mathbb F_2$. Thus the retained graph must be bipartite, and the problem asks for connected bipartite spanning subgraphs.
+
+The count easier to obtain is **coloured** bipartite subgraphs. For every vertex set $S$ and every colour class $T\subseteq S$, choose any subset of original edges crossing $T,S\setminus T$. If $e(T,S\setminus T)$ is their number, set
+
+$$A[S]=\sum_{T\subseteq S}2^{e(T,S\setminus T)}.$$
+
+Each summand counts graphs with that particular two-colouring. A bipartite graph with $k$ components has $2^k$ colourings, including a factor two for an isolated vertex. Therefore $C=L(A)$ counts connected graphs **with** a colouring, and the answer for nonempty $U$ is $C[U]/2$. The modulus $998244353$ makes two a unit. Summing first and dividing all $A[S]$ by two would be wrong for disconnected graphs.
+
+For the official limit $n\le17$, a practical baseline uses $O(3^n)$ cut terms and the distinguished-component recurrence; ranked multiplication can accelerate the latter. Precompute induced-edge counts $e(S)$ so crossing counts are $e(S)-e(T)-e(S\setminus T)$. The partition coefficient is maintained exactly throughout, rather than deduplicating colourings afterward.
+
+## Problem-solving checklist
+
+- Must the two objects use disjoint labels, or is overlap allowed?
+- What does the empty-set coefficient mean?
+- Are components uniquely determined and weights multiplicative?
+- Are you counting uncoloured objects, coloured objects, or objects with an extra mark?
+- Are divisions legal, or should you use the distinguished-component recurrence?
+- Have intermediate product ranks survived until Möbius inversion?
+
+## Exercises with hints and solutions
+
+1. **Partition check.** Give weight two to a singleton and weight three to a pair. What is the partition exponential on two labels?
+
+   **Hint:** list partitions. **Solution:** the singleton partition contributes $2\cdot2=4$ and the one-block partition contributes 3, so the answer is 7.
+
+2. **Characteristic trap.** Over $\mathbb F_2$, let $g=x_0+x_1$. Why is “compute $g^2/2$” invalid, and what is the partition exponential's two-label coefficient?
+
+   **Hint:** ordered and unordered partitions are different computations. **Solution:** $g^2=2x_0x_1=0$, and two has no inverse. The unique partition into two singleton blocks still has weight one, so the division-free answer is one.
+
+3. **Connected extraction.** How many connected simple graphs exist on three labelled vertices?
+
+   **Hint:** subtract component partitions from eight. **Solution:** one empty graph and three single-edge graphs are disconnected, giving four. This also checks the earlier recurrence.
+
+4. **Coloured failure.** For a two-vertex graph with one possible edge, compute $A$ and $C$ for the coloured bipartite model.
+
+   **Hint:** the empty graph has four colourings. **Solution:** $A[U]=4+2=6$, each singleton has $A=2$, and $C[U]=6-2\cdot2=2$. Dividing $C[U]$ by two yields the unique connected graph. Dividing $A[U]$ by two instead yields three, not the two uncoloured graphs.
+
+5. **Projection model.** If $g$ has coefficient one on singletons and zero elsewhere, and $w$ selects the full universe, determine every $b_k$.
+
+   **Hint:** count ordered singleton blocks. **Solution:** only $k=n$ can cover $U$; its coefficient is $n!$. Hence $b_n=n!$ and the other $b_k$ vanish, with the arithmetic interpreted in the coefficient ring.
+
+For a sustained modelling exercise, attempt ARC105 F before reading the reduction above. [Chapter 20](../20-frontier-capstones/chapter.qmd) supplies a synthesis check on the complete four-vertex graph.
+
+## Summary and reference
+
+| Operation | Assumptions | Derived bound |
+|---|---|---|
+| Subset convolution | Ring addition, subtraction, multiplication | $O(n^22^n)$ |
+| Partition exponential / connected extraction | Empty coefficients zero / one | $O(n^22^n)$ via label split |
+| Multiplicative inverse | Constant coefficient a unit | $O(n^22^n)$ |
+| General composition / projection baseline | Inner constant zero; degrees at most $n$ | $O(n^32^n)$ |
+
+The rank-overlap invariant and multiplication bound originate in Björklund, Husfeldt, Kaski and Koivisto, [Fourier meets Möbius: fast subset convolution](https://arxiv.org/abs/cs/0611101). The recurrences above derive their own exp/log contracts; they do not require treating a general composition algorithm as a black box.
