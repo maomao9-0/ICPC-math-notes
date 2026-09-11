@@ -35,6 +35,7 @@ Status meanings: **inventoried** = not yet mathematically reviewed; **audited** 
 | [17](17-algebraic-graph-methods/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FRONTIER.md. |
 | [18](18-holonomic-methods/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FRONTIER.md. |
 | [19](19-frontier-capstones/chapter.qmd) | validated | Reviewed, expanded, exact checks and individual render passed; see VALIDATION_FRONTIER.md. |
+| [20](20-q-analogues/chapter.qmd) | validated | Split out of 14: Gaussian binomials, division-free recurrence, small characteristic, rank distributions. |
 
 All five exercise pages are retained, expanded, and validated with their parent chapters. `index.qmd`, `STUDY_PLAN.qmd`, `NOTATION.qmd`, and `SOURCES.qmd` have been reviewed and revised. All original chapter routes are retained. No chapter remains unreviewed.
 
