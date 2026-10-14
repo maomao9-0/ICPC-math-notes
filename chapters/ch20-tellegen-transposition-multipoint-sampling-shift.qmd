@@ -1,0 +1,1599 @@
+---
+title: "Chapter 20: Tellegen's Principle, Transposed Multipoint Evaluation & Shift of Sampling Points"
+---
+
+## Prerequisites & Learning Objectives
+
+::: {.callout-note}
+### Prerequisite Chapters & Required Foundations
+Before reading this chapter, ensure you are comfortable with the following foundational tools:
+
+- **[Chapter 5: Rational Generating Functions, Bostan–Mori & Berlekamp–Massey](ch05-rational-bostan-mori-berlekamp-massey.qmd)** — partial fraction decompositions over formal power series, reversed polynomials $P^R(x) = x^{\deg P} P(1/x)$, and generating functions of linear recurrences.
+- **[Chapter 6: Binomial Sums, Snake Oil, Taylor Shifts & Stirling Numbers](ch06-binomial-snake-oil-taylor-shift-stirling.qmd)** — diagonal-times-Toeplitz (cross-correlation) convolutions and coefficient-space polynomial shifts $F(x+c)$.
+- **[Chapter 7: Roots of Unity, Cyclotomic Polynomials & Chirp Z-Transform](ch07-roots-of-unity-cyclotomic-czt.qmd)** — Decimation-in-Frequency (`DIF`) and Decimation-in-Time (`DIT`) Number-Theoretic Transforms, bit-reversal permutations, and Bluestein's identity $ij = \binom{i+j}{2} - \binom{i}{2} - \binom{j}{2}$.
+:::
+
+### Learning Objectives
+
+By the end of this chapter, you will be able to:
+
+1. **Dualize any straight-line linear algorithm via Tellegen's Transposition Principle**: Decompose a linear map $\mathbf{y} = M\mathbf{x}$ into elementary matrices (or a directed acyclic graph of addition, fan-out, and scalar multiplication gates) and reverse the circuit to compute $\mathbf{z} = M^\top \mathbf{w}$ in the exact same multiplicative complexity.
+2. **Execute the Middle Product (`mulT`) with $2\times$ FFT length and bit-reversal savings**: Derive $\operatorname{mulT}(C, B)[i] = \sum_{j=0}^{m-1} B[j]\,C[i+j]$ ($0 \le i < n$) as the matrix transpose of polynomial multiplication, prove why cyclic wrap-around on an FFT length $L \ge n + m - 1$ never pollutes the middle window, and eliminate bit-reversal permutations via `DIF_NTT` + `DIT_INTT`.
+3. **Build division-free $O(N \log^2 N)$ Multipoint Evaluation (`eval`) and Fast Lagrange Interpolation (`interp`)**: Construct the primal bottom-up subproduct tree computing $\sum_{i=0}^{n-1} \frac{w_i}{1 - x_i x} \bmod x^n$ with a **single root inversion**, and transpose it top-down to evaluate $F(x_0), \dots, F(x_{n-1})$ using only `mulT` gates ($3\times$ faster than remainder-tree Euclidean division).
+4. **Transpose the Chirp Z-Transform ($\text{czt}^\top$), shift consecutive sampling points (`连续点值平移`), and compute $N! \bmod P$ in $O(\sqrt{P}\log P)$**: Evaluate geometric linear forms via $\text{czt}^\top$, shift point values $F(0), \dots, F(d) \mapsto F(c), \dots, F(c+m-1)$ in a single NTT while safely bypassing overlap singularities, and double block polynomials $G_d(x) = \prod_{j=1}^d(x+j)$ on a baby-step giant-step grid.
+
+---
+
+## §20.1 Tellegen's Transposition Principle & Straight-Line Linear Circuits
+
+### Concrete Motivation: Why Reverse a Linear Algorithm?
+
+Suppose you have fixed parameters $x_0, x_1, \dots, x_{n-1} \in K$ over a commutative ring $K$. Consider two fundamental computational tasks that appear opposite at first glance:
+
+1. **Task A (Weighted Rational Partial-Fraction Sum)**: Given weights $w_0, w_1, \dots, w_{n-1} \in K$, compute the first $n$ Taylor coefficients $z_0, z_1, \dots, z_{n-1}$ of the rational generating function
+   $$
+   Z(x) = \sum_{i=0}^{n-1} \frac{w_i}{1 - x_i x} \bmod x^n = \sum_{j=0}^{n-1} \left(\sum_{i=0}^{n-1} w_i x_i^j\right) x^j \bmod x^n.
+   $$
+   Task A is straightforward: we can pair up fractions in a binary tree $\frac{A_L}{Q_L} + \frac{A_R}{Q_R} = \frac{A_L Q_R + A_R Q_L}{Q_L Q_R}$ from the leaves to the root using only standard polynomial multiplications, and then perform **one single formal power series inversion** $Q_{\text{root}}(x)^{-1} \bmod x^n$ at the very end.
+2. **Task B (Multipoint Polynomial Evaluation)**: Given the coefficients $f_0, f_1, \dots, f_{n-1} \in K$ of a polynomial $F(x) = \sum_{j=0}^{n-1} f_j x^j$, compute its values at all $n$ points simultaneously:
+   $$
+   y_i = F(x_i) = \sum_{j=0}^{n-1} x_i^j f_j \quad \text{for } 0 \le i < n.
+   $$
+   Historically, Task B was solved by recursively taking polynomial remainders $F(x) \bmod \prod_{i \in u}(x - x_i)$ down a binary tree, requiring $O(\log n)$ layers of heavy Euclidean polynomial divisions (`divmod`), each costing $2$ to $3$ times as much as a multiplication.
+
+Look closely at the linear algebra connecting Task A and Task B. Define the $n \times n$ **Vandermonde matrix** $V$ with entries $V_{i,j} = x_i^j$ ($0 \le i, j < n$):
+
+- Task B computes the matrix-vector product $\mathbf{y} = V \mathbf{f}$, since $y_i = \sum_{j=0}^{n-1} V_{i,j} f_j$.
+- Task A computes the transposed matrix-vector product $\mathbf{z} = V^\top \mathbf{w}$, since $z_j = \sum_{i=0}^{n-1} V_{i,j} w_i = \sum_{i=0}^{n-1} (V^\top)_{j,i} w_i$.
+
+Can we mechanically convert our fast, division-free algorithm for $V^\top \mathbf{w}$ into an equally fast, division-free algorithm for $V \mathbf{f}$? **Tellegen's Transposition Principle** guarantees that the answer is always **yes**—not only for Vandermonde matrices, but for *any* linear transformation over any commutative ring $K$.
+
+---
+
+### The Bilinear Form & Elementary Matrix Decomposition
+
+::: {.callout-tip}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: Tellegen's Transposition Principle
+
+- **The Diagnostic Signal**: You need to compute a linear map $\mathbf{y} = M \mathbf{x}$ whose direct algorithm seems to require expensive division or non-local operations (such as polynomial remainder tree evaluation $F(x) \bmod (x - x_i)$), whereas the **transposed** linear map $\mathbf{z} = M^\top \mathbf{w}$ has an obvious, division-free generating function interpretation (such as summing partial fractions $\sum_i \frac{w_i}{1 - x_i x} \bmod x^n$ over a subproduct tree).
+- **The Reverse-Engineering Scratchpad**:
+  1. Write the easier transposed problem $\mathbf{z} = M^\top \mathbf{w}$ as a straight-line sequence of elementary linear steps $M^\top = P_{\text{in}}^\top E_1^\top \cdots E_T^\top P_{\text{out}}^\top$.
+  2. Transpose the factorization by reversing the topological execution order ($t = T$ down to $1$) and replacing each elementary gate by its transpose: scalar multiplications $r_i \gets c \cdot r_i$ stay unchanged, while register additions $r_i \gets r_i + r_j$ flip direction to $r_j \gets r_j + r_i$ (fan-out $\leftrightarrow$ accumulation, polynomial multiplication $\leftrightarrow$ middle product `mulT`).
+:::
+
+Let $K$ be a commutative ring with identity $1_K$, and let $M \in K^{m \times n}$ be a fixed matrix whose entries depend only on precomputed structural constants (such as the evaluation points $x_0, \dots, x_{n-1}$ or roots of unity).
+
+A **straight-line linear program** (or **linear circuit**) computing $\mathbf{y} = M \mathbf{x}$ for an arbitrary input vector $\mathbf{x} \in K^n$ is a finite sequence of $T$ elementary in-place register operations on a workspace array $\mathbf{r} = (r_1, \dots, r_W)^\top \in K^W$ (with $W \ge \max(n, m)$) that begins with $\mathbf{x}$ loaded into the first $n$ registers (and zeros elsewhere) and ends with $\mathbf{y}$ stored in the first $m$ registers.
+
+Every step $t = 1, 2, \dots, T$ applies one of three elementary linear transformations $E_t \in K^{W \times W}$ to the workspace vector $\mathbf{r} \gets E_t \mathbf{r}$:
+
+1. **In-Place Scalar Multiplication $D_i(c)$**: Multiplies register $r_i$ by a fixed constant $c \in K$, leaving all other registers unchanged ($r_i \gets c \cdot r_i$). As a matrix, $D_i(c) = I_W + (c - 1) \mathbf{e}_i \mathbf{e}_i^\top$.
+   - *Transpose*: Since $D_i(c)$ is a diagonal matrix, it is **self-transpose**:
+     $$
+     D_i(c)^\top = D_i(c).
+     $$
+2. **Register Addition / Elementary Shear $E_{i,j}(1)$ ($i \ne j$)**: Adds register $r_j$ into register $r_i$ ($r_i \gets r_i + r_j$). As a matrix, $E_{i,j}(1) = I_W + \mathbf{e}_i \mathbf{e}_j^\top$.
+   - *Transpose*: Transposing swaps the row and column indices of $\mathbf{e}_i \mathbf{e}_j^\top$, reversing the direction of data flow so that register $r_i$ is added into register $r_j$ ($r_j \gets r_j + r_i$):
+     $$
+     E_{i,j}(1)^\top = (I_W + \mathbf{e}_i \mathbf{e}_j^\top)^\top = I_W + \mathbf{e}_j \mathbf{e}_i^\top = E_{j,i}(1).
+     $$
+3. **Register Zero-Clear / Projection $Z_i = D_i(0)$ or Permutation $P_{i,j}$**: Swaps two registers $r_i \leftrightarrow r_j$ ($P_{i,j}^\top = P_{i,j}$) or zeroes an auxiliary register after its value is no longer needed.
+
+Let $P_{\text{in}} \in K^{W \times n}$ be the injection matrix that loads $\mathbf{x} \in K^n$ into the first $n$ registers, and let $P_{\text{out}} \in K^{m \times W}$ be the projection matrix that reads $\mathbf{y} \in K^m$ from the first $m$ registers. Then the primal straight-line program factors $M$ as the matrix product
+$$
+M = P_{\text{out}} E_T E_{T-1} \cdots E_2 E_1 P_{\text{in}}.
+$$
+
+Now take the matrix transpose of both sides using the identity $(AB)^\top = B^\top A^\top$:
+$$
+M^\top = P_{\text{in}}^\top E_1^\top E_2^\top \cdots E_{T-1}^\top E_T^\top P_{\text{out}}^\top.
+$$
+
+Reading this factored product from right to left gives a constructive, step-by-step recipe for computing $\mathbf{z} = M^\top \mathbf{w}$ for any covector $\mathbf{w} \in K^m$:
+
+1. **Initialize ($P_{\text{out}}^\top$)**: Load the input covector $\mathbf{w} \in K^m$ into the output registers of the primal circuit, setting all other workspace registers to $0$.
+2. **Reverse Topological Execution ($E_T^\top, \dots, E_1^\top$)**: Step backward from $t = T$ down to $t = 1$, replacing each elementary operation $E_t$ by its transpose $E_t^\top$:
+   - Every register addition $r_i \gets r_i + r_j$ becomes $r_j \gets r_j + r_i$.
+   - Every constant multiplication $r_i \gets c \cdot r_i$ remains $r_i \gets c \cdot r_i$.
+3. **Extract ($P_{\text{in}}^\top$)**: Read the final result $\mathbf{z} = M^\top \mathbf{w} \in K^n$ from the input registers of the primal circuit.
+
+---
+
+### Dualizing the Directed Acyclic Graph (DAG) of a Linear Circuit
+
+Instead of in-place registers, we can equivalently view a linear algorithm as a **Directed Acyclic Graph (DAG)** in which every node is an intermediate variable and edges carry linear values:
+
+```{mermaid}
+flowchart LR
+  subgraph Primal ["Primal Circuit: y = M x"]
+    direction LR
+    x["Input node u (fan-out)"] -->|"1"| a1["Branch 1"] & a2["Branch 2"]
+    b1["Summand 1"] & b2["Summand 2"] -->|"1"| p["Addition node v (+)"]
+    s1["Node p"] -->|"scalar c"| s2["Node q"]
+  end
+  subgraph Dual ["Transposed Circuit: z = M^T w"]
+    direction RL
+    xT["Output node u (+)"] <--|"1"| a1T["Branch 1"] & a2T["Branch 2"]
+    b1T["Target 1"] & b2T["Target 2"] <--|"1"| pT["Fan-out node v"]
+    s1T["Node p"] <--|"scalar c"| s2T["Node q"]
+  end
+```
+
+The bilinear duality identity
+$$
+\langle \mathbf{w}, M\mathbf{x} \rangle = \mathbf{w}^\top (M\mathbf{x}) = (M^\top \mathbf{w})^\top \mathbf{x} = \langle M^\top \mathbf{w}, \mathbf{x} \rangle
+$$
+shows that if we assign each node $v$ in the primal DAG a dual sensitivity variable $\hat{v}$ (measuring how much the final inner product $\langle \mathbf{w}, \mathbf{y} \rangle$ changes per unit change in $v$), propagating sensitivities backward from the outputs $\hat{y}_i = w_i$ to the inputs $\hat{x}_j = z_j$ performs three exact gate dualizations:
+
+| Primal Gate (Forward Topological Order) | Matrix Form $E_t$ | Transposed Gate (Reverse Topological Order) | Matrix Form $E_t^\top$ |
+| :--- | :--- | :--- | :--- |
+| **Fan-Out (Copy)**: $u_1 \gets v,\; u_2 \gets v$ | $\begin{bmatrix} 1 \\ 1 \end{bmatrix}$ | **Addition (Accumulate)**: $\hat{v} \gets \hat{u}_1 + \hat{u}_2$ | $\begin{bmatrix} 1 & 1 \end{bmatrix}$ |
+| **Addition (Sum)**: $v \gets u_1 + u_2$ | $\begin{bmatrix} 1 & 1 \end{bmatrix}$ | **Fan-Out (Broadcast)**: $\hat{u}_1 \gets \hat{v},\; \hat{u}_2 \gets \hat{v}$ | $\begin{bmatrix} 1 \\ 1 \end{bmatrix}$ |
+| **Scalar Multiply**: $v \gets c \cdot u$ | $\begin{bmatrix} c \end{bmatrix}$ | **Scalar Multiply**: $\hat{u} \gets c \cdot \hat{v}$ | $\begin{bmatrix} c \end{bmatrix}$ |
+| **Polynomial Multiply $\mathcal{M}_B$**: $C = A \cdot B$ | Toeplitz $T_B$ | **Middle Product $\operatorname{mulT}(\cdot, B)$**: $\hat{A} = \operatorname{mulT}(\hat{C}, B)$ | Transposed Toeplitz $T_B^\top$ |
+
+::: {.callout-important}
+### Theorem 20.1 (Tellegen's Transposition Principle)
+Let $K$ be a commutative ring and let $M \in K^{m \times n}$ be a linear map computed by a straight-line linear circuit using $S$ scalar multiplications by fixed constants and $A$ additions. Then the transposed linear map $M^\top \in K^{n \times m}$ can be computed by the reversed straight-line circuit using **precisely $S$ scalar multiplications** (by the exact same constants) and at most $A + n - m$ additions.
+:::
+
+---
+
+### Concrete Hand-Checkable Trace ($N = 2$ Vandermonde Circuit)
+
+Let us trace Tellegen's Principle by hand on a $2 \times 2$ linear map. Fix evaluation points $x_0 = 2, x_1 = 5$. The primal map evaluates $F(x) = f_0 + f_1 x$ at $x_0, x_1$:
+$$
+\begin{bmatrix} y_0 \\ y_1 \end{bmatrix} = \underbrace{\begin{bmatrix} 1 & 2 \\ 1 & 5 \end{bmatrix}}_{V} \begin{bmatrix} f_0 \\ f_1 \end{bmatrix}, \qquad
+\begin{bmatrix} z_0 \\ z_1 \end{bmatrix} = \underbrace{\begin{bmatrix} 1 & 1 \\ 2 & 5 \end{bmatrix}}_{V^\top} \begin{bmatrix} w_0 \\ w_1 \end{bmatrix}.
+$$
+
+Suppose we start from the **primal rational-sum algorithm** for $\mathbf{z} = V^\top \mathbf{w}$:
+$$
+\frac{w_0}{1 - 2x} + \frac{w_1}{1 - 5x} = \frac{w_0(1 - 5x) + w_1(1 - 2x)}{(1 - 2x)(1 - 5x)} = \frac{(w_0 + w_1) + (-5w_0 - 2w_1)x}{1 - 7x + 10x^2} \bmod x^2.
+$$
+Since $(1 - 7x + 10x^2)^{-1} \equiv 1 + 7x \pmod{x^2}$, multiplying the numerator $A_0 + A_1 x$ by $1 + 7x \bmod x^2$ gives the 4-step straight-line circuit for $\mathbf{z} = V^\top \mathbf{w}$:
+
+1. **Step 1 (Cross-multiply numerators)**: $A_0 = w_0 + w_1$ and $A_1 = -5w_0 - 2w_1$.
+   $$
+   \begin{bmatrix} A_0 \\ A_1 \end{bmatrix} = \underbrace{\begin{bmatrix} 1 & 1 \\ -5 & -2 \end{bmatrix}}_{M_1} \begin{bmatrix} w_0 \\ w_1 \end{bmatrix}.
+   $$
+2. **Step 2 (Multiply by inverse root $Q_{\text{root}}^{-1} \equiv 1 + 7x \bmod x^2$)**: $z_0 = A_0$ and $z_1 = 7A_0 + A_1$.
+   $$
+   \begin{bmatrix} z_0 \\ z_1 \end{bmatrix} = \underbrace{\begin{bmatrix} 1 & 0 \\ 7 & 1 \end{bmatrix}}_{M_2} \begin{bmatrix} A_0 \\ A_1 \end{bmatrix}.
+   $$
+   Check: $z_0 = w_0 + w_1$ and $z_1 = 7(w_0 + w_1) + (-5w_0 - 2w_1) = 2w_0 + 5w_1$. This is indeed $V^\top \mathbf{w}$.
+
+Now **transpose** the two steps in reverse order ($V = (M_2 M_1)^\top = M_1^\top M_2^\top$) to evaluate $\mathbf{y} = V \mathbf{f}$ at input $\mathbf{f} = (f_0, f_1)^\top = (3, 4)^\top$ (where $F(x) = 3 + 4x$, so $F(2) = 11$ and $F(5) = 23$):
+
+1. **Step $2^\top$ (Transpose of root multiplication by $1 + 7x$)**:
+   $$
+   \begin{bmatrix} \hat{A}_0 \\ \hat{A}_1 \end{bmatrix} = M_2^\top \begin{bmatrix} f_0 \\ f_1 \end{bmatrix} = \begin{bmatrix} 1 & 7 \\ 0 & 1 \end{bmatrix} \begin{bmatrix} 3 \\ 4 \end{bmatrix} = \begin{bmatrix} 3 + 7 \cdot 4 \\ 4 \end{bmatrix} = \begin{bmatrix} 31 \\ 4 \end{bmatrix}.
+   $$
+2. **Step $1^\top$ (Transpose of leaf cross-multiplication)**:
+   $$
+   \begin{bmatrix} y_0 \\ y_1 \end{bmatrix} = M_1^\top \begin{bmatrix} \hat{A}_0 \\ \hat{A}_1 \end{bmatrix} = \begin{bmatrix} 1 & -5 \\ 1 & -2 \end{bmatrix} \begin{bmatrix} 31 \\ 4 \end{bmatrix} = \begin{bmatrix} 31 - 5 \cdot 4 \\ 31 - 2 \cdot 4 \end{bmatrix} = \begin{bmatrix} 11 \\ 23 \end{bmatrix}.
+   $$
+Both exact point values $y_0 = F(2) = 11$ and $y_1 = F(5) = 23$ emerge without a single polynomial division! Notice what happened in Step $2^\top$ and Step $1^\top$: every primal polynomial multiplication $A(x) \cdot B(x)$ turned into a sliding inner product $\sum_j B[j] \, C[i+j]$. Let us isolate and optimize that exact transposed operator.
+
+---
+
+## §20.2 The Middle Product (`mulT`) & $2\times$ FFT / Bit-Reversal Optimizations
+
+### Deriving `mulT` as the Transpose of Polynomial Multiplication
+
+::: {.callout-tip}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: The Middle Product (`mulT`)
+
+- **The Diagnostic Signal**: You encounter a sliding cross-correlation or difference-indexed convolution $R[i] = \sum_{j=0}^{m-1} B[j] \cdot C[i + j]$ ($0 \le i < n$), or you are transposing a primal algorithm that multiplies an unknown degree-$<n$ polynomial $A(x)$ by a fixed degree-$<m$ polynomial $B(x)$.
+- **The Reverse-Engineering Scratchpad**:
+  1. In primal multiplication $C(x) = A(x) B(x)$, coefficient $A[i]$ contributes $A[i] B[j]$ to $C[i+j]$. Therefore, in the transposed map $\hat{A} = T_B^\top C$, the dual variable $\hat{A}[i]$ gathers $\sum_{j=0}^{m-1} B[j] C[i+j]$.
+  2. To reduce $\sum_{j=0}^{m-1} B[j] C[i+j]$ to standard polynomial multiplication, reverse $B$ into $B^R(x) = x^{m-1} B(1/x)$ so that $B[j] = B^R[m - 1 - j]$. Now the indices $(i + j) + (m - 1 - j) = m - 1 + i$ sum to a constant!
+  3. Multiply $C(x) \cdot B^R(x)$ using a cyclic FFT of length $L \ge n + m - 1$ and read off the clean middle window $[m-1, n+m-2]$.
+:::
+
+Fix a polynomial $B(x) = \sum_{j=0}^{m-1} b_j x^j$ of length $m$ ($\deg B < m$). For any input polynomial $A(x) = \sum_{i=0}^{n-1} a_i x^i$ of length $n$ ($\deg A < n$), the primal multiplication map $\mathcal{M}_B(A) = A(x) \cdot B(x)$ produces a polynomial $C(x) = \sum_{k=0}^{n+m-2} c_k x^k$ of length $n + m - 1$.
+
+In terms of coefficient vectors, $\mathbf{c} = T_B \mathbf{a}$, where $T_B \in K^{(n+m-1) \times n}$ is the banded lower-triangular **Toeplitz matrix** whose $(k, i)$-entry is $b_{k-i}$ whenever $0 \le k - i < m$ (and $0$ otherwise):
+$$
+\begin{bmatrix} c_0 \\ c_1 \\ c_2 \\ \vdots \\ c_{n+m-2} \end{bmatrix}
+=
+\begin{bmatrix}
+b_0 & 0 & \cdots & 0 \\
+b_1 & b_0 & \cdots & 0 \\
+\vdots & b_1 & \ddots & \vdots \\
+b_{m-1} & \vdots & \ddots & b_0 \\
+0 & b_{m-1} & \ddots & b_1 \\
+\vdots & \vdots & \ddots & \vdots \\
+0 & 0 & \cdots & b_{m-1}
+\end{bmatrix}
+\begin{bmatrix} a_0 \\ a_1 \\ \vdots \\ a_{n-1} \end{bmatrix}.
+$$
+
+::: {.callout-note}
+## First-Principles Definition: The Transposed Dual Space $K[x]_{<n}^*$ and Covectors
+For any integer $n \ge 1$, let $K[x]_{<n} = \{A(x) \in K[x] : \deg A < n\} \cong K^n$ be the free $K$-module of polynomials of degree strictly less than $n$, with standard monomial basis $\{1, x, \dots, x^{n-1}\}$. Its **algebraic dual space** is the space of $K$-linear functionals (covectors)
+$$
+K[x]_{<n}^* := \operatorname{Hom}_K\!\big(K[x]_{<n},\, K\big) \cong K^n,
+$$
+equipped with the canonical bilinear pairing $\langle \mathbf{c}, A(x) \rangle = \sum_{i=0}^{n-1} c_i a_i$ where $c_i = \mathbf{c}(x^i)$ is the value of the linear functional $\mathbf{c}$ on $x^i$. Given any linear map $\mathcal{M}_B : K[x]_{<n} \to K[x]_{<n+m-1}$ defined by $A(x) \mapsto A(x) B(x)$, its **dual (transposed) map** $\mathcal{M}_B^* : K[x]_{<n+m-1}^* \to K[x]_{<n}^*$ sends a covector $\mathbf{c} \in K[x]_{<n+m-1}^*$ to the unique covector $\mathcal{M}_B^*(\mathbf{c}) \in K[x]_{<n}^*$ satisfying $\langle \mathcal{M}_B^*(\mathbf{c}), A \rangle = \langle \mathbf{c}, A \cdot B \rangle$ for all $A \in K[x]_{<n}$.
+:::
+
+Now take the matrix transpose $T_B^\top \in K^{n \times (n+m-1)}$. Given a covector $\mathbf{c} = (c_0, c_1, \dots, c_{n+m-2})^\top \in K[x]_{<n+m-1}^*$ of length $n + m - 1$, what is the $i$-th entry ($0 \le i < n$) of $\hat{\mathbf{a}} = T_B^\top \mathbf{c} \in K[x]_{<n}^*$? Looking down column $i$ of $T_B$ (which becomes row $i$ of $T_B^\top$), the entry in position $k = i + j$ is $b_j$ for $0 \le j < m$. Therefore:
+
+$$
+\operatorname{mulT}(C, B)[i] := (T_B^\top \mathbf{c})_i = \sum_{j=0}^{m-1} B[j] \cdot C[i + j] \quad \text{for } 0 \le i < n.
+$$
+
+Why is this operation called the **Middle Product**? Replace $B(x)$ with its degree-$(m-1)$ reversal $B^R(x) = x^{m-1} B(1/x) = \sum_{j=0}^{m-1} b_{m-1-j} x^j$. In the ordinary polynomial product $P(x) = C(x) \cdot B^R(x)$, the coefficient of $x^{m-1+i}$ is
+$$
+[x^{m-1+i}] \big(C(x) \cdot B^R(x)\big) = \sum_{j=0}^{m-1} C[i+j] \cdot B^R[m-1-j] = \sum_{j=0}^{m-1} B[j] \cdot C[i+j] = \operatorname{mulT}(C, B)[i].
+$$
+Thus $\operatorname{mulT}(C, B)$ extracts the **middle block of $n$ coefficients** at indices $m-1, m, \dots, n+m-2$ of the product $C(x) \cdot B^R(x)$:
+$$
+\operatorname{mulT}(C, B)(x) = \left( \big(C(x) \cdot B^R(x)\big) \;\operatorname{div}\; x^{m-1} \right) \bmod x^n.
+$$
+
+---
+
+### Payoff 1: $2\times$ Shorter FFT Length via Exact Cyclic Wrap-Around Cancellation
+
+Suppose $\deg C < n + m - 1$ and $\deg B^R < m$. Their exact polynomial product $P(x) = C(x) \cdot B^R(x)$ has degree at most $(n + m - 2) + (m - 1) = n + 2m - 3$, which requires $n + 2m - 2$ coefficients.
+
+If you use a standard black-box polynomial multiplication routine to compute $C(x) \cdot B^R(x)$ without cyclic wrap-around, you must choose a power-of-two FFT length $L_{\text{naive}} \ge n + 2m - 2$. When $n \approx m$, $n + 2m - 2 \approx 3n$, which frequently forces $L_{\text{naive}}$ to jump to the **next power of two** ($4n$ instead of $2n$), doubling the runtime of every node in the multipoint evaluation tree!
+
+Let us prove why a **much shorter FFT length $L \ge n + m - 1$** is already $100\%$ exact for the middle window $[m-1, n+m-2]$.
+
+::: {.callout-warning}
+### Failure Mode & Boundary Proof: Cyclic Wrap-Around Pollution vs. Clean Middle Window
+When we compute $C(x) \cdot B^R(x) \bmod (x^L - 1)$ using a cyclic NTT of length $L \ge n + m - 1$, any term $p_k x^k$ in the true product $P(x) = C(x) \cdot B^R(x)$ with degree $k \ge L$ wraps around modulo $x^L - 1$ and adds $p_k$ into coefficient index $k - L$.
+
+Which indices $k - L$ can be polluted by wrap-around?
+1. The maximum possible degree in $P(x) = C(x) \cdot B^R(x)$ is
+   $$
+   k_{\max} = (n + m - 2) + (m - 1) = n + 2m - 3.
+   $$
+2. Since we choose $L \ge n + m - 1$, every wrapping index $k \in [L, n + 2m - 3]$ lands at a cyclic position
+   $$
+   0 \le k - L \le (n + 2m - 3) - (n + m - 1) = m - 2.
+   $$
+3. Therefore, cyclic wrap-around **only pollutes indices $[0, m-2]$**! The middle window $[m-1, n+m-2]$—which contains the exact $n$ coefficients $\operatorname{mulT}(C, B)[0 \dots n-1]$—is **completely untouched** by wrap-around.
+
+**The Trap to Avoid**: Never pad $C$ beyond length $n + m - 1$ before calling $\operatorname{mulT}(C, B)$! If $C$ carries nonzero garbage coefficients at indices $\ge n + m - 1$, then $k_{\max}$ exceeds $n + 2m - 3$ and wrap-around $k - L$ spills directly into $[m-1, n+m-2]$, corrupting your output. Always truncate $C$ to length at most $n + m - 1$ first.
+:::
+
+---
+
+### Payoff 2: Zero Bit-Reversal Permutations (`DIF_NTT` + `DIT_INTT`)
+
+In [Chapter 7](ch07-roots-of-unity-cyclotomic-czt.qmd), we saw that an iterative Cooley–Tukey radix-2 NTT comes in two dual butterflies:
+
+- **Decimation-in-Frequency (`DIF_NTT`)**: Accepts a coefficient array in **normal order** and produces the DFT point-value array in **bit-reversed order** without performing a bit-reversal permutation.
+- **Decimation-in-Time (`DIT_INTT`)**: Accepts a DFT point-value array in **bit-reversed order** and produces the inverse DFT coefficient array in **normal order** without performing a bit-reversal permutation.
+
+Why does this matter from Tellegen's perspective? Because `DIT` is the exact linear circuit transpose of `DIF` (up to diagonal twiddle scaling)! And since pointwise multiplication of two DFT vectors commutes with any permutation of the evaluation slots, multiplying two bit-reversed DFT arrays pointwise yields the bit-reversed DFT of their cyclic convolution. Consequently, both standard cyclic convolution and `mulT` require **zero bit-reversal permutations**.
+
+Even better, when a fixed polynomial $B$ is used across multiple operations (or precomputed in a subproduct tree), we can precompute $\widehat{B^R} = \operatorname{DIF\_NTT}_L(B^R)$ once and reuse its bit-reversed point values directly.
+
+---
+
+### Payoff 3: The $1.5\,\mathcal{M}(N)$ Middle-Product Newton Inversion
+
+Recall Newton's iteration for formal power series inversion from Chapter 2: given $G_k(x) \equiv F(x)^{-1} \pmod{x^m}$ of length $m$, we double precision to $2m$ via
+$$
+G_{k+1}(x) = G_k(x) - G_k(x) \Big( \big(F(x) G_k(x) \bmod x^{2m}\big) - 1 \Big) \bmod x^{2m}.
+$$
+Observe the two multiplications inside one Newton step of size $m \to 2m$:
+
+1. **Error extraction**: Because $F(x) G_k(x) \equiv 1 \pmod{x^m}$, the lower $m$ coefficients of $F(x) G_k(x)$ are already known to be $1, 0, \dots, 0$. We only need the **middle block of $m$ coefficients** $[x^m \dots x^{2m-1}](F(x) G_k(x))$. Since $\deg G_k < m$ and we truncate $F$ to degree $< 2m$, this is a middle product of output length $m$, computable with a cyclic NTT of length **$2m$** (instead of $4m$)!
+2. **Correction multiplication**: Let $E(x) = \big((F(x) G_k(x) \bmod x^{2m}) - 1\big) \operatorname{div} x^m$ be the upper $m$-coefficient error polynomial. The upper half of $G_{k+1}(x)$ is simply $-\big(G_k(x) E(x) \bmod x^m\big)$, which is a short product of two length-$m$ polynomials truncated to length $m$, also computable in length **$2m$** (reusing $\operatorname{DIF\_NTT}_{2m}(G_k)$ from step 1!).
+
+Summing three length-$2m$ NTT transforms (one forward on $F \bmod x^{2m}$, one shared forward on $G_k$, two inverse transforms, and one forward on $E$) reduces the cost of a Newton step from $2\,\mathcal{M}(2m)$ to $1.5\,\mathcal{M}(2m)$, cutting total series inversion time by $25\%$.
+
+---
+
+### Concrete Hand-Checkable Trace of `mulT` ($n = 3, m = 2, L = 4$)
+
+Let $B(x) = 2 + 3x$ ($m = 2$, so $B = [2, 3]$) and let $C(x) = 1 + 4x + 5x^2 + 6x^3$ ($n = 3$, length $n + m - 1 = 4$, so $C = [1, 4, 5, 6]$).
+
+1. **Direct Definition Check**: For $i = 0, 1, 2$, $\operatorname{mulT}(C, B)[i] = B[0]\,C[i] + B[1]\,C[i+1]$:
+   - $i = 0$: $2 \cdot 1 + 3 \cdot 4 = 14$.
+   - $i = 1$: $2 \cdot 4 + 3 \cdot 5 = 23$.
+   - $i = 2$: $2 \cdot 5 + 3 \cdot 6 = 28$.
+   So $\operatorname{mulT}(C, B) = [14, 23, 28]$.
+
+2. **Cyclic NTT Trace at Length $L = 4 = n + m - 1$**:
+   - Reverse $B$: $B^R(x) = x^1 B(1/x) = 3 + 2x$ (padded to length $L = 4$: $[3, 2, 0, 0]$).
+   - True product over $K[x]$:
+     $$
+     C(x) \cdot B^R(x) = (1 + 4x + 5x^2 + 6x^3)(3 + 2x) = 3 + 14x + 23x^2 + 28x^3 + 12x^4.
+     $$
+   - Reduce modulo $x^4 - 1$ (since $L = 4$): the $12x^4$ term wraps around to $12x^0$, giving the cyclic product
+     $$
+     (3 + 12) + 14x + 23x^2 + 28x^3 = 15 + 14x + 23x^2 + 28x^3.
+     $$
+   - Notice that index $0$ ($m - 2 = 0$) is polluted ($3 \to 15$), while the window $[m-1, n+m-2] = [1, 3]$ holds $[14, 23, 28]$—the exact vector $\operatorname{mulT}(C, B)$!
+
+```cpp
+// Computes mulT(C, B)[i] = sum_{j=0}^{m-1} B[j] * C[i + j] for 0 <= i < n
+Poly mulT(const Poly& C, const Poly& B, int n) {
+    int m = B.size(), L = 1;
+    while (L < n + m - 1) L <<= 1;
+    Poly A(L, 0), BR(L, 0);
+    for (int i = 0; i < min((int)C.size(), n + m - 1); ++i) A[i] = C[i];
+    for (int j = 0; j < m; ++j) BR[m - 1 - j] = B[j];
+    dif_ntt(A, L); dif_ntt(BR, L);
+    for (int i = 0; i < L; ++i) A[i] = 1LL * A[i] * BR[i] % MOD;
+    dit_intt(A, L);
+    return Poly(A.begin() + (m - 1), A.begin() + (m - 1 + n));
+}
+```
+
+::: {.callout-note}
+### Algorithm Contract: Transposed Polynomial Multiplication (`mulT`)
+
+- **Input & Exact Index Boundaries**:
+  - Covector array $C[0 \dots n+m-2]$ of length $n + m - 1$ (any entries beyond $n + m - 2$ are truncated; if $|C| < n + m - 1$, missing entries are treated as $0$).
+  - Fixed polynomial array $B[0 \dots m-1]$ of length $m \ge 1$, and target output length $n \ge 1$.
+- **Preconditions**:
+  - The modulus $p$ is an NTT-friendly prime with $2^K \mid (p - 1)$ where $L = 2^{\lceil \log_2(n+m-1) \rceil} \le 2^K$.
+- **Postconditions (Output)**:
+  - Returns array $R[0 \dots n-1]$ of length $n$ where $R[i] = \sum_{j=0}^{m-1} B[j] \cdot C[i + j] \bmod p$ for $0 \le i < n$.
+- **Time & Space Complexity**:
+  - **Time**: $O((n + m) \log(n + m))$ field operations using a single cyclic NTT of length $L < 2(n + m - 1)$ with zero bit-reversal permutations.
+  - **Space**: $O(n + m)$ auxiliary workspace of size $L$.
+- **Loop / Algebraic Invariant**:
+  - In the cyclic convolution $P_{\text{cyc}}(x) = C(x) B^R(x) \bmod (x^L - 1)$, every pair $(k, m - 1 - j)$ with $k < n + m - 1$ and $0 \le j < m$ has sum $k + m - 1 - j \le n + 2m - 3 < L + (m - 1)$. Hence no term with total degree $\ge L$ ever wraps into indices $[m - 1, n + m - 2]$, ensuring $P_{\text{cyc}}[m - 1 + i] = \sum_{j=0}^{m-1} B[j]\,C[i+j]$ for all $0 \le i < n$.
+:::
+
+---
+
+## §20.3 Division-Free Multipoint Evaluation (`eval`) & Fast Lagrange Interpolation (`interp`) in $O(N \log^2 N)$
+
+### The Diagnostic Signal & Reverse-Engineering Scratchpad
+
+- **The Diagnostic Signal**: You have a polynomial $F(x) = \sum_{j=0}^{n-1} f_j x^j$ of degree $< n$ and an arbitrary set of $m$ points $x_0, x_1, \dots, x_{m-1} \in K$ (which do *not* form a geometric progression, ruling out NTT or CZT), and you need all point values $F(x_0), \dots, F(x_{m-1})$—or conversely, you are given the point values $y_0, \dots, y_{n-1}$ at distinct points $x_0, \dots, x_{n-1}$ and need the unique degree-$< n$ interpolating polynomial $F(x)$.
+- **The Reverse-Engineering Scratchpad**:
+  1. Instead of attacking $\mathbf{y} = V \mathbf{f}$ directly via Euclidean polynomial remainders $F(x) \bmod (x - x_i)$, look at the transposed problem $\mathbf{z} = V^\top \mathbf{w}$:
+     $$
+     Z(x) = \sum_{j=0}^{n-1} z_j x^j = \sum_{i=0}^{m-1} \frac{w_i}{1 - x_i x} \bmod x^n.
+     $$
+  2. Build a binary subproduct tree over the leaves $i \in \{0, \dots, m-1\}$ where leaf $i$ stores the reversed linear factor $Q_{\text{leaf}(i)}(x) = 1 - x_i x$, and each internal node $u$ stores
+     $$
+     Q_u(x) = Q_{\text{left}(u)}(x) \cdot Q_{\text{right}(u)}(x) = \prod_{i \in u} (1 - x_i x).
+     $$
+     Notice that $\deg Q_u = |u|$ and $[x^0] Q_u(x) = 1$, so $Q_u(x)$ is always invertible as a formal power series over *any* commutative ring $K$!
+  3. Over the subproduct tree, merging rational functions from leaves to the root obeys
+     $$
+     \frac{A_u(x)}{Q_u(x)} = \frac{A_{\text{left}}(x)}{Q_{\text{left}}(x)} + \frac{A_{\text{right}}(x)}{Q_{\text{right}}(x)} = \frac{A_{\text{left}}(x)\, Q_{\text{right}}(x) + A_{\text{right}}(x)\, Q_{\text{left}}(x)}{Q_{\text{left}}(x)\, Q_{\text{right}}(x)},
+     $$
+     where at each leaf $i$, $A_{\text{leaf}(i)}(x) = w_i$ (a constant of length $1$), and at every node $u$, $\deg A_u < |u|$.
+  4. At the root of the tree, we obtain $A_{\text{root}}(x)$ of degree $< m$ and recover $Z(x)$ by a **single formal power series multiplication** with the precomputed inverse $Q_{\text{root}}(x)^{-1} \bmod x^n$:
+     $$
+     Z(x) = A_{\text{root}}(x) \cdot Q_{\text{root}}(x)^{-1} \bmod x^n.
+     $$
+  5. Now apply **Tellegen's Transposition Principle** to reverse Steps 3 and 4 from the root down to the leaves!
+
+---
+
+### Step-by-Step Derivation of the Transposed Multipoint Evaluation Tree
+
+Let us write out the exact linear gates of the primal algorithm ($V^\top \mathbf{w}$) and transpose each one to obtain the division-free multipoint evaluation algorithm ($V \mathbf{f}$). Without loss of generality, pad $\max(n, m)$ so we evaluate $F(x)$ of length $n$ at $m$ points (or pad $n = m$).
+
+1. **Primal Root Gate (Final Multiplication by $Q_{\text{root}}^{-1} \bmod x^n$)**:
+   - In the primal circuit, $A_{\text{root}}$ (length $m$) is multiplied by $H(x) := Q_{\text{root}}(x)^{-1} \bmod x^n$ (length $n$) and truncated to length $n$:
+     $$
+     Z[j] = \sum_{k=0}^{m-1} A_{\text{root}}[k] \cdot H[j - k] \quad (0 \le j < n).
+     $$
+   - To express this root gate and every internal tree step uniformly in terms of `mulT` and the reciprocal subproduct polynomials $Q_u(x) = \prod_{i \in u}(1 - x_i x)$, let us establish the exact coefficient identity satisfied by the dual polynomial at every node $u$:
+     In the primal circuit, each node $u$ computes
+     $$
+     A_u(x) = \mathcal{M}_{Q_{\text{right}(u)}}\big(A_{\text{left}(u)}(x)\big) + \mathcal{M}_{Q_{\text{left}(u)}}\big(A_{\text{right}(u)}(x)\big),
+     $$
+     where $\deg A_{\text{left}} < |u_L|$, $\deg Q_{\text{right}} = |u_R|$ (length $|u_R| + 1$), so the product $A_{\text{left}} \cdot Q_{\text{right}}$ has degree $< |u_L| + |u_R| = |u|$ (length $|u|$).
+   - What is the transpose of the addition + two multiplications at node $u$?
+     In the primal circuit, two products are **added** together to form $A_u$ of length $|u|$. By Tellegen's Principle:
+     - The primal **addition** $A_u = P_1 + P_2$ transposes into a **fan-out** of the dual covector $\hat{A}_u$ (of length $|u|$) to both children!
+     - The primal **multiplication** $\mathcal{M}_{Q_{\text{right}}}\big(A_{\text{left}}\big)$ (which maps a vector of length $|u_L|$ to a vector of length $|u_L| + |u_R| = |u|$ using $Q_{\text{right}}$ of length $|u_R| + 1$) transposes into the **middle product**:
+       $$
+       \hat{A}_{\text{left}(u)} = \operatorname{mulT}\!\big(\hat{A}_u,\; Q_{\text{right}(u)},\; |u_L|\big),
+       $$
+       and symmetrically for the right child:
+       $$
+       \hat{A}_{\text{right}(u)} = \operatorname{mulT}\!\big(\hat{A}_u,\; Q_{\text{left}(u)},\; |u_R|\big).
+       $$
+     Check the lengths in $\operatorname{mulT}\big(\hat{A}_u, Q_{\text{right}(u)}, |u_L|\big)$:
+     - Output length is $n_{\text{out}} = |u_L|$.
+     - Filter $Q_{\text{right}(u)}$ has length $m_{\text{filt}} = |u_R| + 1$.
+     - Required input covector length is $n_{\text{out}} + m_{\text{filt}} - 1 = |u_L| + (|u_R| + 1) - 1 = |u_L| + |u_R| = |u|$, which is **precisely the length of $\hat{A}_u$**!
+
+2. **Now check the Root Initialization $\hat{A}_{\text{root}}$**:
+   - In the primal circuit, $Z(x) = A_{\text{root}}(x) \cdot Q_{\text{root}}(x)^{-1} \bmod x^n$.
+   - Let $H(x) = Q_{\text{root}}(x)^{-1} \bmod x^n$ (length $n$). For any $0 \le k < m$, a unit impulse $A_{\text{root}}(x) = x^k$ produces $Z(x) = x^k H(x) \bmod x^n$, so running the primal root gate on $A_{\text{root}}$ gives inner product
+     $$
+     \langle \mathbf{f}, Z \rangle = \sum_{j=0}^{n-1} f_j [x^j]\big(A_{\text{root}}(x) H(x)\big) = \sum_{k=0}^{m-1} A_{\text{root}}[k] \left(\sum_{j=k}^{n-1} f_j H[j - k]\right).
+     $$
+   - Look at the inner sum for $\hat{A}_{\text{root}}[k]$ ($0 \le k < m$):
+     $$
+     \hat{A}_{\text{root}}[k] = \sum_{j=0}^{n-1-k} H[j] \cdot f_{k + j} = \operatorname{mulT}(F, H, m)[k].
+     $$
+   Look how clean and uniform this is: if we pad $F$ with zeros to length $n + m - 1$ (since $f_j = 0$ for $j \ge n$), then for every $0 \le k < m$,
+   $$
+   \hat{A}_{\text{root}}[k] = \sum_{j=0}^{n-1} H[j] \cdot F[k + j] = \operatorname{mulT}\!\big(F,\; Q_{\text{root}}^{-1} \bmod x^n,\; m\big)[k].
+   $$
+
+```{mermaid}
+flowchart TD
+  subgraph BottomUp ["Phase 1: Bottom-Up Subproduct Tree"]
+    direction BT
+    L0["Leaf 0: 1 - x_0 x"] & L1["Leaf 1: 1 - x_1 x"] --> N01["Q_01 = Q_0 * Q_1"]
+    L2["Leaf 2: 1 - x_2 x"] & L3["Leaf 3: 1 - x_3 x"] --> N23["Q_23 = Q_2 * Q_3"]
+    N01 & N23 --> RootQ["Root: Q_root = Q_01 * Q_23"]
+  end
+  subgraph TopDown ["Phase 2: Top-Down Transposed Evaluation"]
+    direction TB
+    RootA["Root: A_hat = mulT(F, Q_root^-1, m)"] -->|"mulT(A_hat, Q_23, 2)"| A01["A_hat_01 (len 2)"]
+    RootA -->|"mulT(A_hat, Q_01, 2)"| A23["A_hat_23 (len 2)"]
+    A01 -->|"mulT with Q_1, Q_0"| Y01["Leaves 0, 1: F(x_0), F(x_1)"]
+    A23 -->|"mulT with Q_3, Q_2"| Y23["Leaves 2, 3: F(x_2), F(x_3)"]
+  end
+```
+
+---
+
+### Concrete Hand-Checkable Trace of Transposed `eval` ($n = 3, m = 2$)
+
+Let us evaluate $F(x) = 3 + 4x + 2x^2$ ($F = [3, 4, 2]$, $n = 3$) at the two points $x_0 = 2, x_1 = 5$ ($m = 2$).
+First check the target values directly:
+- $F(2) = 3 + 4(2) + 2(4) = 19$.
+- $F(5) = 3 + 4(5) + 2(25) = 73$.
+
+Now run the 3-step Transposed Multipoint Evaluation algorithm:
+
+1. **Bottom-Up Subproduct Tree**:
+   - Leaf $0$: $Q_0(x) = 1 - 2x$ ($Q_0 = [1, -2]$).
+   - Leaf $1$: $Q_1(x) = 1 - 5x$ ($Q_1 = [1, -5]$).
+   - Root: $Q_{\text{root}}(x) = Q_0(x) Q_1(x) = (1 - 2x)(1 - 5x) = 1 - 7x + 10x^2$.
+2. **Root Initialization (`inv` + `mulT`)**:
+   - Invert $Q_{\text{root}}(x)$ modulo $x^n = x^3$:
+     $$
+     H(x) = (1 - 7x + 10x^2)^{-1} \bmod x^3 = 1 + 7x + 39x^2 \quad (H = [1, 7, 39]).
+     $$
+   - Compute $\hat{A}_{\text{root}} = \operatorname{mulT}(F, H, m = 2)$ where $F = [3, 4, 2, 0]$ (padded to length $n + m - 1 = 4$):
+     - $\hat{A}_{\text{root}}[0] = H[0]F[0] + H[1]F[1] + H[2]F[2] = 1(3) + 7(4) + 39(2) = 3 + 28 + 78 = 109$.
+     - $\hat{A}_{\text{root}}[1] = H[0]F[1] + H[1]F[2] + H[2]F[3] = 1(4) + 7(2) + 39(0) = 18$.
+     So $\hat{A}_{\text{root}} = [109, 18]$ (length $2$).
+3. **Top-Down `mulT` Push to Leaves**:
+   - Left child (Leaf $0$, output length $1$, multiplied by right sibling $Q_1 = [1, -5]$ of length $2$):
+     $$
+     \hat{A}_0[0] = \operatorname{mulT}(\hat{A}_{\text{root}}, Q_1, 1)[0] = Q_1[0]\,\hat{A}_{\text{root}}[0] + Q_1[1]\,\hat{A}_{\text{root}}[1] = 1(109) + (-5)(18) = 19 = F(2).
+     $$
+   - Right child (Leaf $1$, output length $1$, multiplied by left sibling $Q_0 = [1, -2]$ of length $2$):
+     $$
+     \hat{A}_1[0] = \operatorname{mulT}(\hat{A}_{\text{root}}, Q_0, 1)[0] = Q_0[0]\,\hat{A}_{\text{root}}[0] + Q_0[1]\,\hat{A}_{\text{root}}[1] = 1(109) + (-2)(18) = 73 = F(5).
+     $$
+Both point values $F(2) = 19$ and $F(5) = 73$ are recovered in exact arithmetic!
+
+```cpp
+// Top-down phase of transposed multipoint evaluation (after Q[u] tree is built)
+void eval_down(int u, int l, int r, const Poly& A_hat, Poly& Y) {
+    if (l == r) { Y[l] = A_hat[0]; return; }
+    int mid = (l + r) >> 1;
+    eval_down(u << 1, l, mid, mulT(A_hat, Q[u << 1 | 1], mid - l + 1), Y);
+    eval_down(u << 1 | 1, mid + 1, r, mulT(A_hat, Q[u << 1], r - mid), Y);
+}
+```
+
+::: {.callout-note}
+### Algorithm Contract: Division-Free Multipoint Evaluation (`eval`)
+
+- **Input & Exact Index Boundaries**:
+  - Polynomial coefficient array $F[0 \dots n-1]$ of length $n \ge 1$ ($\deg F < n$).
+  - Evaluation points array $X[0 \dots m-1]$ of length $m \ge 1$.
+- **Preconditions**:
+  - Working over an NTT-friendly prime field $\mathbb{F}_p$. The points $X[0 \dots m-1]$ do **not** need to be distinct for `eval`.
+- **Postconditions (Output)**:
+  - Returns array $Y[0 \dots m-1]$ where $Y[i] = F(X[i]) \bmod p$ for $0 \le i < m$.
+- **Time & Space Complexity**:
+  - **Time**: $O(m \log^2 m + n \log n)$ field operations, consisting of one bottom-up subproduct tree build in $\frac{1}{2}\mathcal{M}(m)\log_2 m$, one root series inversion of length $n$ in $1.5\,\mathcal{M}(n)$, one root `mulT` of size $(n, m)$, and one top-down `mulT` tree walk in $\mathcal{M}(m)\log_2 m$ (zero polynomial divisions).
+  - **Space**: $O(m \log m + n)$ to store the subproduct tree polynomials $Q_u(x) = \prod_{i \in u}(1 - x_i x)$.
+- **Loop / Algebraic Invariant**:
+  - At every node $u$ covering interval $[l, r]$ of size $s = r - l + 1$, the covector $\hat{A}_u$ has exact length $s$ and satisfies $\hat{A}_u[k] = [x^k]\big(F(x) \cdot Q_u(x)^{-1} \bmod x^n\big)$ in the dual bilinear pairing, which at leaf $l = r = i$ reduces to $\hat{A}_{\text{leaf}(i)}[0] = \sum_{j=0}^{n-1} f_j x_i^j = F(x_i)$.
+:::
+
+---
+
+### Fast Lagrange Interpolation (`interp`) via L'Hôpital's Rule & the Subproduct Tree
+
+Now suppose we are given $n$ **distinct** evaluation points $x_0, x_1, \dots, x_{n-1} \in \mathbb{F}_p$ and target values $y_0, y_1, \dots, y_{n-1} \in \mathbb{F}_p$, and we wish to reconstruct the unique polynomial $F(x)$ of degree $< n$ such that $F(x_i) = y_i$ for all $0 \le i < n$.
+
+Write the **Lagrange Interpolation Formula**:
+$$
+F(x) = \sum_{i=0}^{n-1} y_i \prod_{j \ne i} \frac{x - x_j}{x_i - x_j}.
+$$
+
+How do we compute all $n$ denominators $v_i := \prod_{j \ne i} (x_i - x_j)$ simultaneously in $O(n \log^2 n)$, and then sum the $n$ terms in $O(n \log^2 n)$?
+
+1. **Step 1 (Barycentric Weights via Formal Derivative $M'(x_i)$)**:
+   Define the monic master subproduct polynomial
+   $$
+   M(x) = \prod_{j=0}^{n-1} (x - x_j) = x^n Q_{\text{root}}(1/x),
+   $$
+   which is simply the coefficient reversal of $Q_{\text{root}}(x) = \prod_{j=0}^{n-1}(1 - x_j x)$ from our subproduct tree!
+   Differentiate $M(x)$ using the product rule:
+   $$
+   M'(x) = \sum_{k=0}^{n-1} \prod_{j \ne k} (x - x_j).
+   $$
+   When we evaluate $M'(x)$ at $x = x_i$, every summand with $k \ne i$ contains the factor $(x_i - x_i) = 0$ and vanishes, leaving only the $k = i$ term:
+   $$
+   M'(x_i) = \prod_{j \ne i} (x_i - x_j) = v_i.
+   $$
+   Therefore, we can compute all $n$ denominators $v_0, \dots, v_{n-1}$ by taking the formal derivative $M'(x)$ (in $O(n)$ time) and calling our division-free **Multipoint Evaluation (`eval`)** of $M'(x)$ at $x_0, \dots, x_{n-1}$!
+2. **Step 2 (Bottom-Up Linear Combination over the Subproduct Tree)**:
+   Let $c_i = y_i / v_i = y_i / M'(x_i) \bmod p$. Then
+   $$
+   F(x) = \sum_{i=0}^{n-1} c_i \prod_{j \ne i} (x - x_j) = M(x) \sum_{i=0}^{n-1} \frac{c_i}{x - x_i}.
+   $$
+   Using the monic subproduct tree polynomials $M_u(x) = \prod_{j \in u} (x - x_j) = x^{|u|} Q_u(1/x)$, we combine numerators bottom-up from the leaves $N_{\text{leaf}(i)}(x) = c_i$ via
+   $$
+   N_u(x) = N_{\text{left}(u)}(x) \cdot M_{\text{right}(u)}(x) + N_{\text{right}(u)}(x) \cdot M_{\text{left}(u)}(x),
+   $$
+   so that at the root of the tree, $N_{\text{root}}(x) = F(x)$ directly!
+
+::: {.callout-note}
+### Algorithm Contract: Fast Lagrange Interpolation (`interp`)
+
+- **Input & Exact Index Boundaries**:
+  - Distinct evaluation points $X[0 \dots n-1]$ and target values $Y[0 \dots n-1]$ of length $n \ge 1$.
+- **Preconditions**:
+  - $X[i] \not\equiv X[j] \pmod p$ for all $0 \le i < j < n$ (so that $M'(X[i]) \not\equiv 0 \pmod p$).
+- **Postconditions (Output)**:
+  - Returns the unique polynomial $F[0 \dots n-1]$ of degree $< n$ satisfying $F(X[i]) \equiv Y[i] \pmod p$ for all $0 \le i < n$.
+- **Time & Space Complexity**:
+  - **Time**: $O(n \log^2 n)$ field operations (one subproduct tree build, one `eval` call on $M'(x)$ of degree $n-1$, one batch modular inversion of $M'(X[i])$, and one bottom-up tree combination).
+  - **Space**: $O(n \log n)$ field elements.
+- **Loop / Algebraic Invariant**:
+  - At every subproduct tree node $u$, $N_u(x) = \sum_{i \in u} c_i \prod_{j \in u \setminus \{i\}} (x - x_j)$ has degree $< |u|$ and satisfies $N_u(x_i) = c_i \prod_{j \in u \setminus \{i\}}(x_i - x_j)$ for all $i \in u$.
+:::
+
+---
+
+## §20.4 Transposed Chirp Z-Transform ($\text{czt}^\top$), Shift of Sampling Points (`连续点值平移`) & $O(\sqrt{P}\log P)$ Factorial
+
+### Part A: Transposed Chirp Z-Transform ($\text{czt}^\top$)
+
+::: {.callout-tip}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: Transposed Chirp Z-Transform ($\operatorname{czt}^\top$)
+
+- **The Diagnostic Signal**: You need the first $n$ coefficients of a weighted sum of geometric partial fractions $\sum_{i=0}^{m-1} \frac{w_i}{1 - a c^i x} \bmod x^n$, or equivalently $z_j = \sum_{i=0}^{m-1} w_i (a c^i)^j$ for $0 \le j < n$.
+- **The Reverse-Engineering Scratchpad**:
+  1. Notice that $z_j = \sum_{i=0}^{m-1} w_i (a c^i)^j$ is the exact matrix transpose of evaluating a degree-$<n$ polynomial at the geometric progression $x_i = a c^i$ ($0 \le i < m$).
+  2. Apply Bluestein's identity $ij = \binom{i+j}{2} - \binom{i}{2} - \binom{j}{2}$ to rewrite $c^{ij} = c^{-\binom{j}{2}} c^{-\binom{i}{2}} c^{\binom{i+j}{2}}$, turning the sum over $i$ into a single middle product $\operatorname{mulT}(C, B, n)$ where $B[i] = w_i c^{-\binom{i}{2}}$ and $C[k] = c^{\binom{k}{2}}$.
+:::
+
+In [Chapter 7 (§7.3)](ch07-roots-of-unity-cyclotomic-czt.qmd), we used the **Chirp Z-Transform (`czt`)** to evaluate a polynomial $F(x) = \sum_{j=0}^{n-1} f_j x^j$ at $m$ geometric points $x_i = a \cdot c^i$ ($0 \le i < m$):
+$$
+y_i = \sum_{j=0}^{n-1} f_j (a c^i)^j = \sum_{j=0}^{n-1} (a^j f_j) c^{ij} \quad (0 \le i < m).
+$$
+By Tellegen's Principle, what is the transposed operator $\text{czt}^\top$? Given weights $w_0, w_1, \dots, w_{m-1} \in K$, $\text{czt}^\top$ computes the first $n$ coefficients of the weighted geometric partial-fraction sum $\sum_{i=0}^{m-1} \frac{w_i}{1 - a c^i x} \bmod x^n$:
+$$
+z_j = \sum_{i=0}^{m-1} w_i (a c^i)^j = a^j \sum_{i=0}^{m-1} w_i c^{ij} \quad (0 \le j < n).
+$$
+
+Substitute Bluestein's identity $ij = \binom{i+j}{2} - \binom{i}{2} - \binom{j}{2}$ directly into $z_j$:
+$$
+z_j = a^j c^{-\binom{j}{2}} \sum_{i=0}^{m-1} \Big(w_i c^{-\binom{i}{2}}\Big) \cdot c^{\binom{i+j}{2}} \quad (0 \le j < n).
+$$
+Look at the inner sum over $i \in [0, m-1]$: if we define the filter vector $B[i] = w_i c^{-\binom{i}{2}}$ ($0 \le i < m$) and the chirp sequence $C[k] = c^{\binom{k}{2}}$ ($0 \le k < n + m - 1$), then the sum $\sum_{i=0}^{m-1} B[i] \cdot C[j + i]$ is a **single middle product** $\operatorname{mulT}(C, B, n)[j]$!
+
+Thus $\text{czt}^\top$ runs in $O((n + m) \log(n + m))$ time using **one single `mulT` call**:
+$$
+z_j = a^j c^{-\binom{j}{2}} \cdot \operatorname{mulT}(C, B, n)[j] \quad (0 \le j < n).
+$$
+
+::: {.callout-note}
+### Algorithm Contract: Transposed Chirp Z-Transform ($\operatorname{czt}^\top$)
+
+- **Input & Exact Index Boundaries**: Weight vector $w[0 \dots m-1] \in \mathbb{F}_p^m$, starting point $a \in \mathbb{F}_p$, geometric ratio $c \in \mathbb{F}_p^\times$, and target output length $n \ge 1$.
+- **Preconditions**: $c \not\equiv 0 \pmod p$ (so $c^{-1} \bmod p$ exists) and prime modulus $p$ supports NTT of length $L = 2^{\lceil \log_2(n+m-1) \rceil}$.
+- **Postconditions (Output)**: Vector $z[0 \dots n-1] \in \mathbb{F}_p^n$ where $z_j = \sum_{i=0}^{m-1} w_i (a c^i)^j \bmod p$ for $0 \le j < n$.
+- **Time & Space Complexity**: $O((n + m) \log(n + m))$ time (one `mulT` call of length $L < 2(n + m - 1)$) and $O(n + m)$ space.
+- **Loop / Algebraic Invariant**: After diagonal scaling $B[i] = w_i c^{-\binom{i}{2}}$ and transposed convolution $\operatorname{mulT}(C, B, n)$ against $C[k] = c^{\binom{k}{2}}$ ($0 \le k < n + m - 1$), entry $j$ equals $c^{\binom{j}{2}} \sum_{i=0}^{m-1} w_i c^{ij} \bmod p$.
+:::
+
+---
+
+### Part B: Shift of Sampling Points (`连续点值平移`) in One Single NTT
+
+#### The Diagnostic Signal & Reverse-Engineering Scratchpad
+
+- **The Diagnostic Signal**: A polynomial $F(x)$ of degree $\le d$ is given **not** by its coefficients $f_0, \dots, f_d$, but by its **point values on a consecutive integer grid** $F(0), F(1), \dots, F(d)$, and you need to evaluate $F$ on a **shifted consecutive grid** $F(c), F(c+1), \dots, F(c+m-1)$ for an arbitrary offset $c \in \mathbb{F}_p$.
+- **Why Not Interpolate to Coefficients First?**: Converting $F(0 \dots d) \to$ coefficients $f_0 \dots f_d$ via general `interp` or Stirling numbers and back via `eval` costs $O(d \log^2 d)$. Can we jump directly from $F(0 \dots d)$ to $F(c \dots c+m-1)$ in $O((d + m) \log(d + m))$ using **one single NTT**?
+- **The Reverse-Engineering Scratchpad**:
+  Write the Lagrange interpolation formula specifically for the sample points $x_i = i$ ($i = 0, 1, \dots, d$). At $x = c + k$ ($0 \le k < m$):
+  $$
+  F(c + k) = \sum_{i=0}^d F(i) \prod_{\substack{0 \le j \le d \\ j \ne i}} \frac{c + k - j}{i - j}.
+  $$
+  Let us factor the denominator and numerator separately:
+  1. **Denominator**: For a fixed $i \in \{0, \dots, d\}$, the product $\prod_{j \ne i} (i - j)$ splits into $j < i$ (which gives $i(i-1)\cdots 1 = i!$) and $j > i$ (which gives $(-1)^{d-i} (d - i)!$):
+     $$
+     \prod_{\substack{0 \le j \le d \\ j \ne i}} (i - j) = (-1)^{d - i}\, i!\, (d - i)!.
+     $$
+  2. **Numerator**: Provided $c + k \notin \{0, 1, \dots, d\}$, we can pull out the full falling factorial
+     $$
+     (c + k)^{\underline{d+1}} := \prod_{j=0}^d (c + k - j)
+     $$
+     from the sum and divide by the missing factor $(c + k - i)$:
+     $$
+     \prod_{\substack{0 \le j \le d \\ j \ne i}} (c + k - j) = \frac{(c + k)^{\underline{d+1}}}{c + k - i}.
+     $$
+  3. **Convolution Factorization**: Substituting both back into $F(c + k)$ decouples the index $i$ and the index $k - i$:
+     $$
+     F(c + k) = (c + k)^{\underline{d+1}} \sum_{i=0}^d \underbrace{\left( \frac{(-1)^{d - i} F(i)}{i!\, (d - i)!} \right)}_{A[i]} \cdot \underbrace{\left( \frac{1}{c + k - i} \right)}_{B[k - i + d]}.
+     $$
+     The sum over $i \in [0, d]$ is a **single standard polynomial convolution** (or `mulT`) of $A[0 \dots d]$ (length $d + 1$) and $B[0 \dots d + m - 1]$ (length $d + m$, where $B[t] = \frac{1}{c - d + t}$ for $0 \le t < d + m$), read at index $d + k$!
+
+---
+
+#### Linear-Time $O(d + m)$ Precomputation via Sliding Window & Montgomery Batch Inversion
+
+To keep the total runtime strictly $O((d + m) \log(d + m))$ (avoiding an extra $O(m \log p)$ factor from individual modular inversions or naive falling-factorial evaluations), we compute both prefactors in $O(d + m + \log p)$ time:
+
+1. **Montgomery Prefix-Product Batch Inversion for $B[t] = (c - d + t)^{-1}$**:
+   Given nonzero elements $u_0, u_1, \dots, u_{L-1} \in \mathbb{F}_p^\times$ ($L = d + m$, $u_t = c - d + t$), compute prefix products $\text{pref}_t = \prod_{r=0}^t u_r$, invert the single total product $\text{inv\_all} = (\text{pref}_{L-1})^{p-2} \bmod p$ using **one single modular exponentiation**, and sweep backward from $t = L - 1$ down to $0$:
+   $$
+   u_t^{-1} = \text{inv\_all} \cdot \text{pref}_{t-1}, \qquad \text{inv\_all} \gets \text{inv\_all} \cdot u_t.
+   $$
+2. **Sliding-Window Falling Factorials $(c + k)^{\underline{d+1}}$**:
+   Once all inverses $(c + k - d - 1)^{-1}$ are available from the batch inversion, compute the initial falling factorial for $k = 0$,
+   $$
+   W_0 = c^{\underline{d+1}} = \prod_{j=0}^d (c - j),
+   $$
+   in $O(d)$ multiplications, and update $W_k = (c + k)^{\underline{d+1}}$ from $W_{k-1}$ in $O(1)$ per step:
+   $$
+   W_k = W_{k-1} \cdot (c + k) \cdot (c + k - d - 1)^{-1}.
+   $$
+
+::: {.callout-warning}
+### Failure Mode & Remedy: The Overlap Singularity Trap ($c + k \in [0, d]$)
+**What Goes Wrong**: If the target query interval $[c, c + m - 1]$ (reduced modulo $p$) overlaps the known input grid $[0, d]$, then for some $0 \le k < m$ and $0 \le i \le d$ we have $c + k - i \equiv 0 \pmod p$. At that index:
+
+1. The convolution kernel entry $B[k - i + d] = \frac{1}{c + k - i}$ attempts to **divide by zero modulo $p$**.
+2. Simultaneously, the outer prefactor $(c + k)^{\underline{d+1}} = \prod_{j=0}^d (c + k - j)$ evaluates to **$0 \pmod p$**, turning the true value $F(i)$ into the indeterminate form $0 \cdot \infty$!
+
+**The Clean Remedy**: Before building $B[t]$ or running the sliding window, intersect the query range $[c, c + m - 1]$ with $[0, d]$:
+- For every query point $c + k \in [0, d]$, **copy the known input value $F(c + k)$ directly** in $O(1)$ time!
+- Any remaining query points outside $[0, d]$ form at most **two contiguous disjoint sub-intervals** (one strictly to the left of $0$, and/or one strictly to the right of $d$). Run the convolution formula independently on each non-overlapping sub-interval, where $c + k - i \not\equiv 0 \pmod p$ is guaranteed for all $k, i$.
+
+**Characteristic Limit**: In addition, the denominator $(-1)^{d-i} i! (d-i)!$ requires $d! \not\equiv 0 \pmod p$, so we must have **$p > d$**. Also, if $d + m > p$, the shifted interval wraps around modulo $p$ and hits $[0, d]$ again; always reduce $c \bmod p$ and split out any index $k$ where $(c + k) \bmod p \in [0, d]$.
+:::
+
+---
+
+#### Concrete Hand-Checkable Trace of `shift_of_sampling_points` ($d = 2, c = 3, m = 2$)
+
+Let $F(x) = 1 + x + x^2$ ($d = 2$). Suppose we are given only its values on $[0, 2]$:
+$$
+F(0) = 1, \quad F(1) = 3, \quad F(2) = 7,
+$$
+and we want to compute $F(3)$ and $F(4)$ ($c = 3, m = 2$). (Target check: $F(3) = 1 + 3 + 9 = 13$ and $F(4) = 1 + 4 + 16 = 21$.)
+
+1. **Build $A[0 \dots 2]$**: $A[i] = \frac{(-1)^{2-i} F(i)}{i!\,(2-i)!}$:
+   - $A[0] = \frac{(-1)^2 (1)}{0!\, 2!} = \frac{1}{2}$.
+   - $A[1] = \frac{(-1)^1 (3)}{1!\, 1!} = -3$.
+   - $A[2] = \frac{(-1)^0 (7)}{2!\, 0!} = \frac{7}{2}$.
+2. **Build $B[0 \dots 3]$**: For $t = 0, 1, 2, 3$, $B[t] = \frac{1}{c - d + t} = \frac{1}{1 + t}$:
+   $$
+   B = \left[1,\; \frac{1}{2},\; \frac{1}{3},\; \frac{1}{4}\right].
+   $$
+3. **Convolve $C = A * B$ at indices $d + k = 2 + k$ ($k = 0, 1$)**:
+   - For $k = 0$ (index $d + 0 = 2$):
+     $$
+     C[2] = A[0]B[2] + A[1]B[1] + A[2]B[0] = \frac{1}{2}\cdot\frac{1}{3} + (-3)\cdot\frac{1}{2} + \frac{7}{2}\cdot 1 = \frac{1 - 9 + 21}{6} = \frac{13}{6}.
+     $$
+   - For $k = 1$ (index $d + 1 = 3$):
+     $$
+     C[3] = A[0]B[3] + A[1]B[2] + A[2]B[1] = \frac{1}{2}\cdot\frac{1}{4} + (-3)\cdot\frac{1}{3} + \frac{7}{2}\cdot\frac{1}{2} = \frac{1 - 8 + 14}{8} = \frac{7}{8}.
+     $$
+4. **Multiply by $(c + k)^{\underline{3}} = (3 + k)(2 + k)(1 + k)$**:
+   - $k = 0$: $3^{\underline{3}} \cdot C[2] = (3 \cdot 2 \cdot 1) \cdot \frac{13}{6} = 6 \cdot \frac{13}{6} = 13 = F(3)$.
+   - $k = 1$: $4^{\underline{3}} \cdot C[3] = (4 \cdot 3 \cdot 2) \cdot \frac{7}{8} = 24 \cdot \frac{7}{8} = 21 = F(4)$.
+
+```cpp
+Poly shift_non_overlapping(const Poly& F, long long c, int m) { // [c, c+m-1] cap [0, d] == empty
+    int d = (int)F.size() - 1; Poly A(d + 1), B = batch_invert_range(c - d, d + m);
+    for (int i = 0; i <= d; ++i) {
+        long long coef = 1LL * F[i] * inv_fact[i] % MOD * inv_fact[d - i] % MOD;
+        A[i] = ((d - i) & 1) ? (MOD - coef) % MOD : coef;
+    }
+    Poly C = multiply(A, B), res(m); long long pref = 1;
+    for (int j = 0; j <= d; ++j) pref = pref * ((c - j) % MOD + MOD) % MOD;
+    for (int k = 0; k < m; ++k) {
+        res[k] = pref * C[d + k] % MOD;
+        if (k + 1 < m) pref = pref * ((c + k + 1) % MOD) % MOD * B[k] % MOD;
+    }
+    return res;
+}
+```
+
+::: {.callout-note}
+### Algorithm Contract: Shift of Sampling Points (`shift_of_sampling_points`)
+
+- **Input & Exact Index Boundaries**:
+  - Array $F[0 \dots d]$ of length $d + 1$ containing point values $F(0), F(1), \dots, F(d)$ of a polynomial of degree $\le d$.
+  - Shift offset $c \in \mathbb{F}_p$ ($0 \le c < p$) and output count $m \ge 1$.
+- **Preconditions**:
+  - Prime modulus $p > d$ with NTT support for length $\ge 2d + m$.
+- **Postconditions (Output)**:
+  - Returns array $R[0 \dots m-1]$ where $R[k] = F(c + k) \bmod p$ for $0 \le k < m$.
+- **Time & Space Complexity**:
+  - **Time**: $O((d + m) \log(d + m))$ field operations using **at most two** NTT convolutions (one if $[c, c+m-1] \cap [0, d] = \emptyset$) and $O(d + m + \log p)$ linear-time batch inversion.
+  - **Space**: $O(d + m)$ field elements.
+- **Loop / Algebraic Invariant**:
+  - For every non-overlapping sub-interval $[c', c' + m' - 1]$ disjoint from $[0, d]$, $c' + k - i \not\equiv 0 \pmod p$ holds for all $0 \le k < m'$ and $0 \le i \le d$, so $(c' + k)^{\underline{d+1}} \cdot [x^{d+k}](A(x) B(x))$ equals the exact Lagrange sum $\sum_{i=0}^d F(i) \prod_{j \ne i} \frac{c'+k-j}{i-j} = F(c'+k)$.
+:::
+
+---
+
+### Part C: $O(\sqrt{P}\log P)$ Block Factorial $N! \bmod P$ & P-Recursive Baby-Step Giant-Step
+
+How can we compute $N! \bmod P$ when $N$ and $P$ are around $10^9$ (or $P = 998244353$ with $N$ up to $p - 1$), far too large for an $O(N)$ loop?
+
+1. **Baby-Step Giant-Step Decomposition**:
+   Choose block size $v = \lfloor \sqrt{N} \rfloor$. Define the degree-$d$ **rising-factorial block polynomial**
+   $$
+   G_d(x) = \prod_{j=1}^d (x + j).
+   $$
+   If we can evaluate the degree-$v$ polynomial $G_v(x)$ at the $v$ giant-step multiples $x = 0, v, 2v, \dots, (v-1)v$, then their product covers the first $v^2$ integers:
+   $$
+   \prod_{k=0}^{v-1} G_v(k v) = \prod_{k=0}^{v-1} \prod_{j=1}^v (kv + j) = (v^2)!,
+   $$
+   and the remaining tail from $v^2 + 1$ to $N$ has at most $2v + 1 = O(\sqrt{N})$ integers, which we multiply directly in $O(\sqrt{N})$ time!
+
+2. **Doubling the Block Polynomial on Sampling Points ($d \to 2d$)**:
+   How do we obtain the point values $G_v(0), G_v(v), \dots, G_v(v^2)$ without ever expanding $G_v(x)$ into monomial coefficients or using $O(v \log^2 v)$ multipoint evaluation?
+   Notice that $G_{2d}(x)$ factors into two shifted copies of $G_d$:
+   $$
+   G_{2d}(x) = \prod_{j=1}^{2d} (x + j) = \left(\prod_{j=1}^d (x + j)\right) \left(\prod_{j=1}^d (x + d + j)\right) = G_d(x) \cdot G_d(x + d).
+   $$
+   Change variables to the scaled polynomial $H_d(t) := G_d(v \cdot t)$, which is a polynomial in $t$ of degree $d$. Suppose at step $d$ we maintain the $d + 1$ consecutive integer samples
+   $$
+   H_d(0),\; H_d(1),\; \dots,\; H_d(d) \quad \text{which equal} \quad G_d(0),\; G_d(v),\; \dots,\; G_d(d v).
+   $$
+   To advance from degree $d$ to degree $2d$ (requiring $H_{2d}(0), H_{2d}(1), \dots, H_{2d}(2d)$), we use the identity
+   $$
+   H_{2d}(t) = G_{2d}(v t) = G_d(v t) \cdot G_d(v t + d) = H_d(t) \cdot H_d\!\left(t + d v^{-1}\right),
+   $$
+   which requires only **two calls to `shift_of_sampling_points`** on $H_d(0 \dots d)$:
+   - **Shift 1 (Extend grid from $[0, d]$ to $[d+1, 2d]$)**: Call `shift_of_sampling_points` with offset $c_1 = d + 1$ and length $m_1 = d$ to obtain $H_d(d+1), \dots, H_d(2d)$. Appending these to $H_d(0 \dots d)$ gives $H_d(t)$ for all $0 \le t \le 2d$.
+   - **Shift 2 (Evaluate at fractional shift $t + d v^{-1} \bmod P$)**: Call `shift_of_sampling_points` on $H_d(0 \dots d)$ with offset $c_2 = d \cdot v^{-1} \bmod P$ and length $m_2 = 2d + 1$ to obtain $H_d(t + d v^{-1})$ for all $0 \le t \le 2d$.
+   - **Pointwise Multiply**: Multiply $H_{2d}(t) = H_d(t) \cdot H_d(t + d v^{-1}) \bmod P$ for $0 \le t \le 2d$ in $O(d)$ time!
+   - *(Odd bit $2d \to 2d + 1$)*: If the current binary bit of $v$ is $1$, we advance $d \gets 2d + 1$ by appending one more point $H_{2d}(2d+1)$ (computing Shift 1 with $m_1 = d + 1$ and Shift 2 with $m_2 = 2d + 2$) and multiplying each $H_{2d}(t)$ by the linear factor $(v t + 2d + 1)$ for $0 \le t \le 2d + 1$.
+
+3. **Complexity**: Since $d$ doubles at every step ($1 \to 2 \to 4 \dots \to v$), the NTT sizes form a geometric series:
+   $$
+   \sum_{k=0}^{\lfloor \log_2 v \rfloor} O(2^k \log(2^k)) = O(v \log v) = O(\sqrt{N} \log N)
+   $$
+   with only a single $\log N$ factor!
+
+::: {.callout-tip}
+### Generalization: P-Recursive Sequences & Holonomic Matrix Products
+The exact same doubling trick applies to **any** polynomial recurrence $\mathbf{v}_n = M(n) \mathbf{v}_{n-1}$ where $M(x) \in K[x]^{r \times r}$ is an $r \times r$ matrix of polynomials of degree $\le \delta$:
+$$
+\mathcal{M}_{2d}(x) = M(x + 2d) \cdots M(x + 1) = \mathcal{M}_d(x + d) \cdot \mathcal{M}_d(x).
+$$
+By maintaining point values of each matrix entry on $t = 0, 1, \dots, \delta d$ and shifting by $c_1 = \delta d + 1$ and $c_2 = d v^{-1} \bmod P$, we can compute the $N$-th term of any P-recursive sequence in $O(r^2 \sqrt{\delta N} \log N + r^3 \sqrt{\delta N})$ time.
+:::
+
+::: {.callout-note}
+### Algorithm Contract: BSGS Block Polynomial Doubling ($N! \bmod P$ & P-Recursive Matrices)
+
+- **Input & Exact Index Boundaries**: Target index $N \ge 0$, prime modulus $P > v = \lfloor \sqrt{N} \rfloor$, and $r \times r$ degree-$\delta$ polynomial transition matrix $M(x) \in \mathbb{F}_P[x]^{r \times r}$ (with $r=1, \delta=1, M(x) = [x+1]$ for $N! \bmod P$).
+- **Preconditions**: $v + 1$ consecutive grid points are invertible modulo $P$ so `shift_of_sampling_points` can evaluate shifted block products without overlap singularities.
+- **Postconditions (Output)**: Exact matrix product $\mathcal{M}_N = M(N) M(N-1) \cdots M(1) \bmod P$ (or scalar $N! \bmod P$).
+- **Time & Space Complexity**: $O(r^2 \delta \sqrt{N} \log N + r^3 \delta \sqrt{N})$ time and $O(r^2 \delta \sqrt{N})$ space.
+- **Loop / Algebraic Invariant**: After doubling phase $t$ with block size $d = 2^t$, the array stores the point values of $\mathcal{M}_d(x) = \prod_{j=1}^{d} M(x+j)$ at the $\delta d + 1$ sample points $x \in \{0, v, 2v, \dots, \delta d v\}$.
+:::
+
+---
+
+## §20.5 Complete 8-Problem 4-Tier Practice Ladder
+
+---
+
+### Stepping Stone 1 (`#050`) — Đa Thức / Polynomial (AtCoder ARC 033 D)
+
+- **Source**: [AtCoder Regular Contest 033 D — 多項式 (Polynomial)](https://atcoder.jp/contests/arc033/tasks/arc033_4)
+- **Canonical ID**: `#050` (`5B#D1`)
+- **Prerequisites**: Consecutive-grid Lagrange interpolation (§20.4 Part B), prefix/suffix products.
+
+#### Problem Statement
+
+There is an unknown polynomial $P(x)$ of degree at most $N$ with coefficients in $\mathbb{F}_p$ where $p = 10^9 + 7$. You are given the $N + 1$ point values $A_0 = P(0), A_1 = P(1), \dots, A_N = P(N) \pmod{10^9 + 7}$, and an integer $T$. Compute $P(T) \bmod (10^9 + 7)$.
+
+#### Constraints
+
+- $1 \le N \le 10^5$
+- $0 \le A_i < 10^9 + 7$ for $0 \le i \le N$
+- $0 \le T \le 10^9$
+- Time limit: $2.0\text{ s}$ (requires $O(N)$ time and $O(N)$ space).
+
+#### Sample Trace ($N = 2, T = 4$)
+
+Suppose $N = 2$, $A = [P(0), P(1), P(2)] = [1, 3, 7]$ (corresponding to $P(x) = 1 + x + x^2$), and $T = 4$.
+- Prefix products $\text{pref}_i = \prod_{j=0}^{i-1}(4 - j)$: $\text{pref}_0 = 1, \text{pref}_1 = 4, \text{pref}_2 = 4 \cdot 3 = 12$.
+- Suffix products $\text{suff}_i = \prod_{j=i+1}^2(4 - j)$: $\text{suff}_2 = 1, \text{suff}_1 = 2, \text{suff}_0 = 3 \cdot 2 = 6$.
+- Numerators $\text{num}_i = \text{pref}_i \cdot \text{suff}_i$: $\text{num} = [6, 8, 12]$.
+- Denominators $\text{den}_i = (-1)^{2-i} i! (2-i)!$: $\text{den} = [2, -1, 2]$.
+- Sum: $P(4) = 1 \cdot \frac{6}{2} + 3 \cdot \frac{8}{-1} + 7 \cdot \frac{12}{2} = 3 - 24 + 42 = 21$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+You are given $N + 1$ values of a degree-$N$ polynomial on the consecutive integer grid $x = 0, 1, \dots, N$, and you only need to evaluate $P(x)$ at a **single** query point $x = T$. Because $m = 1$, you do not even need an NTT—you only need to evaluate the Lagrange interpolation sum at $x = T$ in $O(N)$ time without dividing by zero when $T \le N$.
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Write the Lagrange basis polynomial at $x_i = i$:
+$$
+\ell_i(T) = \frac{\prod_{j \ne i} (T - j)}{\prod_{j \ne i} (i - j)} = \frac{\left(\prod_{j=0}^{i-1} (T - j)\right) \left(\prod_{j=i+1}^N (T - j)\right)}{(-1)^{N - i}\, i!\, (N - i)!}.
+$$
+Notice that by writing the numerator as the product of a prefix product $\text{pref}[i] = \prod_{j=0}^{i-1}(T - j)$ and a suffix product $\text{suff}[i] = \prod_{j=i+1}^N(T - j)$, you never divide by $(T - i)$, so the formula works even when $0 \le T \le N$ (or you can return $A_T$ directly when $T \le N$).
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Precompute factorials and inverse factorials up to $N$ in $O(N + \log p)$ time, compute $\text{pref}[0 \dots N]$ and $\text{suff}[0 \dots N]$ in two $O(N)$ sweeps, and accumulate $\sum_{i=0}^N A_i \cdot \text{pref}[i] \cdot \text{suff}[i] \cdot (-1)^{N-i} \text{inv\_fact}[i] \cdot \text{inv\_fact}[N-i] \bmod p$.
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Step-by-Step Mathematical Derivation
+
+1. **Uniqueness of Degree-$N$ Polynomial**: A polynomial $P(x) \in \mathbb{F}_p[x]$ of degree at most $N$ is uniquely determined by its values at $N + 1$ distinct points $x_0, x_1, \dots, x_N \in \mathbb{F}_p$ (since $N < 10^9 + 7 = p$, the residues $0, 1, \dots, N$ are distinct modulo $p$).
+2. **Lagrange Basis Decomposition**: By Lagrange's interpolation formula,
+   $$
+   P(T) = \sum_{i=0}^N A_i \prod_{\substack{0 \le j \le N \\ j \ne i}} \frac{T - j}{i - j}.
+   $$
+3. **Denominator Factorization**: For a fixed $i \in \{0, \dots, N\}$, split the denominator product at $j = i$:
+   $$
+   \prod_{j=0}^{i-1} (i - j) = i(i - 1) \cdots 1 = i!, \qquad \prod_{j=i+1}^N (i - j) = (-1)( -2 ) \cdots (-(N - i)) = (-1)^{N - i} (N - i)!.
+   $$
+4. **Prefix-Suffix Numerator Split (Avoiding $0/0$)**: Define
+   $$
+   \text{pref}[i] = \prod_{j=0}^{i-1} (T - j) \bmod p, \qquad \text{suff}[i] = \prod_{j=i+1}^N (T - j) \bmod p.
+   $$
+   These satisfy the recurrences $\text{pref}[0] = 1$, $\text{pref}[i] = \text{pref}[i-1] \cdot (T - i + 1) \bmod p$, and $\text{suff}[N] = 1$, $\text{suff}[i] = \text{suff}[i+1] \cdot (T - i - 1) \bmod p$.
+5. **Final Linear Sum**: Combining numerator and denominator yields
+   $$
+   P(T) \equiv \sum_{i=0}^N A_i \cdot \text{pref}[i] \cdot \text{suff}[i] \cdot (-1)^{N - i}\, (i!)^{-1}\, ((N - i)!)^{-1} \pmod p.
+   $$
+   *(Boundary Case $0 \le T \le N$)*: If $0 \le T \le N$, then for every $i \ne T$, either $\text{pref}[i]$ or $\text{suff}[i]$ contains the factor $(T - T) = 0$, while for $i = T$, $\text{pref}[T] \cdot \text{suff}[T] = T! (-1)^{N-T} (N - T)!$, so the formula automatically returns $A_T$.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Integer $N \ge 1$, array $A[0 \dots N]$ of length $N + 1$ with $A[i] = P(i) \bmod p$, and evaluation point $T \ge 0$; prime modulus $p = 10^9 + 7 > N$.
+- **Postconditions (Output)**: Single integer $P(T) \bmod p \in [0, p - 1]$.
+- **Time & Space Complexity**: $O(N + \log p)$ time and $O(N)$ auxiliary space.
+- **Loop / Algebraic Invariant**: After $i$ steps of the prefix/suffix sweeps, $\text{pref}[i] \cdot \text{suff}[i] = \prod_{0 \le j \le N, j \ne i} (T - j) \bmod p$ without performing any division by $(T - i)$.
+- **Failure Modes & Edge Cases**: Computing $\prod_{j=0}^N (T - j)$ globally and dividing by $(T - i) \bmod p$ crashes with $0/0$ whenever $(T \bmod p) \in [0, N]$; using $\text{pref}[i] \cdot \text{suff}[i]$ avoids division by $(T - i)$ completely.
+
+</details>
+
+---
+
+### Stepping Stone 2 (`#197`) — [NOIP2020] 微信步数 / WeChat Steps (Luogu P7116)
+
+- **Source**: [Luogu P7116 — [NOIP2020] 微信步数 (WeChat Steps)](https://www.luogu.com.cn/problem/P7116)
+- **Canonical ID**: `#197` (`5B#D7`)
+- **Prerequisites**: Polynomial degree of hyperrectangle volume, prefix sums of polynomials, consecutive-grid Lagrange evaluation (§20.4 Part B).
+
+#### Problem Statement
+
+A walker starts at an initial grid cell $(x_1, x_2, \dots, x_k)$ inside a $k$-dimensional box $[1, w_1] \times [1, w_2] \times \dots \times [1, w_k]$ ($1 \le x_i \le w_i$). The walker repeatedly executes a periodic sequence of $n$ steps: the $r$-th step ($1 \le r \le n$) adds $d_r \in \{-1, +1\}$ to coordinate $c_r \in \{1, \dots, k\}$. A walk terminates on the first step it leaves $[1, w_1] \times \dots \times [1, w_k]$. Sum the total number of steps taken before leaving the box over **all** $\prod_{i=1}^k w_i$ starting cells, modulo $10^9 + 7$, or output $-1$ if at least one starting cell never leaves the box.
+
+#### Constraints
+
+- $1 \le k \le 10$, $1 \le n \le 5 \times 10^5$, $1 \le w_i \le 10^9$
+- $1 \le c_r \le k$, $d_r \in \{-1, +1\}$
+- Modulus: $10^9 + 7$. Time limit: $1.0\text{ s}$ (requires $O(n k + k^2)$ time).
+
+#### Sample Trace ($k = 1, w_1 = 5, n = 2$, steps: $+1, +1$)
+
+Here $k = 1, w_1 = 5, n = 2$, and each period moves $+2$ in dimension $1$ ($\Delta_1 = 2$).
+- Before step $1$: all $5$ cells survive ($+5$).
+- Period $q = 0$: after step $r = 1$ ($+1$), span is $1$, so $5 - 1 = 4$ cells survive ($+4$); after step $r = 2$ ($+2$), span is $2$, so $5 - 2 = 3$ cells survive ($+3$).
+- Period $q = 1$: at $r = 1$, span is $1 + 2 = 3 \implies 5 - 3 = 2$ cells survive ($+2$); at $r = 2$, span is $2 + 2 = 4 \implies 5 - 4 = 1$ cell survives ($+1$).
+- Period $q = 2$: at $r = 1$, span reaches $5 \implies 0$ cells survive.
+- Total steps = $5 + 4 + 3 + 2 + 1 = 15$ (matching exit steps $5, 4, 3, 2, 1$ from $x_1 = 1, 2, 3, 4, 5$).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+By tail-sum expectation (double counting), the sum of exit steps over all starting cells equals $\sum_{t \ge 0} (\text{number of starting cells still inside the box after } t \text{ steps})$. Because coordinates evolve independently, the set of surviving starting cells after $t$ steps is a $k$-dimensional box whose side length in dimension $i$ is $\max\big(0,\; w_i - (\max_{0 \le s \le t} \delta_i(s) - \min_{0 \le s \le t} \delta_i(s))\big)$, where $\delta_i(s)$ is the net displacement in dimension $i$ after $s$ steps.
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Let $t = q n + r$ where $q \ge 1$ is the period index and $1 \le r \le n$ is the step offset inside the period. After the first full period ($q = 0$), the running maximum and minimum in dimension $i$ have already reached their envelope, so for every subsequent period $q \ge 1$, the span $S_i(q n + r) = \max_{0 \le s \le qn+r} \delta_i(s) - \min_{0 \le s \le qn+r} \delta_i(s)$ grows **strictly linearly in $q$**:
+$$
+S_i(q n + r) = L_i(r) + (q - 1) \cdot |\delta_i(n)| \quad (q \ge 1),
+$$
+where $L_i(r) = S_i(n + r)$ is the span at step $r$ of period $q = 1$, and $\Delta_i = |\delta_i(n)|$ is the net drift per period in dimension $i$.
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+For a fixed step $r \in \{1, \dots, n\}$ (or equivalently, summing the linear coefficients over all $r \in \{1, \dots, n\}$ first!), the number of surviving cells at period $q \ge 1$ while all $k$ dimensions remain positive ($q \le Q_{\max}$) is a **polynomial in $q$ of degree at most $k$**:
+$$
+P_r(q) = \prod_{i=1}^k \big(w_i - L_i(r) - (q - 1)\Delta_i\big).
+$$
+Even better: instead of interpolating $P_r(q)$ for each $r$ separately (which would cost $O(n k^2)$), expand or maintain the coefficients of $(q - 1)^0, \dots, (q - 1)^k$ as $r$ advances from $1$ to $n$ (only one factor changes at step $r$!), or evaluate the prefix sum $\sum_{q=1}^{Q_{\max}} q^d$ for $0 \le d \le k$ once using consecutive-grid Lagrange interpolation on $k + 2$ points in $O(k^2)$!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Step-by-Step Mathematical Derivation
+
+1. **Tail-Sum Reformulation**: A starting cell $\mathbf{x} \in \prod_{i=1}^k [1, w_i]$ exits on step $T(\mathbf{x}) \ge 1$ if and only if it survives steps $0, 1, \dots, T(\mathbf{x}) - 1$. Therefore:
+   $$
+   \sum_{\mathbf{x}} T(\mathbf{x}) = \sum_{t = 0}^{\infty} \prod_{i=1}^k \max\!\big(0,\; w_i - S_i(t)\big),
+   $$
+   where $S_i(t) = \max_{0 \le s \le t} \delta_i(s) - \min_{0 \le s \le t} \delta_i(s)$ is the peak-to-trough range of dimension $i$ up to time $t$.
+2. **Infinite Walk Criterion**: The walk is infinite (return $-1$) if and only if after one full period ($t = n$), $S_i(n) < w_i$ for all $1 \le i \le k$ **and** the net period displacement vector is zero ($\delta_i(n) = 0$ for all $1 \le i \le k$).
+3. **Separating Period $q = 0$ from Periodic Regime $q \ge 1$**:
+   - Simulate $t = 0, 1, \dots, n$ directly in $O(n k)$ time, adding $\prod_{i=1}^k \max(0, w_i - S_i(t))$ to the answer. If any dimension reaches $S_i(t) \ge w_i$ during $t \le n$, terminate immediately.
+   - For $t = q n + r$ with $q \ge 1$ and $1 \le r \le n$, let $\Delta_i = |\delta_i(n)|$ and let $L_i(r) = S_i(n + r)$ (obtained by simulating one more period $n + 1 \dots 2n$). Because every extremum after $t \ge n$ simply shifts the extremum of the previous period by $\delta_i(n)$, we have
+     $$
+     S_i(q n + r) = L_i(r) + (q - 1)\Delta_i \quad \text{for all } q \ge 1.
+     $$
+4. **Summing over $q = 1, \dots, Q(r)$ via Power Sums / Lagrange Interpolation**:
+   At step offset $r$, the box remains non-empty for $1 \le q \le Q(r)$, where
+   $$
+   Q(r) = 1 + \min_{\substack{1 \le i \le k \\ \Delta_i > 0}} \left\lfloor \frac{w_i - L_i(r) - 1}{\Delta_i} \right\rfloor
+   $$
+   (with $Q(r) = 0$ if $w_i \le L_i(r)$ for some $i$). Observe that as $r$ goes from $1$ to $n$, $L_i(r)$ increases by at most $1$ at the single coordinate $i = c_r$. Even simpler: $Q(r)$ can only take two values across all $r \in \{1, \dots, n\}$—namely $Q_{\min}$ and $Q_{\min} + 1$!
+   Specifically, let $Q_{\text{full}} = \min_{i : \Delta_i > 0} \lfloor (w_i - S_i(n) - 1) / \Delta_i \rfloor$ be the number of complete periods after $q = 0$ before *any* dimension can possibly hit $0$. Or for each $r$, expand the degree-$k$ polynomial in $x = q - 1$:
+   $$
+   P_r(x) = \prod_{i=1}^k \big((w_i - L_i(r)) - \Delta_i x\big) = \sum_{d=0}^k c_{r, d} x^d \pmod p
+   $$
+   in $O(k^2)$ (or $O(k)$ by dividing out the old factor for $c_r$ and multiplying the new one), and multiply $c_{r, d}$ by the precomputed power sum $S_d(Q(r) - 1) = \sum_{x=0}^{Q(r)-1} x^d \bmod p$, which is a polynomial of degree $d + 1 \le k + 1$ evaluated at $X = Q(r) - 1$ via **Stepping Stone 1** (consecutive-grid Lagrange interpolation on $0, 1, \dots, k + 1$) in $O(k)$ time!
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Dimension $k \in [1, 10]$, period length $n \in [1, 5 \times 10^5]$, box widths $w[1 \dots k]$, and step pairs $(c_r, d_r)$ for $1 \le r \le n$; prime modulus $p = 10^9 + 7 > k + 2$.
+- **Postconditions (Output)**: Total steps over all starting cells modulo $10^9 + 7$, or $-1$ if unbounded.
+- **Time & Space Complexity**: $O(n k + k^2 \log p)$ time and $O(n + k^2)$ space.
+- **Loop / Algebraic Invariant**: After step $r$ of period $q = 1$, $L_i(r) = S_i(n + r)$ satisfies $S_i(q n + r) = L_i(r) + (q - 1)\Delta_i$ for all $q \ge 1$ and $1 \le i \le k$.
+- **Failure Modes & Edge Cases**: Check whether $\Delta_i = 0$ for all $1 \le i \le k$ while $w_i > S_i(n)$ for all $i$ (returning $-1$ for infinite walk before dividing by $\Delta_i$); consecutive-grid Lagrange interpolation on $\{0, 1, \dots, k + 1\}$ requires $p > k + 1$, and when $X = Q(r) - 1 \in \{0, \dots, k + 1\}$ falls on a grid node, return the sample value directly to avoid $0/0$.
+
+</details>
+
+---
+
+### Intermediate 1 (`#127`) — Koxia and Bracket (Codeforces 1770G)
+
+- **Source**: [Codeforces Good Bye 2022 (CF 1770 G) — Koxia and Bracket](https://codeforces.com/problemset/problem/1770/G)
+- **Canonical ID**: `#127` (`5B#B8`)
+- **Prerequisites**: Transposed polynomial multiplication (`mulT`, §20.2), Divide-and-Conquer DP over active balance windows.
+
+#### Problem Statement
+
+You are given a bracket string $S$ of length $N$ consisting of `'('` and `')'`. Let $k$ be the minimum number of character deletions required to transform $S$ into a valid (balanced) bracket sequence. Compute the number of distinct subsets of indices of size $k$ whose deletion makes $S$ a valid bracket sequence, modulo $998244353$.
+
+#### Constraints
+
+- $1 \le N \le 2.5 \times 10^5$
+- Modulus: $p = 998244353$ (NTT-friendly prime).
+- Time limit: $2.0\text{ s}$ (requires $O(N \log^2 N)$ time and $O(N)$ space).
+
+#### Sample Trace ($S = \text{")())(("}$, $N = 6$)
+
+Prefix balances of $S = \text{")())(("}$ are $b = [0, -1, 0, -1, -2, -1, 0]$, with global minimum $b_{\min} = -2$ at position $p^* = 4$ (`")())"` has $b_4 = -2$, and suffix `"(("` has reversed balance $-2$).
+- Left prefix $S[1..4] = \text{")())"}$: must delete $2$ closing brackets `')'` while keeping prefix balance $\ge 0$. Valid deletions of $2$ `')'` from positions $\{1, 3, 4\}$: deleting $\{1, 3\}$ leaves `"()"`, deleting $\{1, 4\}$ leaves `"()"`, so $2$ ways (deleting $\{3, 4\}$ leaves `")("`, invalid).
+- Right suffix $S[5..6] = \text{"(("}$: must delete both `'('`, giving $1$ way.
+- Total valid minimum-deletion subsets: $2 \times 1 = 2$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Assign $+1$ to `'('` and $-1$ to `')'`, and let $b_i = \sum_{j=1}^i s_j$ be the prefix balance ($b_0 = 0$), with global minimum $b_{\min} = \min_{0 \le i \le N} b_i$. Any minimum deletion deletes exactly $-b_{\min}$ closing brackets `')'` and $b_N - b_{\min}$ opening brackets `'('`. Crucially, if $p^*$ is an index achieving $b_{p^*} = b_{\min}$, all deleted `')'` must come from the prefix $S[1 \dots p^*]$ and all deleted `'('` must come from the suffix $S[p^* + 1 \dots N]$!
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+By reversing the suffix $S[p^*+1 \dots N]$ and swapping `'('` $\leftrightarrow$ `')'`, both halves reduce to the same problem: given a string where we are **only allowed to delete `')'`**, count the ways to reach the final mandatory balance while never letting the current balance drop below $0$.
+Between consecutive `')'` characters, a block of $c_i$ opening brackets `'('` simply shifts the polynomial state by $x^{c_i}$. At each `')'`, we either keep it (shift by $x^{-1}$) or delete it (shift by $x^0$), which multiplies the state by $(x^{-1} + 1)$ followed by zeroing out any negative power $[x^{-1}]$.
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+In a naive DP, the state polynomial has degree up to $N$, making each step $O(N)$. However, over any segment $[L, R]$ of `')'` blocks in a Divide-and-Conquer tree, the net balance only changes by $O(R - L + 1)$ relative to the prefix minimum of the segment! Specifically, at every step $i$, any state below the minimum required balance $\text{low}_i$ is zeroed out, and over a segment $[L, R]$ of length $\ell = R - L + 1$, only the window $[\text{low}_L - \ell,\; \text{low}_R + \ell]$ of length $O(\ell)$ can both enter $[L, R]$ and survive to $R$. Use D&C with `mulT` / NTT over windows of size $O(R - L + 1)$ to advance the DP in $O(N \log^2 N)$ total time!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Step-by-Step Mathematical Derivation
+
+1. **Splitting at the Global Minimum Balance $p^*$**:
+   Let $b_i$ be the prefix sum of $+1$/$-1$ weights and let $p^* \in [0, N]$ minimize $b_{p^*}$.
+   - In $S[1 \dots p^*]$, we must delete $k_L = -b_{p^*}$ closing brackets `')'` and $0$ opening brackets `'('` so that the running balance never drops below $0$ and ends at $0$ at $p^*$.
+   - In the reversed, complemented suffix $S'[1 \dots N - p^*]$, we must delete $k_R = b_N - b_{p^*}$ closing brackets `')'` and $0$ opening brackets `'('` under the exact same rule.
+   Since the two halves are independent, the total count is $\text{Ways}(S[1 \dots p^*]) \times \text{Ways}(S'[1 \dots N - p^*]) \bmod 998244353$.
+
+2. **Formulating the One-Sided Deletion DP as Windowed Polynomial Shifts**:
+   In a string of length $M$ where we only delete `')'` and must delete all excess `')'` (so the final balance is $0$), let $d_i$ be the number of deletions made in the first $i$ characters. Since all `'('` are kept, the current balance after $i$ characters is $b_i + d_i \ge 0$, which forces the lower bound
+   $$
+   d_i \ge \max(0, -b_i) =: \text{low}_i, \qquad \text{and also } d_i \le \text{cnt}_{')'}(1 \dots i).
+   $$
+   More simply, track the DP indexed by the number of **kept** `')'` characters $u_i$ in $S[1 \dots i]$:
+   - At an `'('` character, $u_i$ does not change.
+   - At the $m$-th `')'` character (which occurs after $a_m$ opening brackets `'('` have been seen in total), we can either delete it ($u_m = u_{m-1}$) or keep it ($u_m = u_{m-1} + 1$), provided $u_m \le a_m$ (so balance $a_m - u_m \ge 0$).
+   Thus, at the $m$-th `')'` ($1 \le m \le K$), the state polynomial $D_m(x) = \sum_{u=0}^{a_m} \text{dp}_m[u] x^u$ updates via:
+   $$
+   D_m(x) = \big(D_{m-1}(x) \cdot (1 + x)\big) \bmod x^{a_m + 1},
+   $$
+   and at the end we want $[x^{a_K}] D_K(x)$ (since final balance is $0 \implies u_K = a_K$).
+
+3. **Divide-and-Conquer with `mulT` / Active Window Truncation**:
+   Notice that across a segment of `')'` steps $m \in [L, R]$ of length $\ell = R - L + 1$, each step multiplies by $(1 + x)$ and caps the degree at $a_m$ (which is non-decreasing: $a_L \le a_{L+1} \le \dots \le a_R$).
+   - Because each step increases the degree of $x$ by at most $1$, any term $x^u$ entering at $m = L - 1$ with $u < a_L - \ell$ can reach degree at most $u + \ell < a_L \le a_m$, so it **never hits the upper boundary $a_m$** during $[L, R]$!
+   - Conversely, inside $[L, R]$, only degrees $u \in [a_L - \ell,\; a_R]$ (a window of size $(a_R - a_L) + \ell + 1$) interact with the boundary $a_m$.
+   - Better yet: over the entire prefix $1 \dots K$, $\sum (a_R - a_L)$ across a single level of the D&C tree telescopes to $a_K \le N$, and $\sum \ell = K \le N$!
+   Therefore, on each D&C interval $[L, R]$, we shift the active polynomial slice $D_{L-1}[a_L - \ell \dots a_{L-1}]$ down by $a_L - \ell$, recurse on $[L, M]$ and $[M+1, R]$ (while pushing the non-boundary low-degree part across $[L, R]$ via a single multiplication by $(1 + x)^\ell$ or transposed `mulT`), and sum the work at each tree level to $O((a_K + K) \log N) = O(N \log N)$, yielding $O(N \log^2 N)$ total time!
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Bracket string $S[1 \dots N]$ of length $N \le 2.5 \times 10^5$; prime modulus $p = 998244353$.
+- **Postconditions (Output)**: Number of minimum-deletion valid bracket subsequences modulo $998244353$.
+- **Time & Space Complexity**: $O(N \log^2 N)$ time and $O(N)$ auxiliary space.
+- **Loop / Algebraic Invariant**: Entering D&C node $[L, R]$ of length $\ell = R - L + 1$, the active polynomial slice tracks degrees $[ \max(0, a_L - \ell),\; a_{L-1} ]$ of length $\le (a_R - a_L) + \ell + 1$, whose sum across all disjoint intervals at depth $d$ is bounded by $a_K + K \le N$.
+- **Failure Modes & Edge Cases**: If $S$ has no closing brackets to delete in a half ($K = 0$), return $1$ immediately for that half; when multiple indices achieve the global minimum prefix balance $b_{\min}$, splitting at any single minimum index $p^*$ yields the same canonical partition without double counting because no deleted `')'` can lie to the right of $p^*$ and no deleted `'('` can lie to the left of $p^*$.
+
+</details>
+
+---
+
+### Intermediate 2 (`#167`) — [十二省联考2019] 字符串问题 / String Problem (Luogu P5284)
+
+- **Source**: [Luogu P5284 — [十二省联考2019] 字符串问题 (String Problem)](https://www.luogu.com.cn/problem/P5284)
+- **Canonical ID**: `#167` (`5B#B5`)
+- **Prerequisites**: DAG fan-out / addition gate duality (§20.1), Suffix Automaton / Suffix Tree parent tree, topological DP.
+
+#### Problem Statement
+
+You are given a string $S$ of length $|S|$ over lowercase English letters, $n_a$ substrings of $S$ designated as **Type-A** strings $A_1, \dots, A_{n_a}$ (specified by $[la_i, ra_i]$), and $n_b$ substrings designated as **Type-B** strings $B_1, \dots, B_{n_b}$ (specified by $[lb_j, rb_j]$). There are $m$ explicit directed edges from Type-A strings to Type-B strings ($A_{x_k} \to B_{y_k}$). In addition, every Type-B string $B_j$ has an implicit directed edge $B_j \to A_i$ to **every** Type-A string $A_i$ that contains $B_j$ as a prefix ($|A_i| \ge |B_j|$ and $A_i[1 \dots |B_j|] = B_j$). The weight of each $A_i$ is its length $|A_i|$, and the weight of each $B_j$ is $0$. Find the maximum total weight of a walk in this directed graph, or output $-1$ if there is a walk of infinitely large weight (i.e., a directed cycle reachable from an $A_i$ or containing an $A_i$).
+
+#### Constraints
+
+- $\sum |S|, \sum n_a, \sum n_b, \sum m \le 2 \times 10^5$ across testcases.
+- Time limit: $2.0\text{ s}$ (requires $O((|S| + n_a + n_b + m)\log |S|)$ time and $O(|S| + n_a + n_b + m)$ space).
+
+#### Sample Trace ($S = \text{"abaa"}$, $A_1 = \text{"aba"}, A_2 = \text{"ab"}$, $B_1 = \text{"a"}, B_2 = \text{"aba"}$)
+
+Suppose explicit edges are $A_1 \to B_1$ and $A_2 \to B_2$:
+- Implicit prefix edges: $B_1 = \text{"a"}$ is a prefix of both $A_1 = \text{"aba"}$ and $A_2 = \text{"ab"}$, so $B_1 \to A_1$ and $B_1 \to A_2$. $B_2 = \text{"aba"}$ is a prefix of $A_1 = \text{"aba"}$, so $B_2 \to A_1$.
+- Notice the cycle $A_1 \to B_1 \to A_1$: since $|A_1| = 3 > 0$, we can repeat this cycle infinitely many times, so the output is $-1$. If $A_1 \to B_1$ were removed, the longest path would be $A_2 \to B_2 \to A_1$ with weight $|A_2| + |A_1| = 2 + 3 = 5$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Naive graph construction adds up to $n_a \cdot n_b = 4 \times 10^{10}$ implicit edges $B_j \to A_i$ whenever $B_j$ is a prefix of $A_i$. In the Suffix Tree of $S$ (constructed as the parent tree of the Suffix Automaton of the reversed string $S^R$), $B_j$ is a prefix of $A_i$ if and only if the locus of $A_i$ is in the subtree of the locus of $B_j$ (or at the same node with $|A_i| \ge |B_j|$). This is a **tree-subtree fan-out broadcast** from $B_j$ to all $A_i$ in its subtree!
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Apply the **DAG Gate Compression / Transposition Principle** (§20.1) to factor the $O(n_b \cdot n_a)$ bipartite fan-out edges through a linear-size auxiliary spine on the Suffix Tree:
+1. Build the Suffix Automaton (SAM) on $S^R$; its link tree is the exact Suffix Tree of $S$.
+2. For each substring $S[l \dots r]$ (representing the suffix $S[l \dots |S|]$ truncated to length $L = r - l + 1$), start at the SAM node for prefix $S^R$ up to $l$ and use **binary lifting** on the SAM link tree to jump to the highest ancestor $u$ with $\text{len}(u) \ge L$.
+3. Within a single SAM node $u$, multiple $A_i$ and $B_j$ may land with various lengths $L \in (\text{len}(\text{link}(u)), \text{len}(u)]$. Sort all strings landing at node $u$ by length (placing $B_j$ before $A_i$ on ties $|B_j| = |A_i|$) and chain them with a suffix-spine of auxiliary nodes so each $B_j$ only needs **one** outgoing edge to reach all longer $A_i$ in node $u$ and all descendants of $u$!
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Specifically, at each SAM node $u$, create an entry hub $\text{in}[u]$ and an exit hub $\text{out}[u]$ (or chain the sorted $B_j$ and $A_i$ at node $u$ directly): connect $\text{out}[\text{link}(u)] \to \text{in}[u]$, connect each $B_j$ at node $u$ to the suffix of longer $A_i$'s at node $u$ and to $\text{out}[u]$, and run Kahn's topological sort + longest-path DP on the resulting $O(|S| + n_a + n_b)$-vertex, $O(|S| + n_a + n_b + m)$-edge DAG. If the topological sort visits fewer than $V$ vertices, a cycle exists and we output $-1$.
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Step-by-Step Mathematical Derivation
+
+1. **Prefix Relation as Suffix-Tree Subtree Dominance**:
+   Let $\mathcal{T}$ be the link tree of the Suffix Automaton built on $S^R$. Every node $u \in \mathcal{T}$ represents an equivalence class of substrings of $S$ sharing the same start-position set, with maximum length $\text{len}(u)$. For any substring $P = S[l \dots r]$ of length $L = r - l + 1$, its locus $u(P) \in \mathcal{T}$ is the unique ancestor of the prefix node $\text{pos}[l]$ satisfying $\text{len}(\text{link}(u)) < L \le \text{len}(u)$, found in $O(\log |S|)$ via binary lifting.
+   Then $B_j$ is a prefix of $A_i$ if and only if:
+   - Either $u(A_i)$ is a strict descendant of $u(B_j)$ in $\mathcal{T}$, or
+   - $u(A_i) = u(B_j)$ and $|A_i| \ge |B_j|$.
+
+2. **Factoring the Subtree Fan-Out via Spine Nodes**:
+   At each node $u \in \mathcal{T}$, collect all Type-A and Type-B strings with locus $u$, and sort them in non-decreasing order of length, breaking ties of equal length by placing **Type-B before Type-A**.
+   Create a chain of auxiliary hub nodes $h_{u, 1}, h_{u, 2}, \dots, h_{u, k_u}$ corresponding to the sorted list at node $u$, plus a base hub $h_{u, 0}$ (entered from $\text{link}(u)$) and a tail hub $h_{u, k_u + 1}$:
+   - Add directed $0$-weight edges along the spine: $h_{u, 0} \to h_{u, 1} \to \dots \to h_{u, k_u} \to h_{u, k_u + 1}$.
+   - For every child $v$ of $u$ in $\mathcal{T}$, add a $0$-weight edge $h_{u, k_u + 1} \to h_{v, 0}$.
+   - If the $t$-th sorted item at node $u$ is a Type-B string $B_j$, add a $0$-weight edge $B_j \to h_{u, t}$.
+   - If the $t$-th sorted item at node $u$ is a Type-A string $A_i$, add a $0$-weight edge $h_{u, t} \to A_i$.
+   - Add the $m$ explicit edges $A_{x_k} \to B_{y_k}$ directly, and assign vertex weight $|A_i|$ to each $A_i$ (and $0$ to all other nodes).
+
+3. **Exact Equivalence Proof**:
+   A Type-B node $B_j$ at position $(u, t)$ can reach $h_{u, t'}$ for all $t' \ge t$ (which includes all $A_i$ at node $u$ with $|A_i| \ge |B_j|$ because Type-B precedes Type-A on ties) as well as $h_{u, k_u + 1}$, which flows down to $h_{v, 0}$ and hence to all $A_i$ in the strict subtree of $u$. Conversely, no shorter string or non-descendant can be reached. Thus the reachability relation from $B$ to $A$ is $100\%$ preserved while reducing the edge count from $O(n_a n_b)$ to $O(|S| + n_a + n_b + m)$!
+
+4. **Topological Sort & Longest Path DP**:
+   Compute in-degrees of all $V \le 2|S| + 2(n_a + n_b)$ vertices and run Kahn's algorithm:
+   - Initialize $\text{dp}[v] = \text{weight}(v)$ for all $v$.
+   - Along each edge $u \to v$, relax $\text{dp}[v] \gets \max(\text{dp}[v], \text{dp}[u] + \text{weight}(v))$.
+   - If the number of popped vertices is $< V$, a cycle exists (and since every cycle in this bipartite-plus-DAG graph alternates through at least one $A_i$ with $|A_i| \ge 1$, it has positive weight), so output $-1$; otherwise output $\max_v \text{dp}[v]$.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: String $S[1 \dots |S|]$, Type-A intervals $[la_i, ra_i]_{i=1}^{n_a}$, Type-B intervals $[lb_j, rb_j]_{j=1}^{n_b}$, and $m$ directed edges $(x_k, y_k)$ with $1 \le la_i \le ra_i \le |S|$ and $1 \le lb_j \le rb_j \le |S|$.
+- **Postconditions (Output)**: Maximum total length of Type-A strings on a valid walk, or $-1$ if a cycle exists.
+- **Time & Space Complexity**: $O((|S| + n_a + n_b)\log |S| + m)$ time and $O(|S| + n_a + n_b + m)$ space.
+- **Loop / Algebraic Invariant**: At each Suffix Tree node $u$, sorting strings by $(\text{length}, \text{is\_Type\_A})$ ensures $B_j \to h_{u, t}$ reaches $A_i$ at $(u, t')$ if and only if $t' \ge t \iff |A_i| \ge |B_j|$.
+- **Failure Modes & Edge Cases**: When $|A_i| = |B_j|$ at the same SAM node $u$, placing Type-B strictly before Type-A in the comparator is mandatory so that $B_j$ can transition to an identical-length $A_i$; also clear all SAM transitions, binary-lifting tables, and adjacency lists up to the exact allocated node count between testcases.
+
+</details>
+
+---
+
+### Advanced 1 (`#208`) — $a^{-1} + b$ problem (UOJ 182)
+
+- **Source**: [UOJ #182 — a^-1 + b problem](https://uoj.ac/problem/182)
+- **Canonical ID**: `#208` (`5B#B12`)
+- **Prerequisites**: Möbius transformations ($PGL_2$), Logarithmic derivative $P'(x)/P(x)$, Division-free Transposed Multipoint Evaluation (`eval`, §20.3).
+
+#### Problem Statement
+
+You are given an array of $n$ elements $a_1, a_2, \dots, a_n \in \mathbb{F}_p$ ($p = 998244353$) and a sequence of $m$ global operations of two types:
+- `1 x`: Add $x$ to every element ($a_i \gets (a_i + x) \bmod p$ for all $1 \le i \le n$).
+- `2`: Replace every element by its modular inverse ($a_i \gets a_i^{-1} \bmod p$ for all $1 \le i \le n$; it is guaranteed that $a_i \not\equiv 0 \pmod p$ whenever Operation `2` is executed).
+
+After **each** of the $m$ operations, output the sum of all $n$ elements $\left(\sum_{i=1}^n a_i\right) \bmod 998244353$.
+
+#### Constraints
+
+- $1 \le n, m \le 6 \times 10^4$
+- $0 \le a_i, x < 998244353$
+- Time limit: $3.0\text{ s}$ (requires $O((n + m) \log^2(n + m))$ time and $O((n + m) \log(n + m))$ space).
+
+#### Sample Trace ($n = 2, a = [1, 2]$, Operations: `1 1`, then `2`, then `1 3`)
+
+- Initial: $a = [1, 2]$.
+- Step 1 (`1 1`): $a_i \gets a_i + 1 \implies a = [2, 3]$, sum $= 5$.
+- Step 2 (`2`): $a_i \gets a_i^{-1} \implies a = [2^{-1}, 3^{-1}] = [\frac{1}{2}, \frac{1}{3}]$, sum $= \frac{5}{6} \equiv 831870295 \pmod{998244353}$.
+- Step 3 (`1 3`): $a_i \gets a_i + 3 \implies$ sum $= \frac{5}{6} + 2 \cdot 3 = \frac{41}{6} \equiv 831870301 \pmod{998244353}$.
+In Möbius form $a_i^{(k)} = \frac{\alpha_k a_i + \beta_k}{\gamma_k a_i + \delta_k}$: at Step 2, $a_i^{(2)} = \frac{0 \cdot a_i + 1}{1 \cdot a_i + 1} = \frac{1}{a_i + 1}$, which evaluates $\sum_{i=1}^2 \frac{1}{a_i + 1} = \frac{P'(1)}{P(1)}$ where $P(x) = (x+1)(x+2) = x^2 + 3x + 2$ and $P'(x) = 2x + 3$, giving $\frac{P'(1)}{P(1)} = \frac{5}{6}$!
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Both operations $z \mapsto z + x$ and $z \mapsto 1/z$ are **linear fractional (Möbius) transformations** on the projective line $\mathbb{P}^1(\mathbb{F}_p)$, represented by $2 \times 2$ matrices:
+$$
+\begin{bmatrix} 1 & x \\ 0 & 1 \end{bmatrix} \quad \text{and} \quad \begin{bmatrix} 0 & 1 \\ 1 & 0 \end{bmatrix}.
+$$
+Thus after step $k$ ($1 \le k \le m$), the $i$-th element is $a_i^{(k)} = \frac{\alpha_k a_i + \beta_k}{\gamma_k a_i + \delta_k}$ for a known $2 \times 2$ matrix $\begin{bmatrix} \alpha_k & \beta_k \\ \gamma_k & \delta_k \end{bmatrix}$ independent of $i$.
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+When $\gamma_k \equiv 0 \pmod p$, the transformation is purely linear: $\sum_{i=1}^n a_i^{(k)} = \frac{\alpha_k}{\delta_k} \sum_{i=1}^n a_i + n \frac{\beta_k}{\delta_k}$.
+When $\gamma_k \not\equiv 0 \pmod p$, perform polynomial division of $\alpha_k a_i + \beta_k$ by $\gamma_k a_i + \delta_k$ to isolate $a_i$ in the denominator:
+$$
+\frac{\alpha_k a_i + \beta_k}{\gamma_k a_i + \delta_k} = \frac{\alpha_k}{\gamma_k} + \frac{\beta_k \gamma_k - \alpha_k \delta_k}{\gamma_k^2 \left(a_i + \frac{\delta_k}{\gamma_k}\right)}.
+$$
+Summing over $i = 1, \dots, n$ shows that we only need to evaluate the rational sum
+$$
+S(e_k) := \sum_{i=1}^n \frac{1}{a_i + e_k} \quad \text{at the query point } e_k = \frac{\delta_k}{\gamma_k} \bmod p.
+$$
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Define the degree-$n$ polynomial $P(x) = \prod_{i=1}^n (x + a_i)$. By logarithmic differentiation,
+$$
+\frac{P'(x)}{P(x)} = \sum_{i=1}^n \frac{1}{x + a_i} = S(x).
+$$
+Build $P(x)$ in $O(n \log^2 n)$ via a bottom-up subproduct tree, compute its formal derivative $P'(x)$ in $O(n)$, and run **two calls to Division-Free Transposed Multipoint Evaluation (`eval`, §20.3)** to evaluate both $P(e_k)$ and $P'(e_k)$ at all $m$ query points $e_1, \dots, e_m$ simultaneously in $O((n + m) \log^2(n + m))$ time!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Step-by-Step Mathematical Derivation
+
+1. **Matrix Composition of Möbius Transformations**:
+   Maintain the cumulative $2 \times 2$ matrix $M_k = \begin{bmatrix} \alpha_k & \beta_k \\ \gamma_k & \delta_k \end{bmatrix}$ initialized to $M_0 = I_2$:
+   - On Operation `1 x`: left-multiply $M_k = \begin{bmatrix} 1 & x \\ 0 & 1 \end{bmatrix} M_{k-1}$.
+   - On Operation `2`: left-multiply $M_k = \begin{bmatrix} 0 & 1 \\ 1 & 0 \end{bmatrix} M_{k-1}$.
+   By associativity of Möbius transformations, $a_i^{(k)} = \frac{\alpha_k a_i + \beta_k}{\gamma_k a_i + \delta_k} \pmod p$ for all $1 \le i \le n$ and $1 \le k \le m$.
+
+2. **Reduction to Logarithmic Derivative Evaluation**:
+   - **Case 1 ($\gamma_k \equiv 0 \pmod p$)**: Since $\det M_k = \pm 1 \not\equiv 0 \pmod p$, we have $\delta_k \not\equiv 0 \pmod p$, and
+     $$
+     \sum_{i=1}^n a_i^{(k)} = \delta_k^{-1} \left( \alpha_k \sum_{i=1}^n a_i + n \beta_k \right) \bmod p,
+     $$
+     which is answered in $O(1)$ using the precomputed initial sum $\sum_{i=1}^n a_i$.
+   - **Case 2 ($\gamma_k \not\equiv 0 \pmod p$)**: Let $e_k = \delta_k \gamma_k^{-1} \bmod p$. Then
+     $$
+     \sum_{i=1}^n a_i^{(k)} = n \alpha_k \gamma_k^{-1} + (\beta_k \gamma_k - \alpha_k \delta_k) \gamma_k^{-2} \sum_{i=1}^n \frac{1}{e_k + a_i} \bmod p.
+     $$
+     Since the problem guarantees $a_i^{(k')}$ is never $0$ before an inversion step, $\gamma_k a_i + \delta_k \not\equiv 0 \pmod p$ for all $1 \le i \le n$, which guarantees $e_k + a_i \not\equiv 0 \pmod p$, i.e., $P(e_k) = \prod_{i=1}^n (e_k + a_i) \not\equiv 0 \pmod p$.
+
+3. **Shared Subproduct Tree & Transposed `eval` for $P(e_k)$ and $P'(e_k)$**:
+   - Build the subproduct tree over leaves $1 + a_i x$ ($1 \le i \le n$) in $O(n \log^2 n)$ to obtain $P(x) = \prod_{i=1}^n (x + a_i)$ of degree $n$, and differentiate term-by-term to obtain $P'(x)$ of degree $n - 1$.
+   - Build a second subproduct tree over the query points $Q_{\text{leaf}(k)}(x) = 1 - e_k x$ for all steps $k$ with $\gamma_k \ne 0$ ($K \le m$).
+   - Compute $Q_{\text{root}}(x)^{-1} \bmod x^{n+1}$ **once** at the root, run `eval_down` on $P(x)$ and `eval_down` on $P'(x)$ sharing the exact same subproduct tree $Q_u(x)$ and root inverse!
+   - Batch-invert all $P(e_k)$ in $O(K + \log p)$ time and compute $S(e_k) = P'(e_k) \cdot P(e_k)^{-1} \bmod p$.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Array $a[1 \dots n]$ and $m$ operations $(\text{type}_k, x_k)$ for $1 \le k \le m$; prime modulus $p = 998244353$, with $e_k + a_i \not\equiv 0 \pmod p$ whenever $\gamma_k \not\equiv 0 \pmod p$.
+- **Postconditions (Output)**: Array of $m$ sums $\sum_{i=1}^n a_i^{(k)} \bmod p$ for $1 \le k \le m$.
+- **Time & Space Complexity**: $O((n + m)\log^2(n + m))$ time and $O((n + m)\log(n + m))$ space.
+- **Loop / Algebraic Invariant**: Because $P(e_k) = \prod_{i=1}^n (e_k + a_i) \not\equiv 0 \pmod p$, $P'(e_k) / P(e_k) \equiv \sum_{i=1}^n (e_k + a_i)^{-1} \pmod p$ holds without poles at every query step $k$.
+- **Failure Modes & Edge Cases**: If $\gamma_k \equiv 0 \pmod p$ (the Möbius transformation at step $k$ is affine, $c = 0$), evaluating $S(e_k)$ is unnecessary and $e_k = \delta_k \gamma_k^{-1}$ is undefined; always branch on $\gamma_k = 0$ and use the affine sum formula $\alpha_k \sum_{i=1}^n a_i + n \beta_k \bmod p$ directly.
+
+</details>
+
+---
+
+### Advanced 2 (`#202`) — [KrOI2021] Feux Follets (Luogu P7440)
+
+- **Source**: [Luogu P7440 — [KrOI2021] Feux Follets](https://www.luogu.com.cn/problem/P7440)
+- **Canonical ID**: `#202` (`5B#B13`)
+- **Prerequisites**: Tellegen's Principle on Divide-and-Conquer trees (§20.1–§20.3), Transposed Middle Product (`mulT`), Stirling / Falling-Factorial / Binomial D&C.
+
+#### Problem Statement & Constraints
+
+You are given an integer $N$, root parameters $a_0, a_1, \dots, a_{N-1} \in \mathbb{F}_{998244353}$, and a linear-functional coefficient array $c_0, c_1, \dots, c_{N-1} \in \mathbb{F}_{998244353}$. For each prefix polynomial
+$$
+Q_j(x) = \prod_{i=0}^{j-1} (x + a_i) \qquad (0 \le j < N, \quad Q_0(x) = 1),
+$$
+define the output sequence $b_0, b_1, \dots, b_{N-1}$ by the linear functional pairing:
+$$
+b_j = \sum_{k=0}^{j} c_k \, [x^k] Q_j(x) \pmod{998244353} \qquad \text{for all } j = 0, 1, \dots, N - 1,
+$$
+and symmetrically for the leave-one-out subproduct basis $P_{\text{leaf}(i)}(x) = 1 + a_i x$, define $z_i = \sum_{k=0}^{N-1} c_k \, [x^k] \prod_{j \ne i}(1 + a_j x) \pmod{998244353}$. Compute all $N$ dual linear forms modulo $998244353$.
+
+- **Constraints**: $1 \le N \le 10^5$, $0 \le a_i, c_i < 998244353$, Time Limit $2.0\text{ s}$, Modulo $998244353$.
+
+#### Concrete Sample Trace ($N \le 4$)
+
+- **Input**: $N = 3$, $a = (1, 2, 3)$, $c = (c_0, c_1, c_2) = (2, 3, 5)$.
+- **Prefix Polynomials $Q_j(x) = \prod_{i=0}^{j-1} (x + a_i)$**:
+  - $Q_0(x) = 1$,
+  - $Q_1(x) = x + 1$,
+  - $Q_2(x) = (x + 1)(x + 2) = x^2 + 3x + 2$.
+- **Direct Evaluation of $b_j = \sum_{k=0}^{j} c_k [x^k] Q_j(x)$**:
+  - $b_0 = c_0 [x^0] Q_0(x) = 2 \cdot 1 = 2$,
+  - $b_1 = c_0 [x^0] Q_1(x) + c_1 [x^1] Q_1(x) = 2(1) + 3(1) = 5$,
+  - $b_2 = c_0 [x^0] Q_2(x) + c_1 [x^1] Q_2(x) + c_2 [x^2] Q_2(x) = 2(2) + 3(3) + 5(1) = 18$.
+- **Top-Down `mulT` Trace**: Root covector $C_{[0, 3)}(x) = 2 + 3x + 5x^2$.
+  - Left child $[0, 2)$: $\deg < 2 \implies C_{[0, 2)}(x) = C_{[0, 3)}(x) \bmod x^2 = 2 + 3x$.
+    - Leaf $j = 0$: $C_{[0, 1)}(x) = 2 \implies b_0 = 2$.
+    - Leaf $j = 1$: $C_{[1, 2)}(x) = \operatorname{mulT}_1(1 + x, 2 + 3x) = 2(1) + 3(1) = 5 \implies b_1 = 5$.
+  - Right child $[2, 3)$: Multiply in transpose by $Q_{[0, 2)}(x) = (x+1)(x+2) = 2 + 3x + x^2$:
+    $$C_{[2, 3)}(x) = \operatorname{mulT}_1(2 + 3x + x^2, 2 + 3x + 5x^2) = 2(2) + 3(3) + 1(5) = 18 \implies b_2 = 18.$$
+- **Leave-One-Out Subproduct Trace ($c = [1, 2, 1]$)**: Start at root with $\hat{A}_{\text{root}} = [1, 2, 1]$, push to $\{0, 1\}$ via $\operatorname{mulT}([1, 2, 1], [1, 3], 2) = [7, 5]$ (yielding $z_0 = 17, z_1 = 12$) and to Leaf $2$ via $\operatorname{mulT}([1, 2, 1], [1, 3, 2], 1) = [9] = z_2$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Whenever a problem asks you to compute $N$ outputs $z_0, \dots, z_{N-1}$ where each $z_i = \langle \mathbf{c}, \mathcal{L}(\mathbf{e}_i) \rangle$ is the inner product of a fixed coefficient mask $\mathbf{c}$ with the polynomial generated by a unit impulse at leaf $i$ of a Divide-and-Conquer tree, computing each $z_i$ separately would take $O(N^2)$. Instead, recognize that $\mathbf{z} = \mathcal{L}^\top \mathbf{c}$ is the **exact transpose** of the bottom-up D&C polynomial combination $\mathbf{y} = \mathcal{L} \mathbf{w}$!
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Write the primal bottom-up D&C recurrence explicitly first! In the primal circuit, each leaf $i$ starts with a small polynomial $A_i(x)$ of degree $O(1)$ determined by $w_i$, and each internal node $u$ covering $[l, r]$ combines its left and right children via polynomial multiplications:
+$$
+A_u(x) = A_{\text{left}(u)}(x) \cdot P_{\text{right}(u)}(x) + A_{\text{right}(u)}(x) \cdot P_{\text{left}(u)}(x)
+$$
+(or a triangular $2 \times 2$ polynomial matrix transition $V_u = M_{\text{right}} V_{\text{left}}$).
+By Tellegen's Principle (§20.1), reverse the tree traversal from **bottom-up** to **top-down**: initialize the root covector $\hat{A}_{\text{root}} = \mathbf{c}$ of length $N$, and at each node $u$ covering $[l, r]$, push $\hat{A}_u$ to the left and right children using `mulT`!
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+What is the single most critical invariant for keeping the top-down transposed D&C in $O(N \log^2 N)$ instead of $O(N^2 \log N)$?
+**Degree-Window Truncation**: In the primal circuit, the polynomial $A_{\text{left}(u)}(x)$ at child node $\text{left}(u)$ has degree strictly less than $s_L = \text{mid} - l + 1$. Therefore, in the transposed top-down circuit, the covector $\hat{A}_{\text{left}(u)} = \operatorname{mulT}\big(\hat{A}_u, P_{\text{right}(u)}, s_L\big)$ **must be truncated to length $s_L = \text{mid} - l + 1$**! Never pass a full length-$N$ array down the tree.
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Step-by-Step Mathematical Derivation
+
+1. **Primal Bottom-Up D&C Formulation**:
+   Let $\mathcal{T}$ be the segment tree over $[0, N-1]$. At each node $u$ covering $[l, r]$ of length $s_u = r - l + 1$, precompute the auxiliary subproduct polynomials $P_u(x)$ (of degree $s_u$, length $s_u + 1$) bottom-up via $P_u(x) = P_{\text{left}(u)}(x) \cdot P_{\text{right}(u)}(x)$ in $O(N \log^2 N)$ time.
+   In the primal map $\mathbf{y} = \mathcal{L}(\mathbf{w})$, leaf $i$ holds $A_{\text{leaf}(i)}(x) = w_i$, and each internal node $u$ computes
+   $$
+   A_u(x) = \mathcal{M}_{P_{\text{right}(u)}}\big(A_{\text{left}(u)}(x)\big) + \mathcal{M}_{P_{\text{left}(u)}}\big(A_{\text{right}(u)}(x)\big)
+   $$
+   of degree $< s_u$. If the root also applies a global polynomial transform (such as a Taylor shift, Stirling transform, or multiplication by $G(x) \bmod x^N$), that is a single root operator $\mathcal{R}$ applied after $A_{\text{root}}(x)$ is formed: $\mathbf{y} = \mathcal{R}\big(A_{\text{root}}\big)$.
+
+2. **Transposing the Circuit Top-Down ($\mathcal{L}^\top \mathcal{R}^\top \mathbf{c}$)**:
+   Given the target linear functional covector $\mathbf{c} = (c_0, \dots, c_{N-1})^\top$:
+   - **Step $1^\top$ (Transpose Root Operator)**: Compute $\hat{A}_{\text{root}} = \mathcal{R}^\top(\mathbf{c})$ of length $N$ in $O(N \log N)$ time (using a single `mulT`).
+   - **Step $2^\top$ (Top-Down Tree Push via `mulT`)**: At every internal node $u$ covering $[l, r]$ with midpoint $m = \lfloor(l+r)/2\rfloor$, the input covector $\hat{A}_u$ has length $s_u = r - l + 1$. Since $\deg P_{\text{right}(u)} = r - m$ (length $r - m + 1$) and $\deg A_{\text{left}(u)} < m - l + 1$, the transpose of $\mathcal{M}_{P_{\text{right}(u)}}$ is
+     $$
+     \hat{A}_{\text{left}(u)} = \operatorname{mulT}\!\big(\hat{A}_u,\; P_{\text{right}(u)},\; m - l + 1\big),
+     $$
+     and symmetrically,
+     $$
+     \hat{A}_{\text{right}(u)} = \operatorname{mulT}\!\big(\hat{A}_u,\; P_{\text{left}(u)},\; r - m\big).
+     $$
+   - **Step $3^\top$ (Leaf Extraction)**: At each leaf $l = r = i$, $\hat{A}_{\text{leaf}(i)}$ has length $1$, and its sole entry $\hat{A}_{\text{leaf}(i)}[0]$ equals $z_i = (\mathcal{L}^\top \mathcal{R}^\top \mathbf{c})_i$.
+
+3. **Complexity Proof**:
+   At depth $d$ of the segment tree, the lengths $s_u = r - l + 1$ of all disjoint nodes $u$ sum to $N$. Each node $u$ performs two `mulT` calls of FFT size $< 2 s_u$, costing $O(s_u \log s_u)$. Summing over all $O(\log N)$ levels yields $O(N \log^2 N)$ time and $O(N \log N)$ space.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Integer $N \le 10^5$, covector array $c[0 \dots N-1]$, and leaf transition polynomials $P_{\text{leaf}(i)}(x)$ for $0 \le i < N$; prime modulus $p = 998244353$.
+- **Postconditions (Output)**: Array $z[0 \dots N-1]$ where $z[i] = \langle \mathbf{c}, \mathcal{R}\mathcal{L}(\mathbf{e}_i) \rangle \bmod p$.
+- **Time & Space Complexity**: $O(N \log^2 N)$ time and $O(N \log N)$ space.
+- **Loop / Algebraic Invariant**: At every tree node $u$ covering $[l, r]$, the dual covector $\hat{A}_u$ is truncated to exact length $r - l + 1$ and satisfies $\langle \hat{A}_u, A_u \rangle = \langle \hat{A}_{\text{left}(u)}, A_{\text{left}(u)} \rangle + \langle \hat{A}_{\text{right}(u)}, A_{\text{right}(u)} \rangle$ for all primal polynomials $A_{\text{left}(u)}, A_{\text{right}(u)}$ with $\deg A_{\text{left}} \le m - l$ and $\deg A_{\text{right}} \le r - m - 1$.
+- **Failure Modes & Edge Cases**: Failing to truncate the child covector $\hat{A}_{\text{left}(u)}$ to length $m - l + 1$ (and $\hat{A}_{\text{right}(u)}$ to length $r - m$) after each `mulT` call causes the covector length to stay $\Omega(N)$ at all levels, blowing up the runtime to $O(N^2 \log N)$.
+
+</details>
+
+---
+
+### Mastery 1 (`#181`) — N-Step Shift (Luogu P5668)
+
+- **Source**: [Luogu P5668 — N-Step Shift](https://www.luogu.com.cn/problem/P5668)
+- **Canonical ID**: `#181` (`5B#D8`)
+- **Prerequisites**: Shift of Sampling Points (`连续点值平移`, §20.4 Part B), P-recursive polynomial doubling (§20.4 Part C), Multipoint Evaluation (§20.3).
+
+#### Problem Statement & Constraints
+
+Let $F(x)$ be a polynomial of degree $d$ over $\mathbb{F}_{998244353}$, specified by its $d + 1$ point evaluations $F(0), F(1), \dots, F(d)$ on consecutive integers. Given a step count $K = 2^t$ (or general integer $K \ge 1$) and query shift $c \in \mathbb{F}_{998244353}$, define the $K$-step rising product polynomial of degree $D = K d$:
+$$
+P_K(x) = \prod_{j=0}^{K-1} F(x + j).
+$$
+Using **Shift of Sampling Points (`§20.4`)** to maintain all intermediate polynomials purely by their point values on consecutive integers $\{0, 1, \dots, k d\}$ without converting back to monomial coefficients, compute the shifted point-value window $P_K(c), P_K(c + 1), \dots, P_K(c + K d)$ modulo $998244353$.
+
+- **Constraints**: $1 \le d \cdot K \le 10^5$, $0 \le c < 998244353$, Time Limit $2.0\text{ s}$, Modulo $998244353$.
+
+#### Concrete Sample Trace ($N \le 4$)
+
+- **Input**: Degree $d = 1$ with $F(0) = 1, F(1) = 3$ (so $F(x) = 2x + 1$), step count $K = 2$, query shift $c = 2$.
+- **Step 1 (Degree Extension $k = 1 \to 2$)**:
+  - Initially we have $P_1(x) = F(x)$ of degree $1$ at $x \in \{0, 1\}$: $P_1(0) = 1, P_1(1) = 3$.
+  - To multiply $P_1(x)$ and $P_1(x + 1)$ (whose product $P_2(x)$ has degree $2$), first extend $P_1$ from $\{0, 1\}$ to $\{2\}$ via `shift_of_sampling_points([1, 3], c = 2, m = 1)`, giving $P_1(2) = 5$, so $P_1(0..2) = [1, 3, 5]$.
+  - Next, evaluate $P_1(x + 1)$ on $x \in \{0, 1, 2\}$ (via `shift_of_sampling_points([1, 3], c = 1, m = 3)` or array shift since $1 \in \mathbb{Z}$), giving $P_1(1..3) = [3, 5, 7]$.
+  - Multiply pointwise on $x \in \{0, 1, 2\}$:
+    $$P_2(0) = 1 \cdot 3 = 3, \quad P_2(1) = 3 \cdot 5 = 15, \quad P_2(2) = 5 \cdot 7 = 35.$$
+    (Check: $P_2(x) = (2x + 1)(2x + 3) = 4x^2 + 8x + 3$ gives $3, 15, 35$ at $x = 0, 1, 2$.)
+- **Step 2 (Query Shift $c = 2$)**:
+  - Call `shift_of_sampling_points([3, 15, 35], c = 2, m = 3)` to obtain $P_2(2..4) = [35, 63, 99]$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Unrolling $N$ steps of a polynomial recurrence $\mathbf{v}_{k} = M(k) \mathbf{v}_{k-1}$ where each entry of the $r \times r$ transition matrix $M(x)$ is a polynomial in $x$ of degree $\le \delta$ requires computing the rising matrix product $\mathcal{M}_N(x) = M(x + N) M(x + N - 1) \cdots M(x + 1)$.
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Each entry of the $d$-step product matrix $\mathcal{M}_d(x) = M(x + d) \cdots M(x + 1)$ is a polynomial in $x$ of degree at most $D = \delta d$. Therefore, $\mathcal{M}_d(x)$ is completely determined by its values on the $D + 1$ consecutive grid points $t = 0, 1, \dots, D$ (where $x = v \cdot t$ for giant-step stride $v = \lfloor\sqrt{N}\rfloor$).
+To double the step count from $d$ to $2d$, use the associativity identity
+$$
+\mathcal{M}_{2d}(v t) = \mathcal{M}_d(v t + d) \cdot \mathcal{M}_d(v t).
+$$
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+At step $d$ (with current polynomial degree $D = \delta d$), each of the $r^2$ matrix entries is stored as an array of $D + 1$ values at $t = 0, 1, \dots, D$.
+1. Apply `shift_of_sampling_points` with offset $c_1 = D + 1$ and length $m_1 = D$ to extend each entry to $t = 0, 1, \dots, 2D$.
+2. Apply `shift_of_sampling_points` with offset $c_2 = d \cdot v^{-1} \bmod p$ and length $m_2 = 2D + 1$ to obtain $\mathcal{M}_d(v t + d)$ for $t = 0, 1, \dots, 2D$.
+3. Multiply the $r \times r$ matrices $\mathcal{M}_d(v t + d) \cdot \mathcal{M}_d(v t)$ pointwise at each $t \in [0, 2D]$!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Step-by-Step Mathematical Derivation
+
+1. **Polynomial Degree Bound of the $d$-Step Transfer Matrix**:
+   Let $M(x) \in \mathbb{F}_p[x]^{r \times r}$ have polynomial entries of degree $\le \delta$. For any integer $d \ge 1$, the $d$-step transfer matrix
+   $$
+   \mathcal{M}_d(x) := M(x + d) M(x + d - 1) \cdots M(x + 1)
+   $$
+   has polynomial entries of degree at most $D = \delta d$. Fix a giant-step stride $v \ge 1$ ($\gcd(v, p) = 1$) and define the rescaled matrix polynomial $\mathcal{H}_d(t) := \mathcal{M}_d(v t)$, whose entries also have degree $\le D = \delta d$ in $t$.
+
+2. **Point-Value Doubling Recurrence ($d \to 2d$ and $2d \to 2d + 1$)**:
+   Suppose we know the $r \times r$ matrices $\mathcal{H}_d(0), \mathcal{H}_d(1), \dots, \mathcal{H}_d(D)$. Since $\deg \mathcal{H}_{2d} \le 2D$, we need $\mathcal{H}_{2d}(t)$ for $t = 0, 1, \dots, 2D$.
+   By definition,
+   $$
+   \mathcal{H}_{2d}(t) = \mathcal{M}_{2d}(v t) = \mathcal{M}_d(v t + d) \cdot \mathcal{M}_d(v t) = \mathcal{H}_d\!\left(t + d v^{-1}\right) \cdot \mathcal{H}_d(t).
+   $$
+   - First, for each $(i, j) \in [1, r]^2$, call `shift_of_sampling_points` on the degree-$D$ sequence $\mathcal{H}_d(0 \dots D)_{i,j}$ with shift $c_1 = D + 1$ and count $m_1 = D$ to obtain $\mathcal{H}_d(D + 1 \dots 2D)_{i,j}$.
+   - Second, call `shift_of_sampling_points` on $\mathcal{H}_d(0 \dots D)_{i,j}$ with shift $c_2 = d v^{-1} \bmod p$ and count $m_2 = 2D + 1$ to obtain $\mathcal{H}_d(t + d v^{-1})_{i,j}$ for $0 \le t \le 2D$.
+   - Note that the Lagrange denominator weights $(-1)^{D-k}/(k!(D-k)!)$ and the shifted inverse kernel $B[t] = (c - D + t)^{-1}$ depend **only on $D$ and $c$, not on $(i, j)$**! Thus the forward NTT of $B$ is computed **once** per shift and shared across all $r^2$ matrix entries.
+   - Finally, for each $t \in [0, 2D]$, perform one $r \times r$ matrix multiplication $\mathcal{H}_{2d}(t) = \mathcal{H}_d(t + d v^{-1}) \cdot \mathcal{H}_d(t)$ in $O(r^3)$ time.
+   - If advancing $d \to d + 1$, extend the grid by $\delta$ more points via `shift_of_sampling_points` and left-multiply each $\mathcal{H}_d(t)$ by $M(v t + d + 1)$.
+
+3. **Giant-Step Contraction**:
+   Once $d = v = \lfloor \sqrt{N} \rfloor$, multiply $\mathcal{H}_v(v - 1) \cdots \mathcal{H}_v(1) \mathcal{H}_v(0) \mathbf{v}_0$ and apply the remaining $N - v^2 < 2v + 1$ single steps $M(k)$ directly.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Step count $N$, matrix dimension $r$, degree bound $\delta$, polynomial matrix $M(x) \in \mathbb{F}_p[x]^{r \times r}$, and initial vector $\mathbf{v}_0 \in \mathbb{F}_p^r$; prime modulus $p = 998244353 > \delta \sqrt{N}$.
+- **Postconditions (Output)**: Final state vector $\mathbf{v}_N = M(N) M(N-1) \cdots M(1) \mathbf{v}_0 \bmod p$.
+- **Time & Space Complexity**: $O\big(r^2 \delta \sqrt{N} \log(\delta N) + r^3 \delta \sqrt{N}\big)$ time and $O(r^2 \delta \sqrt{N})$ space.
+- **Loop / Algebraic Invariant**: At the end of doubling step $d$, the stored table $\mathcal{H}_d[0 \dots \delta d]$ equals the exact point evaluations $\mathcal{M}_d(v t) \bmod p$ of the degree-$\delta d$ matrix polynomial $\prod_{j=1}^d M(v t + j)$ at $t = 0, 1, \dots, \delta d$.
+- **Failure Modes & Edge Cases**: Recomputing the Lagrange denominator weights and the forward NTT of the shifted inverse kernel $B[t] = (c - D + t)^{-1}$ separately for each of the $r^2$ matrix entries adds a factor of $r^2$ to the kernel setup; compute the kernel's DFT once per shift and reuse it across all $r^2$ entries, and always guard against $c + j \equiv k \pmod p$ overlap singularities in `shift_of_sampling_points`.
+
+</details>
+
+---
+
+### Mastery 2 (`#217`) — 快速阶乘算法 / Fast Factorial (LOJ 161 / Luogu P5282)
+
+- **Source**: [LibreOJ #161 (快速阶乘算法)](https://loj.ac/p/161) / [Luogu P5282 (快速阶乘算法)](https://www.luogu.com.cn/problem/P5282)
+- **Canonical ID**: `#217` (`5B#D11`)
+- **Prerequisites**: Shift of Sampling Points (`连续点值平移`, §20.4 Part B), Block Polynomial Doubling (§20.4 Part C), Overlap Singularity Handling.
+
+#### Problem Statement
+
+Given positive integers $N$ and a prime $P$ (for standard NTT mode $P = 998244353$, or arbitrary prime $P \le 2^{31} - 1$ using 3-prime NTT / MTT), compute $N! \bmod P$ in $O(\sqrt{P} \log P)$ time.
+
+#### Constraints
+
+- $1 \le N < P \le 2^{31} - 1$ (with up to $T \le 5$ testcases)
+- Time limit: $1.0\text{ s}$–$2.0\text{ s}$ (requires $O(\sqrt{N} \log N)$ time and $O(\sqrt{N})$ space).
+
+#### Sample Trace ($N = 10, P = 998244353$)
+
+With $N = 10$, $v = \lfloor\sqrt{10}\rfloor = 3$:
+- Start $d = 1$: $H_1(t) = G_1(3t) = 3t + 1$ for $t \in \{0, 1\}$, so $H_1 = [G_1(0), G_1(3)] = [1, 4]$.
+- Double $d = 1 \to 2$:
+  - Shift 1 ($c_1 = 2, m_1 = 1$): $H_1(2) = G_1(6) = 7$, extending $H_1(0 \dots 2) = [1, 4, 7]$.
+  - Shift 2 ($c_2 = 1 \cdot 3^{-1} \bmod P$, $m_2 = 3$): evaluates $G_1(3t + 1) = 3t + 2$ at $t = 0, 1, 2$, yielding $[2, 5, 8]$.
+  - Pointwise product: $H_2(0 \dots 2) = [1 \cdot 2,\; 4 \cdot 5,\; 7 \cdot 8] = [2, 20, 56]$.
+- Increment $d = 2 \to 3$:
+  - Shift $H_2(0 \dots 2)$ to $t = 3$: $H_2(3) = G_2(9) = 10 \cdot 11 = 110$, so $H_2(0 \dots 3) = [2, 20, 56, 110]$.
+  - Multiply by $(3t + 3)$ for $t = 0, 1, 2, 3$: $H_3(0 \dots 3) = [2 \cdot 3,\; 20 \cdot 6,\; 56 \cdot 9,\; 110 \cdot 12] = [6, 120, 504, 1320]$.
+- Giant steps ($t = 0, 1, 2$): $H_3(0) \cdot H_3(1) \cdot H_3(2) = 6 \cdot 120 \cdot 504 = 362880 = 9!$.
+- Tail ($j = 10$): $362880 \times 10 = 3628800 = 10!$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+When $N \ge P$, $N! \equiv 0 \pmod P$ immediately. When $N > (P - 1)/2$, **Wilson's Theorem** $(P - 1)! \equiv -1 \pmod P$ allows us to reduce $N!$ to the inverse of $(P - 1 - N)!$:
+$$
+N! \equiv \frac{(-1)^{P - N}}{(P - 1 - N)!} \pmod P,
+$$
+which cuts $N$ to at most $P / 2$ before we even start! Then for $v = \lfloor\sqrt{N}\rfloor$, we need $G_v(k v) = \prod_{j=1}^v (k v + j) \bmod P$ for $0 \le k < v$.
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Define $H_d(t) = G_d(v t) = \prod_{j=1}^d (v t + j)$, a polynomial in $t$ of degree $d$. At each binary step of $v$, we maintain the array of $d + 1$ point values $H_d(0), H_d(1), \dots, H_d(d)$.
+To go from $d$ to $2d$ (or $2d + 1$ if the current bit of $v$ is $1$, let $\text{bit} \in \{0, 1\}$):
+1. Shift $H_d(0 \dots d)$ to $c_1 = d + 1$ with length $m_1 = d + \text{bit}$ to obtain $H_d(0 \dots 2d + \text{bit})$.
+2. Shift $H_d(0 \dots d)$ to $c_2 = d \cdot v^{-1} \bmod P$ with length $m_2 = 2d + 1 + \text{bit}$ to obtain $H_d(t + d v^{-1})$ for $0 \le t \le 2d + \text{bit}$.
+3. Multiply pointwise: $H_{2d}(t) = H_d(t) \cdot H_d(t + d v^{-1}) \bmod P$.
+4. If $\text{bit} = 1$, multiply each $H_{2d}(t)$ by $(v t + 2d + 1) \bmod P$ for $0 \le t \le 2d + 1$.
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Why is Shift 2 ($c_2 = d \cdot v^{-1} \bmod P$) guaranteed not to hit the Overlap Singularity Trap when $2v^2 < P$?
+Because $c_2 + t \equiv s \pmod P$ for $0 \le t \le 2d + 1$ and $0 \le s \le d$ would imply $d + v(t - s) \equiv 0 \pmod P$, where $0 < |d + v(t - s)| \le v + v(2v + 1) = 2v^2 + 2v < P$ for $N \le P/2$! Still, wrapping `shift_of_sampling_points` with the general overlap-splitting guard (§20.4 Part B) makes it $100\%$ bulletproof for all $N, P$.
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Step-by-Step Mathematical Derivation
+
+1. **Wilson's Theorem Reflection for $N > P / 2$**:
+   If $N \ge P$, return $0$. If $N > (P - 1) / 2$, since $(P - 1)! \equiv -1 \pmod P$ and $\prod_{k = N + 1}^{P - 1} k \equiv (-1)^{P - 1 - N} (P - 1 - N)! \pmod P$, we have
+   $$
+   N! \equiv (-1)^{P - N} \big((P - 1 - N)!\big)^{-1} \pmod P.
+   $$
+   Thus we may assume $N \le (P - 1) / 2$. If $N$ is small ($N \le 256$), compute $N! \bmod P$ directly by a simple loop.
+
+2. **Binary Doubling on Sampling Points $H_d(0 \dots d)$**:
+   Set $v = \lfloor\sqrt{N}\rfloor$. Start at the highest set bit of $v$ with $d = 1$ and $H_1 = [1,\; v + 1]$.
+   For each subsequent bit $\text{bit} \in \{0, 1\}$ of $v$ from top to bottom:
+   - Let $D_{\text{next}} = 2d + \text{bit}$.
+   - **Call 1**: Extend $H_d[0 \dots d]$ by calling `shift_of_sampling_points(H_d, d + 1, d + bit)` to get $H_d[d + 1 \dots D_{\text{next}}]$, and concatenate to form $L[0 \dots D_{\text{next}}]$.
+   - **Call 2**: Call `shift_of_sampling_points(H_d, d * inv(v) % P, D_next + 1)` to get $R[0 \dots D_{\text{next}}]$ where $R[t] = G_d(v t + d) \bmod P$.
+   - **Combine**: Set $H_{\text{next}}[t] = L[t] \cdot R[t] \bmod P$ for $0 \le t \le D_{\text{next}}$.
+   - **Odd Increment ($\text{bit} = 1$)**: For $0 \le t \le D_{\text{next}}$, multiply $H_{\text{next}}[t]$ by $(v t + 2d + 1) \bmod P$.
+   - Update $d \gets D_{\text{next}}$ and $H_d \gets H_{\text{next}}$.
+
+3. **Final Assembly**:
+   Once $d = v$, multiply the first $v$ block values $\text{ans} = \prod_{t=0}^{v-1} H_v[t] \bmod P = (v^2)! \bmod P$, and multiply by the remaining tail $\prod_{k = v^2 + 1}^N k \bmod P$.
+   *(Arbitrary Prime $P \le 2^{31} - 1$)*: Inside `shift_of_sampling_points`, perform the single polynomial convolution of length $\le 4v \le 2 \times 10^5$ using a 3-prime NTT (e.g., primes $998244353, 1004535809, 469762049$ with Chinese Remainder Theorem reconstruction) so that all arithmetic modulo $P$ remains $100\%$ exact!
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Integer $N \ge 0$ and prime modulus $P \ge 2$ (for arbitrary $P \le 2^{31} - 1$, use 3-prime NTT inside `shift_of_sampling_points`).
+- **Postconditions (Output)**: Returns $N! \bmod P \in [0, P - 1]$.
+- **Time & Space Complexity**: $O(\sqrt{\min(N, P - N)} \log P)$ time and $O(\sqrt{\min(N, P - N)})$ space.
+- **Loop / Algebraic Invariant**: After processing a prefix of the binary representation of $v$ with value $d$, the array $H_d[0 \dots d]$ has length $d + 1$ and satisfies $H_d[t] \equiv \prod_{j=1}^d (v t + j) \pmod P$ for all $0 \le t \le d$.
+- **Failure Modes & Edge Cases**: If $N \ge P$, return $0$ immediately; if $N > (P - 1)/2$, apply Wilson's reflection $N! \equiv (-1)^{P - N} ((P - 1 - N)!)^{-1} \pmod P$ first so that $2 v^2 + 2v < P$ and `shift_of_sampling_points` never divides by $0 \pmod P$ in the Lagrange kernel.
+
+</details>
+
+---
+
+## §20.6 Diagnostic Signals, Reverse-Engineering Scratchpad & Chapter Summary
+
+### Quick-Reference Diagnostic Table
+
+| Structural Signal in the Problem | Primal Operator $M$ | Transposed / Fast Engine | Complexity |
+| :--- | :--- | :--- | :--- |
+| Sliding cross-correlation $\sum_{j=0}^{m-1} B[j]\,C[i+j]$ ($0 \le i < n$) | Polynomial product $\mathcal{M}_B(A) = A \cdot B$ | Middle Product $\operatorname{mulT}(C, B, n)$ (`DIF` + `DIT`, length $L \ge n + m - 1$) | $O((n+m)\log(n+m))$ ($2\times$ shorter FFT, $0$ bit-reversals) |
+| Evaluate $F(x)$ of degree $< n$ at $m$ arbitrary points $x_0 \dots x_{m-1}$ | Rational sum $\sum_{i=0}^{m-1} \frac{w_i}{1 - x_i x} \bmod x^n$ | Division-Free Transposed Multipoint Evaluation (`eval`: 1 root `inv` + top-down `mulT`) | $O(m \log^2 m + n \log n)$ ($3\times$ faster than Euclidean `divmod`) |
+| Reconstruct $F(x)$ of degree $< n$ from $y_i = F(x_i)$ at $n$ distinct points | Multipoint evaluation $\mathbf{y} = V \mathbf{f}$ | Fast Lagrange Interpolation (`interp`: $v_i = M'(x_i)$ via `eval` + bottom-up tree sum) | $O(n \log^2 n)$ |
+| Geometric linear form $z_j = \sum_{i=0}^{m-1} w_i (a c^i)^j$ ($0 \le j < n$) | Chirp Z-Transform $y_i = F(a c^i)$ | Transposed Chirp Z-Transform $\text{czt}^\top$ via 1 `mulT` with $C[k] = c^{\binom{k}{2}}$ | $O((n+m)\log(n+m))$ |
+| Given $F(0 \dots d)$, compute $F(c \dots c+m-1)$ on a shifted integer grid | Monomial coefficient shift $F(x+c)$ | Shift of Sampling Points (`连续点值平移`) via Lagrange convolution + batch inversion | $O((d+m)\log(d+m))$ (1 NTT) |
+| Rising factorial product $\prod_{k=1}^N M(k)$ or $N! \bmod P$ for $N \sim 10^9$ | $O(N)$ sequential step loop | BSGS Block Polynomial Doubling $G_{2d}(x) = G_d(x)G_d(x+d)$ on $G_d(0, v, \dots, dv)$ | $O(\sqrt{N}\log N)$ |
+
+---
+
+### Pre-Submission Checklist for Chapter 20 Engines
+
+1. **`mulT` Input Truncation**: Did you truncate or bound the first argument $C$ of $\operatorname{mulT}(C, B, n)$ to length at most $n + m - 1$ before zero-padding to the FFT length $L \ge n + m - 1$? (Leaving nonzero elements at indices $\ge n + m - 1$ causes cyclic wrap-around to spill past index $m - 2$ and corrupt the output window $[m-1, n+m-2]$.)
+2. **Top-Down `eval` Degree Trimming**: At every node $u$ of the top-down multipoint evaluation or transposed D&C tree covering $[l, r]$, did you pass the exact target length $s = r - l + 1$ to `mulT`?
+3. **Shift of Sampling Points Overlap Guard**: Before inverting $c - d + t \pmod p$ in `shift_of_sampling_points`, did you reduce $c \bmod p$ and split out any index $k \in [0, m-1]$ where $(c + k) \bmod p \in [0, d]$ by copying $F((c+k) \bmod p)$ directly?
+4. **Characteristic Check ($p > d$)**: Did you verify that the prime modulus $p$ satisfies $p > d$ so that the Lagrange denominator $i! (d - i)! \not\equiv 0 \pmod p$ is invertible?
+
+---
+
+### Quarantined Footnotes & Historical Notes
+
+- **Tellegen's Theorem (1952) & Algebraic Complexity (Baur–Strassen / Kaltofen / Bostan–Lecerf–Schost)**: Originally discovered by Bernard Tellegen in electrical network theory (conservation of virtual power across topologically dual circuits), the transposition principle was brought into algebraic complexity by Fiduccia, Bordewich, Kaltofen, and systematized for polynomial algorithms (including the middle product `mulT` and division-free multipoint evaluation) by Bostan, Lecerf, and Schost (2003), *"Tellegen's Principle into Practice"*.
+- **Curriculum Reference Registry & Verification Benchmarks (`R-26`, `R-27`, `R-30`)**: The transposed middle-product and division-free multipoint evaluation algorithms in this chapter correspond to **`R-26`** ([Bostan, Lecerf, and Schost (2003) — *Tellegen's Principle into Practice*](https://algo.inria.fr/schost/Articles/BoLeSc03.pdf)) and **`R-27`** ([CP-Algorithms — Multipoint Evaluation and Interpolation](https://cp-algorithms.com/algebra/polynomial.html)), verified against the Library Checker benchmark **`R-30`** ([`multipoint_evaluation`](https://judge.yosupo.jp/problem/multipoint_evaluation)) and **`shift_of_sampling_points`** ([`shift_of_sampling_points_of_polynomial`](https://judge.yosupo.jp/problem/shift_of_sampling_points_of_polynomial)).
+
+---
+
+**Next Chapter**: Continue to **[Chapter 21: Power Projection, Kinoshita–Li FPS Composition & Dual-Route Compositional Inverse](ch21-kinoshita-li-composition-power-projection-revert.qmd)**, where we apply Tellegen's Principle to transpose FPS composition $G(F(x)) \bmod x^n$ into the **Power Projection** problem $\langle \mathbf{w}, F(x)^k \rangle$ and unlock $O(N \log^2 N)$ composition and compositional inversion via the Kinoshita–Li (2024) transposed Bostan–Mori recursion!

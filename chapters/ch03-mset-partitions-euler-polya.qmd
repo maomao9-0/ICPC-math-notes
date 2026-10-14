@@ -1,0 +1,1592 @@
+---
+title: "03 — The Unlabeled Symbolic Method: Ordinary Generating Functions (OGFs), Multisets & Partitions"
+subtitle: "Part I · Foundations of Formal Power Series & The Symbolic Method"
+---
+
+In Chapters 01 and 02, we constructed the algebraic machinery of the formal power series ring $K[[x]]$: valuations, the $(x)$-adic topology, Newton-iteration division ($F^{-1}$), and the formal differential/integral calculus of $\ln F(x)$ and $\exp F(x)$. Now we answer the central modelling question of enumerative combinatorics: **how do we translate a concrete counting specification into a formal power series equation without guessing recurrences by hand?**
+
+When the elementary building blocks of our combinatorial objects are **unlabeled**—meaning two objects of the same type and size are indistinguishable, like identical coins in a knapsack, identical rows of boxes in an integer partition, or identical beads on a necklace—the right algebraic language is the **Ordinary Generating Function (OGF)**. In this chapter, we develop Flajolet and Sedgewick's **Unlabeled Symbolic Method** from first principles, progress from sequences ($\operatorname{SEQ}$) to powersets ($\operatorname{PSET}$) and multisets ($\operatorname{MSET}$ / the **Euler Transform**), invert the Euler product via $\ln$ and **Möbius inversion**, explore the geometry of **integer partitions** (Ferrers conjugation, Durfee squares, $\sqrt{N}$ Heavy-Light splits, and **Euler's Pentagonal Number Theorem**), and culminate in **Burnside's Lemma** and **Pólya's Cycle Index Theorem**, which reveal why Euler's multiset formula is simply the symmetric group $S_n$ acting on unordered tuples.
+
+::: {.callout-note}
+### Prerequisites & Chapter Dependencies
+- **Chapter 01 (`ch01-ring-convolutions-newton-inv.qmd`)**: The ring $K[[x]]$, formal valuation $\operatorname{val}(F)$, the unit criterion $[x^0]F \in K^\times$, Newton-iteration polynomial inversion `inv`, and the $(x)$-adic convergence of infinite sums and products.
+- **Chapter 02 (`ch02-calculus-frobenius-sparse-ode-newton.qmd`)**: Formal derivative/integral operators, formal logarithm `ln`, and formal exponential `exp` modulo $x^{N+1}$ in $O(N \log N)$ time, along with the characteristic requirement $p > N$.
+:::
+
+::: {.callout-tip}
+### Learning Objectives
+By the end of this chapter, you will be able to:
+
+1. **Translate** unlabeled combinatorial specifications built from disjoint unions ($+$), Cartesian products ($\times$), sequences ($\operatorname{SEQ}$), powersets ($\operatorname{PSET}$), and multisets ($\operatorname{MSET}$) directly into OGF equations over $K[[x]]$.
+2. **Execute** the **Forward Euler Transform** $B(x) = \prod_{k \ge 1} (1 - x^k)^{-a_k} \bmod x^{N+1}$ in $O(N \log N)$ time via the Pólya–Euler harmonic logarithm sieve and a single `exp`, and distinguish **Regime A** (exponent-variable products) from **Regime B** (coefficient-variable products).
+3. **Invert** any Euler product (**Inverse Euler Transform**) in $O(N \log N)$ time by combining formal logarithm $\ln B(x)$ with **Möbius inversion** to recover primitive generator counts $a_k$ from composite multiset counts $b_n$.
+4. **Analyze** restricted and unrestricted integer partitions using **Ferrers diagram conjugation**, **Durfee square decomposition**, and the **$O(N\sqrt{N})$ Heavy-Light split** (which avoids division and works modulo any composite integer $M$).
+5. **Prove** **Euler's Pentagonal Number Theorem** via Franklin's base-versus-slope involution and implement both the $O(N\sqrt{N})$ division-free recurrence and the $O(N \log N)$ sparse FPS inversion engine for $p(n)$.
+6. **Apply** **Burnside's Lemma** and **Pólya's Cycle Index Theorem** $Z_G(s_1, \dots, s_n)$ to count necklaces ($C_n$), bracelets ($D_n$), unordered multisets ($S_n$), and non-isomorphic simple graphs on $n$ vertices.
+:::
+
+---
+
+## 3.1 Combinatorial Classes & Admissible Unlabeled Constructions (`+`, `\times`, `SEQ`)
+
+### 3.1.1 Unlabeled Combinatorial Classes and Ordinary Generating Functions
+
+Before writing any algebraic equations, let us state in plain language what we are counting. Suppose we have a collection of discrete objects—such as binary strings, coin combinations, or rooted trees—where each object $\alpha$ has a non-negative integer **size** (or **weight**) $|\alpha| \in \mathbb{Z}_{\ge 0}$, such as the length of a string or the total value of a coin collection.
+
+::: {.callout-important}
+### Definition 3.1 (Combinatorial Class & Ordinary Generating Function)
+An **unlabeled combinatorial class** is a pair $(\mathcal{A}, |\cdot|)$ consisting of a set of objects $\mathcal{A}$ and a size function $|\cdot| : \mathcal{A} \to \mathbb{Z}_{\ge 0}$ such that for every non-negative integer $n \ge 0$, the subset of objects of size $n$,
+$$
+\mathcal{A}_n := \{\alpha \in \mathcal{A} : |\alpha| = n\},
+$$
+is **finite**, with cardinality $a_n := |\mathcal{A}_n| < \infty$.
+
+The **Ordinary Generating Function (OGF)** of the class $\mathcal{A}$ is the formal power series $A(x) \in \mathbb{Q}[[x]]$ (or $K[[x]]$ over a commutative ring $K$) whose $n$-th coefficient $[x^n]A(x)$ records the number of objects of size $n$:
+$$
+A(x) = \sum_{n=0}^{\infty} a_n x^n = \sum_{\alpha \in \mathcal{A}} x^{|\alpha|}.
+$$
+Two combinatorial classes $\mathcal{A}$ and $\mathcal{B}$ are **combinatorially isomorphic** (written $\mathcal{A} \cong \mathcal{B}$) if there exists a size-preserving bijection $\phi : \mathcal{A} \to \mathcal{B}$, which holds if and only if $A(x) = B(x)$ in $\mathbb{Q}[[x]]$.
+:::
+
+Look closely at the two equivalent sums in Definition 3.1:
+$$
+\sum_{\alpha \in \mathcal{A}} x^{|\alpha|} = \sum_{n=0}^{\infty} \left(\sum_{\substack{\alpha \in \mathcal{A} \\ |\alpha| = n}} 1\right) x^n = \sum_{n=0}^{\infty} a_n x^n.
+$$
+Every individual object $\alpha \in \mathcal{A}$ carries the algebraic "monomial tag" $x^{|\alpha|}$. When we group all objects of the same size $n$ together, their monomials $x^n$ add up to $a_n x^n$.
+
+Two atomic building blocks start every symbolic specification:
+
+1. **The Neutral Class $\mathcal{E} = \{\epsilon\}$**: Contains a single "empty" or "null" object $\epsilon$ of size $|\epsilon| = 0$. Its counting sequence is $(1, 0, 0, \dots)$, and its OGF is $E(x) = x^0 = 1$.
+2. **The Atomic Class $\mathcal{Z} = \{\bullet\}$**: Contains a single elementary atom $\bullet$ (a single node, a $1$-yen coin, or a single step) of size $|\bullet| = 1$. Its counting sequence is $(0, 1, 0, 0, \dots)$, and its OGF is $Z(x) = x^1 = x$. More generally, a single atom $\bullet_w$ of size $w \ge 1$ has OGF $x^w$.
+
+---
+
+### 3.1.2 The Three Fundamental Unlabeled Operators: Disjoint Union, Cartesian Product, and Sequence
+
+Suppose we already know the OGFs $A(x) = \sum_{n \ge 0} a_n x^n$ and $B(x) = \sum_{n \ge 0} b_n x^n$ of two combinatorial classes $\mathcal{A}$ and $\mathcal{B}$. How do we form larger classes from them, and how do their OGFs combine?
+
+#### 1. Disjoint Union (Combinatorial Sum: $\mathcal{C} = \mathcal{A} + \mathcal{B}$)
+- **Concrete Meaning**: An object $\gamma \in \mathcal{C}$ is chosen to be **either** an object from $\mathcal{A}$ **or** an object from $\mathcal{B}$ (with $\mathcal{A}$ and $\mathcal{B}$ made disjoint if they overlap, so a choice from $\mathcal{A}$ is always distinguished from a choice from $\mathcal{B}$), retaining its original size.
+- **Single-Step OGF Derivation**:
+  $$
+  C(x) = \sum_{\gamma \in \mathcal{A} \sqcup \mathcal{B}} x^{|\gamma|} = \sum_{\alpha \in \mathcal{A}} x^{|\alpha|} + \sum_{\beta \in \mathcal{B}} x^{|\beta|} = A(x) + B(x),
+  $$
+  so $c_n = a_n + b_n$ for all $n \ge 0$.
+
+#### 2. Cartesian Product (Ordered Pair: $\mathcal{C} = \mathcal{A} \times \mathcal{B}$)
+- **Concrete Meaning**: An object $\gamma \in \mathcal{C}$ is an **ordered pair** $\gamma = (\alpha, \beta)$ with first component $\alpha \in \mathcal{A}$ and second component $\beta \in \mathcal{B}$, whose total size is the sum of the component sizes:
+  $$
+  |(\alpha, \beta)| = |\alpha| + |\beta|.
+  $$
+- **Single-Step OGF Derivation**: Because exponentiation turns size addition $|\alpha| + |\beta|$ into monomial multiplication $x^{|\alpha|} \cdot x^{|\beta|}$, summing over all pairs $(\alpha, \beta) \in \mathcal{A} \times \mathcal{B}$ factors directly:
+  $$
+  \begin{aligned}
+  C(x) &= \sum_{(\alpha, \beta) \in \mathcal{A} \times \mathcal{B}} x^{|\alpha| + |\beta|} && \text{(definition of size on } \mathcal{A} \times \mathcal{B}\text{)} \\
+  &= \sum_{\alpha \in \mathcal{A}} \sum_{\beta \in \mathcal{B}} x^{|\alpha|} x^{|\beta|} && \text{(exponent law } x^{u+v} = x^u x^v\text{)} \\
+  &= \left(\sum_{\alpha \in \mathcal{A}} x^{|\alpha|}\right) \left(\sum_{\beta \in \mathcal{B}} x^{|\beta|}\right) && \text{(distributivity in } K[[x]]\text{)} \\
+  &= A(x) \cdot B(x).
+  \end{aligned}
+  $$
+  Extracting $[x^n]$ from both sides recovers the Cauchy convolution $c_n = \sum_{k=0}^n a_k b_{n-k}$, where the $k$-th summand $a_k b_{n-k}$ counts pairs $(\alpha, \beta)$ in which the first component has size $|\alpha| = k$ and the second has size $|\beta| = n - k$.
+- **Fixed-$k$ Tuple ($\mathcal{A}^k$)**: Repeating the Cartesian product $k$ times shows that the class $\mathcal{A}^k = \underbrace{\mathcal{A} \times \cdots \times \mathcal{A}}_{k \text{ times}}$ of ordered $k$-tuples $(\alpha_1, \dots, \alpha_k)$ with size $\sum_{i=1}^k |\alpha_i|$ has OGF $A(x)^k$.
+
+#### 3. Sequence Construction (All Finite Ordered Tuples: $\mathcal{C} = \operatorname{SEQ}(\mathcal{A})$)
+- **Concrete Meaning**: An object $\gamma \in \operatorname{SEQ}(\mathcal{A})$ is a finite **ordered sequence** $(\alpha_1, \alpha_2, \dots, \alpha_k)$ of any length $k \ge 0$ of components $\alpha_i \in \mathcal{A}$, where the $k = 0$ case is the empty sequence $\epsilon$ of size $0$:
+  $$
+  \operatorname{SEQ}(\mathcal{A}) = \mathcal{E} + \mathcal{A} + (\mathcal{A} \times \mathcal{A}) + (\mathcal{A} \times \mathcal{A} \times \mathcal{A}) + \cdots = \bigsqcup_{k=0}^{\infty} \mathcal{A}^k.
+  $$
+- **Single-Step OGF Derivation**: Provided the infinite union is admissible (see Theorem 3.1 below), summing the OGFs of $\mathcal{A}^k$ over all sequence lengths $k \ge 0$ yields the geometric series in $K[[x]]$:
+  $$
+  C(x) = \sum_{k=0}^{\infty} A(x)^k = 1 + A(x) + A(x)^2 + A(x)^3 + \cdots = \frac{1}{1 - A(x)}.
+  $$
+  Similarly, the class of **non-empty** sequences $\operatorname{SEQ}_{\ge 1}(\mathcal{A}) = \bigsqcup_{k=1}^{\infty} \mathcal{A}^k$ has OGF $\frac{A(x)}{1 - A(x)}$.
+
+---
+
+### 3.1.3 Why Valuation $\operatorname{val}(A) \ge 1 \iff a_0 = 0$ Is Mandatory
+
+Can we apply $\operatorname{SEQ}(\mathcal{A})$ to *any* combinatorial class $\mathcal{A}$? No! Both combinatorics and abstract algebra enforce the exact same precondition:
+
+::: {.callout-warning}
+### Theorem 3.1 (Admissibility Criterion for $\operatorname{SEQ}(\mathcal{A})$)
+The sequence construction $\mathcal{C} = \operatorname{SEQ}(\mathcal{A})$ is **admissible** (meaning $c_n < \infty$ for every $n \ge 0$, and $C(x) = \frac{1}{1 - A(x)}$ is a well-defined formal power series in $K[[x]]$) **if and only if** $\mathcal{A}$ contains **no objects of size zero**:
+$$
+a_0 = [x^0]A(x) = 0 \iff \operatorname{val}(A) \ge 1.
+$$
+
+1. **The Combinatorial Reason (Finiteness of $\mathcal{C}_n$)**:
+   Suppose $a_0 \ge 1$, so there is at least one object $\alpha_0 \in \mathcal{A}$ with $|\alpha_0| = 0$. Then for $n = 0$, the empty sequence $\epsilon$, the $1$-tuple $(\alpha_0)$, the $2$-tuple $(\alpha_0, \alpha_0)$, and every $k$-tuple $(\alpha_0, \dots, \alpha_0)$ all have total size $0 + \cdots + 0 = 0$, yet they are distinct sequences of different lengths $k$! Thus $c_0 = \infty$ (and by inserting $\alpha_0$'s into any sequence of size $n$, $c_n = \infty$ for any reachable $n$). Conversely, if $a_0 = 0$, every component $\alpha_i \in \mathcal{A}$ has size $|\alpha_i| \ge 1$. Therefore, any sequence $(\alpha_1, \dots, \alpha_k)$ of total size $n$ can have length at most $k \le n$, so $\mathcal{C}_n = \bigsqcup_{k=0}^n (\mathcal{A}^k)_n$ is a finite union of finite sets.
+2. **The Algebraic Reason (Convergence in $K[[x]]$ and Invertibility of $1 - A(x)$)**:
+   In the $(x)$-adic topology of $K[[x]]$ (Chapter 01), an infinite sum $\sum_{k=0}^\infty A(x)^k$ converges formally if and only if $\lim_{k \to \infty} \operatorname{val}(A(x)^k) = \infty$. Because $\operatorname{val}(A^k) \ge k \cdot \operatorname{val}(A)$, this holds if and only if $\operatorname{val}(A) \ge 1$, meaning $[x^0]A(x) = 0$. Under this condition, only $k \le n$ terms of $\sum_{k \ge 0} A(x)^k$ contribute to $[x^n]$, and the denominator $1 - A(x)$ has constant term $[x^0](1 - A(x)) = 1 - 0 = 1 \in K^\times$, which is a unit in **every** commutative ring $K$!
+:::
+
+#### Hand-Checkable Example ($N \le 4$): Ordered Compositions into Restricted Parts
+Let us trace how $\operatorname{SEQ}$ immediately builds generating functions for **integer compositions** (ordered sequences of positive integers summing to $n$, where $(1, 2) \neq (2, 1)$):
+
+- **Example 1: Compositions of $n$ into parts from $\{1, 2\}$ (Domino Tilings / Fibonacci Numbers)**.
+  - *Single Part Class $\mathcal{A}$*: One part is either a $1$-atom ($\bullet_1$, size $1$) or a $2$-atom ($\bullet_2$, size $2$). Thus $A(x) = x + x^2$, with $a_0 = 0$ ($\operatorname{val}(A) = 1 \ge 1$).
+  - *Sequence Class $\mathcal{C} = \operatorname{SEQ}(\mathcal{A})$*: An ordered sequence of parts from $\{1, 2\}$ summing to $n$ has OGF:
+    $$
+    C(x) = \frac{1}{1 - A(x)} = \frac{1}{1 - x - x^2}.
+    $$
+  - *Hand-Checkable Trace for $n \le 4$*: Expanding $\sum_{k=0}^4 (x + x^2)^k \bmod x^5$:
+    - $k = 0$: $1$ (empty composition $()$, size $0$).
+    - $k = 1$: $x + x^2$ (compositions $(1)$ of $1$; $(2)$ of $2$).
+    - $k = 2$: $(x + x^2)^2 = x^2 + 2x^3 + x^4$ (compositions $(1,1)$ of $2$; $(1,2), (2,1)$ of $3$; $(2,2)$ of $4$).
+    - $k = 3$: $(x + x^2)^3 = x^3 + 3x^4 + O(x^5)$ (compositions $(1,1,1)$ of $3$; $(1,1,2), (1,2,1), (2,1,1)$ of $4$).
+    - $k = 4$: $(x + x^2)^4 = x^4 + O(x^5)$ (composition $(1,1,1,1)$ of $4$).
+    Summing down the columns gives $C(x) = 1 + x + 2x^2 + 3x^3 + 5x^4 + O(x^5)$, matching $c_0 = 1, c_1 = 1, c_2 = 2, c_3 = 3, c_4 = 5$!
+
+- **Example 2: Compositions of $n$ into parts of size $\ge 2$**.
+  - *Single Part Class $\mathcal{A}_{\ge 2}$*: One part has size $2, 3, 4, \dots$, which is itself a $2$-atom followed by a sequence of $1$-atoms: $\mathcal{A}_{\ge 2} = \mathcal{Z}^2 \times \operatorname{SEQ}(\mathcal{Z})$, with OGF:
+    $$
+    A_{\ge 2}(x) = x^2 + x^3 + x^4 + \cdots = \frac{x^2}{1 - x}.
+    $$
+  - *Sequence Class $\mathcal{C} = \operatorname{SEQ}(\mathcal{A}_{\ge 2})$*: Since $\operatorname{val}(A_{\ge 2}) = 2 \ge 1$, the sequence construction is admissible and yields:
+    $$
+    C(x) = \frac{1}{1 - A_{\ge 2}(x)} = \frac{1}{1 - \frac{x^2}{1 - x}} = \frac{1 - x}{1 - x - x^2} = 1 + x^2 + x^3 + 2x^4 + O(x^5).
+    $$
+    Indeed, for $n = 0$: $\{()\}$ ($1$ way); $n = 1$: $\emptyset$ ($0$ ways); $n = 2$: $\{(2)\}$ ($1$ way); $n = 3$: $\{(3)\}$ ($1$ way); $n = 4$: $\{(4), (2, 2)\}$ ($2$ ways).
+
+| Combinatorial Construction | Notation | Objects of Size $n$ | OGF Translation | Admissibility Precondition |
+| :--- | :--- | :--- | :--- | :--- |
+| **Neutral Class** | $\mathcal{E} = \{\epsilon\}$ | $[n = 0]$ | $E(x) = 1$ | Always admissible |
+| **Atomic Class (weight $w$)** | $\mathcal{Z}_w = \{\bullet_w\}$ | $[n = w]$ | $Z_w(x) = x^w$ | $w \ge 0$ |
+| **Disjoint Union** | $\mathcal{A} + \mathcal{B}$ | $a_n + b_n$ | $A(x) + B(x)$ | Always admissible |
+| **Cartesian Product** | $\mathcal{A} \times \mathcal{B}$ | $\sum_{k=0}^n a_k b_{n-k}$ | $A(x) \cdot B(x)$ | Always admissible |
+| **Fixed $k$-Tuple** | $\mathcal{A}^k$ | $[x^n] A(x)^k$ | $A(x)^k$ | Always admissible |
+| **Finite Sequence** | $\operatorname{SEQ}(\mathcal{A})$ | $\sum_{k=0}^n [x^n] A(x)^k$ | $\frac{1}{1 - A(x)}$ | $\operatorname{val}(A) \ge 1 \iff a_0 = 0$ |
+
+---
+
+## 3.2 Powersets ($\operatorname{PSET}$), Multisets ($\operatorname{MSET}$ / Euler Transform) & The Inverse Euler Transform
+
+### 3.2.1 From Ordered Sequences to Unordered Subsets ($\operatorname{PSET}$) and Multisets ($\operatorname{MSET}$)
+
+In $\operatorname{SEQ}(\mathcal{A})$, the order of the components matters: $(\alpha_1, \alpha_2) \neq (\alpha_2, \alpha_1)$. What if we want to form an **unordered** collection of objects from $\mathcal{A}$—such as a knapsack selection of coins or a forest of unlabeled rooted trees—where rearranging the components does not create a new configuration?
+
+There are two natural unordered constructions on a combinatorial class $\mathcal{A}$ with $a_0 = 0$:
+
+1. **The Powerset Construction ($\mathcal{P} = \operatorname{PSET}(\mathcal{A})$ — Without Repetition / $0$-$1$ Knapsack)**:
+   An object in $\operatorname{PSET}(\mathcal{A})$ is a finite **subset** of $\mathcal{A}$, meaning each distinct element $\alpha \in \mathcal{A}$ can be chosen either **$0$ times** (contributing size $0$, monomial $1$) or **$1$ time** (contributing size $|\alpha|$, monomial $x^{|\alpha|}$).
+   - Because the decision for each element $\alpha \in \mathcal{A}$ is completely independent, the product rule across all $\alpha \in \mathcal{A}$ gives:
+     $$
+     P(x) = \prod_{\alpha \in \mathcal{A}} \left(1 + x^{|\alpha|}\right).
+     $$
+   - Now group the factors by size $k \ge 1$: since there are $a_k$ distinct elements $\alpha \in \mathcal{A}_k$ of size $k$, each contributing an identical factor $(1 + x^k)$, their product is $(1 + x^k)^{a_k}$:
+     $$
+     P(x) = \prod_{k=1}^{\infty} (1 + x^k)^{a_k}.
+     $$
+
+2. **The Multiset Construction ($\mathcal{B} = \operatorname{MSET}(\mathcal{A})$ — With Unbounded Repetition / The Euler Transform)**:
+   An object in $\operatorname{MSET}(\mathcal{A})$ is a finite **multiset** of elements from $\mathcal{A}$, meaning each distinct element $\alpha \in \mathcal{A}$ can be chosen **$0, 1, 2, 3, \dots$ times**, with total size equal to the sum of sizes of all chosen copies.
+   - For a single element $\alpha \in \mathcal{A}$ of size $|\alpha| = k \ge 1$, choosing $m \ge 0$ identical copies of $\alpha$ forms the sequence class $\operatorname{SEQ}(\{\alpha\})$, whose OGF is the geometric series:
+     $$
+     1 + x^{|\alpha|} + x^{2|\alpha|} + x^{3|\alpha|} + \cdots = \frac{1}{1 - x^{|\alpha|}}.
+     $$
+   - Because a multiset from $\mathcal{A}$ is uniquely specified by choosing how many copies $m_\alpha \ge 0$ to take of each distinct element $\alpha \in \mathcal{A}$, multiplying over all $\alpha \in \mathcal{A}$ and grouping the $a_k$ elements of size $k \ge 1$ yields **Euler's Product Formula (The Euler Transform)**:
+     $$
+     B(x) = \prod_{\alpha \in \mathcal{A}} \frac{1}{1 - x^{|\alpha|}} = \prod_{k=1}^{\infty} \frac{1}{(1 - x^k)^{a_k}}.
+     $$
+
+::: {.callout-note}
+### Combinatorial Double-Check on $(1 - x^k)^{-a_k}$
+Why does having $a_k$ distinguishable types of items of the same weight $k$ produce $(1 - x^k)^{-a_k}$? By the negative binomial expansion:
+$$
+\frac{1}{(1 - x^k)^{a_k}} = \sum_{m=0}^{\infty} \binom{m + a_k - 1}{a_k - 1} x^{mk}.
+$$
+Here, the coefficient $\binom{m + a_k - 1}{a_k - 1}$ is the classic stars-and-bars count of ways to choose $m$ items in total from $a_k$ distinct item types of weight $k$ with repetition allowed, contributing total weight $m \cdot k$.
+:::
+
+---
+
+### 3.2.2 Fast Evaluation via the Pólya–Euler Harmonic Formula ($\ln + \exp$ Sieve)
+
+Suppose we are given the component counts $a_1, a_2, \dots, a_N$ (or a multiset of $M$ item weights $v_1, \dots, v_M \in [1, N]$, which we bucket into frequencies $a_k = \#\{i : v_i = k\}$ in $O(M + N)$ time), and we need the multiset counts $b_0, b_1, \dots, b_N$ modulo $p = 998244353$, where:
+$$
+B(x) = \prod_{k=1}^{N} \frac{1}{(1 - x^k)^{a_k}} \pmod{x^{N+1}}.
+$$
+
+::: {.callout-tip}
+### Diagnostic Signal & Reverse-Engineering Scratchpad: Turning $\prod (1 - x^k)^{-a_k}$ into a Harmonic Sum
+- **The Diagnostic Signal**: You see a product of factors $(1 - x^k)^{-a_k}$ or $(1 + x^k)^{a_k}$ where the **exponents $x^k$ vary** across $k \in \{1, \dots, N\}$ and you only need the result truncated modulo $x^{N+1}$.
+- **Why Direct Multiplication Is Too Slow**: Even after grouping equal weights $k$ into $(1 - x^k)^{-a_k}$, multiplying $N$ polynomials of degree $N$ one by one takes $O(N^2)$ time (or $O(N \log^2 N)$ via divide-and-conquer if expanded, though $(1-x^k)^{-a_k}$ is dense of degree $N$, so naive D&C over $N$ dense degree-$N$ series would cost $O(N^2 \log N)$!).
+- **The Reverse-Engineering Scratchpad**:
+  1. How do we turn a product into a sum in $K[[x]]$? By taking the **formal logarithm $\ln B(x)$** (Chapter 02), since $[x^0]B(x) = 1$!
+  2. What is $\ln\left(\frac{1}{1 - x^k}\right)$? Recall from Chapter 02 that $-\ln(1 - u) = \sum_{j=1}^\infty \frac{u^j}{j}$. Substituting $u = x^k$ produces a **sparse series** containing only multiples of $k$:
+     $$
+     \ln\!\left(\frac{1}{1 - x^k}\right) = \sum_{j=1}^{\infty} \frac{x^{jk}}{j}.
+     $$
+  3. Modulo $x^{N+1}$, for a fixed $k \in \{1, \dots, N\}$, how many multiples $n = jk \le N$ exist? Only $\lfloor N / k \rfloor$ multiples!
+  4. Summing $\lfloor N / k \rfloor$ over all $k = 1, \dots, N$ is the **Harmonic Series**:
+     $$
+     \sum_{k=1}^{N} \left\lfloor \frac{N}{k} \right\rfloor = N \left(1 + \frac{1}{2} + \frac{1}{3} + \cdots + \frac{1}{N}\right) = \Theta(N \log N).
+     $$
+  5. Once $\ln B(x) \bmod x^{N+1}$ is assembled in $O(N \log N)$ time by a simple nested loop, a **single call to `exp`** recovers $B(x) = \exp(\ln B(x)) \bmod x^{N+1}$ in $O(N \log N)$ time!
+:::
+
+Let us write out the single-step derivation of the **Pólya–Euler Harmonic Formula** for both $\operatorname{MSET}(\mathcal{A})$ and $\operatorname{PSET}(\mathcal{A})$:
+
+$$
+\begin{aligned}
+\ln B(x) &= \ln \left( \prod_{k=1}^{\infty} (1 - x^k)^{-a_k} \right) && \text{(definition of } \operatorname{MSET}(\mathcal{A})\text{)} \\
+&= \sum_{k=1}^{\infty} a_k \ln\!\left(\frac{1}{1 - x^k}\right) && \text{(formal logarithm converts products to sums)} \\
+&= \sum_{k=1}^{\infty} a_k \sum_{j=1}^{\infty} \frac{x^{jk}}{j} && \text{(Maclaurin expansion } -\ln(1 - x^k) = \sum_{j \ge 1} \frac{x^{jk}}{j}\text{)} \\
+&= \sum_{j=1}^{\infty} \frac{1}{j} \left(\sum_{k=1}^{\infty} a_k \left(x^j\right)^k\right) && \text{(interchanging } k \text{ and } j \text{ in } K[[x]] \text{ since } jk \to \infty\text{)} \\
+&= \sum_{j=1}^{\infty} \frac{A(x^j)}{j} && \text{(recognizing } A(x^j) = \sum_{k \ge 1} a_k x^{jk}\text{)} \\
+&= \sum_{n=1}^{\infty} \left(\frac{1}{n} \sum_{d \mid n} d \cdot a_d\right) x^n && \text{(setting } n = jk \text{ with } d = k \text{ and } j = n/d\text{)}.
+\end{aligned}
+$$
+
+Exponentiating both sides yields the **Pólya–Euler Exp-Log Formula** for multisets (and similarly for powersets using $\ln(1 + x^k) = \sum_{j \ge 1} \frac{(-1)^{j-1}}{j} x^{jk}$):
+
+$$
+\boxed{
+\operatorname{MSET}(\mathcal{A}): \quad B(x) = \prod_{k=1}^{\infty} \frac{1}{(1 - x^k)^{a_k}} = \exp\!\left(\sum_{j=1}^{\infty} \frac{A(x^j)}{j}\right) = \exp\!\left(\sum_{n=1}^{\infty} \left(\frac{1}{n} \sum_{d \mid n} d \cdot a_d\right) x^n\right)
+}
+$$
+
+$$
+\boxed{
+\operatorname{PSET}(\mathcal{A}): \quad P(x) = \prod_{k=1}^{\infty} (1 + x^k)^{a_k} = \exp\!\left(\sum_{j=1}^{\infty} \frac{(-1)^{j-1}}{j} A(x^j)\right) = \exp\!\left(\sum_{n=1}^{\infty} \left(\frac{1}{n} \sum_{d \mid n} (-1)^{\frac{n}{d} - 1} d \cdot a_d\right) x^n\right)
+}
+$$
+
+*(Local Algebraic Hypotheses)*: Both formulas require $\operatorname{val}(A) \ge 1$ ($a_0 = 0$) for formal convergence, and working modulo $x^{N+1}$ over a ring $K$ requires $1, 2, \dots, N \in K^\times$ (in $\mathbb{F}_p$, the prime characteristic must satisfy $p > N$).
+
+---
+
+### 3.2.3 The Inverse Euler Transform: Recovering Generators via $\ln$ & Möbius Inversion
+
+Now let us flip the problem upside down. Suppose we **already know** the multiset generating function
+$$
+B(x) = 1 + \sum_{n=1}^{N} b_n x^n = \prod_{k=1}^{N} \frac{1}{(1 - x^k)^{a_k}} \pmod{x^{N+1}},
+$$
+and we want to **recover the unknown generator sequence $a_1, a_2, \dots, a_N$**!
+
+::: {.callout-tip}
+### Diagnostic Signal & Reverse-Engineering Scratchpad: The Inverse Euler Transform
+- **The Diagnostic Signal**:
+  1. *Unlabeled Connected vs. Disconnected Structures*: Every unlabeled forest is a multiset of unlabeled trees ($\mathcal{F} = \operatorname{MSET}(\mathcal{T})$); every unlabeled graph is a multiset of unlabeled connected graphs ($\mathcal{G} = \operatorname{MSET}(\mathcal{C})$). If you can count all structures $b_n$ and want the connected ones $a_n$, you need the **Inverse Euler Transform**! (Contrast this with *labeled* EGFs in Chapter 04, where $\widehat{G}(x) = \exp(\widehat{C}(x))$ is inverted by a plain $\widehat{C}(x) = \ln \widehat{G}(x)$ without divisor sums.)
+  2. *Inverse Knapsack / Hidden Set Reconstruction*: You are given the number of ways $b_n$ to form each sum $n \in [1, N]$ using an unknown set of coin weights, and must reconstruct which coins exist (`Luogu P3784`, Problem `#150`).
+- **The Reverse-Engineering Scratchpad**:
+  1. Take the formal logarithm $L(x) := \ln B(x) \bmod x^{N+1}$ in $O(N \log N)$ time.
+  2. By our Pólya–Euler identity above, the $n$-th coefficient of $L(x)$ satisfies:
+     $$
+     [x^n] \ln B(x) = \frac{1}{n} \sum_{d \mid n} d \cdot a_d \iff c_n := n [x^n] \ln B(x) = \sum_{d \mid n} \left(d \cdot a_d\right).
+     $$
+  3. Look at the sequence $c_n = \sum_{d \mid n} (d \cdot a_d)$: it is the **Dirichlet divisor sum** (the Dirichlet convolution with the constant function $\mathbf{1}$) of the sequence $f(d) = d \cdot a_d$!
+  4. Therefore, we can invert the divisor sum in $O(N \log N)$ time using either **Möbius inversion** or a direct **in-place divisor subtraction sieve**, and finally divide by $n$!
+:::
+
+#### Theorem 3.2 (Inverse Euler Transform via $\ln$ and Möbius Inversion)
+Let $K$ be a commutative ring in which $1, 2, \dots, N \in K^\times$ are units, and let $B(x) = 1 + \sum_{n=1}^N b_n x^n \in K[[x]] / (x^{N+1})$. Then there exists a unique sequence $(a_1, \dots, a_N) \in K^N$ such that $B(x) \equiv \prod_{k=1}^N (1 - x^k)^{-a_k} \pmod{x^{N+1}}$, given explicitly by:
+$$
+\boxed{
+n \cdot a_n = \sum_{d \mid n} \mu\!\left(\frac{n}{d}\right) d \, [x^d] \ln B(x) \quad \Longleftrightarrow \quad a_n = \frac{1}{n} \sum_{d \mid n} \mu\!\left(\frac{n}{d}\right) d \, [x^d] \ln B(x) \qquad (1 \le n \le N),
+}
+$$
+where $\mu$ is the classical number-theoretic Möbius function:
+$$
+\mu(m) = \begin{cases}
+1 & \text{if } m = 1, \\
+(-1)^r & \text{if } m = p_1 p_2 \cdots p_r \text{ is a product of } r \text{ distinct primes}, \\
+0 & \text{if } p^2 \mid m \text{ for some prime } p.
+\end{cases}
+$$
+
+*Proof*: Define $L(x) = \ln B(x) \bmod x^{N+1}$ and $c_d := d [x^d] L(x)$ for $1 \le d \le N$. Since $c_n = \sum_{d \mid n} (d a_d)$, multiplying by $\mu(n/d)$ and summing over $d \mid n$ gives:
+$$
+\sum_{d \mid n} \mu\!\left(\frac{n}{d}\right) c_d = \sum_{d \mid n} \mu\!\left(\frac{n}{d}\right) \sum_{k \mid d} k a_k = \sum_{k \mid n} k a_k \sum_{m \mid \frac{n}{k}} \mu(m) = \sum_{k \mid n} k a_k \left[\frac{n}{k} = 1\right] = n a_n,
+$$
+where we used the fundamental Möbius identity $\sum_{m \mid M} \mu(m) = [M = 1]$. Since $n \in K^\times$, dividing by $n$ uniquely determines $a_n$. $\blacksquare$
+
+---
+
+### 3.2.4 Hand-Checkable Concrete Example ($N = 4$): Forward & Inverse Euler Transform
+
+Let us trace both directions by hand up to $N = 4$ for the generator sequence $(a_1, a_2, a_3, a_4) = (1, 2, 0, 1)$ (representing $1$ item type of weight $1$, $2$ item types of weight $2$, $0$ of weight $3$, and $1$ of weight $4$).
+
+1. **Direct Product Verification**:
+   $$
+   \begin{aligned}
+   B(x) &\equiv \frac{1}{(1 - x)^1 (1 - x^2)^2 (1 - x^3)^0 (1 - x^4)^1} \pmod{x^5} \\
+   &\equiv (1 + x + x^2 + x^3 + x^4)(1 + 2x^2 + 3x^4)(1 + x^4) \pmod{x^5} \\
+   &\equiv (1 + x + 3x^2 + 3x^3 + 6x^4)(1 + x^4) \equiv 1 + x + 3x^2 + 3x^3 + 7x^4 \pmod{x^5}.
+   \end{aligned}
+   $$
+   Thus the multiset counting sequence is $(b_0, b_1, b_2, b_3, b_4) = (1, 1, 3, 3, 7)$.
+
+2. **Forward Pólya–Euler Harmonic Trace ($a_k \to \ln B(x) \to B(x)$)**:
+   Compute $c_n = \sum_{d \mid n} d \cdot a_d$ for $n = 1, 2, 3, 4$:
+   - $n = 1$: $c_1 = 1 \cdot a_1 = 1 \cdot 1 = 1 \implies [x^1]\ln B(x) = \frac{1}{1} = 1$.
+   - $n = 2$: $c_2 = 1 \cdot a_1 + 2 \cdot a_2 = 1 + 2(2) = 5 \implies [x^2]\ln B(x) = \frac{5}{2}$.
+   - $n = 3$: $c_3 = 1 \cdot a_1 + 3 \cdot a_3 = 1 + 3(0) = 1 \implies [x^3]\ln B(x) = \frac{1}{3}$.
+   - $n = 4$: $c_4 = 1 \cdot a_1 + 2 \cdot a_2 + 4 \cdot a_4 = 1 + 4 + 4(1) = 9 \implies [x^4]\ln B(x) = \frac{9}{4}$.
+   Thus $\ln B(x) = x + \frac{5}{2}x^2 + \frac{1}{3}x^3 + \frac{9}{4}x^4 + O(x^5)$, whose exponential $\exp(\ln B(x)) \bmod x^5$ evaluates via $n b_n = \sum_{m=1}^n c_m b_{n-m}$ to:
+   - $b_1 = \frac{1}{1}(1 \cdot 1) = 1$;
+   - $b_2 = \frac{1}{2}(1 \cdot 1 + 5 \cdot 1) = 3$;
+   - $b_3 = \frac{1}{3}(1 \cdot 3 + 5 \cdot 1 + 1 \cdot 1) = 3$;
+   - $b_4 = \frac{1}{4}(1 \cdot 3 + 5 \cdot 3 + 1 \cdot 1 + 9 \cdot 1) = \frac{28}{4} = 7$. Exact match!
+
+3. **Inverse Euler Transform Trace ($B(x) \to \ln B(x) \to c_n \to a_n$)**:
+   Given $B(x) = 1 + x + 3x^2 + 3x^3 + 7x^4 + O(x^5)$, taking $\ln B(x)$ gives $c = (c_1, c_2, c_3, c_4) = (1, 5, 1, 9)$. Applying Theorem 3.2 ($n a_n = \sum_{d \mid n} \mu(n/d) c_d$):
+   - $n = 1$: $1 \cdot a_1 = \mu(1) c_1 = 1 \implies a_1 = 1$.
+   - $n = 2$: $2 \cdot a_2 = \mu(1) c_2 + \mu(2) c_1 = 5 - 1 = 4 \implies a_2 = 2$.
+   - $n = 3$: $3 \cdot a_3 = \mu(1) c_3 + \mu(3) c_1 = 1 - 1 = 0 \implies a_3 = 0$.
+   - $n = 4$: $4 \cdot a_4 = \mu(1) c_4 + \mu(2) c_2 + \mu(4) c_1 = 9 - 5 + 0 = 4 \implies a_4 = 1$.
+   We recover $(a_1, a_2, a_3, a_4) = (1, 2, 0, 1)$ without a single guessed item!
+
+---
+
+### 3.2.5 Canonical Failure Modes & Algorithm Contracts
+
+::: {.callout-warning}
+### Failure Mode & Remedy 3.1: Regime A (Exponent-Variable) vs. Regime B (Coefficient-Variable) Products & Characteristic-$p$ Limits
+1. **Pitfall A — Applying Divide-and-Conquer NTT to Unbucketed Regime A Products**:
+   Suppose a problem gives $M = 10^5$ coins of weights $v_1, \dots, v_M \in [1, N]$ ($N = 10^5$) and asks for $\prod_{i=1}^M (1 + x^{v_i}) \bmod x^{N+1}$. A common mistake is to throw the $M$ binomials $(1 + x^{v_i})$ directly into a divide-and-conquer product tree. Why does that TLE? Because a single factor $(1 + x^{10^5})$ already has **degree $10^5$**, so even at the bottom leaves of the D&C tree, multiplying two high-degree sparse binomials via NTT costs $O(N \log N)$!
+   - **Remedy (The Two-Regime Rule)**:
+     - **Regime A (Exponent-Variable Product $\prod_i (1 \pm x^{v_i})^{\pm 1} \bmod x^{N+1}$)**: First **bucket identical weights** into a frequency array $a_k = \#\{i : v_i = k\}$ in $O(M + N)$ time, then run the $O(N \log N)$ Harmonic $\ln$ Sieve + 1 `exp`!
+     - **Regime B (Coefficient-Variable Product $\prod_{i=1}^M (1 \pm v_i x)^{\pm 1} \bmod x^{N+1}$)**: Here every factor $(1 \pm v_i x)$ has **degree $1$**, so the sum of degrees is $\sum \deg = M$. Use a **Divide-and-Conquer Subproduct Tree** in $O(M \log^2 M)$ time (or compute power sums $S_j = \sum_i v_i^j$ via $\ln$ of the D&C product).
+2. **Pitfall B — Division by $n$ in Characteristic $p \le N$ or Composite Modulus $M$**:
+   Both the Forward Euler Transform ($\ln / \exp$) and the Inverse Euler Transform ($a_n = c_n / n$) divide by every integer $n \in \{1, \dots, N\}$. If the modulus is a small prime $p \le N$ or a composite integer $M$ (as in `Luogu P6189` or `LOJ 6089`), $n^{-1} \bmod M$ does not exist!
+   - **Remedy**:
+     - If $N \le 5000$, apply the differential operator $\vartheta_x = x \frac{d}{dx}$ to $B(x) = \exp(\ln B(x))$, which gives $x B'(x) = B(x) \cdot x(\ln B(x))'$. Extracting $[x^n]$ yields the **division-free recurrence** for $c_m$ from $b_n$:
+       $$
+       n b_n = \sum_{m=1}^{n} c_m b_{n-m} \iff c_n = n b_n - \sum_{m=1}^{n-1} c_m b_{n-m},
+       $$
+       which computes $c_n = \sum_{d \mid n} d a_d \bmod M$ in $O(N^2)$ time using only multiplications and subtractions! (Note, however, that recovering $a_n$ from $n a_n \bmod M$ still loses information whenever $\gcd(n, M) > 1$ unless lifted to $\mathbb{Z}$ or computed modulo $n \cdot M$.)
+     - If $N \le 10^5$ and we need the forward partition/knapsack product modulo composite $M$, use the **$O(N\sqrt{N})$ Heavy-Light split** (§3.3.4) or **Euler's Pentagonal Number Theorem** (§3.4.2).
+:::
+
+::: {.callout-note}
+### Algorithm Contract 3.1: Forward & Inverse Euler Transform (`euler_transform` / `inv_euler_transform`)
+- **Inputs**:
+  - *Forward*: Array $c[1 \dots N] \in K^N$ representing $A(x) = \sum_{k=1}^N c_k x^k$ with $c_0 = 0$.
+  - *Inverse*: Array $B[0 \dots N] \in K^{N+1}$ representing $B(x) = 1 + \sum_{n=1}^N b_n x^n$ with $b_0 = 1$.
+- **Algebraic Preconditions**: Commutative ring $K$ in which $1, 2, \dots, N \in K^\times$ are invertible (for $\mathbb{F}_p$, $p > N$) and NTT/MTT is supported up to length $2^{\lceil \log_2(2N+1) \rceil}$.
+- **Outputs**:
+  - *Forward*: $B(x) = \prod_{k=1}^N (1 - x^k)^{-c_k} \bmod x^{N+1}$.
+  - *Inverse*: $a[1 \dots N]$ such that $B(x) \equiv \prod_{k=1}^N (1 - x^k)^{-a_k} \pmod{x^{N+1}}$.
+- **Complexity**: $O(N \log N)$ time and $O(N)$ auxiliary space.
+- **Loop Invariant**:
+  - In the Forward Harmonic Sieve, after processing weight $k \in [1, N]$, each slot `L[j * k]` has accumulated $\frac{c_k}{j}$, so after all $k$, `L[n]` equals $\sum_{k \mid n} \frac{c_k}{n/k} = \frac{1}{n}\sum_{d \mid n} d c_d$.
+  - In the Inverse Divisor Subtraction Sieve, before outer iteration $d$, `c[d]` holds the exact fully-subtracted value $d \cdot a_d$; subtracting `c[d]` from all proper multiples `c[m]` ($m = 2d, 3d, \dots \le N$) removes the divisor contribution $d \cdot a_d$ from every $m$ divisible by $d$ without needing to precompute $\mu$.
+
+```cpp
+// Input: c[1..N] (counts of size k), inv[1..N] (mod inverses), p > N
+vector<long long> L(N + 1, 0);
+for (int k = 1; k <= N; ++k) {
+    if (c[k] == 0) continue;
+    long long ck = c[k] % p;
+    for (int j = 1; j * k <= N; ++j) { // Harmonic O(N log N) loop
+        L[j * k] = (L[j * k] + ck * inv[j]) % p;
+    }
+}
+return poly_exp(L, N + 1); // 1D Newton exp in O(N log N)
+```
+
+For the **Inverse Euler Transform**, one call to `poly_ln` followed by the 10-line divisor subtraction sieve recovers $a[1\dots N]$ in $O(N \log N)$ time:
+
+```cpp
+vector<long long> L = poly_ln(B, N + 1), c(N + 1, 0), a(N + 1, 0);
+for (int n = 1; n <= N; ++n) c[n] = L[n] * n % p;
+for (int d = 1; d <= N; ++d) { // Invariant: c[d] == d * a[d] (mod p)
+    a[d] = c[d] * inv[d] % p;
+    for (int m = 2 * d; m <= N; m += d)
+        c[m] = (c[m] - c[d] + p) % p;
+}
+```
+:::
+
+---
+
+## 3.3 Integer Partitions, Ferrers Diagram Conjugation, Durfee Squares & Heavy-Light $\sqrt{N}$ Splits
+
+### 3.3.1 Integer Partitions as $\operatorname{MSET}(\mathbb{Z}_{\ge 1})$
+
+An **integer partition** of a non-negative integer $n$ is a way of writing $n$ as a sum of positive integers where the **order of the summands does not matter**. By convention, we write a partition $\lambda$ of $n$ (denoted $\lambda \vdash n$ or $|\lambda| = n$) as a non-increasing tuple of positive integers:
+$$
+\lambda = (\lambda_1, \lambda_2, \dots, \lambda_r) \quad \text{with} \quad \lambda_1 \ge \lambda_2 \ge \cdots \ge \lambda_r \ge 1 \quad \text{and} \quad \sum_{i=1}^{r} \lambda_i = n,
+$$
+or equivalently in **multiplicity notation** $\lambda = (1^{m_1} 2^{m_2} 3^{m_3} \cdots)$, where $m_k \ge 0$ is the number of times part $k$ appears in $\lambda$ and $\sum_{k \ge 1} k m_k = n$. The total number of partitions of $n$ is denoted $p(n)$ (with $p(0) = 1$ for the empty partition $\emptyset$).
+
+In the language of the Symbolic Method, an integer partition is simply a **multiset of positive integers** $\mathcal{P} = \operatorname{MSET}(\mathcal{I})$, where the class of positive integer parts $\mathcal{I} = \{\bullet_1, \bullet_2, \bullet_3, \dots\}$ has exactly $a_k = 1$ object of each size $k \ge 1$ ($I(x) = \sum_{k=1}^\infty x^k = \frac{x}{1-x}$). Applying the Euler Transform (§3.2.1) with $a_k = 1$ immediately produces Euler's generating function for $p(n)$:
+$$
+P(x) = \sum_{n=0}^{\infty} p(n) x^n = \prod_{k=1}^{\infty} \frac{1}{1 - x^k} = \prod_{k=1}^{\infty} \left(1 + x^k + x^{2k} + x^{3k} + \cdots\right).
+$$
+
+#### Hand-Checkable Trace for $n \le 5$
+Let us verify the expansion of $\prod_{k=1}^5 (1 - x^k)^{-1} \bmod x^6$ against the explicit list of partitions:
+- $n = 0$: $\emptyset \implies p(0) = 1$.
+- $n = 1$: $(1) \implies p(1) = 1$.
+- $n = 2$: $(2), (1, 1) \implies p(2) = 2$.
+- $n = 3$: $(3), (2, 1), (1, 1, 1) \implies p(3) = 3$.
+- $n = 4$: $(4), (3, 1), (2, 2), (2, 1, 1), (1, 1, 1, 1) \implies p(4) = 5$.
+- $n = 5$: $(5), (4, 1), (3, 2), (3, 1, 1), (2, 2, 1), (2, 1, 1, 1), (1, 1, 1, 1, 1) \implies p(5) = 7$.
+
+---
+
+### 3.3.2 Ferrers Diagram Conjugation & Euler's Distinct-Odd Theorem
+
+We can visualize any partition $\lambda = (\lambda_1, \lambda_2, \dots, \lambda_r) \vdash n$ geometrically as a **Ferrers diagram** (or **Young diagram**): a left-justified grid of $n$ unit boxes in which the $i$-th row from the top contains $\lambda_i$ boxes ($1 \le i \le r$).
+
+**Conjugation ($\lambda \mapsto \lambda'$)**: Reflecting a Ferrers diagram across its main northwest-to-southeast diagonal (swapping rows and columns) produces the **conjugate partition** $\lambda' = (\lambda'_1, \lambda'_2, \dots, \lambda'_{\lambda_1}) \vdash n$, where $\lambda'_j = \#\{i : \lambda_i \ge j\}$ is the length of the $j$-th column.
+
+```text
+Partition λ = (5, 3, 3, 1) ⊢ 12          Conjugate λ' = (4, 3, 3, 1, 1) ⊢ 12
+(r = 4 rows, largest part λ_1 = 5)       (5 rows, largest part λ'_1 = 4)
+
+  +---+---+---+---+---+                    +---+---+---+---+
+  | * | * | * | . | . |  (row 1: 5)        | * | * | * | . |  (row 1: 4)
+  +---+---+---+---+---+                    +---+---+---+---+
+  | * | * | * |          (row 2: 3)        | * | * | * |      (row 2: 3)
+  +---+---+---+                            +---+---+---+
+  | * | * | * |          (row 3: 3)  <==>  | * | * | * |      (row 3: 3)
+  +---+---+---+                            +---+---+---+
+  | . |                  (row 4: 1)        | . |              (row 4: 1)
+  +---+                                    +---+
+                                           | . |              (row 5: 1)
+                                           +---+
+  (The 3×3 Durfee square of '*' boxes is invariant under conjugation!)
+```
+
+Because conjugation $\lambda \mapsto \lambda'$ is a size-preserving involution ($\lambda'' = \lambda$ and $|\lambda'| = |\lambda|$) that swaps the **number of parts** $r(\lambda)$ with the **largest part** $\lambda_1$, it immediately establishes two fundamental bijections:
+
+1. **At Most $k$ Parts $\Longleftrightarrow$ Parts of Size $\le k$**:
+   A Ferrers diagram has **at most $k$ rows** ($r(\lambda) \le k$) if and only if its conjugate $\lambda'$ has **first row of length $\le k$** ($\lambda'_1 \le k$, meaning every part of $\lambda'$ belongs to $\{1, 2, \dots, k\}$). Since partitions into parts from $\{1, 2, \dots, k\}$ are $\operatorname{MSET}(\{\bullet_1, \dots, \bullet_k\})$, both classes share the OGF:
+   $$
+   P_{\le k\text{ parts}}(x) = P_{\text{parts }\le k}(x) = \prod_{i=1}^{k} \frac{1}{1 - x^i}.
+   $$
+
+2. **Exactly $k$ Parts $\Longleftrightarrow$ Largest Part Exactly $k$**:
+   A Ferrers diagram has **exactly $k$ rows** ($r(\lambda) = k$) if and only if its first column has height $k$ (contributing $k$ boxes), and removing that first column leaves a Ferrers diagram of size $n - k$ with **at most $k$ rows**! Under conjugation, this is equivalent to requiring the largest part to be **exactly $k$** (at least one copy of $k$, and all other parts $\le k$):
+   $$
+   P_{\text{exactly }k\text{ parts}}(x) = P_{\max\text{ part }= k}(x) = \frac{x^k}{\prod_{i=1}^{k} (1 - x^i)} = P_{\le k\text{ parts}}(x) - P_{\le k-1\text{ parts}}(x).
+   $$
+
+#### Theorem 3.3 (Euler's Distinct-Parts = Odd-Parts Theorem)
+For every non-negative integer $n \ge 0$, the number of partitions of $n$ into **distinct parts** ($\lambda_1 > \lambda_2 > \cdots > \lambda_r \ge 1$) equals the number of partitions of $n$ into **odd parts** ($\lambda_i \in \{1, 3, 5, \dots\}$):
+$$
+P_{\text{dist}}(x) = \prod_{k=1}^{\infty} (1 + x^k) = \prod_{m=0}^{\infty} \frac{1}{1 - x^{2m+1}} = P_{\text{odd}}(x).
+$$
+
+- **Proof 1 (Single-Step Algebraic Telescoping in $K[[x]]$):**
+  Part $k$ can be chosen $0$ or $1$ time in a distinct-part partition ($\operatorname{PSET}(\mathbb{Z}_{\ge 1})$), giving $P_{\text{dist}}(x) = \prod_{k=1}^\infty (1 + x^k)$. Using the difference-of-squares identity $1 + x^k = \frac{1 - x^{2k}}{1 - x^k}$ on every factor:
+  $$
+  \begin{aligned}
+  P_{\text{dist}}(x) &= \prod_{k=1}^{\infty} (1 + x^k) && \text{(OGF of partitions into distinct parts)} \\
+  &= \prod_{k=1}^{\infty} \frac{1 - x^{2k}}{1 - x^k} && \text{(substituting } 1 + x^k = \frac{1 - x^{2k}}{1 - x^k}\text{)} \\
+  &= \frac{(1 - x^2)(1 - x^4)(1 - x^6)(1 - x^8)\cdots}{(1 - x)(1 - x^2)(1 - x^3)(1 - x^4)(1 - x^5)(1 - x^6)\cdots} && \text{(numerator contains all even powers } 1 - x^{2k}\text{)} \\
+  &= \frac{1}{(1 - x)(1 - x^3)(1 - x^5)(1 - x^7)\cdots} && \text{(canceling every even factor } 1 - x^{2k}\text{)} \\
+  &= \prod_{m=0}^{\infty} \frac{1}{1 - x^{2m+1}} = P_{\text{odd}}(x). && \text{(OGF of multisets of odd positive integers)}
+  \end{aligned}
+  $$
+- **Proof 2 (Glaisher's 2-Adic Bijection — Why the Cancellation Works Combinatorially):**
+  Every positive integer $k \ge 1$ factors uniquely as $k = 2^r \cdot u$ where $r \ge 0$ and $u$ is odd.
+  - Given a partition of $n$ into **odd parts** where each odd number $u$ appears $m_u \ge 0$ times ($\sum_{u \text{ odd}} u m_u = n$), write each multiplicity $m_u$ in **binary**: $m_u = \sum_{r \ge 0} b_{u, r} 2^r$ with $b_{u, r} \in \{0, 1\}$. Replacing $2^r$ copies of $u$ by a single part of size $2^r u$ produces a partition of $n$ into **distinct parts** (since $2^r u = 2^{r'} u' \iff r = r'$ and $u = u'$)!
+  - Conversely, given a partition of $n$ into **distinct parts**, splitting each part $k = 2^r u$ into $2^r$ copies of the odd number $u$ reverses the map! $\blacksquare$
+
+---
+
+### 3.3.3 Durfee Square Decomposition
+
+Look back at the $3 \times 3$ block of `*` cells in the Ferrers diagram of $\lambda = (5, 3, 3, 1)$ in §3.3.2. For any partition $\lambda$, its **Durfee square** is the largest $d \times d$ square of boxes that fits inside the top-left corner of the Ferrers diagram of $\lambda$ (formally, $d = \max\{i \ge 0 : \lambda_i \ge i\}$, with $d = 0$ for $\lambda = \emptyset$).
+
+::: {.callout-tip}
+### Diagnostic Signal & Reverse-Engineering Scratchpad: The Durfee Square
+- **The Diagnostic Signal**: You want to decompose an infinite partition product $\prod_{k \ge 1}(1 - x^k)^{-1}$ or $\prod_{k \ge 1}(1 + yx^k)$ into a fast-converging series of rational functions whose terms start at $x^{d^2}$ or $x^{d(d+1)/2}$ (so only $d \le \sqrt{N}$ summands contribute up to degree $N$!).
+- **The Reverse-Engineering Scratchpad (Geometric Decomposition of any Ferrers Diagram with Durfee Side $d \ge 0$)**:
+  Why can an infinite product $\prod_{k \ge 1}(1 - x^k)^{-1}$ (which has infinitely many factors) be rewritten as a finite $O(\sqrt{N})$ sum up to degree $N$? We classify every Ferrers diagram by a single parameter $d$—its **Durfee square** (`Durfee 正方形` [ZH] / `ダーフィー正方形` [JA])—that forces the minimum size of the diagram to grow quadratically as $d^2$. Every Ferrers diagram with Durfee square of side $d$ is uniquely partitioned into three disjoint regions:
+  1. **The $d \times d$ Durfee Square itself**: Contains exactly $d^2$ boxes $\implies$ OGF $x^{d^2}$.
+  2. **The Right Wing (boxes in rows $1 \dots d$ to the right of column $d$)**: A Ferrers diagram with **at most $d$ rows** $\implies$ OGF $\prod_{i=1}^d \frac{1}{1 - x^i}$.
+  3. **The Bottom Tail (boxes in rows $d+1, d+2, \dots$ below row $d$)**: Because the Durfee square has side $d$, row $d+1$ has length $\le d$ (otherwise a $(d+1) \times (d+1)$ square would fit!). Thus the bottom tail is a Ferrers diagram whose **parts all have size $\le d$** $\implies$ OGF $\prod_{i=1}^d \frac{1}{1 - x^i}$.
+:::
+
+Multiplying the three independent pieces for a fixed Durfee side $d$ and summing over all $d \ge 0$ gives **Cauchy/Durfee's Identity**:
+$$
+\boxed{
+\prod_{k=1}^{\infty} \frac{1}{1 - x^k} = \sum_{d=0}^{\infty} \frac{x^{d^2}}{\prod_{i=1}^{d} (1 - x^i)^2}.
+}
+$$
+
+Similarly, for a partition into **exactly $d$ distinct parts** $\lambda_1 > \lambda_2 > \cdots > \lambda_d \ge 1$, peeling off the minimal **staircase** $(d, d-1, \dots, 2, 1)$ of size $1 + 2 + \cdots + d = \frac{d(d+1)}{2}$ leaves a partition with at most $d$ parts (OGF $\prod_{i=1}^d \frac{1}{1 - x^i}$). Summing over $d \ge 0$ gives **Euler's Distinct-Part Staircase Identity**:
+$$
+\boxed{
+\prod_{k=1}^{\infty} (1 + y x^k) = \sum_{d=0}^{\infty} \frac{y^d x^{d(d+1)/2}}{\prod_{i=1}^{d} (1 - x^i)}.
+}
+$$
+
+---
+
+### 3.3.4 The $\sqrt{N}$ Heavy-Light Partition & Knapsack Split
+
+What happens in a contest when we need to compute partition or knapsack counts up to $N \le 10^5$, **but the modulus $M$ is an arbitrary composite number or non-NTT prime** (such as $P \le 10^9 + 9$ in `Luogu P6189` or $23333333$ in `LOJ 6089`), so we cannot use NTT or modular division?
+
+::: {.callout-tip}
+### Diagnostic Signal & Reverse-Engineering Scratchpad: The $\sqrt{N}$ Heavy-Light Split
+- **The Diagnostic Signal**: You need coefficients $[x^0 \dots x^N]$ of a partition or bounded-knapsack product $\prod_{k=1}^N \cdots$ with $N \le 10^5$, under a **non-NTT or composite modulus $M$** where $O(N \log N)$ polynomial `ln`/`exp`/`inv` are impossible and $O(N^2)$ DP will TLE.
+- **The Reverse-Engineering Scratchpad**:
+  Choose a threshold $B = \lceil \sqrt{N} \rceil$ and split the items/parts into **Light Parts ($1 \le k < B$)** and **Heavy Parts ($k \ge B$)**:
+  $$
+  P(x) = \underbrace{\left(\prod_{k=1}^{B-1} \frac{1}{1 - x^k}\right)}_{\text{Light OGF } L(x)} \cdot \underbrace{\left(\prod_{k=B}^{N} \frac{1}{1 - x^k}\right)}_{\text{Heavy OGF } H(x)} \pmod{x^{N+1}}.
+  $$
+  1. **Why Light Parts ($1 \le k < B$) Are Fast**: There are only $B - 1 < \sqrt{N}$ distinct light weights! Standard 1D unbounded knapsack DP processes each light weight $k$ in $O(N)$ additions (`for s = k .. N: L[s] += L[s - k]`), taking $O(N B) = O(N\sqrt{N})$ time total.
+  2. **Why Heavy Parts ($k \ge B$) Are Fast (Staircase / Column-Peeling DP)**:
+     If we processed all $N - B + 1$ heavy weights one by one, it would take $O(N^2)$ time. Instead, ask: **how many heavy parts ($\ge B$) can a partition of $s \le N$ contain?**
+     At most $j \le \lfloor N / B \rfloor \le \sqrt{N}$ parts!
+     Let $g[j][s]$ be the number of partitions of $s$ into **exactly $j$ parts, each of size $\ge B$**. Every such partition $\lambda_1 \ge \lambda_2 \ge \cdots \ge \lambda_j \ge B$ is formed by looking at its smallest part $\lambda_j$:
+     - **Case 1 ($\lambda_j = B$)**: The smallest part is exactly $B$. Removing it leaves a partition of $s - B$ into $j - 1$ parts all $\ge B$ ($g[j-1][s-B]$ ways).
+     - **Case 2 ($\lambda_j > B$)**: Every one of the $j$ parts is $\ge B + 1$. Subtracting $1$ from all $j$ parts simultaneously (peeling a column of height $j$) leaves a partition of $s - j$ into $j$ parts all $\ge B$ ($g[j][s-j]$ ways).
+     This gives the division-free recurrence:
+     $$
+     g[j][s] = g[j-1][s - B] + g[j][s - j] \qquad \left(1 \le j \le \lfloor N / B \rfloor,\; jB \le s \le N\right),
+     $$
+     which has only $O(\sqrt{N}) \times N = O(N\sqrt{N})$ states and $O(1)$ transitions!
+  3. **Combining Light and Heavy Parts in $O(N)$ Time (Zero NTT!)**:
+     Instead of initializing $g[0][0] = 1$ and convolving $L(x)$ with $H(x)$ at the end, **or** after computing $H[s] = \sum_{j=0}^{\lfloor N/B \rfloor} g[j][s]$ in $O(N\sqrt{N})$ time and running the $B - 1$ light transitions directly on top of the array `dp[s] = H[s]`, we obtain the full answer $[x^s]\big(L(x)H(x)\big)$ in $O(N\sqrt{N})$ additions and $O(N)$ space!
+:::
+
+::: {.callout-note}
+### Algorithm Contract 3.2: $\sqrt{N}$ Heavy-Light Partition / Knapsack Engine
+- **Input**: Integer $N \ge 1$, split threshold $B = \lceil \sqrt{N} \rceil$, and arbitrary modulus $M \ge 2$ (need not be prime!).
+- **Output**: Array `ans[0..N]` where `ans[s]` $= p(s) \bmod M$.
+- **Two-Phase Index Bounds & Loop Invariant**:
+  1. **Heavy Staircase Phase ($1 \le j \le \lfloor N / B \rfloor$, $j B \le s \le N$)**: Evaluates $g[j][s] = (g[j-1][s-B] + g[j][s-j]) \bmod M$ with base $g[0][0] = 1$, maintaining the invariant that after row $j$, $g[j][s]$ counts all partitions of $s$ into exactly $j$ parts each $\ge B$; accumulates $H[s] = \sum_{j=0}^{\lfloor N/B \rfloor} g[j][s] \bmod M$.
+  2. **Light Knapsack Sweep ($1 \le k < B$, $k \le s \le N$)**: Initializes `ans[s] = H[s]` and runs `ans[s] = (ans[s] + ans[s - k]) % M` (with optional backward pass `s = N downto k*(c_k+1)` for bounded multiplicity $c_k$), maintaining the invariant that after step $k$, `ans[s]` equals $[x^s]\big(H(x)\prod_{i=1}^k (1 - x^i)^{-1}\big) \bmod M$.
+- **Complexity**: $O(N\sqrt{N})$ time and $O(N)$ auxiliary space (using a 1D rolling array for $g[j][s]$).
+:::
+
+---
+
+## 3.4 Euler's Pentagonal Number Theorem & $O(N\sqrt{N})$ / $O(N \log N)$ Partition Engines
+
+### 3.4.1 Statement and Franklin's Base-vs-Slope Involution Proof
+
+Look at the denominator of Euler's partition generating function $P(x) = \frac{1}{\prod_{k=1}^\infty (1 - x^k)}$. What happens if we expand the infinite product $\prod_{k=1}^\infty (1 - x^k)$ itself? Let us compute its first few terms by hand:
+$$
+(1 - x)(1 - x^2)(1 - x^3)(1 - x^4)\cdots = 1 - x - x^2 + x^5 + x^7 - x^{12} - x^{15} + x^{22} + x^{26} - \cdots
+$$
+Miraculously, almost all coefficients cancel to $0$, and every non-zero coefficient is $+1$ or $-1$! The surviving exponents $0, 1, 2, 5, 7, 12, 15, 22, 26, \dots$ are the **generalized pentagonal numbers**:
+$$
+\omega(m) := \frac{m(3m - 1)}{2} \quad \text{for } m = 0, 1, -1, 2, -2, 3, -3, \dots
+$$
+(When $m > 0$, $\omega(m) = \frac{m(3m-1)}{2} \in \{1, 5, 12, 22, \dots\}$; when $m = -k < 0$, $\omega(-k) = \frac{k(3k+1)}{2} \in \{2, 7, 15, 26, \dots\}$.)
+
+::: {.callout-important}
+### Theorem 3.4 (Euler's Pentagonal Number Theorem, 1750 / Franklin's Proof, 1881)
+In the formal power series ring $\mathbb{Z}[[x]]$ (and hence over **any** commutative ring $K$):
+$$
+\boxed{
+\prod_{k=1}^{\infty} (1 - x^k) = 1 + \sum_{m=1}^{\infty} (-1)^m \left( x^{\frac{m(3m-1)}{2}} + x^{\frac{m(3m+1)}{2}} \right) = \sum_{m=-\infty}^{\infty} (-1)^m x^{\frac{m(3m-1)}{2}}.
+}
+$$
+:::
+
+::: {.callout-tip}
+### Diagnostic Signal & Reverse-Engineering Scratchpad: Pentagonal Sparsity & Franklin's Involution
+- **The Diagnostic Signal**: You need to compute the partition numbers $p(0), \dots, p(N)$ in $O(N\sqrt{N})$ time (without FFT or when the modulus is arbitrary/non-NTT), or expand the denominator $E(x) = \prod_{k \ge 1}(1-x^k)$ of an infinite product.
+- **The Reverse-Engineering Scratchpad**: Expanding $E(x) = \prod_{k \ge 1}(1-x^k)$ counts partitions into *distinct* parts weighted by $(-1)^{\text{number of parts}}$. To make almost all terms cancel in pairs with opposite signs, we need an operation on a distinct-part Ferrers diagram that changes the number of parts by $\pm 1$ while preserving the total weight $n$ and strict part distinctness. Removing the smallest part (the bottom row, of length $b(\lambda)$) decreases the number of parts by $1$; where can we place those $b(\lambda)$ boxes so the parts remain strictly decreasing? Only by appending $1$ box to the end of each of the top $b(\lambda)$ rows! That top-right $45^\circ$ diagonal of contiguous-length rows is the **slope** $s(\lambda)$. Comparing $b(\lambda)$ against $s(\lambda)$ gives a bijective sign-reversing toggle everywhere *except* when the bottom row and the $45^\circ$ slope collide ($m$ rows total, with $b(\lambda) = m$ or $b(\lambda) = m+1$), which leaves the surviving pentagonal numbers $\frac{m(3m-1)}{2}$ and $\frac{m(3m+1)}{2}$.
+:::
+
+#### Franklin's Combinatorial Involution Proof (Step-by-Step)
+1. **What Does $[x^n] \prod_{k=1}^\infty (1 - x^k)$ Count?**
+   Expanding the product $\prod_{k=1}^\infty (1 - x^k)$, a term of degree $n$ is formed by choosing a finite set of **distinct** part sizes $\lambda_1 > \lambda_2 > \cdots > \lambda_r \ge 1$ summing to $n$, where choosing $r$ parts multiplies $r$ minus signs together to give weight $(-1)^r$:
+   $$
+   [x^n] \prod_{k=1}^{\infty} (1 - x^k) = \sum_{\substack{\lambda \vdash n \\ \lambda \text{ has distinct parts}}} (-1)^{r(\lambda)} = p_{\text{dist, even}}(n) - p_{\text{dist, odd}}(n).
+   $$
+2. **Defining the Base $b(\lambda)$ and the Slope $s(\lambda)$**:
+   For any non-empty partition $\lambda = (\lambda_1 > \lambda_2 > \cdots > \lambda_r \ge 1)$ into $r$ distinct parts, draw its Ferrers diagram and highlight two segments of boxes:
+   - **The Base $B$ (size $b = \lambda_r$)**: The entire bottom row (the smallest part $\lambda_r$).
+   - **The Slope $S$ (size $s$)**: Starting at the rightmost box of the top row $\lambda_1$, walk southwest along the $45^\circ$ diagonal as long as each successive row is exactly $1$ box shorter than the row above it ($\lambda_1, \lambda_2 = \lambda_1 - 1, \dots, \lambda_s = \lambda_1 - s + 1$). Thus $s \ge 1$ is the largest index such that $\lambda_i = \lambda_1 - (i - 1)$ for all $1 \le i \le s$.
+
+```text
+Case 1 (b <= s): λ = (6, 5, 4, 2) ⊢ 17        ---(Move Base to Slope)--->   φ(λ) = (7, 6, 4) ⊢ 17
+b = 2 (Base 'B'), s = 3 (Slope 'S')                                         (r = 4 -> 3: sign flips!)
+  . . . . . S                                                                 . . . . . . B
+  . . . . S                                                                   . . . . . B
+  . . . S                                                                     . . . .
+  B B
+
+Exception 1 (b = s = m): λ = (5, 4, 3) ⊢ 12   Exception 2 (b = s + 1, s = m): λ = (6, 5, 4) ⊢ 15
+(m = 3, size = 3(8)/2 = 12)                   (m = 3, size = 3(10)/2 = 15)
+  . . . . S                                     . . . . . S
+  . . . S                                       . . . . S
+  B B X   (X belongs to BOTH B and S!)          B B B X   (X belongs to BOTH B and S!)
+```
+
+3. **Franklin's Sign-Reversing Involution $\phi$**:
+   We pair up partitions $\lambda$ of $n$ into distinct parts by comparing $b$ and $s$:
+   - **Move A (when $b \le s$)**: Delete the bottom row $B$ (of $b$ boxes) and append $1$ box to the right end of each of the first $b$ rows!
+     - *Why is the result still a partition into distinct parts?* Because $b \le s$, we only lengthen a prefix of the first $s$ rows, so $\lambda_1 + 1 > \lambda_2 + 1 > \cdots > \lambda_b + 1 > \lambda_{b+1}$ holds strictly!
+     - *What is the new slope and new base?* The first $b$ rows now form the new slope of length $s' = b$, while the new bottom row has length $b' = \lambda_{r-1} > b = s'$. Thus $\phi(\lambda)$ satisfies $b' > s'$, and its number of parts changed from $r$ to $r - 1$ (flipping $(-1)^r$ to $(-1)^{r-1}$)!
+   - **Move B (when $b > s$)**: Remove the rightmost box from each of the first $s$ rows (the slope $S$) and place those $s$ boxes at the very bottom as a new $(r+1)$-th row of length $s$!
+     - *Why is the result a partition into distinct parts, and inverse to Move A?* Because the first $s$ rows originally stepped down by $1$ and row $s$ was at least $2$ longer than row $s+1$ ($\lambda_s \ge \lambda_{s+1} + 2$), shortening the first $s$ rows by $1$ preserves strict inequality $\lambda_1 - 1 > \cdots > \lambda_s - 1 > \lambda_{s+1}$. Moreover, since $b > s$, the new bottom row has length $b' = s < b$, which is strictly smaller than the row above it (provided row $r$ was not shortened to $b - 1 = s$). Clearly Move A and Move B are exact inverses!
+
+4. **Why $b = s = m$ and $b = s + 1 = m + 1$ Are the ONLY Unpairable Exceptions**:
+   When does Move A or Move B fail? **Only when the Base $B$ and the Slope $S$ share a corner box** (which happens if and only if the slope extends all the way down to the bottom row $r$, so $s = r := m$):
+   - **Exception 1 ($s = r = m$ and $b = s = m$)**:
+     Here the partition has $m$ rows of lengths $(2m - 1, 2m - 2, \dots, m)$. Since $b \le s$, we try Move A (delete the bottom row of $m$ boxes and add $1$ box to the first $m$ rows)—**impossible**, because deleting the bottom row leaves only $m - 1$ rows!
+     - Number of boxes: $n = \sum_{i=0}^{m-1} (m + i) = m^2 + \frac{m(m-1)}{2} = \frac{m(3m - 1)}{2} = \omega(m)$.
+     - Sign: $(-1)^m$.
+   - **Exception 2 ($s = r = m$ and $b = s + 1 = m + 1$)**:
+     Here the partition has $m$ rows of lengths $(2m, 2m - 1, \dots, m + 1)$. Since $b > s$, we try Move B (remove $1$ box from the first $m$ rows and create a new bottom row of length $m$)—**impossible**, because the old $m$-th row was shortened from $m + 1$ to $m$, so the two bottom rows would both have length $m$, violating distinctness!
+     - Number of boxes: $n = \sum_{i=1}^{m} (m + i) = m^2 + \frac{m(m+1)}{2} = \frac{m(3m + 1)}{2} = \omega(-m)$.
+     - Sign: $(-1)^m$.
+   For every other $n$, all partitions of $n$ into distinct parts cancel in sign-reversing pairs $\{\lambda, \phi(\lambda)\}$, proving $[x^n]\prod_{k \ge 1}(1 - x^k) = 0$! $\blacksquare$
+
+---
+
+### 3.4.2 Dual Partition Engines: $O(N\sqrt{N})$ Division-Free Recurrence vs. $O(N \log N)$ Sparse FPS Inversion
+
+Because $P(x) = \frac{1}{\prod_{k=1}^\infty (1 - x^k)}$, multiplying both sides by Euler's pentagonal series gives the fundamental identity in $\mathbb{Z}[[x]]$:
+$$
+\left(\sum_{n=0}^{\infty} p(n) x^n\right) \left(1 + \sum_{m=1}^{\infty} (-1)^m \left(x^{\frac{m(3m-1)}{2}} + x^{\frac{m(3m+1)}{2}}\right)\right) = 1.
+$$
+
+This single equation gives us **two complementary engines** for computing $p(0), p(1), \dots, p(N)$:
+
+#### Engine 1: The $O(N\sqrt{N})$ Division-Free Pentagonal Recurrence (Valid in Every Characteristic $p$ and Modulo Any Composite $M$)
+Extracting $[x^n]$ for $n \ge 1$ from $P(x) Q(x) = 1$ (where $[x^n]1 = 0$) and moving $p(n)$ to the left-hand side yields Euler's recurrence:
+$$
+\boxed{
+p(n) = \sum_{m=1}^{\infty} (-1)^{m-1} \left( p\!\left(n - \frac{m(3m-1)}{2}\right) + p\!\left(n - \frac{m(3m+1)}{2}\right) \right) \qquad (n \ge 1),
+}
+$$
+where $p(0) = 1$ and $p(k) = 0$ for $k < 0$.
+- **Why it runs in $O(N\sqrt{N})$ with Tiny Constant Factor**: For each $n \le N$, the sum stops as soon as $\frac{m(3m-1)}{2} > n$, which happens at $m \approx \sqrt{\frac{2n}{3}} \approx 0.816 \sqrt{n}$. Across all $1 \le n \le N$, the total number of additions/subtractions is $\sum_{n=1}^N 2\sqrt{\frac{2n}{3}} \approx \frac{4}{3}\sqrt{\frac{2}{3}} N^{3/2} \approx 1.09 N\sqrt{N}$ ($\approx 3.4 \times 10^7$ simple integer additions for $N = 10^5$, running in $< 40\text{ ms}$ in C++!).
+- **Algebraic Superpower**: It performs **zero multiplications and zero divisions**, so it works identically over $\mathbb{Z} / M\mathbb{Z}$ for **any** modulus $M$ (prime or composite, small or large).
+
+#### Engine 2: The $O(N \log N)$ Sparse FPS Inversion Engine (`inv` on $Q(x) \bmod x^{N+1}$)
+When $N \le 5 \times 10^5$ and the modulus is an NTT-friendly prime $p = 998244353$:
+1. Construct the degree-$N$ polynomial $Q(x) = 1 + \sum_{m \ge 1} (-1)^m \big(x^{\omega(m)} + x^{\omega(-m)}\big) \bmod x^{N+1}$ in $O(\sqrt{N})$ time (only $2\sqrt{2N/3}$ non-zero coefficients!).
+2. Compute $P(x) = Q(x)^{-1} \bmod x^{N+1}$ via a **single call to Newton-iteration FPS `inv`** (Chapter 01, §1.3) in $O(N \log N)$ time!
+- *Notice*: Using Pentagonal Number Theorem + 1 `inv` is roughly **$3\times$ faster** than applying the general $\ln + \exp$ Euler Transform to $\prod_{k=1}^N (1 - x^k)^{-1}$, because `inv` skips both the $O(N \log N)$ harmonic logarithm sieve and the extra NTTs inside `exp`!
+
+::: {.callout-note}
+### Algorithm Contract 3.3: Dual Partition Engines ($O(N\sqrt{N})$ vs. $O(N \log N)$)
+| Feature | Engine 1: Pentagonal Recurrence | Engine 2: Pentagonal + FPS `inv` |
+| :--- | :--- | :--- |
+| **Time Complexity** | $\Theta(N\sqrt{N})$ ($\approx 1.09 N\sqrt{N}$ additions) | $\Theta(N \log N)$ ($1$ call to `poly_inv`) |
+| **Space Complexity** | $\Theta(N)$ | $\Theta(N)$ |
+| **Modulus Requirement** | **Arbitrary integer $M \ge 2$** (composite or prime) | Prime $p$ with $2^k \mid (p - 1)$ (or 3-prime MTT) |
+| **Crossover Scale** | Best for $N \le 10^5$ or non-NTT modulus $M$ | Best for $N \in [10^5, 10^6]$ mod $998244353$ |
+:::
+
+---
+
+## 3.5 Burnside's Lemma & Pólya's Cycle Index Theorem ($Z_G(s_1, \dots, s_n)$)
+
+### 3.5.1 Symmetry Groups, Orbits, and Burnside's Lemma
+
+Up to now, we have seen two extremes of counting: completely ordered sequences $\operatorname{SEQ}(\mathcal{A})$ and completely unordered multisets $\operatorname{MSET}(\mathcal{A})$. What lies in between?
+- **Necklaces**: $n$ beads arranged in a circle, where two arrangements are considered identical if one can be **rotated** into the other by the cyclic group $C_n = \langle \rho \mid \rho^n = e \rangle$.
+- **Bracelets**: $n$ beads arranged in a circle, where both **rotations and flips (reflections)** are allowed, governed by the dihedral group $D_n$ of order $2n$.
+- **Unlabeled Graphs**: Simple graphs on $n$ vertices, where two graphs are isomorphic if one can be obtained from the other by **relabeling the vertices** via a permutation $\pi \in S_n$.
+
+In all of these problems, we start with a finite set $X$ of **labeled configurations** (such as all $k^n$ colored strings of length $n$, or all $2^{\binom{n}{2}}$ labeled graphs on $n$ vertices) and a finite **symmetry group** $G$ acting on $X$. Two labeled configurations $x, y \in X$ represent the **same unlabeled object** if and only if $y = g \cdot x$ for some symmetry $g \in G$. Thus:
+- Each unlabeled object corresponds to an **orbit** $\mathcal{O}_x = \{g \cdot x : g \in G\} \subseteq X$.
+- The set of all unlabeled objects is the quotient set of orbits $X / G = \{\mathcal{O}_x : x \in X\}$.
+- For a fixed element $x \in X$, its **stabilizer subgroup** $\operatorname{Stab}_G(x) := \{g \in G : g \cdot x = x\} \le G$ consists of all symmetries that leave $x$ unchanged.
+- For a fixed symmetry $g \in G$, its **fixed-point set** $X^g := \{x \in X : g \cdot x = x\} \subseteq X$ consists of all configurations invariant under $g$.
+
+::: {.callout-important}
+### Theorem 3.5 (Burnside's Lemma / The Cauchy–Frobenius Orbit-Counting Theorem)
+Let a finite group $G$ act on a finite set $X$. The number of orbits (distinct unlabeled objects) $|X / G|$ is equal to the **average number of configurations fixed by a symmetry $g \in G$**:
+$$
+\boxed{
+|X / G| = \frac{1}{|G|} \sum_{g \in G} |X^g|.
+}
+$$
+:::
+
+#### Complete Single-Step Double-Counting Proof
+We count the size of the bipartite incidence set of invariant pairs:
+$$
+I := \{(g, x) \in G \times X : g \cdot x = x\}
+$$
+in two ways—first by grouping by $g \in G$, then by grouping by $x \in X$:
+1. **Counting by $g \in G$**: For each symmetry $g \in G$, the elements $x \in X$ satisfying $(g, x) \in I$ are by definition the fixed points $X^g$, so $|I| = \sum_{g \in G} |X^g|$.
+2. **Counting by $x \in X$ and Orbit-Stabilizer**: For each configuration $x \in X$, the symmetries $g \in G$ satisfying $(g, x) \in I$ form the stabilizer $\operatorname{Stab}_G(x)$, whose size satisfies $|\operatorname{Stab}_G(x)| = \frac{|G|}{|\mathcal{O}_x|}$ because the map $g \mapsto g \cdot x$ partitions $G$ into $|\mathcal{O}_x|$ cosets of $\operatorname{Stab}_G(x)$, each of size $|\operatorname{Stab}_G(x)|$.
+3. **Equating the Two Counts**:
+   $$
+   \begin{aligned}
+   \sum_{g \in G} |X^g| &= \sum_{x \in X} |\operatorname{Stab}_G(x)| && \text{(swapping summation order over } (g, x) \in I\text{)} \\
+   &= \sum_{\mathcal{O} \in X / G} \sum_{x \in \mathcal{O}} |\operatorname{Stab}_G(x)| && \text{(partitioning } X \text{ into disjoint orbits } \mathcal{O} \in X/G\text{)} \\
+   &= \sum_{\mathcal{O} \in X / G} \sum_{x \in \mathcal{O}} \frac{|G|}{|\mathcal{O}|} && \text{(Orbit-Stabilizer Theorem: } |\operatorname{Stab}_G(x)| \cdot |\mathcal{O}| = |G|\text{)} \\
+   &= \sum_{\mathcal{O} \in X / G} |\mathcal{O}| \cdot \frac{|G|}{|\mathcal{O}|} = |G| \cdot |X / G|. && \text{(each orbit } \mathcal{O} \text{ has } |\mathcal{O}| \text{ elements, summing to } |G|\text{)}
+   \end{aligned}
+   $$
+Dividing both sides by $|G|$ yields $|X / G| = \frac{1}{|G|} \sum_{g \in G} |X^g|$. $\blacksquare$
+
+*(Local Algebraic Hypothesis)*: To evaluate $|X / G|$ modulo $M$ in a commutative ring $K = \mathbb{Z}/M\mathbb{Z}$, the group order $|G|$ must be a **unit** in $K$ ($\gcd(|G|, M) = 1$; for prime $p$, $p \nmid |G|$).
+
+---
+
+### 3.5.2 Pólya's Cycle Index Theorem ($Z_G(s_1, \dots, s_n)$)
+
+Burnside's Lemma tells us to compute $|X^g|$ for each $g \in G$. Now suppose $X = \mathcal{F}^D$ is the set of all ways to place objects from a weighted combinatorial class $\mathcal{F}$ (with OGF $F(x) = \sum_{w \ge 0} f_w x^w$) into a domain $D = \{1, 2, \dots, n\}$ of $n$ slots, and a permutation group $G \le S_n$ acts on $D$ by permuting the slots: $(g \cdot c)(i) = c(g^{-1}(i))$.
+
+**When is a slot assignment $c : D \to \mathcal{F}$ fixed by $g \in G$?**
+Write the permutation $g \in G$ as a product of disjoint cycles on $D = \{1, \dots, n\}$. Suppose $g$ has $c_k(g)$ cycles of length $k$ for each $k \in \{1, 2, \dots, n\}$ (so $\sum_{k=1}^n k \cdot c_k(g) = n$).
+- The condition $g \cdot c = c$ means $c(g(i)) = c(i)$ for every slot $i \in D$.
+- Stepping around any cycle $(i_1, i_2, \dots, i_k)$ of $g$, this forces:
+  $$
+  c(i_1) = c(i_2) = \cdots = c(i_k).
+  $$
+  In plain words: **a configuration $c$ is fixed by $g$ if and only if all slots in the same cycle of $g$ receive the exact same object $\alpha \in \mathcal{F}$!**
+- Now track the **total weight** $\sum_{i=1}^n |c(i)|$: if we assign a single object $\alpha \in \mathcal{F}$ of weight $|\alpha| = w$ to all $k$ slots of a $k$-cycle, those $k$ slots together contribute weight $k \cdot w$ (monomial $x^{kw} = (x^k)^{|\alpha|}$).
+- Summing over all choices of $\alpha \in \mathcal{F}$ for that single $k$-cycle produces the OGF:
+  $$
+  \sum_{\alpha \in \mathcal{F}} \left(x^k\right)^{|\alpha|} = F(x^k).
+  $$
+- Because the choices for different cycles of $g$ are completely independent, multiplying $F(x^k)$ across all $c_k(g)$ cycles of length $k$ for $k = 1, \dots, n$ gives the exact OGF of configurations fixed by $g$:
+  $$
+  \sum_{c \in X^g} x^{|c|} = \prod_{k=1}^{n} F(x^k)^{c_k(g)}.
+  $$
+
+Averaging over all $g \in G$ via Burnside's Lemma (weighted by $x^{|c|}$, since $G$ preserves total weight) motivates Pólya's master polynomial:
+
+::: {.callout-important}
+### Definition 3.2 & Theorem 3.6 (Cycle Index Polynomial & Pólya's Enumeration Theorem)
+Let $G \le S_n$ be a permutation group acting on $n$ slots. The **Cycle Index Polynomial** of $G$ is the $n$-variate polynomial in $\mathbb{Q}[s_1, s_2, \dots, s_n]$ defined by:
+$$
+\boxed{
+Z_G(s_1, s_2, \dots, s_n) := \frac{1}{|G|} \sum_{g \in G} \prod_{k=1}^{n} s_k^{c_k(g)},
+}
+$$
+where $c_k(g)$ is the number of cycles of length $k$ in the disjoint cycle decomposition of $g$.
+
+1. **Unweighted Colorings ($m$ colors)**: If each slot is colored with one of $m$ unweighted colors ($F(x) = m$), the number of $G$-inequivalent colorings is:
+   $$
+   |X / G| = Z_G(m, m, \dots, m) = \frac{1}{|G|} \sum_{g \in G} m^{c(g)},
+   $$
+   where $c(g) = \sum_{k=1}^n c_k(g)$ is the total number of cycles of $g$.
+2. **Weighted Colorings (Pólya Substitution $s_k \gets F(x^k)$)**: If each slot is filled with an object from a combinatorial class $\mathcal{F}$ with OGF $F(x) = \sum_{w \ge 0} f_w x^w$ (or multivariate OGF $F(x, y, \dots)$), the OGF of $G$-orbits by total weight is obtained by substituting $s_k = F(x^k)$ for each $1 \le k \le n$:
+   $$
+   \boxed{
+   \operatorname{OGF}\!\left(\mathcal{F}^D / G\right)(x) = Z_G\!\left(F(x), F(x^2), \dots, F(x^n)\right) = \frac{1}{|G|} \sum_{g \in G} \prod_{k=1}^{n} F(x^k)^{c_k(g)}.
+   }
+   $$
+:::
+
+---
+
+### 3.5.3 The Canonical Cycle Index Catalog ($C_n$, $D_n$, $S_n$) & Unification with the Euler Transform
+
+Let us derive the cycle index $Z_G$ for the three most important symmetry groups in competitive programming:
+
+#### 1. The Cyclic Group $C_n$ (Rotational Necklaces of $n$ Beads)
+The group $C_n = \{\rho^0, \rho^1, \dots, \rho^{n-1}\}$ consists of $n$ cyclic shifts $i \mapsto (i + r) \bmod n$ for $r \in \{0, 1, \dots, n-1\}$.
+- **Cycle decomposition of $\rho^r$**: Starting at any bead, repeatedly adding $r \pmod n$ returns to the start after $d = \frac{n}{\gcd(r, n)}$ steps! Thus $\rho^r$ decomposes into $\gcd(r, n)$ disjoint cycles, each of length $d = \frac{n}{\gcd(r, n)}$, contributing the monomial $s_d^{n/d}$.
+- **Grouping by cycle length $d \mid n$**: For a divisor $d \mid n$, how many shifts $r \in \{0, \dots, n-1\}$ satisfy $\gcd(r, n) = \frac{n}{d}$? Writing $r = \frac{n}{d} \cdot j$ with $0 \le j < d$, we have $\gcd\!\left(\frac{n}{d} j, n\right) = \frac{n}{d} \iff \gcd(j, d) = 1$, which holds for $\varphi(d)$ values of $j$ (where $\varphi$ is Euler's totient function)!
+- Therefore:
+  $$
+  \boxed{
+  Z_{C_n}(s_1, \dots, s_n) = \frac{1}{n} \sum_{r=0}^{n-1} s_{n/\gcd(r, n)}^{\gcd(r, n)} = \frac{1}{n} \sum_{d \mid n} \varphi(d) \, s_d^{n/d}.
+  }
+  $$
+  - *Pólya–Redfield OGF for All Cyclic Necklaces $\operatorname{CYC}(\mathcal{A})$*: Summing $Z_{C_n}(A(x), A(x^2), \dots, A(x^n))$ over all necklace lengths $n \ge 1$ (with $a_0 = 0$) and setting $n = d \cdot m$ yields:
+    $$
+    \operatorname{CYC}(\mathcal{A})(x) = \sum_{n=1}^{\infty} \frac{1}{n} \sum_{d \mid n} \varphi(d) A(x^d)^{n/d} = \sum_{d=1}^{\infty} \frac{\varphi(d)}{d} \sum_{m=1}^{\infty} \frac{A(x^d)^m}{m} = \sum_{d=1}^{\infty} \frac{\varphi(d)}{d} \ln\!\left(\frac{1}{1 - A(x^d)}\right).
+    $$
+
+#### 2. The Dihedral Group $D_n$ (Bracelets of $n$ Beads under Rotation & Reflection)
+The dihedral group $D_n$ has $2n$ elements: the $n$ rotations in $C_n$ plus $n$ reflections across axes of symmetry of a regular $n$-gon:
+- If **$n$ is odd**, every reflection axis passes through $1$ vertex and the midpoint of the opposite edge, fixing $1$ bead and pairing the remaining $n - 1$ beads into $\frac{n-1}{2}$ cycles of length $2$ ($s_1 s_2^{(n-1)/2}$).
+- If **$n$ is even**, $\frac{n}{2}$ reflection axes pass through $2$ opposite vertices ($s_1^2 s_2^{(n-2)/2}$) and $\frac{n}{2}$ reflection axes pass through the midpoints of $2$ opposite edges ($s_2^{n/2}$).
+$$
+Z_{D_n}(s_1, \dots, s_n) = \frac{1}{2} Z_{C_n}(s_1, \dots, s_n) + \begin{cases}
+\dfrac{1}{2} s_1 s_2^{(n-1)/2} & \text{if } n \text{ is odd}, \\[8pt]
+\dfrac{1}{4} \left(s_1^2 s_2^{(n-2)/2} + s_2^{n/2}\right) & \text{if } n \text{ is even}.
+\end{cases}
+$$
+
+#### 3. The Symmetric Group $S_n$ (Unordered Multisets of Cardinality $n$: $\operatorname{MSET}_n(\mathcal{A})$)
+When $G = S_n$ permutes all $n$ slots arbitrarily, order is completely forgotten: an $S_n$-orbit of $n$-tuples from $\mathcal{A}$ is simply a **multiset of $n$ elements from $\mathcal{A}$**!
+- **Cycle-Type Enumeration (Cauchy's Formula)**: Two permutations in $S_n$ have the same cycle counts $(c_1, c_2, \dots, c_n)$ if and only if their cycle lengths form the same integer partition $\lambda = (1^{c_1} 2^{c_2} \cdots n^{c_n}) \vdash n$ (so $\sum_{k=1}^n k c_k = n$). How many permutations in $S_n$ have cycle type $(1^{c_1} \cdots n^{c_n})$?
+  Write all $n$ numbers in a row ($n!$ ways) and place parentheses to cut out $c_1$ cycles of length $1$, $c_2$ cycles of length $2$, $\dots$, $c_n$ cycles of length $n$. This overcounts each permutation in two ways:
+  1. Each $k$-cycle can be cyclically rotated in $k$ ways without changing the cycle ($k^{c_k}$ factor for the $c_k$ cycles of length $k$);
+  2. The $c_k$ disjoint cycles of the same length $k$ can be permuted among themselves in $c_k!$ ways.
+  Dividing out these symmetries gives **Cauchy's Cycle-Type Formula**:
+  $$
+  \#\left\{g \in S_n : c_k(g) = c_k \text{ for all } k\right\} = \frac{n!}{\prod_{k=1}^{n} k^{c_k} \, c_k!}.
+  $$
+- **Generating Function of $Z_{S_n}$**: Dividing by $|S_n| = n!$ gives:
+  $$
+  Z_{S_n}(s_1, \dots, s_n) = \sum_{\substack{c_1, \dots, c_n \ge 0 \\ 1 c_1 + 2 c_2 + \cdots + n c_n = n}} \prod_{k=1}^{n} \frac{1}{c_k!} \left(\frac{s_k}{k}\right)^{c_k}.
+  $$
+  Now multiply by $y^n = \prod_{k=1}^n y^{k c_k}$ and sum over all $n \ge 0$ (with $Z_{S_0} = 1$):
+  $$
+  \sum_{n=0}^{\infty} Z_{S_n}(s_1, \dots, s_n) y^n = \prod_{k=1}^{\infty} \left(\sum_{c_k=0}^{\infty} \frac{1}{c_k!} \left(\frac{s_k y^k}{k}\right)^{c_k}\right) = \prod_{k=1}^{\infty} \exp\!\left(\frac{s_k y^k}{k}\right) = \exp\!\left(\sum_{k=1}^{\infty} \frac{s_k y^k}{k}\right).
+  $$
+- **The Grand Unification**: Substitute Pólya's rule $s_k \gets A(x^k)$ into $\sum_{n \ge 0} Z_{S_n} y^n$:
+  $$
+  \sum_{n=0}^{\infty} \operatorname{OGF}\!\left(\operatorname{MSET}_n(\mathcal{A})\right)(x) \, y^n = \exp\!\left(\sum_{k=1}^{\infty} \frac{A(x^k)}{k} y^k\right).
+  $$
+  Setting $y = 1$ (when $a_0 = 0$) recovers the **Pólya–Euler Multiset Formula** $\operatorname{MSET}(\mathcal{A})(x) = \exp\!\left(\sum_{k \ge 1} \frac{A(x^k)}{k}\right)$ from §3.2.2, while extracting $[y^n]$ gives the exact OGF for **multisets of fixed cardinality $n$**!
+
+---
+
+### 3.5.4 Enumerating Unlabeled Simple Graphs on $n$ Vertices
+
+One of the crowning applications of Pólya's theorem in competitive programming (`Luogu P4727`, Problem `#159`) is counting **non-isomorphic simple undirected graphs** on $n$ vertices ($n \le 60$).
+
+::: {.callout-tip}
+### Diagnostic Signal & Reverse-Engineering Scratchpad: Induced Action of $S_n$ on Vertex Pairs $\binom{V}{2}$
+- **The Setup**: A simple undirected graph on $V = \{1, 2, \dots, n\}$ is a coloring of the $N = \binom{n}{2}$ unordered vertex pairs $E(K_n) = \{\{u, v\} : 1 \le u < v \le n\}$ with **$2$ colors**: $\{0 \text{ (absent)}, 1 \text{ (present)}\}$.
+- **The Induced Group Action**: The symmetric group $S_n$ permutes the $n$ vertices, which induces a permutation $\tilde{\pi}$ on the $\binom{n}{2}$ potential edges via $\tilde{\pi}(\{u, v\}) = \{\pi(u), \pi(v)\}$.
+- **By Burnside's Lemma**: For each vertex permutation $\pi \in S_n$, let $c_E(\pi)$ be the **number of edge cycles (edge orbits)** of $\tilde{\pi}$ acting on $\binom{V}{2}$. Since each edge orbit can be independently colored $0$ or $1$, $\pi$ fixes $2^{c_E(\pi)}$ labeled graphs!
+- **Why Grouping by Cycle Type $\lambda \vdash n$ Wins**: Notice that $c_E(\pi)$ depends **only** on the vertex cycle lengths $\lambda = (\ell_1, \ell_2, \dots, \ell_k) \vdash n$ of $\pi$! For $n = 60$, $|S_{60}| = 60! \approx 8.32 \times 10^{81}$ is astronomically large, whereas the number of integer partitions of $60$ is only $p(60) = 966{,}467 < 10^6$!
+:::
+
+#### Lemma 3.1 (Edge-Orbit Count $c_E(\lambda)$ for a Vertex Permutation of Cycle Type $\lambda = (\ell_1, \dots, \ell_k) \vdash n$)
+Let $\pi \in S_n$ decompose into $k$ disjoint vertex cycles $C_1, C_2, \dots, C_k$ of lengths $\ell_1, \ell_2, \dots, \ell_k$. Then the number of edge orbits $c_E(\lambda)$ induced by $\pi$ on $\binom{V}{2}$ is:
+$$
+\boxed{
+c_E(\lambda) = \sum_{i=1}^{k} \left\lfloor \frac{\ell_i}{2} \right\rfloor + \sum_{1 \le i < j \le k} \gcd(\ell_i, \ell_j).
+}
+$$
+
+*Single-Step Proof*: Every unordered pair of vertices $\{u, v\} \in \binom{V}{2}$ either has both endpoints inside the **same** vertex cycle $C_i$ (**intra-cycle edge**), or one endpoint in $C_i$ and one endpoint in $C_j$ for $i < j$ (**inter-cycle edge**):
+1. **Intra-Cycle Edges inside a Single Cycle $C_i$ of Length $\ell$ ($\lfloor \ell / 2 \rfloor$ orbits)**:
+   Label the vertices of $C_i$ around a regular $\ell$-gon as $0, 1, \dots, \ell - 1$, where $\pi(x) = (x + 1) \bmod \ell$. Every chord $\{x, y\}$ inside $C_i$ is classified by its circular step distance $d = \min\big((x - y) \bmod \ell, (y - x) \bmod \ell\big) \in \left\{1, 2, \dots, \lfloor \ell / 2 \rfloor\right\}$.
+   - Since $\pi$ rotates the $\ell$-gon by $+1$, two chords inside $C_i$ lie in the same edge orbit **if and only if** they have the same circular distance $d$!
+   - Thus there is **one edge orbit for each distance $d \in \{1, 2, \dots, \lfloor \ell / 2 \rfloor\}$**, giving $\lfloor \ell / 2 \rfloor$ intra-cycle edge orbits! (Notice: for $d < \ell / 2$, the orbit has length $\ell$; when $\ell$ is even and $d = \ell / 2$, the main diagonals $\{x, x + \ell/2\}$ map to themselves after $\ell / 2$ steps, forming a single orbit of length $\ell / 2$, so both cases contribute $1$ orbit per $d \le \lfloor \ell / 2 \rfloor$.)
+2. **Inter-Cycle Edges between $C_i$ (length $\ell_i$) and $C_j$ (length $\ell_j$) ($\gcd(\ell_i, \ell_j)$ orbits)**:
+   There are $\ell_i \cdot \ell_j$ edges $\{u, v\}$ with $u \in C_i$ and $v \in C_j$. Under $t$ applications of $\pi$, $\{u, v\}$ maps to $\{\pi^t(u), \pi^t(v)\}$. Because $C_i$ and $C_j$ are disjoint, $\{\pi^t(u), \pi^t(v)\} = \{u, v\}$ holds if and only if $\pi^t(u) = u$ (so $\ell_i \mid t$) **and** $\pi^t(v) = v$ (so $\ell_j \mid t$).
+   - The smallest positive $t$ divisible by both $\ell_i$ and $\ell_j$ is $\operatorname{lcm}(\ell_i, \ell_j)$.
+   - Therefore, every inter-cycle edge orbit between $C_i$ and $C_j$ has length $\operatorname{lcm}(\ell_i, \ell_j)$, and the $\ell_i \ell_j$ cross-edges partition into:
+     $$
+     \frac{\ell_i \ell_j}{\operatorname{lcm}(\ell_i, \ell_j)} = \gcd(\ell_i, \ell_j) \text{ orbits!} \quad \blacksquare
+     $$
+
+Combining Lemma 3.1 with Cauchy's cycle-type formula and Burnside's Lemma gives the exact number of unlabeled simple graphs on $n$ vertices:
+$$
+\boxed{
+g_n = \frac{1}{n!} \sum_{\lambda = (1^{m_1}\cdots n^{m_n}) \vdash n} \frac{n!}{\prod_{r=1}^{n} r^{m_r} \, m_r!} \, 2^{c_E(\lambda)} = \sum_{\lambda = (1^{m_1}\cdots n^{m_n}) \vdash n} \frac{2^{c_E(\lambda)}}{\prod_{r=1}^{n} r^{m_r} \, m_r!}.
+}
+$$
+
+#### Hand-Checkable Trace at $n = 4$ ($g_4 = 11$ Unlabeled Simple Graphs)
+Let us evaluate every term of the sum over all $p(4) = 5$ partitions $\lambda \vdash 4$ to verify $g_4 = 11$:
+
+| Partition $\lambda \vdash 4$ | Multiplicity $1^{m_1}2^{m_2}3^{m_3}4^{m_4}$ | Permutations $\frac{4!}{\prod r^{m_r} m_r!}$ | Intra-Cycle $\sum \lfloor \ell_i / 2 \rfloor$ | Inter-Cycle $\sum_{i<j} \gcd(\ell_i, \ell_j)$ | Total Orbits $c_E(\lambda)$ | Fixed Graphs $\#(\lambda) \cdot 2^{c_E(\lambda)}$ |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| $(4)$ | $4^1$ | $\frac{24}{4^1 \cdot 1!} = 6$ | $\lfloor 4/2 \rfloor = 2$ | $0$ | $2$ | $6 \times 2^2 = 24$ |
+| $(3, 1)$ | $1^1 3^1$ | $\frac{24}{1 \cdot 3} = 8$ | $\lfloor 3/2 \rfloor + \lfloor 1/2 \rfloor = 1$ | $\gcd(3, 1) = 1$ | $2$ | $8 \times 2^2 = 32$ |
+| $(2, 2)$ | $2^2$ | $\frac{24}{2^2 \cdot 2!} = 3$ | $1 + 1 = 2$ | $\gcd(2, 2) = 2$ | $4$ | $3 \times 2^4 = 48$ |
+| $(2, 1, 1)$ | $1^2 2^1$ | $\frac{24}{1^2 \cdot 2! \cdot 2^1 \cdot 1!} = 6$ | $1 + 0 + 0 = 1$ | $\gcd(2,1) + \gcd(2,1) + \gcd(1,1) = 3$ | $4$ | $6 \times 2^4 = 96$ |
+| $(1, 1, 1, 1)$ | $1^4$ | $\frac{24}{1^4 \cdot 4!} = 1$ | $0$ | $\binom{4}{2} \cdot \gcd(1, 1) = 6$ | $6$ | $1 \times 2^6 = 64$ |
+
+Averaging over $|S_4| = 24$:
+$$
+g_4 = \frac{24 + 32 + 48 + 96 + 64}{24} = \frac{264}{24} = 11.
+$$
+(Indeed, on $4$ vertices there is $1$ graph with $0$ edges, $1$ with $1$ edge, $2$ with $2$ edges, $3$ with $3$ edges, $2$ with $4$ edges, $1$ with $5$ edges, and $1$ with $6$ edges: $1 + 1 + 2 + 3 + 2 + 1 + 1 = 11$!)
+
+::: {.callout-note}
+### Algorithm Contract 3.4: Pólya Cycle-Index & Unlabeled Graph Enumeration
+- **Preconditions**:
+  - *Cyclic Necklaces $\operatorname{CYC}(\mathcal{A}) \bmod x^{N+1}$*: Component OGF $A(x)$ with $a_0 = 0$, prime $p > N$.
+  - *Unlabeled Simple Graphs $g_n$*: Vertex count $n \le 60$, prime modulus $p > n$ (so $\gcd(n!, p) = 1$).
+- **Postconditions**:
+  - *Necklaces*: Computes $B(x) = -\ln(1 - A(x)) \bmod x^{N+1}$ once via `poly_ln` and evaluates $[x^n]\operatorname{CYC}(\mathcal{A}) = \sum_{d \mid n} \frac{\varphi(d)}{d} [x^{n/d}]B(x) \bmod p$.
+  - *Unlabeled Graphs*: Enumerates all $p(n)$ cycle-type partitions $\lambda = (1^{m_1}\cdots n^{m_n}) \vdash n$ via recursive DFS and sums $2^{c_E(\lambda)} \prod_{r=1}^n (r^{m_r} m_r!)^{-1} \bmod p$.
+- **Complexity**: $O(N \log N)$ time and $O(N)$ space for $\operatorname{CYC}(\mathcal{A})$; $O(p(n)\sqrt{n})$ time and $O(n)$ space for $g_n$.
+:::
+
+---
+
+## 3.6 Practice Set: 8-Problem 4-Tier Ladder
+
+We now apply every tool developed in this chapter across 8 curated competitive programming problems, progressing from Stepping Stone polynomial modelling and partition engines to Mastery inverse knapsack reconstruction and Pólya graph enumeration.
+
+---
+
+### Stepping Stone 1 (`#001`) — Snack
+
+- **Source**: [AtCoder `fps-24` — Task A: Snack](https://atcoder.jp/contests/fps-24/tasks/fps_24_a)
+- **Prerequisites**: Unlabeled Symbolic Method ($\times$, $\mathcal{A}^D$), Sparse Polynomial Exponentiation / Factorization (`Ch 02`, `Ch 03 §3.1`)
+
+#### Problem Statement & Exact Constraints
+Takahashi buys one snack each day for $D$ consecutive days ($D$ ordered days). On any single day, there are $4$ available snack weights with the following menu of distinguishable snack varieties: 1 variety of $1$-yen snack, 2 varieties of $3$-yen snack, 1 variety of $4$-yen snack, and 3 varieties of $6$-yen snack.
+
+Find the number of ordered $D$-day snack sequences whose total price over the $D$ days is **exactly $N$ yen**, modulo $998244353$.
+
+- **Constraints**: $1 \le D \le 2.5 \times 10^5$, $1 \le N \le 10^6$ (or $N \le 2.5 \times 10^5$), Modulus $p = 998244353$, Time Limit $2.0\text{ s}$.
+- **Target Complexity**: $O(D + N)$ time and $O(D + N)$ space!
+- **Sample Trace ($D = 2, N = 4$)**: With single-day OGF $S(x) = x + 2x^3 + x^4 + 3x^6$, a 2-day sequence summing to $N = 4$ yen must choose $(1\text{ yen}, 3\text{ yen})$ or $(3\text{ yen}, 1\text{ yen})$; since there is $1$ variety of $1$-yen snack and $2$ varieties of $3$-yen snack, there are $[x^4] S(x)^2 = 1 \cdot 2 + 2 \cdot 1 = 4$ valid sequences.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Each day is an independent choice from the single-day snack class $\mathcal{S}$, and the $D$ days are ordered ($\text{Day } 1, \text{Day } 2, \dots, \text{Day } D$), so the $D$-day menu is the Cartesian power $\mathcal{S}^D$. Write down the single-day OGF $S(x)$ and factor out the minimum daily spend $x^1$. (As a warm-up, also consider the factored-menu variant **Variant A** where there is $1$ variety each of $1, 3, 4, 6$-yen snacks, vs. the contest problem **Variant B** with $1, 2, 1, 3$ varieties.)
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Since every snack costs at least $1$ yen, $\operatorname{val}(S) = 1$. Factor $S(x) = x \cdot Q(x)$ so that $S(x)^D = x^D Q(x)^D$, reducing the target to $[x^{N-D}] Q(x)^D$ (if $N < D$, the answer is $0$):
+- In **Variant A** (warm-up), $Q_A(x) = 1 + x^2 + x^3 + x^5$. Try factoring $Q_A(x)$ by grouping $(1 + x^2) + x^3(1 + x^2)$!
+- In **Variant B** (`fps-24 A`), $Q_B(x) = 1 + 2x^2 + x^3 + 3x^5$ has only $4$ non-zero terms ($\deg Q_B = 5$). Recall from Chapter 02 that $Y(x) = Q_B(x)^D$ satisfies the linear differential equation $Q_B(x) Y'(x) = D \cdot Q_B'(x) Y(x)$!
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+- For **Variant A**: Since $Q_A(x)^D = (1 + x^2)^D (1 + x^3)^D$, expand $(1 + x^2)^D = \sum_{j=0}^D \binom{D}{j} x^{2j}$ and sum over all $j$ such that $2j \le N - D$ and $3 \mid (N - D - 2j)$ in $O(D)$ time!
+- For **Variant B**: Extracting $[x^{n-1}]$ from $Q_B(x) Y'(x) = D \cdot Q_B'(x) Y(x)$ gives a $5$-term $O(1)$-per-step linear recurrence for $y_n = [x^n] Q_B(x)^D$, solving up to $K = N - D$ in $O(N - D)$ time without a single NTT!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Combinatorial-to-OGF Translation & Valuation Shift
+Let $\mathcal{S}$ be the combinatorial class of snacks available on a single day. Because the $D$ days are ordered and the total cost is the sum of the $D$ daily costs, the class of $D$-day snack sequences is $\mathcal{S}^D$, with OGF $S(x)^D$. Thus we seek $[x^N] S(x)^D$.
+
+Notice that every snack has weight $\ge 1$, so $\operatorname{val}(S) = 1$ and $\operatorname{val}(S^D) = D$. If $N < D$ or $N > 6D$, the answer is immediately $0$. Otherwise, set $K := N - D \ge 0$ and factor $S(x) = x Q(x)$ with $[x^0]Q(x) = 1$:
+$$
+[x^N] S(x)^D = [x^N] x^D Q(x)^D = [x^{N - D}] Q(x)^D = [x^K] Q(x)^D.
+$$
+
+#### 2. Warm-Up Variant A ($S_A(x) = x + x^3 + x^4 + x^6$)
+Factoring out $x$ leaves $Q_A(x) = 1 + x^2 + x^3 + x^5$, which factors cleanly into two binomials:
+$$
+Q_A(x) = (1 + x^2) + x^3(1 + x^2) = (1 + x^2)(1 + x^3) \implies Q_A(x)^D = (1 + x^2)^D (1 + x^3)^D.
+$$
+Expanding both binomials via the Binomial Theorem:
+$$
+(1 + x^2)^D = \sum_{j=0}^{D} \binom{D}{j} x^{2j}, \qquad (1 + x^3)^D = \sum_{k=0}^{D} \binom{D}{k} x^{3k}.
+$$
+To extract $[x^K] Q_A(x)^D$, a term $2j + 3k = K$ contributes $\binom{D}{j}\binom{D}{k}$ whenever $0 \le j \le \min(D, \lfloor K / 2 \rfloor)$, $3 \mid (K - 2j)$, and $0 \le \frac{K - 2j}{3} \le D$:
+$$
+\text{Ans}_A = \sum_{\substack{0 \le j \le \min(D, \lfloor K/2 \rfloor) \\ K - 2j \equiv 0 \pmod 3 \\ (K - 2j)/3 \le D}} \binom{D}{j} \binom{D}{\frac{K - 2j}{3}} \pmod{998244353}.
+$$
+
+#### 3. Primary Solution (`fps-24 A`: $S_B(x) = x + 2x^3 + x^4 + 3x^6$) via Sparse Power ODE
+Here $Q_B(x) = 1 + 2x^2 + x^3 + 3x^5 = \sum_{i=0}^5 q_i x^i$ with $q = (1, 0, 2, 1, 0, 3)$. Let $Y(x) = Q_B(x)^D = \sum_{n=0}^{5D} y_n x^n$. Differentiating logarithmically:
+$$
+\frac{Y'(x)}{Y(x)} = \frac{D \cdot Q_B'(x)}{Q_B(x)} \iff Q_B(x) Y'(x) = D \cdot Q_B'(x) Y(x).
+$$
+Extracting $[x^{n-1}]$ from both sides for $n \ge 1$ (since $q_0 = 1$ and $y_0 = 1$):
+$$
+\begin{aligned}
+\sum_{i=0}^{\min(5, n)} q_i (n - i) y_{n-i} &= D \sum_{i=1}^{\min(5, n)} i q_i y_{n-i}
+&& \text{(extract } [x^{n-1}] \text{ from } Q_B(x) Y'(x) = D Q_B'(x) Y(x)\text{)} \\[4pt]
+q_0 n y_n + \sum_{i=1}^{\min(5, n)} q_i (n - i) y_{n-i} &= \sum_{i=1}^{\min(5, n)} D i q_i y_{n-i}
+&& \text{(isolate the } i = 0 \text{ term on the LHS)} \\[4pt]
+n y_n &= \sum_{i=1}^{\min(5, n)} q_i \bigl(i(D + 1) - n\bigr) y_{n-i}.
+&& \text{(use } q_0 = 1 \text{ and collect } D i - (n - i) = i(D + 1) - n\text{)}
+\end{aligned}
+$$
+Substituting $q_1 = q_4 = 0, q_2 = 2, q_3 = 1, q_5 = 3$ yields the $3$-term $O(1)$ recurrence for $1 \le n \le K$:
+$$
+y_n = \frac{1}{n} \Big( 2\big(2(D+1) - n\big) y_{n-2} + \big(3(D+1) - n\big) y_{n-3} + 3\big(5(D+1) - n\big) y_{n-5} \Big) \bmod 998244353,
+$$
+where $y_0 = 1$ and $y_m = 0$ for $m < 0$. (Alternatively, one call to $\exp(D \ln Q_B(x)) \bmod x^{K+1}$ solves it in $O(K \log K)$ time.)
+
+::: {.callout-note}
+#### Algorithm Contract (`#001`)
+- **Input & Preconditions**: Integers $1 \le D \le 2.5 \times 10^5$, $1 \le N \le 10^6$, and prime modulus $p = 998244353 > N - D$ so that $1, 2, \dots, N - D \in \mathbb{F}_p^\times$ and $[x^0]Q_B(x) = 1$.
+- **Postconditions (Output)**: Returns $[x^N] S_B(x)^D = [x^{N-D}] Q_B(x)^D \bmod 998244353$.
+- **Time & Space Complexity**: $O(N - D)$ time and $O(N - D)$ space for the Sparse Power ODE recurrence ($O(D)$ time for Variant A).
+- **Loop / Algebraic Invariant**: After iteration $n \in [1, N - D]$, $y_m = [x^m] Q_B(x)^D \bmod p$ is exact for all $0 \le m \le n$.
+- **Failure Modes & Edge Cases**: If $N < D$ or $N > 6D$, return $0$ immediately before allocating or indexing $K = N - D$; when $i(D+1) - n < 0$, add $p$ before modular multiplication to prevent negative remainder underflow.
+:::
+
+</details>
+
+---
+
+### Stepping Stone 2 (`#188`) — Running (Partition Function Modulo Arbitrary $P$)
+
+- **Source**: [Luogu P6189 — [NOI Online #1 入门组] 跑步](https://www.luogu.com.cn/problem/P6189)
+- **Prerequisites**: Integer Partitions, $\sqrt{N}$ Heavy-Light Split, Euler's Pentagonal Number Theorem (`Ch 03 §3.3.4`, `§3.4.2`)
+
+#### Problem Statement & Exact Constraints
+Given a positive integer $n$ and a modulus $P$, find the number of integer partitions $p(n)$ of $n$ into positive integers (where order does not matter), modulo $P$.
+
+- **Constraints**: $1 \le n \le 10^5$, $2 \le P \le 10^9 + 9$ (**$P$ is NOT guaranteed to be prime!**), Time Limit $1.0\text{ s}$.
+- **Target Complexity**: $O(n\sqrt{n})$ time and $O(n)$ space, using **zero divisions**.
+- **Sample Trace ($n = 4, P = 100$)**: The integer partitions of $n = 4$ are $(4), (3,1), (2,2), (2,1,1), (1,1,1,1)$, giving $p(4) = 5 \bmod 100$ (which matches Euler's pentagonal recurrence $p(4) = p(3) + p(2) = 3 + 2 = 5$).
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+We need $[x^n] \prod_{k=1}^n \frac{1}{1 - x^k} \bmod P$, where $n \le 10^5$ and $P$ is an **arbitrary (possibly composite) integer**. Because $P$ is not an NTT prime and modular inverses $k^{-1} \bmod P$ may not exist, $O(n \log n)$ polynomial `ln`/`exp`/`inv` are off the table, and naive $O(n^2)$ knapsack DP is too slow. Which two $O(n\sqrt{n})$ division-free methods from §3.3.4 and §3.4.2 apply directly?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+- **Method 1 (Euler's Pentagonal Number Theorem, §3.4.2)**: Use $P(x) \left(1 + \sum_{m \ge 1} (-1)^m (x^{m(3m-1)/2} + x^{m(3m+1)/2})\right) = 1$, which gives a recurrence for $p(n)$ using only additions and subtractions of $p(n - \omega(\pm m))$.
+- **Method 2 ($\sqrt{n}$ Heavy-Light DP, §3.3.4)**: Split parts at $B = \lceil \sqrt{n} \rceil \approx 317$: run unbounded knapsack for parts $1 \le k < B$, and run the staircase DP $g[j][s] = g[j-1][s-B] + g[j][s-j]$ for parts $\ge B$.
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+In Method 1, precompute the generalized pentagonal numbers $\omega_1(m) = \frac{m(3m-1)}{2}$ and $\omega_2(m) = \frac{m(3m+1)}{2}$ for $m \ge 1$ while $\omega_1(m) \le n$. For each $i = 1 \dots n$, loop over $m = 1, 2, \dots$ until $\omega_1(m) > i$, adding or subtracting `p[i - w1]` and `p[i - w2]` modulo $P$ according to the parity of $m$.
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### Method 1: Euler's Pentagonal Number Recurrence (Recommended — Fastest Constant Factor)
+By Theorem 3.4, in $\mathbb{Z}[[x]]$:
+$$
+\left(\sum_{i=0}^{\infty} p(i) x^i\right) \left(1 + \sum_{m=1}^{\infty} (-1)^m \left(x^{\frac{m(3m-1)}{2}} + x^{\frac{m(3m+1)}{2}}\right)\right) = 1.
+$$
+For every $i \ge 1$, the coefficient of $x^i$ on the right-hand side is $0$, so isolating $p(i)$ gives:
+$$
+p(i) = \sum_{m=1}^{\infty} (-1)^{m-1} \left( p\!\left(i - \frac{m(3m-1)}{2}\right) + p\!\left(i - \frac{m(3m+1)}{2}\right) \right) \pmod P,
+$$
+with base case $p(0) = 1$ and $p(k) = 0$ for $k < 0$. Because this identity holds in $\mathbb{Z}[[x]]$, reducing every addition and subtraction modulo $P$ is valid for **any** modulus $P \ge 2$.
+
+```cpp
+vector<long long> p(n + 1, 0);
+p[0] = 1 % P;
+for (int i = 1; i <= n; ++i) {
+    long long sum = 0;
+    for (int k = 1; ; ++k) {
+        int w1 = k * (3 * k - 1) / 2, w2 = k * (3 * k + 1) / 2;
+        if (w1 > i) break;
+        long long term = p[i - w1] + (w2 <= i ? p[i - w2] : 0);
+        sum += (k & 1) ? term : -term;
+    }
+    p[i] = (sum % P + P) % P;
+}
+```
+
+#### Method 2: $\sqrt{n}$ Heavy-Light Knapsack Split (Generalizes to Restricted/Bounded Partitions!)
+Set $B = \lfloor \sqrt{n} \rfloor + 1$.
+1. **Heavy Parts ($\ge B$)**: Let $g[j][s]$ be the number of partitions of $s$ into $j$ parts all $\ge B$ ($0 \le j \le \lfloor n / B \rfloor$). Using $g[0][0] = 1$ and $g[j][s] = (g[j-1][s-B] + g[j][s-j]) \bmod P$, accumulate `dp[s] = sum_j g[j][s] % P` in $O(n\sqrt{n})$ time.
+2. **Light Parts ($1 \le k < B$)**: For $k = 1, 2, \dots, B - 1$ and $s = k, \dots, n$, update `dp[s] = (dp[s] + dp[s - k]) % P` in $O(n\sqrt{n})$ time. Then `dp[n]` is $p(n) \bmod P$.
+
+::: {.callout-note}
+#### Algorithm Contract (`#188`)
+- **Input & Preconditions**: Integer $1 \le n \le 10^5$ and arbitrary integer modulus $2 \le P \le 10^9 + 9$ (no primality or coprimality required; works over $\mathbb{Z}_P$).
+- **Postconditions (Output)**: Returns $p(n) = [x^n] \prod_{k=1}^n (1 - x^k)^{-1} \bmod P$.
+- **Time & Space Complexity**: $O(n\sqrt{n})$ time and $O(n)$ space for both Euler's Pentagonal Recurrence and the $\sqrt{n}$ Heavy-Light Split.
+- **Loop / Algebraic Invariant**: After outer step $i$, `p[0..i]` holds the exact partition numbers modulo $P$ (or in Method 2, after processing light part $k$, `dp[s]` counts partitions of $s$ using parts in $\{1, \dots, k\} \cup [B, n]$).
+- **Failure Modes & Edge Cases**: Never attempt harmonic `ln`/`exp` here since $P$ may be composite ($\gcd(k, P) > 1$); in Method 1, accumulate `sum` in 64-bit `long long` and normalize `(sum % P + P) % P` to avoid signed overflow or negative remainders.
+:::
+
+</details>
+
+---
+
+### Intermediate 1 (`#153`) — Princess Fu's Knapsack (Unbounded Knapsack via Harmonic $\ln/\exp$)
+
+- **Source**: [Luogu P4389 — 付公主的背包](https://www.luogu.com.cn/problem/P4389)
+- **Prerequisites**: Multiset Construction ($\operatorname{MSET}$), Regime A Frequency Bucketing, Pólya–Euler Harmonic $\ln/\exp$ (`Ch 03 §3.2.2`)
+
+#### Problem Statement & Exact Constraints
+Princess Fu has $n$ types of items. The $i$-th item type has volume $v_i$ ($1 \le v_i \le m$) and is available in **infinite supply**. Copies of the same item type are indistinguishable, and the order in which items are placed into the knapsack does not matter. For **every** knapsack capacity $s = 1, 2, \dots, m$, find the number of ways to fill a knapsack of exact total volume $s$, modulo $998244353$.
+
+- **Constraints**: $1 \le n, m \le 10^5$, $1 \le v_i \le m$, Modulus $p = 998244353$, Time Limit $1.0\text{ s}$.
+- **Target Complexity**: $O(n + m \log m)$ time and $O(m)$ space.
+- **Sample Trace ($n = 2, m = 4$)**: For item volumes $v = (1, 2)$, $B(x) = \frac{1}{(1-x)(1-x^2)} = 1 + x + 2x^2 + 2x^3 + 3x^4 + O(x^5)$, outputting counts $(1, 2, 2, 3)$ for $s = 1, 2, 3, 4$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Each item type $i$ of volume $v_i$ can be chosen $0, 1, 2, \dots$ times without order, so its OGF is $1 + x^{v_i} + x^{2v_i} + \cdots = \frac{1}{1 - x^{v_i}}$. Across all $n$ item types, we want the coefficients $[x^1 \dots x^m]$ of:
+$$
+B(x) = \prod_{i=1}^{n} \frac{1}{1 - x^{v_i}} \pmod{x^{m+1}}.
+$$
+Notice this is a **Regime A** product (varying exponents $x^{v_i}$). What must we do before taking $\ln B(x)$?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+If all $n = 10^5$ items had $v_i = 1$ and we expanded $-\ln(1 - x^{v_i}) = \sum_{j=1}^m \frac{x^{j v_i}}{j}$ separately for each item $i$, we would do $n \times m = 10^{10}$ operations! Instead, **bucket equal volumes first**: let $a_k = \#\{i \in [1, n] : v_i = k\}$ for $1 \le k \le m$. Then:
+$$
+B(x) = \prod_{k=1}^{m} \frac{1}{(1 - x^k)^{a_k}} \implies \ln B(x) \equiv \sum_{k=1}^{m} a_k \sum_{j=1}^{\lfloor m/k \rfloor} \frac{x^{jk}}{j} \pmod{x^{m+1}}.
+$$
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+1. Count frequencies `a[k]` for $1 \le k \le m$ in $O(n)$ time.
+2. Build `L[0..m]` in $O(m \log m)$ harmonic time: for $k = 1 \dots m$ (if $a_k > 0$) and $j = 1 \dots \lfloor m / k \rfloor$, add $a_k \cdot j^{-1} \bmod 998244353$ to `L[j * k]`.
+3. Compute `B = poly_exp(L, m + 1)` in $O(m \log m)$ time and print `B[1..m]`.
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Unlabeled Multiset Specification
+Let $\mathcal{A}$ be the combinatorial class of the $n$ distinct item types, where item $i$ has size $|i| = v_i \ge 1$. A valid knapsack configuration is an unordered multiset from $\mathcal{A}$, i.e., $\mathcal{B} = \operatorname{MSET}(\mathcal{A})$. Letting $a_k = \#\{i \in \{1, \dots, n\} : v_i = k\}$ for each $1 \le k \le m$, the OGF of $\mathcal{A}$ truncated to degree $m$ is $A(x) = \sum_{k=1}^m a_k x^k$ (with $a_0 = 0$), and the OGF of $\mathcal{B}$ is:
+$$
+B(x) = \prod_{k=1}^{m} \frac{1}{(1 - x^k)^{a_k}} \pmod{x^{m+1}}.
+$$
+
+#### 2. Harmonic Logarithm Sieve + Single `exp`
+Since $p = 998244353 > m = 10^5$, all integers $1, 2, \dots, m$ are units in $\mathbb{F}_p$. Applying the Pólya–Euler Harmonic Formula (§3.2.2):
+$$
+L(x) := \ln B(x) \bmod x^{m+1} = \sum_{k=1}^{m} a_k \sum_{j=1}^{\lfloor m/k \rfloor} \frac{x^{jk}}{j}.
+$$
+*(Contrast with `#165` in Chapter 02, §2.6)*: In the $0/1$ subset-sum problem `#165` ($\operatorname{PSET}(\mathcal{A}) = \prod_{k=1}^m (1 + x^k)^{a_k}$), the harmonic logarithm has **alternating signs** $(-1)^{j-1} \frac{a_k}{j} x^{jk}$, whereas in this unbounded knapsack problem `#153` ($\operatorname{MSET}(\mathcal{A}) = \prod_{k=1}^m (1 - x^k)^{-a_k}$), every term in the harmonic logarithm has an **all-positive sign** $+\frac{a_k}{j} x^{jk}$.
+
+After grouping identical volumes into $a_1, \dots, a_m$ in $O(n + m)$ time, the nested loop over $(k, j)$ executes $\sum_{k=1}^m \lfloor m / k \rfloor = O(m \log m)$ iterations. Finally, $B(x) = \exp(L(x)) \bmod x^{m+1}$ is computed via a single Newton-iteration exponential in $O(m \log m)$ time, and the answers are $[x^1]B(x), [x^2]B(x), \dots, [x^m]B(x)$.
+
+::: {.callout-note}
+#### Algorithm Contract (`#153`)
+- **Input & Preconditions**: Item volumes $v_1, \dots, v_n \in [1, m]$ with $1 \le n, m \le 10^5$ and prime modulus $p = 998244353 > m$ (so $a_0 = 0$ and $1, \dots, m \in \mathbb{F}_p^\times$).
+- **Postconditions (Output)**: Returns $[x^s] \prod_{i=1}^n (1 - x^{v_i})^{-1} \bmod 998244353$ for all $s = 1, 2, \dots, m$.
+- **Time & Space Complexity**: $O(n + m \log m)$ time ($O(n)$ bucketing + $O(m \log m)$ harmonic sieve + 1 FPS `exp`) and $O(m)$ space.
+- **Loop / Algebraic Invariant**: After processing volume $k$ in the harmonic sieve, $L(x) \equiv \sum_{r=1}^k a_r \ln((1 - x^r)^{-1}) \pmod{x^{m+1}}$ with $[x^0]L(x) = 0$.
+- **Failure Modes & Edge Cases**: Failure to bucket identical volumes $v_i = k$ into $a_k$ before the harmonic loop causes $O(n m)$ TLE when many $v_i = 1$; ignore any item with $v_i > m$.
+:::
+
+</details>
+
+---
+
+### Intermediate 2 (`#009`) — Coin 2 (Bounded Knapsack via Net-Frequency Harmonic Sieve)
+
+- **Source**: [AtCoder `fps-24` — Task N: Coin 2](https://atcoder.jp/contests/fps-24/tasks/fps_24_n)
+- **Prerequisites**: Bounded Multisets, Geometric Series Quotient $\frac{1 - x^{w(c+1)}}{1 - x^w}$, Harmonic $\ln/\exp$ (`Ch 03 §3.2.2`)
+
+#### Problem Statement & Exact Constraints
+You have $N$ types of coins. For the $i$-th coin type ($1 \le i \le N$), each coin has value $w_i \ge 1$ and you possess at most $c_i \ge 1$ identical coins of this type. Find the number of ways to select a collection of coins whose values sum to $s$ for **each** $s = 1, 2, \dots, M$ (or for target $s = M$), modulo $998244353$.
+
+- **Constraints**: $1 \le N, M \le 2.5 \times 10^5$, $1 \le w_i \le M$, $1 \le c_i \le M$, Modulus $p = 998244353$, Time Limit $2.0\text{ s}$.
+- **Target Complexity**: $O(N + M \log M)$ time and $O(M)$ space.
+- **Sample Trace ($N = 2, M = 3$)**: With coin types $(w_1, c_1) = (1, 2)$ and $(w_2, c_2) = (2, 1)$, the bounded multiset OGF is $(1 + x + x^2)(1 + x^2) = 1 + x + 2x^2 + x^3 + x^4$, giving counts $(1, 2, 1)$ for $s = 1, 2, 3$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Coin type $i$ can be used $0, 1, 2, \dots, c_i$ times, contributing the finite geometric series $1 + x^{w_i} + x^{2w_i} + \cdots + x^{c_i w_i}$. How do we rewrite this polynomial of $c_i + 1$ terms as a quotient of two **binomials** of the form $(1 - x^k)$?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Write $1 + x^{w_i} + \cdots + x^{c_i w_i} = \frac{1 - x^{w_i(c_i + 1)}}{1 - x^{w_i}}$. Multiplying over all $i = 1, \dots, N$ yields:
+$$
+B(x) = \prod_{i=1}^{N} \frac{1 - x^{w_i(c_i + 1)}}{1 - x^{w_i}} \pmod{x^{M+1}}.
+$$
+Notice that both the numerator factors $(1 - x^{w_i(c_i + 1)})$ and the denominator factors $(1 - x^{w_i})^{-1}$ have the exact Euler form $(1 - x^k)^{\pm 1}$! What happens if $w_i(c_i + 1) > M$?
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Maintain a single **net-frequency array** $\text{ net }[1 \dots M]$ initialized to $0$:
+- For each coin type $i$:
+  - Increment $\text{net}[w_i] \mathrel{+}= 1$ (from $(1 - x^{w_i})^{-1}$).
+  - If $w_i(c_i + 1) \le M$, decrement $\text{net}[w_i(c_i + 1)] \mathrel{-}= 1$ (from $(1 - x^{w_i(c_i + 1)})^{+1}$; if $w_i(c_i + 1) > M$, $1 - x^{w_i(c_i + 1)} \equiv 1 \pmod{x^{M+1}}$!).
+- Run the exact same $O(M \log M)$ Forward Euler Transform on `net[1..M]`!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Reducing Bounded Multisets to a Generalized Euler Product
+For the $i$-th coin type of weight $w_i$ and copy limit $c_i$, choosing $m \in \{0, 1, \dots, c_i\}$ copies has OGF:
+$$
+1 + x^{w_i} + x^{2w_i} + \cdots + x^{c_i w_i} = \frac{1 - x^{w_i(c_i + 1)}}{1 - x^{w_i}}.
+$$
+Across all $N$ independent coin types, the OGF of bounded coin collections modulo $x^{M+1}$ is:
+$$
+B(x) = \prod_{i=1}^{N} \frac{1 - x^{w_i(c_i + 1)}}{1 - x^{w_i}} = \prod_{k=1}^{M} (1 - x^k)^{-\text{net}_k} \pmod{x^{M+1}},
+$$
+where the net exponent $\text{net}_k \in \mathbb{Z}$ at weight $k \in \{1, \dots, M\}$ is defined by:
+$$
+\text{net}_k = \#\{i : w_i = k\} - \#\{i : w_i(c_i + 1) = k\}.
+$$
+ (Whenever $w_i(c_i + 1) > M$, we have $1 - x^{w_i(c_i + 1)} \equiv 1 \pmod{x^{M+1}}$, which corresponds combinatorially to the fact that $c_i$ copies of weight $w_i$ already exceed capacity $M$, so the upper bound $c_i$ is inactive.)
+
+#### 2. Harmonic Sieve and `exp`
+Taking the formal logarithm in $\mathbb{F}_{998244353}[[x]] / (x^{M+1})$ (valid since $p = 998244353 > M$):
+$$
+\ln B(x) \equiv \sum_{k=1}^{M} \text{net}_k \sum_{j=1}^{\lfloor M/k \rfloor} \frac{x^{jk}}{j} \pmod{x^{M+1}}.
+$$
+We build $\text{net}[1 \dots M]$ in $O(N + M)$ time, accumulate $L(x) = \ln B(x) \bmod x^{M+1}$ via the harmonic loop in $O(M \log M)$ time, and recover $B(x) = \exp(L(x)) \bmod x^{M+1}$ in $O(M \log M)$ time.
+
+::: {.callout-note}
+#### Algorithm Contract (`#009`)
+- **Input & Preconditions**: Pairs $(w_i, c_i)$ for $1 \le i \le N$ with $w_i \ge 1, c_i \ge 1$, target degree $M \le 2.5 \times 10^5$, and prime modulus $p = 998244353 > M$.
+- **Postconditions (Output)**: Returns $[x^s] \prod_{i=1}^N \frac{1 - x^{w_i(c_i+1)}}{1 - x^{w_i}} \bmod 998244353$ for $1 \le s \le M$.
+- **Time & Space Complexity**: $O(N + M \log M)$ time and $O(M)$ space.
+- **Loop / Algebraic Invariant**: $\text{net}_k = \#\{i : w_i = k\} - \#\{i : w_i(c_i + 1) = k\}$ for $1 \le k \le M$, so $\exp(\sum_{k=1}^M \text{net}_k \ln((1 - x^k)^{-1})) \equiv B(x) \pmod{x^{M+1}}$.
+- **Failure Modes & Edge Cases**: Compute $w_i(c_i + 1)$ in 64-bit `long long` before checking $\le M$ to prevent 32-bit integer overflow when $w_i, c_i \approx 2.5 \times 10^5$; normalize negative $\text{net}_k$ modulo $p$ via `(net[k] % p + p) % p`.
+:::
+
+</details>
+
+---
+
+### Advanced 1 (`#223`) — Inverse Euler Transform (yukicoder 899 / LOJ 6268)
+
+- **Source**: [LibreOJ #6268 / yukicoder 899 — 逆オイラー変換 (Inverse Euler Transform)](https://loj.ac/p/6268)
+- **Prerequisites**: Inverse Euler Transform, Formal Logarithm $\ln B(x)$, Möbius Inversion (`Ch 03 §3.2.3`)
+
+#### Problem Statement & Exact Constraints
+You are given the coefficients $b_1, b_2, \dots, b_N \in \mathbb{F}_{998244353}$ of a formal power series $B(x) = 1 + \sum_{n=1}^N b_n x^n$ which satisfies the Euler product relation:
+$$
+B(x) \equiv \prod_{k=1}^{N} \frac{1}{(1 - x^k)^{a_k}} \pmod{x^{N+1}}.
+$$
+Recover the sequence $a_1, a_2, \dots, a_N \bmod 998244353$. (Also consider the unlabeled graph variant: given the number of all unlabeled graphs $g_n$, or unlabeled forests $f_n$, recover the number of unlabeled connected graphs $c_n$ or unlabeled trees $t_n$.)
+
+- **Constraints**: $1 \le N \le 10^5$, $0 \le b_n < 998244353$, Modulus $p = 998244353$, Time Limit $1.0\text{ s}$.
+- **Target Complexity**: $O(N \log N)$ time and $O(N)$ space.
+- **Sample Trace ($N = 3$)**: Given $B(x) \equiv 1 + x + 2x^2 + 2x^3 \pmod{x^4}$, we have $x B'(x) B(x)^{-1} \equiv x + 3x^2 + x^3 \pmod{x^4}$ so $(c_1, c_2, c_3) = (1, 3, 1)$; divisor subtraction recovers $a_1 = 1$, $2a_2 = c_2 - c_1 = 2 \implies a_2 = 1$, and $3a_3 = c_3 - c_1 = 0 \implies a_3 = 0$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Every object in $\mathcal{B}$ is a multiset of connected/primitive objects in $\mathcal{A}$: $\mathcal{B} = \operatorname{MSET}(\mathcal{A})$. Here $B(x) \bmod x^{N+1}$ is known and the exponents $a_1, \dots, a_N$ are unknown. What operation turns the product $\prod_{k=1}^N (1 - x^k)^{-a_k}$ into a linear combination of the unknowns $a_k$?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Compute $L(x) = \ln B(x) \bmod x^{N+1}$ in $O(N \log N)$ time using FPS logarithm ($\ln B = \int B' B^{-1} \, dx$). By the Pólya–Euler Harmonic Formula:
+$$
+[x^n] L(x) = \frac{1}{n} \sum_{d \mid n} d \cdot a_d \iff c_n := n [x^n] L(x) = \sum_{d \mid n} (d \cdot a_d).
+$$
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Once $c_n = n [x^n] L(x) \bmod p$ is computed for $1 \le n \le N$, apply either:
+- **Möbius inversion**: $a_n = \frac{1}{n} \sum_{d \mid n} \mu(n/d) c_d \bmod p$, or
+- **In-place divisor subtraction**: for $d = 1 \dots N$, `c[d]` is already $d \cdot a_d$, so set `a[d] = c[d] * inv[d] % p` and subtract `c[d]` from `c[2d], c[3d], ...` in $O(N \log N)$ total time!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Logarithmic Linearization
+Since $[x^0]B(x) = 1$ and $p = 998244353 > N$, the formal logarithm $L(x) := \ln B(x) \bmod x^{N+1}$ is well-defined and unique in $\mathbb{F}_p[[x]] / (x^{N+1})$:
+$$
+L(x) = \int \frac{B'(x)}{B(x)} \, dx \equiv \sum_{k=1}^{N} a_k \ln\!\left(\frac{1}{1 - x^k}\right) \equiv \sum_{n=1}^{N} \left(\frac{1}{n} \sum_{d \mid n} d \cdot a_d\right) x^n \pmod{x^{N+1}}.
+$$
+
+#### 2. Divisor Sum Inversion
+Define $c_n := n [x^n] L(x) \bmod p$ for $1 \le n \le N$ (or note directly that $\sum_{n=1}^N c_n x^n = x L'(x) = x B'(x) B(x)^{-1} \bmod x^{N+1}$, so we don't even need the formal integration step of $\ln$!). Then:
+$$
+c_n \equiv \sum_{d \mid n} \left(d \cdot a_d\right) \pmod p.
+$$
+By Theorem 3.2 (Möbius inversion), $d \cdot a_d$ is recovered for all $1 \le d \le N$ by sweeping $d = 1, 2, \dots, N$: at step $d$, all proper divisors $k \mid d$ ($k < d$) have already subtracted their $k \cdot a_k$ contribution from $c_d$, so the remaining value in $c_d$ is $d \cdot a_d \bmod p$. Dividing by $d$ via $a_d = c_d \cdot d^{-1} \bmod p$ and subtracting $c_d$ from $c_{2d}, c_{3d}, \dots \le N$ completes the recovery in $O(N \log N)$ time.
+
+::: {.callout-note}
+#### Algorithm Contract (`#223`)
+- **Input & Preconditions**: Coefficients $b_1, \dots, b_N \in \mathbb{F}_p$ of $B(x) = 1 + \sum_{n=1}^N b_n x^n$ with $[x^0]B(x) = 1$ and prime modulus $p = 998244353 > N$.
+- **Postconditions (Output)**: Returns $a_1, \dots, a_N \in \mathbb{F}_p$ satisfying $\prod_{k=1}^N (1 - x^k)^{-a_k} \equiv B(x) \pmod{x^{N+1}}$.
+- **Time & Space Complexity**: $O(N \log N)$ time (1 polynomial inverse + 1 NTT multiplication + $O(N \log N)$ divisor sieve) and $O(N)$ space.
+- **Loop / Algebraic Invariant**: At the start of outer step $d \in [1, N]$, $c_m \equiv \sum_{k \mid m,\, k \ge d} k \cdot a_k \pmod p$ for all $d \le m \le N$, so $c_d \equiv d \cdot a_d \pmod p$.
+- **Failure Modes & Edge Cases**: Requires $[x^0]B(x) = 1$ and $p > N$ so that $d^{-1} \bmod p$ exists for all $1 \le d \le N$; in the divisor loop, start multiples at $m = 2d$ (not $m = d$) so $c_d$ is preserved while updating multiples.
+:::
+
+</details>
+
+---
+
+### Advanced 2 (`#221`) — Little Y's Knapsack Counting Problem (Bounded Knapsack Modulo Non-NTT Prime)
+
+- **Source**: [LibreOJ #6089 — 小 Y 的背包计数问题](https://loj.ac/p/6089)
+- **Prerequisites**: Bounded Knapsack OGF, $\sqrt{N}$ Heavy-Light Split, Staircase Partition DP (`Ch 03 §3.3.4`)
+
+#### Problem Statement & Exact Constraints
+Little Y has a knapsack and $n$ types of items ($1 \le i \le n$). The $i$-th item type has weight $i$ and stock limit $i$ (at most $i$ copies of item $i$ can be placed in the knapsack). For **every** knapsack capacity $s = 1, 2, \dots, n$, find the number of ways to choose items of total weight $s$, modulo $23333333$.
+
+- **Constraints**: $1 \le n \le 10^5$, Modulus $p = 23333333$ (**non-NTT modulus!**), Time Limit $1.0\text{ s}$.
+- **Target Complexity**: $O(n\sqrt{n})$ time and $O(n)$ space with **zero NTTs** (or $O(n \log n)$ when the modulus is NTT-friendly).
+- **Sample Trace ($n = 3$)**: Items have $(w_i, c_i) \in \{(1, 1), (2, 2), (3, 3)\}$, so $F(x) \equiv (1 + x)(1 + x^2 + x^4)(1 + x^3 + \cdots) \equiv 1 + x + x^2 + 2x^3 \pmod{x^4}$, giving counts $(1, 1, 2)$ for capacities $s = 1, 2, 3$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Item $i$ has weight $i$ and copy limit $i$, so its OGF is $1 + x^i + x^{2i} + \cdots + x^{i^2} = \frac{1 - x^{i(i+1)}}{1 - x^i}$, and we want $[x^1 \dots x^n]$ of:
+$$
+F(x) = \prod_{i=1}^{n} \frac{1 - x^{i(i+1)}}{1 - x^i} \pmod{x^{n+1}}.
+$$
+**Modulus check**: Because the modulus is $p = 23333333$ ($23333333 - 1 = 2^2 \times 5833333$, which is prime with $n \le 10^5 < p$ so every integer $1, 2, \dots, n$ is a unit in $\mathbb{F}_p$, but not NTT-friendly!), look at the numerator $1 - x^{i(i+1)}$: for which items $i$ can the copy limit $i$ actually be exceeded within total capacity $\le n$?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Set the split threshold $B = \lceil \sqrt{n} \rceil \approx 317$.
+- For any **heavy item $i \ge B$**, taking $i + 1$ copies would weigh $i(i + 1) > B^2 \ge n$! Thus **the copy limit $i$ is never reached for $i \ge B$** (in $K[[x]] / (x^{n+1})$, $1 - x^{i(i+1)} \equiv 1$ for all $i \ge B$)!
+- Therefore, heavy items $i \in [B, n]$ behave as **unbounded partition parts** $\prod_{i=B}^n \frac{1}{1 - x^i} \bmod x^{n+1}$, while light items $i \in [1, B - 1]$ have bounded multiplicity $\le i$!
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Combine the two $\sqrt{n}$ engines from §3.3.4:
+1. **Light Items ($1 \le i < B$)**: Run bounded knapsack DP for each $i \in [1, B - 1]$ in $O(n)$ time per item by maintaining sliding-window prefix sums modulo $i$ (`sum_{m=0}^i dp[s - m * i]`), taking $O(n\sqrt{n})$ total time.
+2. **Heavy Items ($B \le i \le n$)**: Since copy limits are inactive for $i \ge B$, run the exact **Heavy-Part Staircase DP** $g[j][s] = g[j-1][s-B] + g[j][s-j]$ for $1 \le j \le \lfloor n / B \rfloor$ in $O(n\sqrt{n})$ time, and convolve with the light DP in $O(n)$ by adding `g[j][s]` into the light DP array (or running the light DP starting from the heavy array `H[s] = sum_j g[j][s]`)!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Algebraic Truncation at $B = \lceil \sqrt{n} \rceil$
+In $\mathbb{Z}_{23333333}[[x]] / (x^{n+1})$, the full bounded-knapsack generating function is:
+$$
+F(x) = \prod_{i=1}^{n} \frac{1 - x^{i(i+1)}}{1 - x^i} \pmod{x^{n+1}}.
+$$
+Let $B = \lfloor \sqrt{n} \rfloor + 1$. For every $i \ge B$, we have $i(i + 1) > B^2 > n$, so $x^{i(i+1)} \equiv 0 \pmod{x^{n+1}}$. Thus $F(x)$ factors into a **Bounded Light Product** ($i < B$) and an **Unbounded Heavy Partition Product** ($i \ge B$):
+$$
+F(x) \equiv \underbrace{\left(\prod_{i=1}^{B-1} \frac{1 - x^{i(i+1)}}{1 - x^i}\right)}_{L(x)} \cdot \underbrace{\left(\prod_{i=B}^{n} \frac{1}{1 - x^i}\right)}_{H(x)} \pmod{x^{n+1}}.
+$$
+*(Bonus Note for NTT-Friendly Moduli)*: If the modulus were $998244353$, notice that $F(x) \equiv \frac{\prod_{i=1}^{B-1}(1 - x^{i(i+1)})}{\prod_{i=1}^n (1 - x^i)} \pmod{x^{n+1}}$ has net frequency $\text{net}_k = 1 - \#\{i : i(i+1) = k\}$, which solves in $O(n \log n)$ via the Harmonic $\ln/\exp$ Sieve!
+
+#### 2. $O(n\sqrt{n})$ Division-Free Algorithm for Non-NTT Modulus $23333333$
+1. **Compute Heavy OGF $H(x) \bmod x^{n+1}$ via Staircase DP**:
+   Let $g[j][s]$ be the number of partitions of $s$ into $j$ parts each $\ge B$ ($0 \le j \le \lfloor n / B \rfloor$). Initialize $g[0][0] = 1$, and for $j = 1 \dots \lfloor n / B \rfloor$ and $s = jB \dots n$:
+   $$
+   g[j][s] = \big(g[j-1][s - B] + g[j][s - j]\big) \bmod p.
+   $$
+   Initialize our main DP array `dp[s] = sum_{j=0}^{n/B} g[j][s] % p` for $0 \le s \le n$.
+2. **Apply Light Items ($1 \le i < B$) In-Place via $\frac{1 - x^{i(i+1)}}{1 - x^i}$**:
+   Multiplying `dp(x)` by $\frac{1 - x^{i(i+1)}}{1 - x^i} \bmod x^{n+1}$ takes two linear $O(n)$ passes per $i \in [1, B - 1]$:
+   - **Pass 1 (Divide by $1 - x^i$, Strided Prefix Sum)**:
+     `for s = i .. n: dp[s] = (dp[s] + dp[s - i]) % p;`
+   - **Pass 2 (Multiply by $1 - x^{i(i+1)}$, Strided Backward Difference)**:
+     `int lim = i * (i + 1); for s = n downto lim: dp[s] = (dp[s] - dp[s - lim] + p) % p;`
+
+Look how clean Pass 1 + Pass 2 is: multiplying by $\frac{1 - x^{i(i+1)}}{1 - x^i}$ is literally one forward pass of stride $i$ followed by one backward pass of stride $i(i+1)$!
+
+::: {.callout-note}
+#### Algorithm Contract (`#221`)
+- **Input & Preconditions**: Integer $1 \le n \le 10^5$ and modulus $p = 23333333$ (works over any commutative ring $\mathbb{Z}_p$ with zero divisions).
+- **Postconditions (Output)**: Returns $[x^s] \prod_{i=1}^n \frac{1 - x^{i(i+1)}}{1 - x^i} \bmod p$ for all $1 \le s \le n$.
+- **Time & Space Complexity**: $O(n\sqrt{n})$ time ($\approx 3.1 \times 10^7$ additions/subtractions for $n = 10^5$) and $O(n)$ space (using two rolling rows for $g[j][s]$).
+- **Loop / Algebraic Invariant**: After processing light item $i < B$, $\text{dp}(x) \equiv H(x) \prod_{r=1}^i \frac{1 - x^{r(r+1)}}{1 - x^r} \pmod{x^{n+1}}$.
+- **Failure Modes & Edge Cases**: Pass 1 (dividing by $1 - x^i$) must iterate **ascending** `s = i .. n`, whereas Pass 2 (multiplying by $1 - x^{i(i+1)}$) must iterate **descending** `s = n downto i*(i+1)` to avoid subtracting already-modified values; use rolling arrays for $g[j][s]$ to keep memory $O(n)$ rather than $O(n\sqrt{n})$.
+:::
+
+</details>
+
+---
+
+### Mastery 1 (`#150`) — The Forgotten Set (Inverse Knapsack via $\ln$, MTT & Möbius Inversion)
+
+- **Source**: [Luogu P3784 — [SDOI2017] 遗忘的集合](https://www.luogu.com.cn/problem/P3784)
+- **Prerequisites**: Inverse Euler Transform, Formal Logarithm under Arbitrary Prime $p$ (MTT), Möbius Inversion (`Ch 02`, `Ch 03 §3.2.3`)
+
+#### Problem Statement & Exact Constraints
+A hidden subset of positive integers $S \subseteq \{1, 2, \dots, n\}$ was chosen. For every target sum $m \in \{1, 2, \dots, n\}$, let $f(m)$ be the number of ways to form sum $m$ using elements of $S$ where each element of $S$ can be chosen **an arbitrary number of times** (unbounded knapsack, order does not matter). You are given $n$, a prime modulus $p$, and the values $f(1), f(2), \dots, f(n) \bmod p$. Reconstruct the size $|S|$ and output all elements of $S$ in increasing order.
+
+*(We also solve the $0/1$ subset-sum variant where each element of $S$ can be chosen at most once!)*
+
+- **Constraints**: $1 \le n < 2^{18} = 262{,}144$, $10^6 \le p < 2^{30}$ ($p$ is prime, so $p > n$, though $p$ need not be NTT-friendly), Time Limit $3.0\text{ s}$.
+- **Target Complexity**: $O(n \log n)$ time and $O(n)$ space.
+- **Sample Trace ($n = 3, p = 998244353$)**: Given $f(1) = 1, f(2) = 2, f(3) = 2$, the OGF $F(x) \equiv 1 + x + 2x^2 + 2x^3 \pmod{x^4}$ has logarithmic derivative coefficients $(c_1, c_2, c_3) = (1, 3, 1)$, recovering $a = (1, 1, 0)$ and the hidden set $S = \{1, 2\}$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Let $a_k \in \{0, 1\}$ be the indicator $[k \in S]$ for each $1 \le k \le n$. Because each element $k \in S$ can be chosen $0, 1, 2, \dots$ times without order, the given sequence $F(x) = 1 + \sum_{m=1}^n f(m) x^m$ is the exact Euler Transform of $a_1, \dots, a_n$:
+$$
+F(x) \equiv \prod_{k=1}^{n} \frac{1}{(1 - x^k)^{a_k}} \pmod{x^{n+1}}.
+$$
+We need to invert this Euler product to recover $a_k \in \{0, 1\}$!
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+1. Why does $\ln F(x) \bmod x^{n+1}$ exist in $\mathbb{F}_p[[x]]$ even when $p$ is not $998244353$? Because $p \ge 10^6 > n = 2^{18}$, every integer $1, 2, \dots, n$ is invertible modulo $p$! We only need **MTT (3-prime NTT + CRT or split-radix FFT)** to perform polynomial multiplication modulo $p$ inside Newton-iteration `inv` and `ln`.
+2. Once $L(x) = \ln F(x) \bmod x^{n+1}$ is computed, set $c_m = m [x^m] L(x) \bmod p = \sum_{d \mid m} d \cdot a_d \pmod p$.
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Apply the $O(n \log n)$ in-place divisor subtraction sieve to $c_1, \dots, c_n$:
+- For $d = 1 \dots n$: `a[d] = c[d] * inv[d] % p` (which must be $0$ or $1$), and for $m = 2d, 3d, \dots \le n$, subtract $c_d$ from $c_m$ modulo $p$.
+- Collect and output all $d \in [1, n]$ with $a_d = 1$!
+- *(For the $0/1$ subset-sum variant $F_{0/1}(x) = \prod_{k=1}^n (1 + x^k)^{a_k}$)*: Since $\ln(1 + x^k) = \sum_{j \ge 1} \frac{(-1)^{j-1}}{j} x^{jk}$, we have $c_m = \sum_{d \mid m} (-1)^{\frac{m}{d} - 1} d \cdot a_d$, so in the divisor loop for $m = j \cdot d$ ($j \ge 2$), subtract $(-1)^{j-1} c_d$ from $c_{jd}$!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Unbounded Knapsack Formulation (`Luogu P3784`)
+Let $a_k = [k \in S] \in \{0, 1\}$ for $1 \le k \le n$. The generating function of unbounded subset sums from $S$ is:
+$$
+F(x) = 1 + \sum_{m=1}^{n} f(m) x^m \equiv \prod_{k=1}^{n} (1 - x^k)^{-a_k} \pmod{x^{n+1}}.
+$$
+Since $p \ge 10^6 > n$, $1, 2, \dots, n \in \mathbb{F}_p^\times$. Using MTT-backed polynomial inversion $F(x)^{-1} \bmod x^{n+1}$, compute the logarithmic derivative:
+$$
+C(x) := x \frac{F'(x)}{F(x)} \equiv \sum_{m=1}^{n} c_m x^m \pmod{x^{n+1}}, \quad \text{where } c_m = \sum_{d \mid m} d \cdot a_d \pmod p.
+$$
+*(Pedagogical Shortcut)*: Notice that computing $C(x) = x F'(x) F(x)^{-1} \bmod x^{n+1}$ directly gives $c_m = m [x^m] \ln F(x)$ without needing to divide by $m$ during integration and multiply by $m$ afterward!
+
+#### 2. Möbius / Divisor Subtraction Sieve
+Run the in-place divisor subtraction loop for $d = 1, 2, \dots, n$:
+1. At the start of iteration $d$, all proper divisors $k \mid d$ ($k < d$) have already been subtracted from $c_d$, so $c_d \equiv d \cdot a_d \pmod p$.
+2. Since $a_d \in \{0, 1\}$ and $1 \le d \le n < p$, we have $d \cdot a_d \neq 0 \pmod p \iff c_d \neq 0 \iff d \in S$! (Even simpler: we don't even need $d^{-1} \bmod p$ when $a_d \in \{0, 1\}$, because $a_d = 1 \iff c_d \equiv d \pmod p \iff c_d \neq 0$!)
+3. For every multiple $m = 2d, 3d, \dots \le n$, update $c_m \gets (c_m - c_d) \bmod p$.
+
+#### 3. Bonus: $0/1$ Subset-Sum Variant ($F_{0/1}(x) = \prod_{k \in S}(1 + x^k) \bmod x^{n+1}$)
+If each element of $S$ can be used **at most once**, then:
+$$
+x \frac{F'_{0/1}(x)}{F_{0/1}(x)} = \sum_{k=1}^{n} a_k \frac{k x^k}{1 + x^k} = \sum_{k=1}^{n} k a_k \sum_{j=1}^{\infty} (-1)^{j-1} x^{jk} = \sum_{m=1}^{n} \left(\sum_{d \mid m} (-1)^{\frac{m}{d} - 1} d \cdot a_d\right) x^m.
+$$
+Thus the divisor loop simply updates $c_{jd} \gets \big(c_{jd} - (-1)^{j-1} c_d\big) \bmod p$ for $j = 2, 3, \dots, \lfloor n / d \rfloor$.
+
+::: {.callout-note}
+#### Algorithm Contract (`#150`)
+- **Input & Preconditions**: Integer $1 \le n < 2^{18}$, arbitrary prime $p \in [10^6, 2^{30})$ (so $p > n$), and $f(1), \dots, f(n) \in \mathbb{F}_p$ with $f(0) = 1$.
+- **Postconditions (Output)**: Returns the sorted subset $S = \{d \in [1, n] : a_d = 1\}$ whose unbounded knapsack OGF modulo $(x^{n+1}, p)$ equals $F(x)$.
+- **Time & Space Complexity**: $O(n \log n)$ time (1 MTT polynomial inverse + 1 MTT multiplication + $O(n \log n)$ divisor sieve) and $O(n)$ space.
+- **Loop / Algebraic Invariant**: Before processing divisor $d$, $c_d \equiv d \cdot a_d \pmod p$; since $1 \le d \le n < p$ and $a_d \in \{0, 1\}$, $c_d \not\equiv 0 \pmod p \iff a_d = 1$.
+- **Failure Modes & Edge Cases**: Because $p$ is not an NTT prime, standard single-prime NTT fails—must use MTT (3-prime NTT + CRT or split-radix FFT) for polynomial multiplication inside Newton inversion.
+:::
+
+</details>
+
+---
+
+### Mastery 2 (`#159`) — Graph Isomorphism Counting (`Luogu P4727`)
+
+- **Source**: [Luogu P4727 — [HNOI2009] 图的同构记数](https://www.luogu.com.cn/problem/P4727) (with Necklace Cycle Index Synthesis `Wave 2A #39`)
+- **Prerequisites**: Burnside's Lemma, Pólya's Cycle Index Theorem, Induced Action on $\binom{V}{2}$, Integer Partition Enumeration (`Ch 03 §3.5`)
+
+#### Problem Statement & Exact Constraints
+Given the number of vertices $n$, find the number of **non-isomorphic simple undirected graphs** on $n$ vertices, modulo a prime $p$ ($p = 997$ in HNOI 2009, or $p = 998244353$ in general versions with $p > n$).
+
+- **Constraints**: $1 \le n \le 60$, prime $p > n$ ($p = 997$ in HNOI 2009), Time Limit $1.0\text{ s}$.
+- **Target Complexity**: $O(p(n) \sqrt{n})$ time ($\approx 9.66 \times 10^5$ partitions for $n = 60$) and $O(n)$ space.
+- **Sample Trace ($n = 3, p = 997$)**: The partitions of $n = 3$ are $\lambda = (1^3)$ ($1$ permutation, $c_E = 3$ edge orbits), $(1^1 2^1)$ ($3$ permutations, $c_E = 2$), and $(3^1)$ ($2$ permutations, $c_E = 1$), giving $g_3 = \frac{1}{6}(1 \cdot 2^3 + 3 \cdot 2^2 + 2 \cdot 2^1) = \frac{24}{6} = 4$ non-isomorphic graphs ($0, 1, 2, 3$ edges).
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Two labeled simple graphs on $V = \{1, \dots, n\}$ are isomorphic iff they lie in the same orbit under $S_n$ acting on the $\binom{n}{2}$ potential edges. By §3.5.4, a permutation $\pi \in S_n$ fixes $2^{c_E(\pi)}$ graphs, where $c_E(\pi)$ is the number of edge cycles of $\pi$, and $c_E(\pi)$ depends **only on the cycle-length partition** $\lambda \vdash n$ of $\pi$! (As a companion exercise, also consider how Pólya's Cycle Index sums over all cyclic necklaces of weight $\le N$ in $O(N \log N)$ time.)
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+- **Primary Problem (`Luogu P4727`)**: Enumerate all integer partitions $\lambda = (1^{m_1} 2^{m_2} \cdots n^{m_n}) \vdash n$ via a backtracking DFS over non-increasing part sizes. Maintain on the fly:
+  1. The denominator factor $\prod_r r^{m_r} m_r! \bmod p$;
+  2. The edge-orbit count (Lemma 3.1):
+     $$
+     c_E(\lambda) = \sum_{r} m_r \left\lfloor \frac{r}{2} \right\rfloor + \sum_{r} \binom{m_r}{2} r + \sum_{r < s} m_r m_s \gcd(r, s).
+     $$
+- **Companion Synthesis (Cyclic Necklaces)**: Do **not** call `poly_ln` for each $d = 1 \dots N$! Instead, compute $B(x) := -\ln(1 - A(x)) \bmod x^{N+1}$ **once** in $O(N \log N)$ time, and then substitute $x \gets x^d$ via the harmonic loop $Z_{\text{cycle}}(x) = \sum_{d=1}^N \frac{\varphi(d)}{d} B(x^d) \bmod x^{N+1}$!
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+- For `Luogu P4727`, precompute `gcd[r][s]` for $1 \le r, s \le n$, powers of $2$ modulo $p$, and factorials/inverses modulo $p$. In the DFS, when adding a group of $m_r$ parts of size $r$, increment $c_E$ by $m_r \lfloor r / 2 \rfloor + \frac{m_r(m_r - 1)}{2} r + m_r \sum_{s \text{ already chosen}} m_s \gcd(r, s)$ in $O(\text{distinct parts})$ time!
+- For Cyclic Necklaces, sieve $\varphi(1 \dots N)$ in $O(N)$ time, compute $B(x) = -\ln(1 - A(x)) \bmod x^{N+1}$ in $O(N \log N)$, and accumulate `Z[j * d] += phi[d] * inv[d] % mod * B[j]` for $d = 1 \dots N$ and $j = 1 \dots \lfloor N / d \rfloor$ in $O(N \log N)$ time!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Unlabeled Simple Graphs on $n \le 60$ Vertices (`Luogu P4727`)
+By Burnside's Lemma, Cauchy's cycle-type formula, and Lemma 3.1 (§3.5.4), the number of non-isomorphic simple undirected graphs on $n$ vertices is:
+$$
+g_n = \sum_{\lambda = (1^{m_1} 2^{m_2} \cdots n^{m_n}) \vdash n} \frac{2^{c_E(\lambda)}}{\prod_{r=1}^{n} r^{m_r} \, m_r!} \pmod p,
+$$
+where:
+$$
+c_E(\lambda) = \sum_{r=1}^{n} \left( m_r \left\lfloor \frac{r}{2} \right\rfloor + \frac{m_r(m_r - 1)}{2} r \right) + \sum_{1 \le r < s \le n} m_r m_s \gcd(r, s).
+$$
+Since $p(60) = 966{,}467$ and a partition of $60$ has at most $\sqrt{2 \times 60} \approx 11$ **distinct** part sizes $(r, m_r)$, a recursive DFS that chooses the next distinct part size $r$ and its multiplicity $m_r \ge 1$ updates $c_E(\lambda)$ in $O(1)$ amortized steps and finishes in $< 30\text{ ms}$ (assuming precomputed `gcd_tbl[r][s]`, `inv_fact[m]`, `inv_val[r]`, `pow2[e]`, and `vector<pair<int, int>> parts`):
+
+```cpp
+void dfs(int rem, int max_r, int cur_orbits, long long inv_denom) {
+    if (rem == 0) { ans = (ans + inv_denom * pow2[cur_orbits]) % p; return; }
+    for (int r = min(rem, max_r); r >= 1; --r) {
+        int cross = 0;
+        for (auto& [s, ms] : parts) cross += ms * gcd_tbl[r][s];
+        for (int m = 1, r_inv = inv_val[r]; m * r <= rem; ++m, r_inv = 1LL * r_inv * inv_val[r] % p) {
+            int add = m * (r / 2) + m * (m - 1) / 2 * r + m * cross;
+            parts.push_back({r, m});
+            dfs(rem - m * r, r - 1, cur_orbits + add, inv_denom * r_inv % p * inv_fact[m] % p);
+            parts.pop_back();
+        }
+    }
+}
+```
+
+#### 2. Bonus Companion: $O(N \log N)$ Pólya–Redfield Cycle Index for Cyclic Necklaces
+For cyclic necklaces of beads from class $\mathcal{A}$ ($a_0 = 0$), summing $Z_{C_m}(A(x), A(x^2), \dots, A(x^m))$ over all necklace lengths $m \ge 1$ gives:
+$$
+Z_{\text{cycle}}(x) = \sum_{m=1}^{\infty} \frac{1}{m} \sum_{d \mid m} \varphi(d) A(x^d)^{m/d} = \sum_{d=1}^{\infty} \frac{\varphi(d)}{d} \ln\!\left(\frac{1}{1 - A(x^d)}\right).
+$$
+Notice that $B(x) := \ln\!\left(\frac{1}{1 - A(x)}\right) = -\ln(1 - A(x)) \bmod x^{N+1}$ is a single formal power series! Once $B(x) = \sum_{j=1}^N b_j x^j$ is computed via **one call to `poly_ln`** in $O(N \log N)$ time, we have $B(x^d) \equiv \sum_{j=1}^{\lfloor N/d \rfloor} b_j x^{jd} \pmod{x^{N+1}}$, so:
+$$
+[x^n] Z_{\text{cycle}}(x) = \sum_{d \mid n} \frac{\varphi(d)}{d} \, b_{n/d} \qquad (1 \le n \le N),
+$$
+which is evaluated by a single $O(N \log N)$ harmonic divisor loop!
+
+::: {.callout-note}
+#### Algorithm Contract (`#159`)
+- **Input & Preconditions**: Integer $1 \le n \le 60$ and prime modulus $p > n$ ($p = 997$ in HNOI 2009) so that $\gcd(n!, p) = 1$ and every centralizer size $\prod r^{m_r} m_r!$ is invertible modulo $p$.
+- **Postconditions (Output)**: Returns $g_n = \frac{1}{n!} \sum_{\pi \in S_n} 2^{c_E(\pi)} \bmod p$, the number of non-isomorphic simple undirected graphs on $n$ vertices.
+- **Time & Space Complexity**: $O(p(n) \sqrt{n})$ time ($p(60) = 966{,}467$ states, each with $\le 11$ distinct part sizes) and $O(n)$ space.
+- **Loop / Algebraic Invariant**: At each DFS state with partial partition $\{(s, m_s)\}$ of $n - \text{rem}$, `cur_orbits` equals $c_E$ of the chosen parts and `inv_denom` equals $\prod (s^{m_s} m_s!)^{-1} \bmod p$.
+- **Failure Modes & Edge Cases**: Never reduce the exponent $c_E(\lambda)$ modulo $p$ (must reduce modulo $p - 1$ by Fermat's Little Theorem or index into `pow2[0 .. n*(n-1)/2]`); requires $p > n$ so that $r^{-1} \bmod p$ and $(m_r!)^{-1} \bmod p$ exist.
+:::
+
+</details>
+
+---
+
+## 3.7 Chapter Checklist, Library Verification & Summary
+
+### Library Verification Footnote (`R-25`)
+To unit-test your partition engines (`Engine 1` $O(N\sqrt{N})$ recurrence and `Engine 2` $O(N \log N)$ Pentagonal + FPS `inv` from §3.4.2) before tackling full modelling problems, verify against:
+- **[Library Checker — `partition_function`](https://judge.yosupo.jp/problem/partition_function)** ($N \le 5 \times 10^5$, $\bmod\; 998244353$): Build $Q(x) = 1 + \sum_{m \ge 1} (-1)^m (x^{m(3m-1)/2} + x^{m(3m+1)/2}) \bmod x^{N+1}$ in $O(\sqrt{N})$ time and output $Q(x)^{-1} \bmod x^{N+1}$ in $O(N \log N)$ time.
+
+### Chapter 03 Master Diagnostic & Formula Summary
+
+| Combinatorial Structure | Symbolic Notation | OGF / Cycle Index Formula | Optimal Engine & Complexity | Algebraic Precondition |
+| :--- | :--- | :--- | :--- | :--- |
+| **Ordered Sequence** | $\operatorname{SEQ}(\mathcal{A})$ | $\dfrac{1}{1 - A(x)}$ | 1 FPS `inv` in $O(N \log N)$ | $\operatorname{val}(A) \ge 1$ ($a_0 = 0$) |
+| **Powerset ($0/1$ Subset)** | $\operatorname{PSET}(\mathcal{A})$ | $\prod_{k \ge 1} (1 + x^k)^{a_k} = \exp\!\left(\sum_{j \ge 1} \frac{(-1)^{j-1}}{j} A(x^j)\right)$ | Bucket $a_k$ + Harmonic Sieve + 1 `exp`: $O(N \log N)$ | $a_0 = 0,\; p > N$ |
+| **Multiset (Euler Transform)** | $\operatorname{MSET}(\mathcal{A})$ | $\prod_{k \ge 1} (1 - x^k)^{-a_k} = \exp\!\left(\sum_{j \ge 1} \frac{A(x^j)}{j}\right)$ | Bucket $a_k$ + Harmonic Sieve + 1 `exp`: $O(N \log N)$ | $a_0 = 0,\; p > N$ |
+| **Bounded Multiset** | $\prod_{i=1}^M \frac{1 - x^{w_i(c_i+1)}}{1 - x^{w_i}}$ | $\prod_{k=1}^N (1 - x^k)^{-\text{net}_k}$ | Net-Frequency Sieve + 1 `exp`: $O(M + N \log N)$ | $w_i \ge 1,\; p > N$ |
+| **Inverse Euler Transform** | $\mathcal{B} = \operatorname{MSET}(\mathcal{A}) \to \mathcal{A}$ | $n a_n = \sum_{d \mid n} \mu(n/d) \, d [x^d] \ln B(x)$ | 1 FPS `ln` + Divisor Subtraction Sieve: $O(N \log N)$ | $[x^0]B = 1,\; p > N$ |
+| **Integer Partitions $p(n)$** | $\operatorname{MSET}(\mathbb{Z}_{\ge 1})$ | $\left(\sum_{m \in \mathbb{Z}} (-1)^m x^{m(3m-1)/2}\right)^{-1}$ | Pentagonal `inv` in $O(N \log N)$, or Pentagonal / $\sqrt{N}$ DP in $O(N\sqrt{N})$ | `inv` needs NTT; Pentagonal / $\sqrt{N}$ DP works for **any** mod $M$ |
+| **Cyclic Necklaces** | $\operatorname{CYC}(\mathcal{A})$ | $\sum_{d \ge 1} \frac{\varphi(d)}{d} \ln\frac{1}{1 - A(x^d)}$ | 1 FPS `ln` on $1 - A(x)$ + Harmonic Sieve: $O(N \log N)$ | $a_0 = 0,\; p > N$ |
+| **Unlabeled Simple Graphs** | $2^{\binom{V}{2}} / S_n$ | $\sum_{\lambda \vdash n} \frac{2^{\sum \lfloor \ell_i / 2 \rfloor + \sum_{i<j}\gcd(\ell_i, \ell_j)}}{\prod r^{m_r} m_r!}$ | Partition DFS over $\lambda \vdash n$: $O(p(n)\sqrt{n})$ | $\gcd(n!, p) = 1$ ($p > n$) |
+
+### Pre-Submission Checklist for Unlabeled OGF & Euler/Pólya Problems
+1. **Did you verify $a_0 = 0$ ($\operatorname{val}(A) \ge 1$)?** Before applying $\operatorname{SEQ}$, $\operatorname{PSET}$, $\operatorname{MSET}$, or $\operatorname{CYC}$, verify that no component has size $0$ (or factor out size-$0$ choices upfront).
+2. **Did you bucket identical weights before taking $\ln$?** Never sum $-\ln(1 - x^{v_i})$ over $n$ individual items; accumulate `a[v] += 1` (and `a[v * (c + 1)] -= 1` for bounded items) so the harmonic loop runs over $k = 1 \dots N$ in $O(N \log N)$ time.
+3. **Is the modulus $M$ prime with $M > N$?** If $M \le N$ or $M$ is composite, `ln`, `exp`, and division by $n$ in the Inverse Euler Transform are illegal—switch to the **$O(N\sqrt{N})$ Heavy-Light split** (§3.3.4), **Euler's Pentagonal Recurrence** (§3.4.2), or the **$O(N^2)$ log-derivative recurrence** $n b_n = \sum_{m=1}^n c_m b_{n-m}$.

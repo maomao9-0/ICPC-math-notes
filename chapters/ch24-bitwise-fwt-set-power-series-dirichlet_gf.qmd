@@ -1,0 +1,1439 @@
+---
+title: "Chapter 24: Non-Cauchy Algebras: Bitwise FWT, Set Power Series ($\\mathcal{R}_n = K[\\mathbf{x}]/(\\mathbf{x}^2)$) & The Dirichlet Ring ($\\mathcal{D}_f$)"
+---
+
+::: {.callout-note}
+## Prerequisites
+- **[Chapter 2: Formal Calculus, Frobenius, O(NK) Sparse ODEs & 1D Newton Iteration](ch02-calculus-frobenius-sparse-ode-newton.qmd)**: Pointwise truncated polynomial ODEs for $\operatorname{inv}, \ln, \exp, P^\alpha$.
+- **[Chapter 12: Cacti, Deserts, Block-Cut Trees & 2-Connected Graphs](ch12-cacti-deserts-block-cut-biconnected-graphs.qmd)**: Species composition vs. vertex-labeled biconnected graph enumeration.
+- **[Chapter 13: Graphical Generating Functions: Eulerian, Bipartite, DAGs & Spanning Trees](ch13-graphical-gf-eulerian-bipartite-dags-sccs.qmd)**: Spanning subgraphs, source-layer DAG recurrences, and Kirchhoff's Matrix-Tree determinants.
+:::
+
+## Learning Objectives
+
+By the end of this chapter, you will be able to:
+
+1. **Diagonalize Bitwise Semigroup and Group Algebras ($K[(S, \oplus)]$)**: Derive the $2 \times 2$ coordinate transform matrices for bitwise OR, AND, and XOR convolutions via characters, execute Fast Zeta/Möbius and Walsh–Hadamard Transforms in $O(n 2^n)$, and compress products of $m$ sparse 2-term XOR factors into a single FWT pass in $O(m + n 2^n)$ via the **Small-Support XOR Trick**.
+2. **Construct the Set Power Series Ring $\mathcal{R}_n = K[x_1, \dots, x_n]/(x_1^2, \dots, x_n^2)$**: Prove that disjoint-union subset convolution is exact multiplication in the square-free multivariate quotient ring $\mathcal{R}_n$, lift set masks to ranked polynomials in $K[t]/(t^{n+1})$ via $\operatorname{popcount}$ grading, and lay out the `[1<<n][n+1]` buffer in L1-cache-contiguous memory.
+3. **Execute $O(n^2 2^n)$ Transcendental Operations & General Composition on $\mathcal{R}_n$**: Apply pointwise $O(n^2)$ truncated polynomial ODEs ($\operatorname{inv}, \ln, \exp, P^\alpha$) in Ranked Zeta space, implement the **Division-Free MSB Derivative Split** ($\exp(F_0 + x_v F_1) = \exp(F_0)(1 + x_v F_1)$) that halves constant factors and bypasses characteristic-$p$ non-invertibility, and execute **`Elegia`'s $O(n^2 2^n)$ Taylor Shift Pyramid** for general SPS composition $G(F(\mathbf{x}))$.
+4. **Filter Articulation Points via Pointed Vertex-by-Vertex SPS $\ln$**: Extract biconnected subgraphs on a fixed $n$-vertex graph in $O(n^3 2^n)$ by sequentially rooting at each vertex $v \in V$ and taking the $(n-1)$-variable subset logarithm $\ln C^{(v)}(\mathbf{x})$ to strip components glued at $v$.
+5. **Compute Transcendental Functions in the Dirichlet Ring $\mathcal{D}_f$ via the $\Omega(n)$-Derivation**: Construct the prime-multiplicity derivation $(\vartheta f)(n) = \Omega(n) f(n)$ satisfying the Leibniz rule on Dirichlet convolution, and evaluate $\exp_D(f)$, $\ln_D(f)$, and $f^\alpha$ up to $N$ in $O(N \log N)$ time or via prime-by-prime Bell series recurrences.
+
+---
+
+## 24.1 Bitwise Group Algebras (OR, AND, XOR Fast Walsh–Hadamard / Möbius Transforms)
+
+Every polynomial engine we have built in Chapters 1–23 operated inside the **Cauchy convolution algebra** $K[[x]]$, where multiplying two monomials adds their integer exponents: $x^i \cdot x^j = x^{i+j}$. Yet many combinatorial problems combine indices not by integer addition, but by bitwise boolean operations on $n$-bit masks $S, T \in \{0, 1\}^n$ (identified with subsets of $\{0, 1, \dots, n-1\}$ or integers in $[0, 2^n - 1]$):
+
+$$
+(A *_{\oplus} B)_S = \sum_{\substack{T, R \in \{0, 1\}^n \\ T \oplus R = S}} A_T B_R, \qquad \oplus \in \{\mathbin{|}, \mathbin{\&}, \oplus_{\text{XOR}}\}.
+$$
+
+Before writing down transform matrices, let us name the concrete combinatorial objects being counted and the exact algebraic structure behind them.
+
+### From Monoid Algebras to Coordinate-Wise $2 \times 2$ Kronecker Products
+
+Fix a commutative ring $K$ and a finite commutative monoid $(M, \oplus)$ of size $2^n$, where $M = \{0, 1\}^n$ and $\oplus$ acts independently on each of the $n$ bit positions. The **monoid algebra** $K[M]$ consists of formal linear combinations $A = \sum_{S \in M} A_S \mathbf{e}_S$ with multiplication defined on basis elements by $\mathbf{e}_T \cdot \mathbf{e}_R = \mathbf{e}_{T \oplus R}$.
+
+Because the $n$ bit coordinates do not carry into one another under $\mathbin{|}$, $\mathbin{\&}$, or $\oplus_{\text{XOR}}$, the $n$-bit monoid decomposes as a direct product of $n$ copies of the 1-bit monoid $(\{0, 1\}, \oplus_1)$. Consequently, the $2^n$-dimensional algebra $K[\{0, 1\}^n]$ factors as the $n$-fold tensor product of the 2-dimensional 1-bit algebra:
+
+$$
+K[\{0, 1\}^n] \cong \underbrace{K[\{0, 1\}] \otimes_K K[\{0, 1\}] \otimes_K \cdots \otimes_K K[\{0, 1\}]}_{n \text{ times}}.
+$$
+
+This tensor factorization means we only ever need to diagonalize a **single bit** ($n = 1$, a $2 \times 2$ matrix $\mathcal{T}_1$) and apply that $2 \times 2$ butterfly across each of the $n$ bit dimensions sequentially in $n \cdot 2^{n-1}$ operations!
+
+### Diagnostic Signal & Reverse-Engineering the $2 \times 2$ Transform Matrices
+
+::: {.callout-tip}
+### Diagnostic Signal & Reverse-Engineering Scratchpad: 1-Bit Characters
+
+- **The Diagnostic Signal**: You are asked to compute $C_S = \sum_{T \oplus R = S} A_T B_R$ for all $S \in [0, 2^n-1]$ where $\oplus$ is a bitwise boolean operation without arithmetic carries between bits.
+- **The Reverse-Engineering Scratchpad**:
+  Suppose $n = 1$, so our sequence has two entries $(a_0, a_1)$ and we want a linear map $(a_0, a_1) \mapsto (\hat{a}_0, \hat{a}_1)$ that turns 1-bit convolution into pointwise multiplication $\hat{c}_0 = \hat{a}_0 \hat{b}_0$ and $\hat{c}_1 = \hat{a}_1 \hat{b}_1$.
+  1. **Bitwise OR ($\mathbin{|}$)**: The convolution rules are $c_0 = a_0 b_0$ and $c_1 = a_0 b_1 + a_1 b_0 + a_1 b_1$. Notice that $c_0 = a_0 b_0$ is *already* a pointwise product! And if we add the two equations together, we get:
+     $$
+     c_0 + c_1 = a_0 b_0 + a_0 b_1 + a_1 b_0 + a_1 b_1 = (a_0 + a_1)(b_0 + b_1).
+     $$
+     Thus $(\hat{a}_0, \hat{a}_1) = (a_0, a_0 + a_1)$ diagonalizes 1-bit OR! Over $n$ bits, iterating this over all coordinates sums over all subsets: $\widehat{A}_S = \sum_{T \subseteq S} A_T$ (the **Subset Fast Zeta Transform** / **SOS DP**). Its inverse subtracts the 0-coordinate from the 1-coordinate: $(a_0, a_1) = (\hat{a}_0, \hat{a}_1 - \hat{a}_0)$ (the **Subset Fast Möbius Transform**).
+  2. **Bitwise AND ($\mathbin{\&}$)**: Symmetrically, $c_1 = a_1 b_1$ is already pointwise, and $c_0 + c_1 = (a_0 + a_1)(b_0 + b_1)$. Thus $(\hat{a}_0, \hat{a}_1) = (a_0 + a_1, a_1)$ diagonalizes 1-bit AND. Over $n$ bits, this sums over all supersets: $\widehat{A}_S = \sum_{T \supseteq S} A_T$ (the **Superset Fast Zeta Transform**).
+  3. **Bitwise XOR ($\oplus$)**: Here $c_0 = a_0 b_0 + a_1 b_1$ and $c_1 = a_0 b_1 + a_1 b_0$. Adding and subtracting the two equations yields:
+     $$
+     c_0 + c_1 = (a_0 + a_1)(b_0 + b_1), \qquad c_0 - c_1 = (a_0 - a_1)(b_0 - b_1).
+     $$
+     Thus $(\hat{a}_0, \hat{a}_1) = (a_0 + a_1, a_0 - a_1)$ is the **Walsh–Hadamard butterfly**. Over $n$ bits, every mask $S$ picks up a $-1$ factor whenever both $S$ and $T$ have bit $i$ set, giving $\widehat{A}_S = \sum_{T} (-1)^{\operatorname{popcount}(S \mathbin{\&} T)} A_T$.
+:::
+
+| Bitwise Operation | 1-Bit Forward $\mathcal{T}_1$ | 1-Bit Inverse $\mathcal{T}_1^{-1}$ | Global Forward Formula $\widehat{A}_S$ | Global Inverse Formula $A_S$ | Ring Requirement |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **OR** ($T \cup R = S$) | $\begin{pmatrix} 1 & 0 \\ 1 & 1 \end{pmatrix}$ | $\begin{pmatrix} 1 & 0 \\ -1 & 1 \end{pmatrix}$ | $\sum_{T \subseteq S} A_T$ | $\sum_{T \subseteq S} (-1)^{\lvert S \setminus T \rvert} \widehat{A}_T$ | Any commutative ring $K$ |
+| **AND** ($T \cap R = S$) | $\begin{pmatrix} 1 & 1 \\ 0 & 1 \end{pmatrix}$ | $\begin{pmatrix} 1 & -1 \\ 0 & 1 \end{pmatrix}$ | $\sum_{T \supseteq S} A_T$ | $\sum_{T \supseteq S} (-1)^{\lvert T \setminus S \rvert} \widehat{A}_T$ | Any commutative ring $K$ |
+| **XOR** ($T \oplus R = S$) | $\begin{pmatrix} 1 & 1 \\ 1 & -1 \end{pmatrix}$ | $\frac{1}{2}\begin{pmatrix} 1 & 1 \\ 1 & -1 \end{pmatrix}$ | $\sum_{T} (-1)^{\lvert S \cap T \rvert} A_T$ | $\frac{1}{2^n} \sum_{T} (-1)^{\lvert S \cap T \rvert} \widehat{A}_T$ | $2 \in K^\times$ ($\operatorname{char}(K) \neq 2$) |
+
+```cpp
+// Unified in-place O(n 2^n) FWT / Fast Zeta & Mobius loop skeleton
+for (int len = 1; len < (1 << n); len <<= 1)
+    for (int i = 0; i < (1 << n); i += (len << 1))
+        for (int j = 0; j < len; ++j) {
+            mint u = A[i + j], v = A[i + len + j];
+            // OR:  A[i+len+j] = u + sgn * v;
+            // AND: A[i+j]     = u + sgn * v;
+            // XOR: A[i+j] = u + v; A[i+len+j] = u - v; (divide by 2^n at end if inverse)
+        }
+```
+
+### Hand-Checkable Trace ($n = 2$ XOR Convolution)
+
+Let $n = 2$, and suppose $A = [1, 2, 0, 3]$ and $B = [0, 1, 2, 1]$ indexed by masks $00_2, 01_2, 10_2, 11_2$. Let us trace $C = A *_{\text{xor}} B$:
+1. **Bit 0 butterfly** ($\text{len} = 1$, pairs $(0,1)$ and $(2,3)$):
+   - $A^{(1)} = [1+2, 1-2, 0+3, 0-3] = [3, -1, 3, -3]$.
+   - $B^{(1)} = [0+1, 0-1, 2+1, 2-1] = [1, -1, 3, 1]$.
+2. **Bit 1 butterfly** ($\text{len} = 2$, pairs $(0,2)$ and $(1,3)$):
+   - $\widehat{A} = [3+3, -1+(-3), 3-3, -1-(-3)] = [6, -4, 0, 2]$.
+   - $\widehat{B} = [1+3, -1+1, 1-3, -1-1] = [4, 0, -2, -2]$.
+3. **Pointwise product**: $\widehat{C} = \widehat{A} \odot \widehat{B} = [24, 0, 0, -4]$.
+4. **Inverse FWT** (apply the two butterflies, then divide by $2^2 = 4$):
+   - After bit 0: $[24+0, 24-0, 0+(-4), 0-(-4)] = [24, 24, -4, 4]$.
+   - After bit 1: $[24+(-4), 24+4, 24-(-4), 24-4] = [20, 28, 28, 20]$.
+   - Divide by $4$: $C = [5, 7, 7, 5]$.
+   - Direct check for $C_{00_2}$: $A_0 B_0 + A_1 B_1 + A_2 B_2 + A_3 B_3 = 1(0) + 2(1) + 0(2) + 3(1) = 5$. Exact match!
+
+### The Small-Support XOR Trick ($O(m + n 2^n)$ Sparse Product Compression)
+
+Suppose we must compute the XOR product of $m$ sparse polynomials, each supported on at most two masks (for example, choosing whether to include or exclude each of $m$ items with XOR weight $u_i \in [0, 2^n - 1]$):
+
+$$
+F(x) = \prod_{i=1}^m \left(a + b x^{u_i}\right) \quad \text{in } K[\mathbb{Z}_2^n],
+$$
+
+where $m \le 10^6$ and $n \le 20$. Transforming $m$ separate arrays of size $2^n$ would take $O(m n 2^n)$ time—an immediate TLE.
+
+How do we collapse all $m$ transforms into **one** FWT? Look at what the XOR transform does to a single factor $P_i(x) = a + b x^{u_i}$ at frequency mask $M$:
+
+$$
+\widehat{P_i}(M) = a (-1)^{\operatorname{popcount}(M \mathbin{\&} 0)} + b (-1)^{\operatorname{popcount}(M \mathbin{\&} u_i)} = \begin{cases} a + b & \text{if } \operatorname{popcount}(M \mathbin{\&} u_i) \equiv 0 \pmod 2, \\ a - b & \text{if } \operatorname{popcount}(M \mathbin{\&} u_i) \equiv 1 \pmod 2. \end{cases}
+$$
+
+Notice that $\widehat{P_i}(M)$ can only take **two possible values**: $a+b$ or $a-b$! Therefore, for a fixed frequency mask $M$, if $c_{+1}(M)$ counts how many indices $i \in \{1, \dots, m\}$ have $\operatorname{popcount}(M \mathbin{\&} u_i)$ even, and $c_{-1}(M)$ counts how many have $\operatorname{popcount}(M \mathbin{\&} u_i)$ odd, then the product in frequency space is simply:
+
+$$
+\widehat{F}(M) = (a + b)^{c_{+1}(M)} (a - b)^{c_{-1}(M)}.
+$$
+
+How do we find $c_{+1}(M)$ and $c_{-1}(M)$ for all $M$ simultaneously? Build a single frequency array $C$ of length $2^n$ where $C_u = \#\{i : u_i = u\}$, and apply a single forward XOR-FWT to $C$! By linearity of FWT:
+
+$$
+\widehat{C}_M = \sum_{i=1}^m (-1)^{\operatorname{popcount}(M \mathbin{\&} u_i)} = c_{+1}(M) - c_{-1}(M).
+$$
+
+Combining this with the total count $c_{+1}(M) + c_{-1}(M) = m$, we solve the $2 \times 2$ linear system at each mask $M$:
+
+$$
+c_{+1}(M) = \frac{m + \widehat{C}_M}{2}, \qquad c_{-1}(M) = \frac{m - \widehat{C}_M}{2}.
+$$
+
+One forward FWT on $C$, $2^n$ modular exponentiations, and one inverse FWT on $\widehat{F}$ solves the entire $m$-factor product in $O(m + n 2^n)$ time! (This generalizes to $k$-sparse factors for $k \le 3$ via $2^{k-1}$ linear equations.)
+
+::: {.callout-warning}
+### Failure Mode & Remedy: Characteristic-2 Collapse & Zero Factors in Pointwise FWT Products
+
+1. **Characteristic-2 Collapse in XOR-FWT**: The inverse XOR butterfly requires dividing by $2$ at each of the $n$ bit layers (or by $2^n$ at the end). If you work over $\mathbb{F}_2$ or $\mathbb{Z}/2^k\mathbb{Z}$, $2$ is not a unit! Remedy: Lift the coefficients to $\mathbb{Z}$ (using 64-bit integers `int64_t`) or a prime field $\mathbb{F}_p$ with $p > 2$, execute the XOR-FWT and division by $2^n$ in the lifted ring, and reduce modulo $2$ or $2^k$ only after the inverse transform completes.
+2. **Vanishing Pointwise Values in Frequency Space ($\widehat{P}_M = 0$)**: When maintaining dynamic products $\widehat{F}_M = \prod_i \widehat{P_i}(M) \bmod p$, a factor might evaluate to $\widehat{P_i}(M) \equiv 0 \pmod p$ (for instance, when $a \equiv b \pmod p$ and $c_{-1}(M) > 0$). You **cannot** later "remove" that factor by multiplying by $\widehat{P_i}(M)^{-1} \bmod p$. Remedy: Either count the multiplicity of zero factors per mask $M$ as a pair `(nonzero_part, zero_count)`, or compute exponents $c_{+1}(M), c_{-1}(M)$ directly over $\mathbb{Z}$ before taking modular powers.
+:::
+
+::: {.callout-note}
+## Algorithm Contract: Bitwise FWT / FZT & Small-Support XOR Eigenvalue Trick
+
+- **Input & Exact Index Boundaries**: Bit-width $n \ge 0$ ($N = 2^n$ masks indexed $0 \dots 2^n - 1$); arrays $A, B$ of length $2^n$ over commutative ring $K$ (or $m$ sparse tuples for the eigenvalue trick).
+- **Preconditions**: For OR/AND FZT and IFMT, any commutative ring $K$ suffices; for `IFWT-XOR`, $2 \in K^\times$ must be invertible ($\operatorname{char}(K) \neq 2$). For the small-support XOR eigenvalue trick, the forward frequency FWT must be computed over exact 64-bit integers (`int64_t`), not modulo $p$.
+- **Postconditions (Output)**: Exact bitwise OR, AND, or XOR convolution $C_S = \sum_{T \oplus R = S} A_T B_R$ for all $S \in [0, 2^n - 1]$.
+- **Time & Space Complexity**: $O(n 2^n)$ time and $O(2^n)$ in-place space (or $O(m + k 2^k + n 2^n)$ for $k$-sparse factors).
+- **Loop / Algebraic Invariant**: After processing bit stages $0, 1, \dots, b - 1$, each block of size $2^b$ holds the $b$-dimensional character evaluation along the lowest $b$ bits while higher bits $b \dots n - 1$ remain in the time domain.
+- **Failure Modes & Edge Cases**:
+  1. **Characteristic-2 Collapse**: Dividing by $2^n$ in `IFWT-XOR` fails when $2$ is not a unit in $K$ (e.g., $\mathbb{F}_2$ or $\mathbb{Z}/2^{64}\mathbb{Z}$ without extra precision bits).
+  2. **Modular Reduction of Frequency Counts**: Reducing $\widehat{C}_M$ modulo $p$ before solving the linear system for multiplicity counts $c_r(M)$ corrupts the integer exponents used in $\prod_r \lambda_r^{c_r(M)} \bmod p$.
+  3. **Zero Point-Value Factors**: When evaluating ratios or dynamic updates in the FWT domain, frequencies with $\widehat{A}_M \equiv 0 \pmod p$ cannot be divided out naively and require $(a, c)$ zero-divisor tracking (Ch 22 §22.3).
+:::
+
+---
+
+## 24.2 The Set Power Series Ring $\mathcal{R}_n = K[x_1, \dots, x_n]/(x_1^2, \dots, x_n^2)$ & Ranked Fast Zeta Transform
+
+Bitwise OR convolution combines two subsets $T, R \subseteq \{0, \dots, n-1\}$ into $T \cup R$ even when $T$ and $R$ overlap. However, in almost all exact partition and graph component problems—such as building a disconnected graph out of vertex-disjoint connected components, or partitioning $V$ into $k$ independent sets—we need the **disjoint-union subset convolution**:
+
+$$
+(A *_{\text{sub}} B)_S = \sum_{\substack{T \cup R = S \\ T \cap R = \varnothing}} A_T B_R = \sum_{T \subseteq S} A_T B_{S \setminus T}.
+$$
+
+Computing this naively by iterating over submasks `for (int T = S; ; T = (T - 1) & S)` takes $\sum_{S} 2^{|S|} = 3^n$ operations. To accelerate this to $O(n^2 2^n)$ and unlock $\ln$, $\exp$, and composition, we first formulate subset convolution as exact multiplication in a commutative quotient ring.
+
+### Algebraic Definition of the Set Power Series Ring $\mathcal{R}_n$
+
+Fix an $n$-element ground set $V = \{0, 1, \dots, n-1\}$ and a commutative ring $K$. Introduce $n$ formal commuting variables $x_0, x_1, \dots, x_{n-1}$, one for each vertex in $V$, and quotient out the square of every variable:
+
+$$
+\mathcal{R}_n = K[x_0, x_1, \dots, x_{n-1}] / (x_0^2, x_1^2, \dots, x_{n-1}^2).
+$$
+
+For each subset $S \subseteq V$, define the square-free monomial $\mathbf{x}^S = \prod_{i \in S} x_i$. What happens when we multiply two monomials $\mathbf{x}^T$ and $\mathbf{x}^R$ inside $\mathcal{R}_n$?
+- If $T \cap R = \varnothing$, no variable appears twice, so $\mathbf{x}^T \cdot \mathbf{x}^R = \mathbf{x}^{T \cup R}$.
+- If $T \cap R \neq \varnothing$, there is at least one element $v \in T \cap R$, which produces a factor $x_v^2 = 0$ in the quotient ring:
+
+$$
+\mathbf{x}^T \cdot \mathbf{x}^R = \begin{cases} \mathbf{x}^{T \cup R} & \text{if } T \cap R = \varnothing, \\ 0 & \text{if } T \cap R \neq \varnothing. \end{cases}
+$$
+
+Therefore, formal multiplication of two **Set Power Series (SPS)** $A(\mathbf{x}) = \sum_{S \subseteq V} A_S \mathbf{x}^S$ and $B(\mathbf{x}) = \sum_{S \subseteq V} B_S \mathbf{x}^S$ in $\mathcal{R}_n$ is **identically** their disjoint-union subset convolution!
+
+### Diagnostic Signal & Reverse-Engineering the Ranked Lift
+
+::: {.callout-tip}
+### Diagnostic Signal & Reverse-Engineering Scratchpad: The Popcount Grading Trick
+
+- **The Diagnostic Signal**: You need $C_S = \sum_{T \subseteq S} A_T B_{S \setminus T}$ for $n \le 20$ ($3^n \approx 3.5 \times 10^9$ is TLE, while $n^2 2^n \approx 4 \times 10^8$ simple additions passes in $< 0.3\text{ s}$).
+- **The Reverse-Engineering Scratchpad**:
+  Why couldn't we just use the $O(n 2^n)$ OR-FWT (Fast Zeta Transform) from §24.1? Because OR-FWT computes $\sum_{T \cup R = S} A_T B_R$, which includes overlapping pairs with $T \cap R \neq \varnothing$.
+  How can we detect whether $T$ and $R$ overlap using only a simple scalar statistic? By inclusion-exclusion on set sizes:
+  $$
+  |T \cup R| = |T| + |R| - |T \cap R| \implies |T| + |R| \ge |T \cup R|,
+  $$
+  with equality $|T| + |R| = |T \cup R|$ **if and only if** $T \cap R = \varnothing$!
+  Therefore, if we attach a formal grading variable $t^{|S|}$ to record the cardinality (rank) of each set $S$, lifting $A_S$ to a polynomial $A_S(t) = A_S t^{|S|} \in K[t]/(t^{n+1})$, and then run the Subset Fast Zeta Transform on the polynomial coefficients:
+  $$
+  \widehat{A}_M(t) = \sum_{T \subseteq M} A_T t^{|T|} \in K[t]/(t^{n+1}),
+  $$
+  then multiplying $\widehat{A}_M(t) \cdot \widehat{B}_M(t)$ in $K[t]/(t^{n+1})$ and applying the Inverse Fast Zeta Transform at mask $S$ gives the polynomial:
+  $$
+  \sum_{T \cup R = S} A_T B_R t^{|T| + |R|}.
+  $$
+  In this sum, overlapping pairs $T \cap R \neq \varnothing$ have $|T| + |R| > |S|$, so they land exclusivamente in degrees $> |S|$! The coefficient of $t^{|S|}$ contains **only** the disjoint pairs $|T| + |R| = |S|$!
+:::
+
+```{mermaid}
+flowchart LR
+    A["SPS A_S, B_S in R_n"] -->|"Lift by rank k = |S| + Ranked FZT O(n^2 2^n)"| B["Ranked Zeta Space: A_hat_M(t), B_hat_M(t) in K[t]/(t^{n+1})"]
+    B -->|"Pointwise Cauchy Product or ODE in K[t]/(t^{n+1}) O(n^2 2^n)"| C["Ranked Zeta Result C_hat_M(t)"]
+    C -->|"Ranked IFZT + Extract [t^{|S|}] O(n^2 2^n)"| D["Disjoint Subset Result C_S in R_n"]
+```
+
+### L1 Cache-Contiguous Memory Layout: `[1<<n][n+1]` vs. `[n+1][1<<n]`
+
+Because $O(n^2 2^n)$ at $n = 20$ performs $\approx 2.2 \times 10^8$ multiply-adds, memory layout determines whether your code runs in $0.18\text{ s}$ or $1.8\text{ s}$ (TLE).
+
+::: {.callout-important}
+### Hardware Reality Check: Why `[1<<n][n+1]` Beats `[n+1][1<<n]`
+
+- If you store the ranked array as `P[n + 1][1 << n]` (rank outer, mask inner), then during the pointwise $O(n^2)$ polynomial product or ODE at a fixed mask $M$, accessing `P[0][M], P[1][M], ..., P[n][M]` jumps by a stride of $2^n \times 4\text{ bytes} = 4\text{ MB}$ per step! Every single rank access is an L1/L2 cache miss and TLB thrash.
+- Instead, flatten the buffer as `P[(1 << n) * (n + 1)]` indexed via `P[M * (n + 1) + d]` (equivalent to `P[1 << n][n + 1]`, **mask outer, rank inner**). For $n = 20$, all $21$ ranks of mask $M$ occupy $21 \times 4 = 84\text{ bytes}$—fitting inside **two adjacent 64-byte L1 cache lines**! Both the FZT butterfly (which vectorizes across $d \in [0, n]$) and the pointwise $O(n^2)$ polynomial loop run entirely inside L1 registers.
+:::
+
+```cpp
+// Ranked Fast Zeta / Mobius Transform on L1-contiguous layout P[mask * (n + 1) + d]
+void ranked_fzt(vector<mint>& P, int n, bool inv) {
+    int S = n + 1;
+    for (int i = 0; i < n; ++i)
+        for (int mask = 0; mask < (1 << n); ++mask)
+            if (mask & (1 << i)) {
+                int u = (mask ^ (1 << i)) * S, v = mask * S;
+                for (int d = 0; d <= n; ++d)
+                    P[v + d] += inv ? -P[u + d] : P[u + d];
+            }
+}
+```
+
+### Hand-Checkable Trace ($n = 2$ Subset Convolution)
+
+Let $V = \{0, 1\}$, and consider $A(\mathbf{x}) = 1 + 2 x_0 + 3 x_1$ and $B(\mathbf{x}) = 1 + 4 x_0 + 5 x_1 + 6 x_0 x_1$.
+1. **Ranked Lift**:
+   - $M = 00_2$: $A_{00}(t) = 1$, $B_{00}(t) = 1$.
+   - $M = 01_2$: $A_{01}(t) = 2t$, $B_{01}(t) = 4t$.
+   - $M = 10_2$: $A_{10}(t) = 3t$, $B_{10}(t) = 5t$.
+   - $M = 11_2$: $A_{11}(t) = 0$, $B_{11}(t) = 6t^2$.
+2. **Ranked FZT** ($\widehat{P}_M(t) = \sum_{T \subseteq M} P_T(t)$):
+   - $\widehat{A}_{11}(t) = 1 + 2t + 3t + 0 = 1 + 5t$, $\widehat{B}_{11}(t) = 1 + 4t + 5t + 6t^2 = 1 + 9t + 6t^2$.
+   - $\widehat{A}_{01}(t) = 1 + 2t$, $\widehat{B}_{01}(t) = 1 + 4t$; $\widehat{A}_{10}(t) = 1 + 3t$, $\widehat{B}_{10}(t) = 1 + 5t$; $\widehat{A}_{00}(t) = 1$, $\widehat{B}_{00}(t) = 1$.
+3. **Pointwise Product in $K[t]/(t^3)$**:
+   - $\widehat{C}_{11}(t) = (1 + 5t)(1 + 9t + 6t^2) \bmod t^3 = 1 + 14t + 51t^2$.
+   - $\widehat{C}_{01}(t) = (1+2t)(1+4t) = 1 + 6t + 8t^2$; $\widehat{C}_{10}(t) = (1+3t)(1+5t) = 1 + 8t + 15t^2$; $\widehat{C}_{00}(t) = 1$.
+4. **Ranked IFZT & Degree Extraction**:
+   - At $M = 11_2$, IFZT gives $C_{11}(t) = \widehat{C}_{11}(t) - \widehat{C}_{01}(t) - \widehat{C}_{10}(t) + \widehat{C}_{00}(t) = (1 + 14t + 51t^2) - (1 + 6t + 8t^2) - (1 + 8t + 15t^2) + 1 = 28t^2$.
+   - Notice how the overlapping products $2x_0 \cdot 4x_0 = 8t^2$ and $3x_1 \cdot 5x_1 = 15t^2$ were subtracted away by IFZT! Extracting $[t^2] C_{11}(t) = 28$ matches $1 \cdot 6 + 2 \cdot 5 + 3 \cdot 4 = 28$.
+
+::: {.callout-note}
+### Algorithm Contract: Ranked Fast Zeta Transform (Disjoint Subset Convolution)
+
+- **Input**: Two set power series $A, B \in \mathcal{R}_n = K[x_0, \dots, x_{n-1}]/(x_0^2, \dots, x_{n-1}^2)$ of size $2^n$.
+- **Output**: The disjoint subset convolution $C = A *_{\text{sub}} B$ where $C_S = \sum_{T \subseteq S} A_T B_{S \setminus T}$.
+- **Algebraic Hypothesis**: None — valid over **any** commutative ring $K$ regardless of characteristic (division-free).
+- **Complexity**: $O(n^2 2^n)$ time ($O(n 2^n)$ for ranked FZT/IFZT and $O(n^2 2^n)$ for pointwise polynomial multiplication in $K[t]/(t^{n+1})$), $O(n 2^n)$ space.
+- **Failure Modes & Edge Cases**:
+  - **Rank Contamination Across Chained Convolutions**: Pointwise multiplication in $K[t]/(t^{n+1})$ produces valid coefficients at $t^{|S|}$ after IFZT, but leaves non-zero garbage at higher ranks $k > |S|$. When chaining multiple subset convolutions, you must zero out $C_S(k)$ for $k \neq |S|$ in the primal domain before re-transforming (or perform the entire algebraic expression inside $K[t]/(t^{n+1})$ before a single final IFZT and rank extraction).
+  - **Cache Locality (`[mask][rank]` vs. `[rank][mask]`)**: Laying out the ranked array as `A[mask][n + 1]` (or flat `A[(n + 1) * mask + k]`) keeps the $O(n^2)$ inner polynomial convolution contiguous in L1 cache, whereas `A[n + 1][1 << n]` can suffer TLB thrashing at $n = 20$.
+:::
+
+---
+
+## 24.3 Transcendental Operations on $\mathcal{R}_n$ ($\operatorname{inv}, \ln, \exp, P^\alpha$), MSB Split & SPS Composition
+
+Because the Ranked Fast Zeta Transform is an **algebra homomorphism** from $\mathcal{R}_n$ into $(K[t]/(t^{n+1}))^{2^n}$ (up to discarding higher-degree contamination via clean round-trips, or exact when every operation commutes with the projection modulo $t^{|S|+1}$), any formal power series operation on $\mathcal{R}_n$ reduces to applying $O(n^2)$ truncated 1D polynomial ODEs from Chapter 2 at each of the $2^n$ masks!
+
+### Pointwise $O(n^2)$ Truncated Polynomial ODEs in Ranked Zeta Space
+
+A natural question arises: does a single Ranked FZT $\to$ Pointwise $\exp$/$\ln$ in $K[t]/(t^{n+1})$ $\to$ Ranked IFZT work without cleaning intermediate ranks? **Yes!** Why? Because for any formal power series $G(y) = \sum_{d \ge 0} g_d y^d$ and any $F(\mathbf{x}) = \sum_{S \neq \varnothing} F_S \mathbf{x}^S \in \mathcal{R}_n$, if we replace each variable $x_i$ with $t x_i$ (which multiplies $\mathbf{x}^S$ by $t^{|S|}$), then $\mathbf{x}^T \cdot \mathbf{x}^R = 0$ for overlapping $T \cap R \neq \varnothing$ still occurs strictly in powers of $t$ with exponent $|T| + |R| > |T \cup R|$. Thus, in the lifted ring $K[t][x_0, \dots, x_{n-1}]$, for every mask $S$, the lowest possible power of $t$ that can produce the OR-union $\bigcup_j T_j = S$ is $t^{|S|}$, achieved **if and only if** the sets $T_j$ are pairwise disjoint!
+
+Therefore, at each mask $M \in [0, 2^n - 1]$ independently, let $p(t) = \widehat{F}_M(t) = \sum_{k=0}^n p_k t^k \in K[t]/(t^{n+1})$. We compute $q(t) = \sum_{k=0}^n q_k t^k$ using the exact $O(n^2)$ recurrences from Chapter 2:
+
+| Operation | Algebraic Hypothesis on $F_\varnothing = p_0$ | Pointwise $O(n^2)$ Recurrence for $q_k$ ($k = 1, \dots, n$) | Base Case $q_0$ |
+| :--- | :--- | :--- | :--- |
+| $Q = F^{-1}$ | $p_0 \in K^\times$ | $q_k = -p_0^{-1} \sum_{j=1}^k p_j q_{k-j}$ | $q_0 = p_0^{-1}$ |
+| $Q = \ln F$ | $p_0 = 1$, $1, \dots, n \in K^\times$ | $q_k = p_k - \frac{1}{k} \sum_{j=1}^{k-1} j q_j p_{k-j}$ | $q_0 = 0$ |
+| $Q = \exp F$ | $p_0 = 0$, $1, \dots, n \in K^\times$ | $q_k = \frac{1}{k} \sum_{j=1}^k j p_j q_{k-j}$ | $q_0 = 1$ |
+| $Q = F^\alpha$ | $p_0 = 1$, $1, \dots, n \in K^\times$ | $q_k = \frac{1}{k} \sum_{j=1}^k \big((\alpha + 1)j - k\big) p_j q_{k-j}$ | $q_0 = 1$ |
+
+After running the recurrence at all $2^n$ masks, run `ranked_fzt(Q, n, true)` and extract $Q_S = [t^{|S|}] Q_S(t)$!
+
+### The Division-Free MSB Derivative Split ($\exp$ and $\ln$ in Any Characteristic)
+
+Look closely at the table above: $\ln F$ and $\exp F$ via $K[t]/(t^{n+1})$ ODEs appear to require $1, 2, \dots, n \in K^\times$. Yet inside $\mathcal{R}_n$, for any $F$ with $F_\varnothing = 0$, how can $\exp(F) = \sum_{d=0}^n \frac{F^d}{d!}$ possibly require dividing by $d!$ when multiplying $d$ non-empty disjoint subsets $T_1, \dots, T_d$ already counts each unordered partition $\{T_1, \dots, T_d\}$ **exactly $d!$ times**, canceling the $d!$ in the denominator over $\mathbb{Z}$?!
+
+Indeed, $\exp(F)$ and $\ln(1 + F)$ on $\mathcal{R}_n$ are **completely division-free**! To see why—and to obtain an algorithm that is simultaneously $2\times$ faster than full $n$-bit $\exp/\ln$ and works over **arbitrary commutative rings $K$** (including $\mathbb{F}_2$, $\mathbb{Z}/2^{64}\mathbb{Z}$, and composite moduli)—isolate the highest-indexed variable $x_v$.
+
+Every $F(\mathbf{x}) \in \mathcal{R}_{v+1}$ splits uniquely into terms not containing $x_v$ and terms containing $x_v$:
+
+$$
+F(\mathbf{x}) = F_0(\mathbf{x}) + x_v F_1(\mathbf{x}), \qquad F_0, F_1 \in \mathcal{R}_v.
+$$
+
+Because $x_v^2 = 0$ in $\mathcal{R}_{v+1}$, the Taylor series for $\exp(x_v F_1)$ truncates linearly at $1 + x_v F_1$! Therefore:
+
+$$
+\exp(F_0 + x_v F_1) = \exp(F_0) \cdot \exp(x_v F_1) = \exp(F_0) + x_v \big(\exp(F_0) *_{\text{sub}} F_1\big).
+$$
+
+Let $E_0 = \exp(F_0) \in \mathcal{R}_v$. Then transitioning from $v$ variables to $v+1$ variables requires **only a single $v$-variable subset convolution** $E_0 *_{\text{sub}} F_1$! Iterating $v = 0, 1, \dots, n-1$ gives $\exp(F)$ using only additions, subtractions, and multiplications in $K$, with total work:
+
+$$
+\sum_{v=0}^{n-1} O(v^2 2^v) = O(n^2 2^n) \quad \text{(with half the constant factor of full $n$-bit $\exp$!)}.
+$$
+
+Inverting this relation for $E = E_0 + x_v E_1 = \exp(F_0 + x_v F_1)$ with $E_\varnothing = 1$ gives $F_0 = \ln(E_0)$ and $E_1 = E_0 *_{\text{sub}} F_1 \implies F_1 = E_0^{-1} *_{\text{sub}} E_1$, where $E_0^{-1}$ needs only $E_\varnothing = 1 \in K^\times$!
+
+```cpp
+// Division-free SPS exp via MSB split: works in ANY commutative ring K!
+vector<mint> sps_exp_msb(const vector<mint>& F, int n) {
+    vector<mint> E(1 << n); E[0] = 1;
+    for (int v = 0; v < n; ++v) { // E[0..2^v-1] already holds exp(F_0)
+        vector<mint> F1(F.begin() + (1 << v), F.begin() + (2 << v));
+        vector<mint> E1 = subset_conv(vector<mint>(E.begin(), E.begin() + (1 << v)), F1, v);
+        copy(E1.begin(), E1.end(), E.begin() + (1 << v));
+    }
+    return E;
+}
+```
+
+### `Elegia`'s $O(n^2 2^n)$ SPS Composition $G(F(\mathbf{x}))$ via Taylor Shift Pyramid
+
+What if we need a general composition $G(F(\mathbf{x})) = \sum_{d=0}^n g_d \frac{F(\mathbf{x})^d}{d!}$ where $F_\varnothing = 0$ and the input array `g[0..n]` stores the **exponential generating function (EGF) derivatives** $g_d = G^{(d)}(0) \in K$ (if $G(y) = \sum_{d=0}^n c_d y^d$ is given in ordinary generating function (OGF) form, simply pass $g_d = c_d \cdot d!$; for example, $g_d = [d = c]$ extracts the single divided power $\frac{F(\mathbf{x})^c}{c!}$ without dividing by $c!$, and $g_d = d!$ evaluates the geometric series $(1 - F(\mathbf{x}))^{-1} = \sum_{d=0}^n F(\mathbf{x})^d$ for ordered sequences of components)?
+
+::: {.callout-tip}
+### Diagnostic Signal & Reverse-Engineering Scratchpad: `Elegia`'s Taylor Shift Pyramid
+
+- **The Diagnostic Signal**: You want to evaluate $G(F(\mathbf{x})) = \sum_{d=0}^n g_d \frac{F(\mathbf{x})^d}{d!} \in \mathcal{R}_n$ for an arbitrary sequence $g_0, \dots, g_n \in K$ and $F_\varnothing = 0$, and either $d!$ is non-invertible or you cannot express $G(y)$ via $\exp/\ln$.
+- **The Reverse-Engineering Scratchpad**:
+  Write $F(\mathbf{x}) = F^{(0)} + x_0 D_0 + x_1 D_1 + \dots + x_{n-1} D_{n-1}$, where $D_k \in \mathcal{R}_k$ consists of the subsets in $F$ whose maximum element (MSB) is $k$: $D_k(\mathbf{x}) = \sum_{S \subseteq \{0, \dots, k-1\}} F_{S \cup \{k\}} \mathbf{x}^S$.
+  Because $x_k^2 = 0$, adding $x_k D_k$ to the partial sum $F_{\le k-1}$ shifts the argument of $G$ by an infinitesimal $x_k D_k$ whose square vanishes! By Taylor's formula for $G(y + \epsilon)$ with $\epsilon^2 = 0$:
+  $$
+  G^{(d)}\!\big(F_{\le k-1} + x_k D_k\big) = G^{(d)}\!\big(F_{\le k-1}\big) + x_k \, G^{(d+1)}\!\big(F_{\le k-1}\big) *_{\text{sub}} D_k.
+  $$
+  Observe the index bounds: at step $k$, each $D_j$ for $j \ge k$ contributes at least one new vertex, so if we still plan to differentiate $d$ more times using variables $\{k, \dots, n-1\}$, we only need $0 \le d \le n - k$!
+  Moreover, at step $k$, $G^{(d)}(F_{\le k-1})$ only depends on variables $\{0, \dots, k-1\}$, so it lives in $\mathcal{R}_k$ (size $2^k$)!
+  Summing the cost of $n - k$ subset convolutions of size $2^k$ across $k = 0, \dots, n-1$:
+  $$
+  \sum_{k=0}^{n-1} (n - k) \cdot k^2 2^k = O(n^2 2^n).
+  $$
+:::
+
+```cpp
+// Elegia's O(n^2 2^n) SPS composition: g[d]=G^(d)(0) (EGF; pass c[d]*d! for OGF)
+vector<mint> sps_compose(const vector<mint>& F, const vector<mint>& g, int n) {
+    vector<vector<mint>> H(n + 1, vector<mint>(1));
+    for (int d = 0; d <= n; ++d) H[d][0] = g[d];
+    for (int k = 0; k < n; ++k) {
+        vector<mint> Dk(F.begin() + (1 << k), F.begin() + (2 << k)); // MSB = k
+        vector<vector<mint>> nxt(n - k, vector<mint>(2 << k));
+        for (int d = 0; d < n - k; ++d) {
+            auto prod = subset_conv(H[d + 1], Dk, k); // reuse Ranked FZT of Dk
+            copy(H[d].begin(), H[d].end(), nxt[d].begin());
+            copy(prod.begin(), prod.end(), nxt[d].begin() + (1 << k));
+        } H.swap(nxt);
+    }
+    return H[0];
+}
+```
+
+### Pointed Vertex-by-Vertex Biconnected SPS $\ln$ (`#207 UOJ 94`)
+
+Taking $C(\mathbf{x}) = \ln F(\mathbf{x})$ turns disconnected subgraphs $F(\mathbf{x})$ into connected subgraphs $C(\mathbf{x})$. How do we go one connectivity level deeper and strip away **articulation points (cut vertices)** to extract **biconnected** (2-vertex-connected) subgraphs on a fixed input graph $G = (V, E)$?
+
+Suppose we fix a single vertex $v \in V$ and look at all connected graphs on $T \cup \{v\}$ (where $T \subseteq V \setminus \{v\}$). When is $v$ an articulation point of a connected graph $H$ on $T \cup \{v\}$? Precisely when deleting $v$ splits $H \setminus \{v\}$ into $k \ge 2$ non-empty connected components on disjoint subsets $T_1 \sqcup T_2 \sqcup \dots \sqcup T_k = T$, with each component independently attached to $v$!
+
+Therefore, if we form the $(n-1)$-variable **pointed SPS at $v$**:
+
+$$
+C^{(v)}(\mathbf{x}) = \sum_{T \subseteq V \setminus \{v\}} C_{T \cup \{v\}} \mathbf{x}^T \in \mathcal{R}_{V \setminus \{v\}},
+$$
+
+then a graph on $T \cup \{v\}$ is **simply a disjoint union of $v$-blocks** (connected graphs on $T_i \cup \{v\}$ where $v$ is *not* an articulation point)! Because the subsets $T_i \subseteq V \setminus \{v\}$ are pairwise disjoint, taking the $(n-1)$-variable subset logarithm
+
+$$
+\widetilde{C}^{(v)}(\mathbf{x}) = \ln C^{(v)}(\mathbf{x}) \quad \text{in } \mathcal{R}_{V \setminus \{v\}}
+$$
+
+and writing its coefficients back into $C_{T \cup \{v\}}$ **exactingly strips away all graphs in which $v$ is an articulation point**, while leaving graphs where $v \notin S$ untouched! Repeating this $(n-1)$-variable SPS $\ln$ sequentially for $v = 0, 1, \dots, n-1$ eliminates every possible articulation point in $O(n \cdot n^2 2^{n-1}) = O(n^3 2^n)$ time!
+
+::: {.callout-note}
+### Revisited — Two Faces of One Idea (`#9`): Species Composition vs. Vertex-by-Vertex SPS $\ln$ for Biconnected Graphs
+
+Compare our two journeys to biconnected graph enumeration across this textbook:
+
+1. **Chapter 12 (`[Mas-1] #183 Luogu P5827 — 点双连通图计数`)**: In Chapter 12, the ground set $V = \{1, \dots, n\}$ was **symmetric** (we counted labeled biconnected graphs on $K_n$). Because all vertices were interchangeable, rooting at a vertex and decomposing into a set of blocks translated into a **1D compositional equation** $C'(x) = \exp\!\big(B'(x C'(x))\big)$, solved in $O(n \log n)$ via Lagrange Inversion / Newton Iteration.
+2. **Chapter 24 (`[Adv-2] #207 UOJ 94 — 胡策的统计`)**: Here, the input is an **arbitrary fixed graph $G = (V, E)$** with $n \le 15$. Vertex symmetry is completely broken: each subset $S \subseteq V$ has its own edge count $E(S)$, so a 1D EGF in $|S|$ cannot distinguish which vertices belong to $S$. By lifting the EGF variable $x$ to $n$ square-free variables $x_0, \dots, x_{n-1} \in \mathcal{R}_n$, the global species substitution $B'(x C'(x))$ splits into **$n$ sequential pointed $(n-1)$-variable logarithms** $\ln_{\mathcal{R}_{V \setminus \{v\}}} C^{(v)}(\mathbf{x})$, stripping articulation points one vertex at a time!
+:::
+
+#### Hand-Checkable Trace: Stripping Cut-Vertex $v = 1$ on Path Graph $0 - 1 - 2$ ($n = 3$)
+
+Let $V = \{0, 1, 2\}$ and suppose $G$ is the path graph with edges $\{0, 1\}$ and $\{1, 2\}$.
+1. **Connected Subgraph SPS $C(\mathbf{x})$**: After the initial global subset logarithm $C(\mathbf{x}) = \ln F(\mathbf{x})$, the non-empty connected induced subgraphs containing vertex $v = 1$ are:
+   - $\{1\}$ ($T = \varnothing \subseteq \{0, 2\}$): $1$ connected graph ($C_{\{1\}} = 1$).
+   - $\{0, 1\}$ ($T = \{0\}$): $1$ connected graph ($C_{\{0,1\}} = 1$).
+   - $\{1, 2\}$ ($T = \{2\}$): $1$ connected graph ($C_{\{1,2\}} = 1$).
+   - $\{0, 1, 2\}$ ($T = \{0, 2\}$): $1$ connected graph, the path $0 - 1 - 2$ ($C_{\{0,1,2\}} = 1$), in which **$v = 1$ is an articulation point**!
+2. **Pointed SPS at $v = 1$**: In the $2$-variable ring $\mathcal{R}_{\{0, 2\}} = K[x_0, x_2]/(x_0^2, x_2^2)$, the pointed series is:
+   $$C^{(1)}(x_0, x_2) = C_{\{1\}} + C_{\{0,1\}} x_0 + C_{\{1,2\}} x_2 + C_{\{0,1,2\}} x_0 x_2 = 1 + x_0 + x_2 + x_0 x_2.$$
+3. **2-Variable Subset Logarithm**: Let $U = x_0 + x_2 + x_0 x_2$. Since $x_0^2 = x_2^2 = 0$, we have $U^2 = (x_0 + x_2)^2 = 2 x_0 x_2$ and $U^3 = 0$. Therefore:
+   $$\widetilde{C}^{(1)}(x_0, x_2) = \ln(1 + U) = U - \frac{1}{2}U^2 = (x_0 + x_2 + x_0 x_2) - \frac{1}{2}(2 x_0 x_2) = x_0 + x_2 + 0 \cdot x_0 x_2.$$
+4. **Verification**: Writing $\widetilde{C}^{(1)}$ back into $C_{T \cup \{1\}}$ sets $C_{\{0,1,2\}} = 0$ while preserving the single-edge blocks $C_{\{0,1\}} = 1$ and $C_{\{1,2\}} = 1$. The path $0 - 1 - 2$ (whose cut-vertex is $1$) has been cleanly annihilated!
+
+::: {.callout-note}
+### Algorithm Contract: Set Power Series Transcendental Engine ($\ln, \exp, \Phi(F)$ & Pointed Biconnected $\ln$)
+
+- **Input**: Set power series $F \in \mathcal{R}_n$ of size $2^n$ (and for general composition, EGF derivative coefficients $g_0, \dots, g_n \in K$ representing $\Phi(y) = \sum_{d=0}^n g_d \frac{y^d}{d!}$).
+- **Output**: $\ln F$, $\exp F$, $\Phi(F) \in \mathcal{R}_n$, or the biconnected subgraph SPS after $n$ pointed $(n-1)$-variable logarithms.
+- **Algebraic Hypothesis**:
+  - **MSB Derivative Split ($\exp F, \ln F$) & `Elegia` Composition $\Phi(F)$**: Requires $F_\varnothing = 0$ for $\exp F$ and $\Phi(F)$, or $F_\varnothing = 1$ for $\ln F$. Completely **division-free** — valid over **any** commutative ring $K$ regardless of characteristic!
+  - **Pointwise ODE in $K[t]/(t^{n+1})$**: Requires $1, 2, \dots, n \in K^\times$ ($\operatorname{char}(K) = 0$ or $p > n$).
+- **Complexity**: $O(n^2 2^n)$ time and $O(n 2^n)$ space for $\ln, \exp, \Phi(F)$ (with the MSB split achieving a $\frac{1}{2}\times$ constant-factor speedup by avoiding the top-bit FZT); $O(n^3 2^n)$ time for $n$-step pointed biconnected $\ln$.
+- **Failure Modes & Edge Cases**:
+  - **Non-Zero Constant Term ($F_\varnothing \neq 0$)**: $\exp F$ and $\Phi(F)$ require $F_\varnothing = 0$ so that $F$ is nilpotent ($F^{n+1} = 0$ in $\mathcal{R}_n$). If $F_\varnothing = c \neq 0$, shift the outer function by $c$ or factor out $\exp(c)$ before calling the engine.
+  - **EGF vs. OGF Coefficient Convention in `sps_compose`**: `Elegia`'s Taylor shift pyramid evaluates $\sum_{d=0}^n g_d \frac{F(\mathbf{x})^d}{d!}$. If your outer polynomial is given in OGF form $\sum_{d=0}^n c_d y^d$, you must pass $g_d = c_d \cdot d!$.
+  - **Single-Edge Graphs ($|S| = 2$) in Pointed Biconnected $\ln$**: A single edge $K_2$ has no articulation point and remains non-zero after pointed vertex-by-vertex $\ln$; if a problem defines biconnected subgraphs or cycles only on $|S| \ge 3$, filter out $|S| \le 2$ explicitly as dictated by the problem statement.
+:::
+
+---
+
+## 24.4 The Ring of Dirichlet Series $\mathcal{D}_f$, Bell Series & The $\Omega(n)$-Derivation
+
+Our third non-Cauchy algebra replaces $x^i \cdot x^j = x^{i+j}$ with **integer multiplication of indices** $n^{-s} \cdot m^{-s} = (nm)^{-s}$. A formal **Dirichlet Generating Function (DGF)** is a formal series
+
+$$
+F(s) = \sum_{n=1}^{\infty} \frac{f(n)}{n^s} \in \mathcal{D}_f,
+$$
+
+equipped with **Dirichlet convolution**:
+
+$$
+(f *_D g)(n) = \sum_{d \mid n} f(d) \, g\!\left(\frac{n}{d}\right).
+$$
+
+The multiplicative identity is $\varepsilon(n) = [n = 1]$, and a series $f \in \mathcal{D}_f$ is invertible ($f \in \mathcal{D}_f^\times$) if and only if $f(1) \in K^\times$. By enumerating pairs $(d, k)$ with $dk \le N$, a single Dirichlet convolution or inversion up to $N$ takes $\sum_{d=1}^N \lfloor N/d \rfloor = O(N \log N)$ time.
+
+### Algebraic Isomorphism with $\mathcal{R}_n$ & Bell Series for Multiplicative Functions
+
+By the Fundamental Theorem of Arithmetic, every integer $n = p_1^{e_1} p_2^{e_2} \cdots p_k^{e_k}$ corresponds to a monomial $\prod_i x_{p_i}^{e_i}$ in infinitely many prime variables $x_2, x_3, x_5, \dots$:
+
+1. **Square-Free Restriction**: If we restrict $f(n)$ to **square-free** integers ($\mu(n) \neq 0$) on the first $n$ primes, then $x_{p_i}^2 = 0$ and Dirichlet convolution becomes **isomorphic to the Set Power Series ring $\mathcal{R}_n$**!
+2. **Multiplicative Functions & Bell Series**: When $f$ is multiplicative ($f(mn) = f(m)f(n)$ for $\gcd(m, n) = 1$), the Dirichlet series factors as an Euler product over primes, where the behavior at prime $p$ is captured by the 1D **Bell series** in $K[[x]]$:
+   $$
+   B_p(f; x) = \sum_{k=0}^{\infty} f(p^k) x^k, \qquad B_p(f *_D g; x) = B_p(f; x) \cdot B_p(g; x).
+   $$
+
+### Diagnostic Signal & The Prime-Multiplicity $\Omega(n)$-Derivation
+
+What if $f(n)$ is **not** multiplicative, and we need $\ln_D(f)$, $\exp_D(f)$, or $f^\alpha$ in $\mathcal{D}_f$ up to $N \le 10^6$? In $K[[x]]$, we reduced $\exp$ and $\ln$ to ODEs using the standard derivative $\frac{d}{dx} x^n = n x^{n-1}$. What is the counterpart of $\frac{d}{dx}$ inside the Dirichlet ring $\mathcal{D}_f$?
+
+::: {.callout-tip}
+### Diagnostic Signal & Reverse-Engineering Scratchpad: Why $\Omega(n)$ Replaces $\ln n$
+
+- **The Diagnostic Signal**: You need to compute $\exp_D(f)$, $\ln_D(f)$, or $f^\alpha$ for an arbitrary (non-multiplicative) arithmetic function $f(1 \dots N)$ modulo $p$.
+- **The Reverse-Engineering Scratchpad**:
+  Analytically, differentiating $F(s) = \sum_{n=1}^\infty f(n) n^{-s}$ with respect to $s$ multiplies $f(n)$ by $-\ln n$. Why does that satisfy the product rule (Leibniz rule) on Dirichlet convolution? Because $\ln(ab) = \ln a + \ln b$ is a **completely additive** function!
+  In modular arithmetic $\mathbb{F}_p$, the real logarithm $\ln n$ does not exist. However, ANY completely additive integer-valued function $w : \mathbb{Z}_{\ge 1} \to \mathbb{Z}$ satisfying $w(ab) = w(a) + w(b)$ defines a formal derivation $(\vartheta f)(n) = w(n) f(n)$ on $\mathcal{D}_f$:
+  $$
+  \vartheta(f *_D g)(n) = w(n) \sum_{ab = n} f(a) g(b) = \sum_{ab = n} \big(w(a) + w(b)\big) f(a) g(b) = (\vartheta f *_D g + f *_D \vartheta g)(n).
+  $$
+  To solve for $g(n)$ from $(\vartheta g)(n) = w(n) g(n)$, we must divide by $w(n) \bmod p$ for every $n \ge 2$. Therefore, we need a completely additive integer function $w(n)$ such that $w(n) > 0$ for all $n \ge 2$ and $w(n)$ is as small as possible so $w(n) < p$!
+  The canonical choice is the **total prime multiplicity function**:
+  $$
+  \Omega(n) = \sum_{p^k \parallel n} k \qquad \big(\Omega(1) = 0, \text{ and } 1 \le \Omega(n) \le \lfloor \log_2 N \rfloor \text{ for all } 2 \le n \le N\big).
+  $$
+  Because $\Omega(n) \le 20$ for $N \le 10^6$, $\Omega(n)$ is invertible modulo **every prime $p > \log_2 N$**!
+:::
+
+Applying the derivation $(\vartheta f)(n) = \Omega(n) f(n)$ to $g = \ln_D(f)$ (with $f(1) = 1$), $g = \exp_D(f)$ (with $f(1) = 0$), and $g = f^\alpha$ (with $f(1) = 1$) yields three $O(N \log N)$ divisor recurrences:
+
+1. **Dirichlet Logarithm** ($g = \ln_D f$, $f(1) = 1 \implies \vartheta g *_D f = \vartheta f$):
+   $$
+   \begin{aligned}
+   \sum_{d \mid n} \Omega(d) \, g(d) \, f\!\left(\frac{n}{d}\right) = \Omega(n) f(n) &\iff \Omega(n) g(n) f(1) + \sum_{\substack{d \mid n \\ 1 < d < n}} \Omega(d) \, g(d) \, f\!\left(\frac{n}{d}\right) = \Omega(n) f(n) \\
+   &\iff g(n) = f(n) - \frac{1}{\Omega(n)} \sum_{\substack{d \mid n \\ 1 < d < n}} \Omega(d) \, g(d) \, f\!\left(\frac{n}{d}\right) \qquad (n \ge 2, \ g(1) = 0).
+   \end{aligned}
+   $$
+2. **Dirichlet Exponential** ($g = \exp_D f$, $f(1) = 0 \implies \vartheta g = \vartheta f *_D g$):
+   $$
+   \begin{aligned}
+   \Omega(n) g(n) = \sum_{d \mid n} \Omega\!\left(\frac{n}{d}\right) f\!\left(\frac{n}{d}\right) g(d) &\iff \Omega(n) g(n) = \sum_{\substack{d \mid n \\ d < n}} \Omega\!\left(\frac{n}{d}\right) f\!\left(\frac{n}{d}\right) g(d) \quad (\text{since } \Omega(1) = 0) \\
+   &\iff g(n) = \frac{1}{\Omega(n)} \sum_{\substack{d \mid n \\ d < n}} \Omega\!\left(\frac{n}{d}\right) f\!\left(\frac{n}{d}\right) g(d) \qquad (n \ge 2, \ g(1) = 1).
+   \end{aligned}
+   $$
+3. **Dirichlet Power** ($g = f^\alpha$, $f(1) = 1 \implies f *_D \vartheta g = \alpha \, \vartheta f *_D g$):
+   $$
+   \begin{aligned}
+   \sum_{d \mid n} \Omega(d) g(d) f\!\left(\frac{n}{d}\right) = \alpha \sum_{d \mid n} \Omega\!\left(\frac{n}{d}\right) f\!\left(\frac{n}{d}\right) g(d) &\iff \Omega(n) g(n) f(1) = \sum_{\substack{d \mid n \\ d < n}} \left(\alpha \, \Omega\!\left(\frac{n}{d}\right) - \Omega(d)\right) f\!\left(\frac{n}{d}\right) g(d) \\
+   &\iff g(n) = \frac{1}{\Omega(n)} \sum_{\substack{d \mid n \\ d < n}} \left(\alpha \, \Omega\!\left(\frac{n}{d}\right) - \Omega(d)\right) f\!\left(\frac{n}{d}\right) g(d) \qquad (n \ge 2, \ g(1) = 1).
+   \end{aligned}
+   $$
+
+```cpp
+// O(N log N) Dirichlet Exp and Ln using the Omega(n)-derivation
+vector<mint> dgf_exp(const vector<mint>& f, const vector<int>& Om, int N) {
+    vector<mint> g(N + 1); g[1] = 1;
+    for (int d = 1; d <= N; ++d) {
+        if (d >= 2) g[d] *= inv_small[Om[d]]; // finalize g[d] before pushing to multiples
+        for (int k = 2; d * k <= N; ++k)
+            g[d * k] += g[d] * f[k] * Om[k];
+    }
+    return g;
+}
+```
+
+### Hand-Checkable Trace ($N = 6$ Dirichlet Exponential)
+
+Let us trace $g = \exp_D(f)$ up to $N = 6$ where $f(1) = 0$, $f(2) = 1$, $f(3) = 2$, and $f(4) = f(5) = f(6) = 0$. Here $\Omega = [0, 0, 1, 1, 2, 1, 2]$ for indices $0 \dots 6$:
+- $n = 1$: $g(1) = 1$. Push to $k = 2$: $g(2) \mathrel{+}= g(1) f(2) \Omega(2) = 1 \cdot 1 \cdot 1 = 1$. Push to $k = 3$: $g(3) \mathrel{+}= g(1) f(3) \Omega(3) = 1 \cdot 2 \cdot 1 = 2$.
+- $n = 2$: Finalize $g(2) = 1 / \Omega(2) = 1$. Push to $k = 2$ ($n'=4$): $g(4) \mathrel{+}= g(2) f(2) \Omega(2) = 1 \cdot 1 \cdot 1 = 1$. Push to $k = 3$ ($n'=6$): $g(6) \mathrel{+}= g(2) f(3) \Omega(3) = 1 \cdot 2 \cdot 1 = 2$.
+- $n = 3$: Finalize $g(3) = 2 / \Omega(3) = 2$. Push to $k = 2$ ($n'=6$): $g(6) \mathrel{+}= g(3) f(2) \Omega(2) = 2 \cdot 1 \cdot 1 = 2$.
+- $n = 4$: Finalize $g(4) = 1 / \Omega(4) = 1/2$.
+- $n = 6$: Finalize $g(6) = (2 + 2) / \Omega(6) = 4 / 2 = 2$.
+- Direct check: $\exp_D(f) = \varepsilon + f + \frac{1}{2!}(f *_D f)$ has $[4^{-s}]\exp_D(f) = \frac{1}{2} f(2)^2 = \frac{1}{2}$ and $[6^{-s}]\exp_D(f) = \frac{1}{2}(f(2)f(3) + f(3)f(2)) = 2$. Exact match!
+
+::: {.callout-note}
+### Algorithm Contract: Dirichlet Generating Function Engine ($*_{\text{Dir}}, A^{-1}, \ln_D, \exp_D$)
+
+- **Input**: Arithmetic functions $f, g : \{1, \dots, N\} \to K$ representing truncated Dirichlet series $\sum_{n=1}^N f(n) n^{-s} \in \mathcal{D}_f$.
+- **Output**: Dirichlet convolution $f *_D g$, inverse $f^{-1}$, logarithm $\ln_D f$, exponential $\exp_D f$, or power $f^\alpha$ on $\{1, \dots, N\}$.
+- **Algebraic Hypothesis**:
+  - **Convolution $f *_D g$**: Any commutative ring $K$.
+  - **Inversion $f^{-1}$**: Requires $f(1) \in K^\times$ (no characteristic restriction!).
+  - **Transcendental Operations ($\ln_D f, \exp_D f, f^\alpha$) via $\Omega(n)$-Derivation**: Requires $f(1) = 1$ ($\ln_D, f^\alpha$) or $f(1) = 0$ ($\exp_D$), and $1, 2, \dots, \lfloor \log_2 N \rfloor \in K^\times$ (i.e., $\operatorname{char}(K) = 0$ or $p > \lfloor \log_2 N \rfloor$).
+- **Complexity**: $O(N \log N)$ time ($\sum_{d=1}^N \lfloor N / d \rfloor \approx N \ln N$ harmonic loop iterations; $O(N \log \log N)$ when restricted to prime multipliers via Dirichlet FZT/IFZT), $O(N)$ space.
+- **Failure Modes & Edge Cases**:
+  - **$\Omega(1) = 0$ Division-by-Zero Guard**: Since $\Omega(1) = 0$, the divisor recurrence $\Omega(n) g(n) = \sum_{d \mid n} \dots$ only determines $g(n)$ for $n \ge 2$. Always initialize $g(1) = 0$ (for $\ln_D$) or $g(1) = 1$ (for $\exp_D, f^\alpha$) explicitly and guard the division by $\Omega(n)^{-1}$ with $n \ge 2$.
+  - **Small Characteristic $p \le \lfloor \log_2 N \rfloor$**: If $p \le \lfloor \log_2 N \rfloor$, $\Omega(n) \equiv 0 \pmod p$ for integers with $p$ prime factors (counted with multiplicity), breaking the $\Omega(n)$-derivation recurrence.
+:::
+
+---
+
+## 24.5 Summary & Algorithm Contract Comparison
+
+| Engine / Transform | Ring & Domain | Time Complexity | Space Complexity | Characteristic / Unit Precondition |
+| :--- | :--- | :--- | :--- | :--- |
+| **Bitwise OR / AND FZT & IFMT** | $K[(\{0,1\}^n, \mathbin{\vert})]$ or $\mathbin{\&}$ | $O(n 2^n)$ | $O(2^n)$ | Any commutative ring $K$ |
+| **Bitwise XOR FWT / IFWT** | $K[\mathbb{Z}_2^n]$ | $O(n 2^n)$ | $O(2^n)$ | $2 \in K^\times$ ($\operatorname{char}(K) \neq 2$) |
+| **Small-Support XOR Trick** | $\prod_{i=1}^m (a + b x^{u_i})$ in $K[\mathbb{Z}_2^n]$ | $O(m + n 2^n)$ | $O(2^n)$ | $2 \in K^\times$ |
+| **Subset Convolution / SPS `inv`** | $\mathcal{R}_n = K[\mathbf{x}]/(\mathbf{x}^2)$ | $O(n^2 2^n)$ | $O(n 2^n)$ | $F_\varnothing \in K^\times$ for `inv` |
+| **SPS $\exp / \ln$ (MSB Split)** | $\mathcal{R}_n = K[\mathbf{x}]/(\mathbf{x}^2)$ | $O(n^2 2^n)$ ($\frac{1}{2}\times$ const) | $O(n 2^n)$ | $F_\varnothing = 0$ ($\exp$) or $1$ ($\ln$); **any ring $K$** |
+| **SPS Composition $G(F(\mathbf{x}))$** | $\mathcal{R}_n$, $G(y) = \sum g_d \frac{y^d}{d!}$ | $O(n^2 2^n)$ | $O(n 2^n)$ | $F_\varnothing = 0$; **any ring $K$** |
+| **Pointed Biconnected SPS $\ln$** | $\mathcal{R}_n$ ($n$ sequential $(n-1)$-bit $\ln$) | $O(n^3 2^n)$ | $O(n 2^n)$ | Any ring $K$ (with MSB $\ln$) |
+| **Dirichlet $\exp_D, \ln_D, f^\alpha$** | $\mathcal{D}_f$ truncated at $N$ | $O(N \log N)$ | $O(N)$ | $1, \dots, \lfloor \log_2 N \rfloor \in K^\times$ |
+
+---
+
+## 24.6 4-Tier Practice Ladder
+
+---
+
+### Stepping Stone 1 (`#216`) — Jzzhu and Numbers
+
+- **Source**: [Codeforces 449D — Jzzhu and Numbers](https://codeforces.com/problemset/problem/449/D)
+- **Prerequisites**: Superset Fast Zeta & Möbius Transform (§24.1), Binomial Expansion in Bitwise AND Algebra
+
+#### Problem Statement
+
+You are given an array of $m$ non-negative integers $a_1, a_2, \dots, a_m$ where $0 \le a_i < 2^{20}$. Count the number of non-empty subsequences of indices $1 \le i_1 < i_2 < \dots < i_k \le m$ such that the bitwise AND of the chosen elements equals zero:
+
+$$
+a_{i_1} \mathbin{\&} a_{i_2} \mathbin{\&} \cdots \mathbin{\&} a_{i_k} = 0.
+$$
+
+Output the answer modulo $10^9 + 7$.
+
+#### Constraints
+
+- $1 \le m \le 10^6$
+- $0 \le a_i \le 10^6 < 2^{20}$ (so $n = 20$ bits)
+- Time limit: $2.0\text{ s}$, Memory limit: $256\text{ MB}$
+
+**Sample Trace ($m = 3, n = 2$, $a = [1, 2, 3]$)**:
+- The frequency array on masks $00_2, 01_2, 10_2, 11_2$ is $C = [0, 1, 1, 1]$.
+- Superset Zeta Transform $\widehat{C}_S = \sum_{T \supseteq S} C_T$ gives $\widehat{C} = [3, 2, 2, 1]$.
+- Pointwise non-empty subsequence counts $\widehat{F}_S = 2^{\widehat{C}_S} - 1$ give $\widehat{F} = [2^3-1, 2^2-1, 2^2-1, 2^1-1] = [7, 3, 3, 1]$.
+- Superset Möbius Transform at $S = 00_2$: $F_0 = \widehat{F}_{00} - \widehat{F}_{01} - \widehat{F}_{10} + \widehat{F}_{11} = 7 - 3 - 3 + 1 = 2$ (corresponding to $\{1, 2\}$ and $\{1, 2, 3\}$).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Each element $a_i$ can either be excluded (which acts as the identity mask $\mathbf{1} = 2^n - 1$ for bitwise AND) or included with mask $a_i$. What polynomial product in the bitwise AND monoid algebra $K[(\{0, 1\}^n, \mathbin{\&})]$ generates the bitwise AND of all subsets?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+In the bitwise AND algebra where the identity element is $\mathbf{1} = 2^n - 1$, the generating function over all $2^m$ subsequences is $F(\mathbf{e}) = \prod_{i=1}^m (\mathbf{e}_{\mathbf{1}} + \mathbf{e}_{a_i})$. Apply the Superset Fast Zeta Transform $\widehat{F}_S = \sum_{T \supseteq S} F_T$: a factor $(\mathbf{e}_{\mathbf{1}} + \mathbf{e}_{a_i})$ evaluates at $S$ to $1 + [a_i \supseteq S] = 2^{[S \subseteq a_i]}$.
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Let $C_u$ be the frequency of $u$ in $a$. Compute $\widehat{C}_S = \sum_{T \supseteq S} C_T$ in $O(n 2^n)$ via the Superset FZT. Then $\widehat{F}_S = 2^{\widehat{C}_S} - 1$ counts non-empty subsequences whose bitwise AND is a superset of $S$. Recover $F_0$ by applying the Superset IFMT (or direct inclusion-exclusion $F_0 = \sum_{S} (-1)^{\operatorname{popcount}(S)} \widehat{F}_S$) in $O(2^n)$.
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Mathematical Derivation
+
+Let $M = \{0, 1\}^n$ with $n = 20$ be the commutative monoid under bitwise AND ($\mathbin{\&}$), whose multiplicative identity is the all-ones mask $\mathbf{1} = 2^n - 1$. For each $i \in \{1, \dots, m\}$, choosing whether to omit or pick $a_i$ corresponds to the binomial factor $(\mathbf{e}_{\mathbf{1}} + \mathbf{e}_{a_i}) \in \mathbb{F}_p[M]$. Subtracting the empty subsequence $\mathbf{e}_{\mathbf{1}}$, the generating element for all non-empty subsequences is:
+
+$$
+F = \prod_{i=1}^m \left(\mathbf{e}_{\mathbf{1}} + \mathbf{e}_{a_i}\right) - \mathbf{e}_{\mathbf{1}} \quad \text{in } \mathbb{F}_p[(M, \mathbin{\&})],
+$$
+
+and we seek the coefficient $F_0 = [\mathbf{e}_0] F$.
+
+Applying the **Superset Fast Zeta Transform** $\mathcal{Z}_{\supseteq}(A)_S = \sum_{T \supseteq S} A_T$ diagonalizes bitwise AND convolution into pointwise multiplication. For a single factor $\mathbf{e}_{\mathbf{1}} + \mathbf{e}_{a_i}$:
+- Since $\mathbf{1} \supseteq S$ for every mask $S$, $\mathbf{e}_{\mathbf{1}}$ always contributes $1$ to $\mathcal{Z}_{\supseteq}(\mathbf{e}_{\mathbf{1}} + \mathbf{e}_{a_i})_S$.
+- The term $\mathbf{e}_{a_i}$ contributes $1$ if and only if $a_i \supseteq S$ (i.e., $a_i \mathbin{\&} S = S$), and $0$ otherwise.
+
+Let $C_u = \#\{i : a_i = u\}$ be the frequency array of the input, and let $\widehat{C}_S = \sum_{T \supseteq S} C_T$ be its Superset Fast Zeta Transform. Then exactly $\widehat{C}_S$ elements satisfy $a_i \supseteq S$, so multiplying across all $i = 1, \dots, m$ yields:
+
+$$
+\widehat{F}_S = \prod_{i=1}^m 2^{[a_i \supseteq S]} - 1 = 2^{\widehat{C}_S} - 1.
+$$
+
+Finally, inverting $\mathcal{Z}_{\supseteq}$ at mask $S = 0$ via the Superset Möbius Transform $\mu_{\supseteq}(0, S) = (-1)^{|S \setminus 0|} = (-1)^{\operatorname{popcount}(S)}$ extracts $F_0$:
+
+$$
+F_0 = \sum_{S=0}^{2^n - 1} (-1)^{\operatorname{popcount}(S)} \left(2^{\widehat{C}_S} - 1\right) \pmod{10^9 + 7}.
+$$
+
+```cpp
+for (int i = 0; i < n; ++i)
+    for (int mask = 0; mask < (1 << n); ++mask)
+        if (!(mask & (1 << i))) C[mask] += C[mask | (1 << i)];
+mint ans = 0;
+for (int mask = 0; mask < (1 << n); ++mask) {
+    mint ways = pw2[C[mask]] - 1;
+    ans += (__builtin_popcount(mask) & 1) ? -ways : ways;
+}
+```
+
+#### Algorithm Contract
+
+- **Input & Exact Index Boundaries**: Integer $m \ge 1$, array $a[1 \dots m]$ with $0 \le a_i < 2^{20}$ ($n = 20$), modulus $p = 10^9 + 7$.
+- **Preconditions**: None (Superset FZT and IFMT require no divisions in $K$).
+- **Postconditions (Output)**: Returns $F_0 = \#\{\varnothing \neq I \subseteq \{1, \dots, m\} : \bigwedge_{i \in I} a_i = 0\} \bmod p$.
+- **Time & Space Complexity**: $O(m + n 2^n)$ time ($20 \times 2^{19} \approx 10^7$ additions) and $O(2^n)$ auxiliary space.
+- **Loop / Algebraic Invariant**: After outer iteration $i \in [0, n-1]$, `C[mask]` stores the exact sum of initial frequencies over all masks $T$ that agree with `mask` on bits $i+1 \dots n-1$ and are supersets of `mask` on bits $0 \dots i$.
+- **Failure Modes & Edge Cases**: In bitwise AND convolution, the multiplicative identity is the all-ones mask $\mathbf{1} = 2^n - 1$, not $0$; subtracting $-1$ in $2^{\widehat{C}_S} - 1$ excludes the empty subsequence (whose bitwise AND is $\mathbf{1}$) before applying the Superset Möbius Transform.
+
+</details>
+
+---
+
+### Stepping Stone 2 (`#020`) — Connectivity 2
+
+- **Source**: [AtCoder Beginner Contest 213 G — Connectivity 2](https://atcoder.jp/contests/abc213/tasks/abc213_g)
+- **Prerequisites**: Set Power Series $\ln$ / Pointed Connected-Component Decomposition (§24.2, §24.3)
+
+#### Problem Statement
+
+You are given a simple undirected graph $G = (V, E)$ with $n$ vertices $V = \{1, 2, \dots, n\}$ and $m$ edges. There are $2^m$ spanning subgraphs $G' = (V, E')$ obtained by choosing a subset of edges $E' \subseteq E$. For each vertex $k \in \{2, 3, \dots, n\}$ independently, find the number of spanning subgraphs $G'$ in which vertex $1$ and vertex $k$ belong to the same connected component, modulo $998244353$.
+
+#### Constraints
+
+- $2 \le n \le 17$
+- $0 \le m \le \frac{n(n-1)}{2}$
+- Modulus: $p = 998244353$
+- Time limit: $2.0\text{ s}$, Memory limit: $1024\text{ MB}$
+
+**Sample Trace ($n = 3, m = 2$, edges $(1, 2)$ and $(2, 3)$)**:
+- Total subgraphs on subsets $S \subseteq \{1, 2, 3\}$: $F_S = 2^{e(S)}$ has $F_{\{1\}} = 1$, $F_{\{1,2\}} = 2^1 = 2$, $F_{\{1,3\}} = 2^0 = 1$, $F_{\{1,2,3\}} = 2^2 = 4$.
+- Connected subgraphs $C = \ln F$:
+  - $C_{\{1\}} = 1$.
+  - $C_{\{1,2\}} = F_{\{1,2\}} - C_{\{1\}} F_{\{2\}} = 2 - 1(1) = 1$.
+  - $C_{\{1,3\}} = F_{\{1,3\}} - C_{\{1\}} F_{\{3\}} = 1 - 1(1) = 0$.
+  - $C_{\{1,2,3\}} = F_{\{1,2,3\}} - C_{\{1\}} F_{\{2,3\}} - C_{\{1,2\}} F_{\{3\}} - C_{\{1,3\}} F_{\{2\}} = 4 - 1(2) - 1(1) - 0(1) = 1$.
+- Answer for $k = 2$: $\sum_{S \ni 1, 2} C_S F_{V \setminus S} = C_{\{1,2\}} F_{\{3\}} + C_{\{1,2,3\}} F_{\varnothing} = 1(1) + 1(1) = 2$.
+- Answer for $k = 3$: $\sum_{S \ni 1, 3} C_S F_{V \setminus S} = C_{\{1,3\}} F_{\{2\}} + C_{\{1,2,3\}} F_{\varnothing} = 0(1) + 1(1) = 1$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Every spanning subgraph $G' = (V, E')$ decomposes uniquely into the connected component $S \subseteq V$ containing vertex $1$, and an arbitrary Induced subgraph on the remaining vertices $V \setminus S$ with zero edges crossing between $S$ and $V \setminus S$.
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+For each subset $S \subseteq V$, let $F_S = 2^{e(S)}$ be the total number of subgraphs on $S$, where $e(S)$ is the number of input edges with both endpoints in $S$. Let $C_S$ be the number of connected subgraphs on $S$. In the Set Power Series ring $\mathcal{R}_n$, $F(\mathbf{x}) = \exp(C(\mathbf{x}))$, or equivalently using the pointed MSB derivative at vertex $1$: $F^{(1)}(\mathbf{x}) = C^{(1)}(\mathbf{x}) *_{\text{sub}} F(\mathbf{x})$ in $\mathcal{R}_{V \setminus \{1\}}$.
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Either compute $C(\mathbf{x}) = \ln F(\mathbf{x})$ in $O(n^2 2^n)$ (or even simpler for $n = 17$, the $O(3^n)$ pointed recurrence $C_S = F_S - \sum_{1 \in T \subsetneq S} C_T F_{S \setminus T}$). Once $C_S$ is known for all $S \ni 1$, for each $k \in \{2, \dots, n\}$, sum $C_S \cdot F_{V \setminus S}$ over all subsets $S \subseteq V$ containing both $1$ and $k$.
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Mathematical Derivation
+
+For every subset $S \subseteq V$, let $e(S) = |\{(u, v) \in E : u \in S \text{ and } v \in S\}|$ denote the number of edges induced by $S$, and let $F_S = 2^{e(S)}$ be the total number of spanning subgraphs on vertex set $S$. Let $C_S$ denote the number of **connected** spanning subgraphs on $S$.
+
+By the exponential formula in the Set Power Series ring $\mathcal{R}_n = \mathbb{F}_p[x_1, \dots, x_n]/(x_1^2, \dots, x_n^2)$, every spanning subgraph on $S$ is a disjoint union of connected components:
+
+$$
+F(\mathbf{x}) = \sum_{S \subseteq V} F_S \mathbf{x}^S = \exp\!\left(\sum_{\varnothing \neq S \subseteq V} C_S \mathbf{x}^S\right) \implies C(\mathbf{x}) = \ln F(\mathbf{x}).
+$$
+
+Even more directly, apply the partial derivative $\partial_{x_1}$ (pointing at vertex $1$) to $F(\mathbf{x}) = \exp(C(\mathbf{x}))$:
+
+$$
+\partial_{x_1} F(\mathbf{x}) = \partial_{x_1} C(\mathbf{x}) *_{\text{sub}} F(\mathbf{x}) \quad \text{in } \mathcal{R}_{V \setminus \{1\}}.
+$$
+
+Reading the coefficient of $\mathbf{x}^{S \setminus \{1\}}$ for any subset $S \ni 1$ states that every subgraph on $S$ is uniquely formed by choosing the connected component $T \subseteq S$ containing vertex $1$ (in $C_T$ ways) and an arbitrary subgraph on $S \setminus T$ (in $F_{S \setminus T}$ ways):
+
+$$
+F_S = \sum_{\substack{T \subseteq S \\ 1 \in T}} C_T F_{S \setminus T} \implies C_S = F_S - \sum_{\substack{T \subsetneq S \\ 1 \in T}} C_T F_{S \setminus T}.
+$$
+
+We can compute $C(\mathbf{x}) = \ln F(\mathbf{x})$ in $O(n^2 2^n)$ via Ranked FZT (or the submask loop in $\frac{1}{2} 3^n$ since $n \le 17$). Finally, a spanning subgraph $G'$ on $V$ connects vertex $1$ and vertex $k$ if and only if the connected component $S$ of vertex $1$ also contains $k$, while $V \setminus S$ carries any of the $F_{V \setminus S}$ subgraphs on the remaining vertices:
+
+$$
+\text{Ans}(k) = \sum_{\substack{S \subseteq V \\ \{1, k\} \subseteq S}} C_S F_{V \setminus S} \pmod{998244353}.
+$$
+
+```cpp
+// Compute C = ln(F) via Ranked FZT in O(n^2 2^n), or pointed inversion at vertex 0
+vector<mint> C = sps_ln(F, n); // F[0] = 1, C[S] = connected subgraphs on S
+for (int k = 1; k < n; ++k) {
+    mint ans = 0;
+    for (int S = 0; S < (1 << n); ++S)
+        if ((S & 1) && (S & (1 << k))) ans += C[S] * F[((1 << n) - 1) ^ S];
+    cout << ans.val() << "\n";
+}
+```
+
+#### Algorithm Contract
+
+- **Input & Exact Index Boundaries**: $2 \le n \le 17$ (0-indexed $0 \dots n-1$), edge list $E$ of size $m$.
+- **Preconditions**: $F_\varnothing = 2^{e(\varnothing)} = 1 \in \mathbb{F}_p^\times$.
+- **Postconditions (Output)**: Outputs $n - 1$ integers: $\text{Ans}(k) \bmod 998244353$ for $k = 1, \dots, n-1$.
+- **Time & Space Complexity**: $O(n^2 2^n)$ time and $O(n 2^n)$ space using SPS $\ln$ (or $O(3^n)$ time and $O(2^n)$ space via pointed submask DP).
+- **Loop / Algebraic Invariant**: For every mask $S$ with bit $0$ set, $C_S$ equals the number of connected spanning subgraphs on $S$, and $\sum_{0 \in T \subseteq S} C_T F_{S \setminus T} = F_S$.
+- **Failure Modes & Edge Cases**: When summing $C_S F_{V \setminus S}$, only masks $S$ containing both vertex $0$ (1-indexed vertex $1$) and vertex $k$ may be included, and the complement mask $V \setminus S = ((1 \ll n) - 1) \oplus S$ must be taken inside the $n$-bit universe `[0, 2^n - 1]` so no bits $\ge n$ leak into the index.
+
+</details>
+
+---
+
+### Intermediate 1 (`#027`) — We Love Forest
+
+- **Source**: [AtCoder Beginner Contest 253 Ex — We Love Forest](https://atcoder.jp/contests/abc253/tasks/abc253_h)
+- **Prerequisites**: Matrix-Tree Theorem (Ch 13), Set Power Series Divided Power $\frac{T(\mathbf{x})^c}{c!}$ (§24.3)
+
+#### Problem Statement
+
+You are given an undirected multigraph $G = (V, E)$ with $n$ vertices and $m$ labeled edges $e_1, e_2, \dots, e_m$ (self-loops are not present, but multiple edges between the same pair of vertices are distinct). For each integer $k = 1, 2, \dots, n - 1$, you perform the following random process starting from an empty graph $H$ on $V$:
+- Repeat $k$ times: choose one of the $m$ edges of $G$ uniformly at random (with replacement, so the same edge can be chosen multiple times) and add it to $H$.
+
+Find the probability that the resulting $k$-edge graph $H$ is a **forest** (contains no cycles, including no 2-edge cycles formed by picking the same edge or parallel edges twice), modulo $998244353$.
+
+#### Constraints
+
+- $2 \le n \le 14$
+- $1 \le m \le 500$
+- Modulus: $p = 998244353$
+- Time limit: $3.0\text{ s}$, Memory limit: $1024\text{ MB}$
+
+**Sample Trace ($n = 3, m = 2$, edges $e_1 = (1, 2), e_2 = (2, 3)$)**:
+- Spanning trees per subset $S$: $T_{\{1\}} = T_{\{2\}} = T_{\{3\}} = 1$, $T_{\{1,2\}} = T_{\{2,3\}} = 1, T_{\{1,3\}} = 0$, $T_{\{1,2,3\}} = 1$.
+- For $k = 1$ edge ($c = n - k = 2$ components): $[x^V] \frac{T(\mathbf{x})^2}{2!} = T_{\{1,2\}} T_{\{3\}} + T_{\{2,3\}} T_{\{1\}} + T_{\{1,3\}} T_{\{2\}} = 1 + 1 + 0 = 2$ forests. Ordered edge sequences: $2 \cdot 1! = 2$, probability $2 / 2^1 = 1$.
+- For $k = 2$ edges ($c = n - k = 1$ component): $[x^V] \frac{T(\mathbf{x})^1}{1!} = T_{\{1,2,3\}} = 1$ forest. Ordered sequences: $1 \cdot 2! = 2$, probability $2 / 2^2 = 1/2 \equiv 499122177 \pmod{998244353}$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+A sequence of $k$ chosen edges forms a forest on $V$ if and only if the $k$ edges are all distinct and form an unordered $k$-edge spanning forest on $V$ (which has exactly $c = n - k$ connected tree components), ordered in $k!$ ways.
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+For each non-empty subset $S \subseteq V$, compute the number of spanning trees $T_S$ induced on $S$ using Kirchhoff's Matrix-Tree determinant in $O(|S|^3)$. In the Set Power Series ring $\mathcal{R}_n$, what is the coefficient of $\mathbf{x}^V$ in the divided power $\frac{T(\mathbf{x})^c}{c!}$? It counts unordered partitions of $V$ into $c = n - k$ disjoint spanning trees!
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Lift $T(\mathbf{x})$ to Ranked Zeta space $\widehat{T}_M(t) = \sum_{S \subseteq M} T_S t^{|S|} \in \mathbb{F}_p[t]/(t^{n+1})$. Note that $\widehat{T}_M(0) = 0$ because $T_\varnothing = 0$. At each mask $M$, compute powers $\widehat{T}_M(t)^c \bmod t^{n+1}$ for $c = 1, \dots, n-1$, apply Ranked IFZT at the full mask $V = 2^n - 1$, and multiply $[t^n]\big(T(\mathbf{x})^c / c!\big)_V$ by $k! / m^k \bmod p$.
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Mathematical Derivation
+
+Any forest on $n$ vertices with $k$ edges contains no cycles (and thus no duplicate edges) and consists of exactly $c = n - k$ connected components, each of which is a spanning tree on its vertex subset. Furthermore, any unordered $k$-edge forest can be produced by $k!$ distinct ordered sequences of $k$ edge draws out of $m^k$ total sequences. Thus, if $F_k$ denotes the number of unordered $k$-edge spanning forests on $V$, the desired probability is:
+
+$$
+\mathbb{P}(\text{forest at step } k) = F_k \cdot \frac{k!}{m^k} \pmod{998244353}.
+$$
+
+To compute $F_k$ for all $k = 1, \dots, n - 1$:
+1. **Spanning Trees per Subset $T_S$**: For each non-empty subset $S \subseteq V$, build the $|S| \times |S|$ Laplacian matrix $L_S$ of the induced subgraph $G[S]$ and take the $(|S|-1) \times (|S|-1)$ principal minor determinant via Gaussian elimination in $O(|S|^3)$ (or compute $T_S$ via SPS Matrix-Tree / edge-by-edge tree DP). This gives the tree SPS $T(\mathbf{x}) = \sum_{\varnothing \neq S \subseteq V} T_S \mathbf{x}^S \in \mathcal{R}_n$.
+2. **Forests via Divided Powers in $\mathcal{R}_n$**: An unordered $k$-edge spanning forest on $V$ is an unordered set of $c = n - k$ vertex-disjoint spanning trees whose union is $V$. In $\mathcal{R}_n$, multiplying $T(\mathbf{x})$ with itself $c$ times counts **ordered** $c$-tuples of disjoint trees, so dividing by $c!$ counts unordered $c$-component forests:
+   $$
+   F_k = [\mathbf{x}^V] \frac{T(\mathbf{x})^{n-k}}{(n-k)!}.
+   $$
+
+In Ranked Zeta space, we compute $\widehat{T}_M(t) \in \mathbb{F}_p[t]/(t^{n+1})$ once in $O(n^2 2^n)$. Since we only need the coefficient at the single full mask $V = 2^n - 1$ after Ranked IFZT, recall that IFZT at the top mask $V$ is simply the alternating sum over all masks $M \subseteq V$:
+
+$$
+[\mathbf{x}^V] \frac{T(\mathbf{x})^c}{c!} = \frac{1}{c!} [t^n] \sum_{M=0}^{2^n - 1} (-1)^{n - \operatorname{popcount}(M)} \widehat{T}_M(t)^c.
+$$
+
+Thus we don't even need $n$ separate Ranked IFZTs! At each mask $M$, we maintain the running polynomial power $P_M^{(c)}(t) = \widehat{T}_M(t)^c \bmod t^{n+1}$ for $c = 1, \dots, n - 1$ in $O(n^3)$ per mask, accumulating $(-1)^{n - |M|} [t^n] P_M^{(c)}(t)$ into `forest_ord[c]`.
+
+```cpp
+ranked_fzt(T_ranked, n, false);
+vector<mint> forest_ord(n + 1, 0);
+for (int M = 0; M < (1 << n); ++M) {
+    mint sgn = ((n - __builtin_popcount(M)) & 1) ? -1 : 1;
+    vector<mint> pw(n + 1, 0); pw[0] = 1;
+    for (int c = 1; c < n; ++c) {
+        vector<mint> nxt(n + 1, 0);
+        for (int i = 0; i <= n; ++i)
+            for (int j = 1; i + j <= n; ++j)
+                nxt[i + j] += pw[i] * T_ranked[M * (n + 1) + j];
+        pw.swap(nxt);
+        forest_ord[c] += sgn * pw[n];
+    }
+}
+```
+
+#### Algorithm Contract
+
+- **Input & Exact Index Boundaries**: $2 \le n \le 14$, $1 \le m \le 500$, edge list of size $m$.
+- **Preconditions**: $1, 2, \dots, n \in \mathbb{F}_p^\times$ and $m \not\equiv 0 \pmod p$ ($p = 998244353$).
+- **Postconditions (Output)**: Outputs $F_k \cdot k! \cdot m^{-k} \bmod p$ for $k = 1, \dots, n - 1$.
+- **Time & Space Complexity**: $O(n^3 2^n)$ time and $O(n 2^n)$ space ($\approx 14^3 \cdot 2^{14} \approx 4.5 \times 10^7$ operations).
+- **Loop / Algebraic Invariant**: At iteration $c$, `pw[d]` at mask $M$ equals $[t^d] \widehat{T}_M(t)^c$, and summing $(-1)^{n-|M|} \text{pw}[n]$ over all $M$ yields $c! \cdot F_{n-c}$ by inclusion-exclusion over missing vertices.
+- **Failure Modes & Edge Cases**: Because $G$ is a multigraph, parallel edges between $u$ and $v$ must be accumulated with multiplicity in the Laplacian entries $L_{u,u}, L_{v,v} \mathrel{+}= 1$ and $L_{u,v}, L_{v,u} \mathrel{-}= 1$; single-vertex subsets ($|S| = 1$) have $0 \times 0$ reduced Laplacian determinant $T_S = 1$, whereas $T_\varnothing = 0$.
+
+</details>
+
+---
+
+### Intermediate 2 (`#042`) — Balance Scale
+
+- **Source**: [AtCoder Beginner Contest 306 Ex — Balance Scale](https://atcoder.jp/contests/abc306/tasks/abc306_h)
+- **Prerequisites**: DAG Source-Layer Recurrence (Ch 13.3), Connected Component SPS $\ln$ & SPS Inversion (§24.2, §24.3)
+
+#### Problem Statement
+
+You have $n$ balls numbered $1, \dots, n$ with unknown positive weights, and $m$ pairs of balls $(u_i, v_i)$ that you compare on a balance scale. Each of the $m$ comparisons independently produces one of three symbols: `<` ($w_{u_i} < w_{v_i}$), `>` ($w_{u_i} > w_{v_i}$), or `=` ($w_{u_i} = w_{v_i}$).
+
+Count how many of the $3^m$ outcome strings of length $m$ are **consistent** with at least one assignment of real weights $w_1, \dots, w_n \in \mathbb{R}$, modulo $998244353$.
+
+#### Constraints
+
+- $2 \le n \le 17$
+- $1 \le m \le \frac{n(n-1)}{2}$
+- Modulus: $p = 998244353$
+- Time limit: $4.0\text{ s}$, Memory limit: $1024\text{ MB}$
+
+**Sample Trace ($n = 3, m = 3$, triangle $K_3$ with edges $(1,2), (2,3), (1,3)$)**:
+- Every non-empty subset $T \subseteq \{1, 2, 3\}$ induces a connected subgraph $G[T]$, so the number of connected components is $c(T) = 1$, giving weight $W_T = (-1)^{c(T) - 1} = +1$ for all $T \neq \varnothing$.
+- Solving $A(\mathbf{x}) = (1 - W(\mathbf{x}))^{-1}$ in $\mathcal{R}_3$ (where $A_k$ denotes $A_S$ for $|S| = k$ by symmetry):
+  - $|S| = 1$: $A_1 = W_1 A_0 = 1(1) = 1$.
+  - $|S| = 2$: $A_2 = 2 W_1 A_1 + W_2 A_0 = 2(1)(1) + 1(1) = 3$.
+  - $|S| = 3$: $A_3 = 3 W_1 A_2 + 3 W_2 A_1 + W_3 A_0 = 3(3) + 3(1) + 1(1) = 13$ ($6$ strict orders, $6$ orders with one equal pair, and $1$ all-equal `===`).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+An outcome string of `<`, `>`, and `=` is consistent with some real weights $w_1, \dots, w_n$ if and only if contracting all `=` edges and directing `<`/`>` edges produces a **DAG** with no `<`/`>` edge having both endpoints inside the same `=` connected component.
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Suppose we partition $V$ into contracted `=` components. Within any layer of $k$ minimal (source) components $T_1, \dots, T_k$ of the contracted DAG, there can be NO edges of $G$ between $T_i$ and $T_j$ (otherwise that edge would have a symbol: `=` would merge $T_i$ and $T_j$, while `<` or `>` would make one non-minimal!). Therefore, the union $T = T_1 \sqcup \dots \sqcup T_k$ of any $k$ independent contracted components is a subset $T \subseteq V$ such that $T_1, \dots, T_k$ are the **exact connected components of the induced subgraph $G[T]$**!
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+By the DAG source-layer inclusion-exclusion recurrence (Chapter 13.3), selecting a non-empty independent set of $c$ contracted components covering vertex set $T$ carries weight $(-1)^{c - 1}$. Since the connected components of $G[T]$ are uniquely determined by $T$ itself (say $c(T)$ components), the weight of choosing $T$ as the source layer is simply $W_T = (-1)^{c(T) - 1}$ for $T \neq \varnothing$! Then $A_S = \sum_{\varnothing \neq T \subseteq S} (-1)^{c(T)-1} A_{S \setminus T}$, which is a single Set Power Series inversion $A(\mathbf{x}) = (1 - W(\mathbf{x}))^{-1}$ in $\mathcal{R}_n$ in $O(n^2 2^n)$!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Mathematical Derivation
+
+Consider any valid outcome string on the $m$ edges of $G = (V, E)$. Define an equivalence relation on $V$ where $u \sim v$ if and only if they are connected by a path of `=` edges. Let $B_1, B_2, \dots, B_r$ be the resulting equivalence classes (blocks of equal weight). For the outcome string to be consistent with real weights $w_1, \dots, w_n$:
+1. Each block $B_i$ must induce a connected subgraph $G[B_i]$, and **every** edge of $G$ with both endpoints in $B_i$ must be assigned `=` (since all vertices in $B_i$ have equal weight).
+2. Every edge of $G$ between two distinct blocks $B_i \neq B_j$ must be assigned `<` or `>`, and the resulting directed multigraph on the contracted blocks $\{B_1, \dots, B_r\}$ must be **acyclic** (a DAG).
+
+Crucially, once we know the orientation of every edge between distinct blocks $B_i \neq B_j$, the outcome string on all $m$ edges is uniquely determined! Now apply the standard DAG source-layer inclusion-exclusion recurrence (Chapter 13.3) to the contracted blocks: if we peel off a non-empty set of $k$ blocks $B_1, \dots, B_k$ that have no edges between them in $G$ (so they are pairwise disconnected in $G$ and can simultaneously serve as sources), inclusion-exclusion assigns weight $(-1)^{k-1}$.
+
+Notice the miracle: if $B_1, \dots, B_k$ are non-empty connected subgraphs of $G$ with **no edges of $G$ between distinct $B_i$ and $B_j$**, then $B_1, \dots, B_k$ are simply the **connected components of the induced subgraph $G[T]$** on their union $T = B_1 \sqcup \dots \sqcup B_k$! Thus, for each non-empty subset $T \subseteq V$, there is **at most one** way to decompose $T$ into pairwise non-adjacent connected blocks, namely into the $c(T)$ connected components of $G[T]$!
+
+Therefore, defining the Set Power Series $W(\mathbf{x}) \in \mathcal{R}_n$ by:
+
+$$
+W_T = \begin{cases} 0 & \text{if } T = \varnothing, \\ (-1)^{c(T) - 1} & \text{if } T \neq \varnothing, \end{cases}
+$$
+
+where $c(T)$ is the number of connected components of $G[T]$, the number of valid outcome strings $A_S$ on $G[S]$ satisfies:
+
+$$
+A_S = \sum_{\varnothing \neq T \subseteq S} W_T A_{S \setminus T} \quad (S \neq \varnothing, \ A_\varnothing = 1) \iff A(\mathbf{x}) = \frac{1}{1 - W(\mathbf{x})} \quad \text{in } \mathcal{R}_n.
+$$
+
+We precompute $c(T)$ for all $T \subseteq V$ in $O(n 2^n)$ (using BFS/DFS or DSU on masks) and run one $O(n^2 2^n)$ SPS inversion `(1 - W)^{-1}`! *(Alternatively, applying `sps_compose` from §24.3 with $G(y) = (1 - y)^{-1} = \sum_{d=0}^n d! \frac{y^d}{d!}$—passing the EGF derivative array $g_d = d!$—computes $(1 - W(\mathbf{x}))^{-1}$ with zero divisions in any characteristic.)*
+
+```cpp
+vector<mint> P((n + 1) << n, 0); P[0] = 1;
+for (int T = 1; T < (1 << n); ++T)
+    P[T * (n + 1) + __builtin_popcount(T)] = (comp_cnt[T] & 1) ? -1 : 1; // 1 - W(x)
+ranked_fzt(P, n, false);
+for (int M = 0; M < (1 << n); ++M)
+    poly_inv_inplace(&P[M * (n + 1)], n); // O(n^2) truncated inverse at each mask
+ranked_fzt(P, n, true);
+mint ans = P[((1 << n) - 1) * (n + 1) + n];
+```
+
+#### Algorithm Contract
+
+- **Input & Exact Index Boundaries**: $2 \le n \le 17$, $1 \le m \le \binom{n}{2}$, undirected edge list $E$.
+- **Preconditions**: $[t^0](1 - W)_\varnothing = 1 \in \mathbb{F}_p^\times$ (no divisions needed in `poly_inv_inplace` since constant term is $1$).
+- **Postconditions (Output)**: Returns $A_V \bmod 998244353$, the number of consistent `<`/`>`/`=` strings of length $m$.
+- **Time & Space Complexity**: $O(n^2 2^n)$ time and $O(n 2^n)$ space ($\approx 17^2 \cdot 2^{17} \approx 3.8 \times 10^7$ operations).
+- **Loop / Algebraic Invariant**: In Ranked Zeta space at mask $M$, `P[M*(n+1) + d]` after `poly_inv_inplace` equals $[t^d]\big(1 - \widehat{W}_M(t)\big)^{-1}$, and Ranked IFZT extracts $[\mathbf{x}^V](1 - W(\mathbf{x}))^{-1}$ at degree $d = n$.
+- **Failure Modes & Edge Cases**: When forming $P(\mathbf{x}) = 1 - W(\mathbf{x})$ for inversion, the sign of $W_T = (-1)^{c(T) - 1}$ is negated to $-W_T = (-1)^{c(T)}$ for all $T \neq \varnothing$ while $P_\varnothing = 1$; getting this sign parity backwards computes $(1 + W(\mathbf{x}))^{-1}$ instead of $(1 - W(\mathbf{x}))^{-1}$.
+
+</details>
+
+---
+
+### Advanced 1 (`#110`) — Wise Men (Hard Version)
+
+- **Source**: [Codeforces 1326F2 — Wise Men (Hard Version)](https://codeforces.com/problemset/problem/1326/F2)
+- **Prerequisites**: Partition-Indexed Subset Convolution, Ranked Zeta Space & Superset Möbius Inversion (§24.1, §24.2)
+
+#### Problem Statement
+
+There are $n$ wise men numbered $1, \dots, n$, and a symmetric binary adjacency matrix $G \in \{0, 1\}^{n \times n}$ indicating which pairs of wise men know each other. For each of the $n!$ permutations $p = (p_1, p_2, \dots, p_n)$ of $\{1, \dots, n\}$, we form a binary string $s(p) = s_1 s_2 \dots s_{n-1} \in \{0, 1\}^{n-1}$ of length $n - 1$, where $s_i = 1$ if $p_i$ and $p_{i+1}$ know each other ($G_{p_i, p_{i+1}} = 1$), and $s_i = 0$ otherwise.
+
+For every binary string $w \in \{0, 1\}^{n-1}$, compute the number of permutations $p$ such that $s(p) = w$. (Output all $2^{n-1}$ exact integer counts in $64$-bit integers `int64_t`.)
+
+#### Constraints
+
+- $2 \le n \le 18$
+- $G_{i,j} \in \{0, 1\}$, $G_{i,i} = 0$, $G_{i,j} = G_{j,i}$
+- Exact 64-bit integer output (no modulus!)
+- Time limit: $4.0\text{ s}$, Memory limit: $512\text{ MB}$
+
+**Sample Trace ($n = 3$, edges $(1, 2)$ and $(2, 3)$)**:
+- Path counts $P_k(S)$ for $S = \{1, 2, 3\}$:
+  - Partition $\lambda = (3)$ (one path of length 3): $1 \to 2 \to 3$ and $3 \to 2 \to 1$, so $Z_{(3)} = 2$.
+  - Partition $\lambda = (2, 1)$ (path of length 2 on $T$ and length 1 on $V \setminus T$): for $T = \{1,2\}$, $2 \times 1 = 2$; for $T = \{2,3\}$, $2 \times 1 = 2$; for $T = \{1,3\}$, $0$. Sum $Z_{(2,1)} = 4$.
+  - Partition $\lambda = (1, 1, 1)$: $1! \times 3! = 6$.
+- Mapping partitions to masks $w \in \{00_2, 01_2, 10_2, 11_2\}$ of `1`-runs (Superset Zeta $\widehat{A}_w$):
+  - $\widehat{A}_{11} = Z_{(3)} = 2$; $\widehat{A}_{10} = \widehat{A}_{01} = Z_{(2,1)} = 4$; $\widehat{A}_{00} = Z_{(1,1,1)} = 6$.
+- Superset IFMT gives $A_{11} = 2$, $A_{10} = 4 - 2 = 2$, $A_{01} = 4 - 2 = 2$, $A_{00} = 6 - 4 - 4 + 2 = 0$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Directly requiring $s_i = 0$ (two adjacent vertices do *not* know each other) is awkward, whereas requiring $s_i = 1$ (an edge is present) simply chains consecutive vertices into directed paths in $G$! Apply Superset Zeta Transform on the $(n-1)$-bit pattern $w$: requiring $s(p) \supseteq w$ means every maximal contiguous block of $1$s in $w$ of length $L - 1$ forces a directed path of $L$ vertices in $G$.
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Notice that the number of ways to cover $V$ with disjoint directed paths of vertex sizes $L_1, L_2, \dots, L_r$ (where $\sum L_i = n$) depends **only on the unordered integer partition** $\lambda = (L_1 \ge L_2 \ge \dots \ge L_r) \vdash n$, NOT on the order of the blocks! For $n = 18$, there are $2^{17} = 131072$ masks $w$, but only $p(18) = 385$ integer partitions of $18$!
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+1. Use standard $O(n^2 2^n)$ Hamiltonian path DP to compute $P_{|S|}(S)$, the number of directed paths spanning subset $S$.
+2. Apply the $O(n 2^n)$ Fast Zeta Transform to each rank $k = 1, \dots, n$: $\widehat{P}_k(M) = \sum_{S \subseteq M, |S|=k} P_k(S)$.
+3. Backtrack over all $p(n) \le 385$ partitions $\lambda = (L_1, \dots, L_r) \vdash n$, maintaining the pointwise product $\prod_{i=1}^r \widehat{P}_{L_i}(M)$ and evaluating the top-mask IFZT sum $\sum_{M} (-1)^{n - |M|} \prod_i \widehat{P}_{L_i}(M)$ in $O(2^n)$ per partition.
+4. Assign each mask $w \in [0, 2^{n-1}-1]$ the value of its run-length partition $\lambda(w)$, and run an $O((n-1) 2^{n-1})$ Superset IFMT!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Mathematical Derivation
+
+For each pattern mask $w \in \{0, 1\}^{n-1}$, let $A_w$ be the number of permutations $p$ with $s(p) = w$, and let $\widehat{A}_w = \sum_{w' \supseteq w} A_{w'}$ be its **Superset Zeta Transform**: the number of permutations $p$ such that $p_i$ and $p_{i+1}$ know each other whenever bit $i$ of $w$ is $1$ (with no restriction when bit $i$ of $w$ is $0$).
+
+Decompose the $(n-1)$-bit mask $w$ by splitting at every $0$-bit. This partitions the $n$ positions $\{1, \dots, n\}$ into maximal contiguous segments of sizes $L_1, L_2, \dots, L_r$ ($\sum_{i=1}^r L_i = n$), where a segment of $L_i$ vertices corresponds to $L_i - 1$ consecutive $1$-bits in $w$. A permutation $p$ satisfies $s(p) \supseteq w$ if and only if it partitions the vertex set $V$ into an ordered tuple of disjoint subsets $(S_1, S_2, \dots, S_r)$ with $|S_i| = L_i$, and forms a valid directed path in $G[S_i]$ on each subset $S_i$!
+
+For each $k \in \{1, \dots, n\}$ and $S \subseteq V$ with $|S| = k$, let $P_k(S)$ be the number of directed Hamiltonian paths spanning $S$. Then in the Set Power Series ring $\mathcal{R}_n$:
+
+$$
+\widehat{A}_w = [\mathbf{x}^V] \prod_{i=1}^r \left(\sum_{|S| = L_i} P_{L_i}(S) \mathbf{x}^S\right).
+$$
+
+Because $\mathcal{R}_n$ is commutative, this product depends **only on the sorted integer partition** $\lambda(w) = \operatorname{sort}(L_1, \dots, L_r) \vdash n$! For $n = 18$, the number of partitions is $p(18) = 385 \ll 2^{17} = 131072$.
+
+Let $\widehat{P}_k(M) = \sum_{S \subseteq M, |S| = k} P_k(S)$ be the Fast Zeta Transform of the rank-$k$ slice. Because $\sum L_i = n$, any overlapping union $\bigcup_{i=1}^r S_i$ with $|S_i| = L_i$ has cardinality strictly less than $n$, so its contribution to the full mask $V$ vanishes under IFZT! Thus, for every partition $\lambda = (L_1, \dots, L_r) \vdash n$, we evaluate the top-mask IFZT directly by inclusion-exclusion:
+
+$$
+Z_\lambda = [\mathbf{x}^V] \prod_{i=1}^r P_{L_i}(\mathbf{x}) = \sum_{M=0}^{2^n - 1} (-1)^{n - \operatorname{popcount}(M)} \prod_{i=1}^r \widehat{P}_{L_i}(M).
+$$
+
+We compute $P_k(S)$ in $O(n^2 2^n)$ via standard bitmask path DP, transform each rank $k$ in $O(n 2^n)$, DFS over the $p(n) = 385$ partitions maintaining the running pointwise product array `prod[M]` in $385 \times 2^{18} \approx 10^8$ multiplications, fill $\widehat{A}_w = Z_{\lambda(w)}$, and finish with a Superset IFMT on $\widehat{A}$ in $O(n 2^{n-1})$!
+
+```cpp
+// DFS over integer partitions lambda of n, maintaining pointwise product in Zeta space
+void dfs_part(int rem, int max_L, vector<int>& cur, const vector<ll>& prod) {
+    if (rem == 0) {
+        ll sum = 0;
+        for (int M = 0; M < (1 << n); ++M)
+            sum += ((n - __builtin_popcount(M)) & 1) ? -prod[M] : prod[M];
+        part_val[cur] = sum; return;
+    }
+    for (int L = min(rem, max_L); L >= 1; --L) {
+        vector<ll> nxt(1 << n);
+        for (int M = 0; M < (1 << n); ++M) nxt[M] = prod[M] * P_hat[L][M];
+        cur.push_back(L); dfs_part(rem - L, L, cur, nxt); cur.pop_back();
+    }
+}
+```
+
+#### Algorithm Contract
+
+- **Input & Exact Index Boundaries**: $2 \le n \le 18$, $n \times n$ symmetric adjacency matrix $G$.
+- **Preconditions**: Exact 64-bit signed arithmetic `int64_t` (since $18! \approx 6.4 \times 10^{15} < 2^{63} - 1$ and no divisions are needed).
+- **Postconditions (Output)**: Outputs $2^{n-1}$ exact integers $A_w$ for $w \in [0, 2^{n-1}-1]$.
+- **Time & Space Complexity**: $O\big((n^2 + p(n)) 2^n\big)$ time and $O(n 2^n)$ space, where $p(18) = 385$.
+- **Loop / Algebraic Invariant**: At each DFS node with partial partition $(L_1, \dots, L_j)$, `prod[M]` holds $\prod_{i=1}^j \widehat{P}_{L_i}(M)$, and at leaves ($\sum L_i = n$), the alternating sum over $M$ extracts the exact disjoint-union coefficient $[\mathbf{x}^V] \prod_i P_{L_i}(\mathbf{x})$.
+- **Failure Modes & Edge Cases**: Because the problem requires exact $64$-bit integers without a modulus, do not reduce modulo $998244353$; use `int64_t` (`long long`) or `uint64_t` throughout (safe since $\sum_w A_w = 18! \approx 6.40 \times 10^{15} < 2^{63} - 1$), and note that a contiguous segment of $L$ vertices corresponds to $L - 1$ consecutive `1`-bits in the $(n - 1)$-bit mask $w$.
+
+</details>
+
+---
+
+### Advanced 2 (`#207`) — [集训队互测2015] 胡策的统计
+
+- **Source**: [UOJ 94 — 胡策的统计](https://uoj.ac/problem/94)
+- **Prerequisites**: Pointed Vertex-by-Vertex Biconnected SPS $\ln$, SPS $\exp$ & Divided Powers (§24.3, Callout `#9`)
+
+#### Problem Statement
+
+You are given a simple undirected graph $G = (V, E)$ with $n$ vertices and $m$ edges. A non-empty induced or spanning subgraph $H = (S, E_H)$ ($S \subseteq V, E_H \subseteq E[S]$) is called **biconnected** if it is connected and contains no articulation point (no vertex $v \in S$ whose removal disconnects $H$; in particular, a single vertex $|S| = 1$ and a single edge $|S| = 2$ are biconnected).
+
+1. First, for every non-empty subset $S \subseteq V$, compute the number of biconnected spanning subgraphs $B_S$ on $S$.
+2. Second, compute the total weight over all ordered partitions of $V$ into $k \ge 1$ vertex-disjoint biconnected spanning subgraphs (equivalently, $[\mathbf{x}^V] \frac{1}{1 - B(\mathbf{x})}$ in $\mathcal{R}_n$), modulo $998244353$.
+
+#### Constraints
+
+- $1 \le n \le 15$
+- $0 \le m \le \frac{n(n-1)}{2}$
+- Modulus: $p = 998244353$
+- Time limit: $2.0\text{ s}$, Memory limit: $256\text{ MB}$
+
+**Sample Trace ($n = 3$, triangle $K_3$ with $3$ edges)**:
+- Total subgraphs $F_S = 2^{e(S)}$: $F_1 = 1$, $F_2 = 2$, $F_{\{1,2,3\}} = 8$.
+- Connected subgraphs $C = \ln F$: $C_1 = 1$, $C_2 = 1$, $C_{\{1,2,3\}} = 4$ (the triangle plus $3$ paths of $2$ edges).
+- Sequential pointed $(n-1)$-variable $\ln$ for $v = 1, 2, 3$:
+  - At $v = 1$: $C^{(1)} = 1 + x_2 + x_3 + 4 x_2 x_3$. Taking $\ln C^{(1)}$ in $\mathcal{R}_{\{2,3\}}$ subtracts $x_2 \cdot x_3$ (the path $2 - 1 - 3$ where $1$ is a cut vertex!), updating $C_{\{1,2,3\}} \leftarrow 4 - 1 = 3$.
+  - At $v = 2$: subtracts the path $1 - 2 - 3$, updating $C_{\{1,2,3\}} \leftarrow 3 - 1 = 2$.
+  - At $v = 3$: subtracts the path $1 - 3 - 2$, updating $C_{\{1,2,3\}} \leftarrow 2 - 1 = 1$ (only the $3$-cycle $K_3$ remains!).
+- Thus $B_1 = 1, B_2 = 1, B_{\{1,2,3\}} = 1$. Finally, $[\mathbf{x}^V](1 - B(\mathbf{x}))^{-1} = 1(B_{\{1,2,3\}}) + 2!\cdot 3(B_2 B_1) + 3!\cdot 1(B_1^3 / 3!) = 1 + 6 + 6 = 13$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+To find the number of biconnected spanning subgraphs $B_S$ for every $S \subseteq V$ on a fixed graph $G$ ($n \le 15$), start with $F_S = 2^{e(S)}$, take the $n$-variable SPS logarithm $C(\mathbf{x}) = \ln F(\mathbf{x})$ to isolate connected subgraphs, and then ask: how do we strip away connected subgraphs that have an articulation point?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Fix a vertex $v \in V$. In any connected graph $H$ on $T \cup \{v\}$ ($T \subseteq V \setminus \{v\}$), deleting $v$ partitions $T$ into connected pieces $T_1 \sqcup \dots \sqcup T_k = T$ that were attached to $v$ and had no edges between distinct $T_i$ and $T_j$. That means the pointed $(n-1)$-variable SPS $C^{(v)}(\mathbf{x}) = \sum_{T \subseteq V \setminus \{v\}} C_{T \cup \{v\}} \mathbf{x}^T \in \mathcal{R}_{V \setminus \{v\}}$ is the exponential of connected graphs on $T_i \cup \{v\}$ where $v$ is **not** an articulation point!
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+1. Compute $C = \ln F$ in $\mathcal{R}_n$ in $O(n^2 2^n)$.
+2. For each $v = 0, 1, \dots, n - 1$: extract the $(n-1)$-variable SPS $C^{(v)}(\mathbf{x})$ on masks $T \subseteq V \setminus \{v\}$ (note $C^{(v)}_\varnothing = C_{\{v\}} = 1$), replace $C^{(v)}$ with $\ln C^{(v)}$ in $\mathcal{R}_{V \setminus \{v\}}$ in $O(n^2 2^{n-1})$, and write the coefficients back into $C_{T \cup \{v\}}$.
+3. After all $n$ vertices are processed, $B_S = C_S$ holds the exact number of biconnected spanning subgraphs on $S$. Compute $(1 - B(\mathbf{x}))^{-1}$ in $\mathcal{R}_n$ in $O(n^2 2^n)$ to obtain $[\mathbf{x}^V](1 - B(\mathbf{x}))^{-1}$.
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Mathematical Derivation
+
+Let $F_S = 2^{e(S)}$ be the number of spanning subgraphs on $S \subseteq V$. Taking the Set Power Series logarithm in $\mathcal{R}_n$:
+
+$$
+C(\mathbf{x}) = \ln F(\mathbf{x}) \quad \text{in } \mathcal{R}_n
+$$
+
+yields $C_S$, the number of connected spanning subgraphs on $S$.
+
+Now we must eliminate all connected subgraphs that contain at least one articulation point (cut vertex). Order the vertices $V = \{0, 1, \dots, n-1\}$. Suppose that after step $v - 1$, $C_S$ counts connected spanning subgraphs on $S$ in which **none of the vertices in $S \cap \{0, \dots, v-1\}$ is an articulation point**.
+
+Consider how a graph $H$ counted by $C_{T \cup \{v\}}$ (where $T \subseteq V \setminus \{v\}$) behaves when we delete vertex $v$:
+- Deleting $v$ splits $H \setminus \{v\}$ into $k \ge 1$ connected components on disjoint vertex subsets $T_1 \sqcup T_2 \sqcup \dots \sqcup T_k = T$.
+- For each piece $T_i$, the induced subgraph $H[T_i \cup \{v\}]$ is connected, $v$ is **not** an articulation point of $H[T_i \cup \{v\}]$, and furthermore no vertex $u \in T_i \cap \{0, \dots, v-1\}$ can be an articulation point of $H[T_i \cup \{v\}]$ if and only if $u$ was not an articulation point of $H$!
+- Conversely, gluing $k$ such $v$-blocks $H_i$ on $T_i \cup \{v\}$ at vertex $v$ creates no new cycles between distinct $T_i$, so a vertex $u \neq v$ is an articulation point of the union $H$ if and only if $u$ is an articulation point of its own piece $H_i$!
+
+Therefore, in the $(n-1)$-variable Set Power Series ring $\mathcal{R}_{V \setminus \{v\}}$, the pointed series
+
+$$
+C^{(v)}(\mathbf{x}) = \sum_{T \subseteq V \setminus \{v\}} C_{T \cup \{v\}} \mathbf{x}^T \quad \big(\text{with } C^{(v)}_\varnothing = C_{\{v\}} = 1\big)
+$$
+
+is the exact subset exponential of the subgraphs on $T \cup \{v\}$ in which $v$ is **not** an articulation point! Updating
+
+$$
+C^{(v)}(\mathbf{x}) \leftarrow \ln_{\mathcal{R}_{V \setminus \{v\}}} C^{(v)}(\mathbf{x})
+$$
+
+and writing its coefficients back to $C_{T \cup \{v\}}$ strips away all graphs where $v$ is an articulation point. After repeating this for $v = 0, 1, \dots, n-1$, no vertex in $V$ can be an articulation point, so $B(\mathbf{x}) = C(\mathbf{x})$ is the exact SPS of biconnected spanning subgraphs! Finally, an ordered sequence of $k$ disjoint biconnected components partitioning $V$ has generating function $\sum_{k \ge 0} B(\mathbf{x})^k = (1 - B(\mathbf{x}))^{-1}$ in $\mathcal{R}_n$.
+
+```cpp
+vector<mint> C = sps_ln(F, n); // Step 1: connected subgraphs on V
+for (int v = 0; v < n; ++v) {  // Step 2: strip cut vertex v via (n-1)-var SPS ln
+    vector<mint> Cv(1 << (n - 1));
+    for (int T = 0; T < (1 << (n - 1)); ++T) {
+        int full_T = (T & ((1 << v) - 1)) | ((T >> v) << (v + 1)) | (1 << v);
+        Cv[T] = C[full_T];
+    }
+    Cv = sps_ln(Cv, n - 1); // C_{\{v\}} = 1 is the constant term Cv[0]
+    for (int T = 0; T < (1 << (n - 1)); ++T) {
+        int full_T = (T & ((1 << v) - 1)) | ((T >> v) << (v + 1)) | (1 << v);
+        C[full_T] = Cv[T];
+    }
+}
+vector<mint> ans_sps = sps_inv_one_minus(C, n); // Step 3: (1 - B(x))^{-1}
+```
+
+#### Algorithm Contract
+
+- **Input & Exact Index Boundaries**: $1 \le n \le 15$, undirected edge list $E$ of size $m$.
+- **Preconditions**: $F_\varnothing = 1$ and $C_{\{v\}} = 1$ for all $v \in V$; $1, \dots, n \in \mathbb{F}_p^\times$ ($p = 998244353$).
+- **Postconditions (Output)**: Returns $[\mathbf{x}^V](1 - B(\mathbf{x}))^{-1} \bmod 998244353$.
+- **Time & Space Complexity**: $O(n^3 2^n)$ time ($15$ calls to $14$-variable SPS $\ln$, $\approx 15 \cdot 14^2 \cdot 2^{14} \approx 4.8 \times 10^7$ ops) and $O(n 2^n)$ space.
+- **Loop / Algebraic Invariant**: After iteration $v \in [0, n-1]$, for every non-empty $S \subseteq V$, `C[S]` equals the number of connected spanning subgraphs on $S$ whose set of articulation points is disjoint from $\{0, 1, \dots, v\}$.
+- **Failure Modes & Edge Cases**: In the pointed $(n-1)$-variable logarithm at vertex $v$, the empty subset $T = \varnothing \subseteq V \setminus \{v\}$ corresponds to the single-vertex subgraph $\{v\}$ with $C^{(v)}_\varnothing = C_{\{v\}} = 1$ (so $\ln C^{(v)}$ is well-defined with constant term $0$), and both $|S| = 1$ (single vertex) and $|S| = 2$ (single edge $K_2$) have no articulation points and remain biconnected ($B_S = 1$).
+
+</details>
+
+---
+
+### Mastery 1 (`#231`) — 幂数 (Powerful Numbers)
+
+- **Source**: [LibreOJ 6729 — 幂数](https://loj.ac/p/6729)
+- **Prerequisites**: Dirichlet Ring $\mathcal{D}_f$, Bell Series Division & Powerful Number Perturbation (§24.4)
+
+#### Problem Statement
+
+Let $f, g : \mathbb{Z}_{\ge 1} \to \mathbb{F}_p$ be two multiplicative functions such that $f(1) = g(1) = 1$ and $f(p) = g(p)$ at every prime $p$. Given a positive integer $N \le 10^{11}$, an $O(1)$ (or $O(\sqrt{x})$-cached) prefix-sum oracle for $G(x) = \sum_{n=1}^x g(n) \bmod p$, and prime-power evaluators for $f(p^k)$ and $g(p^k)$ ($k \ge 1$), compute the prefix sum
+
+$$
+S(N) = \sum_{n=1}^N f(n) \bmod p
+$$
+
+in $O(\sqrt{N})$ time by expressing $f = h *_D g$ in the Dirichlet ring $\mathcal{D}_f$, proving via Bell series that $h = f *_D g^{-1}$ vanishes outside the $O(\sqrt{N})$ **powerful numbers** $d \le N$ ($p \mid d \implies p^2 \mid d$), and summing $h(d) G(\lfloor N / d \rfloor)$ over all powerful numbers $d \le N$.
+
+#### Constraints
+
+- $1 \le N \le 10^{11}$ (or up to $10^{13}$)
+- Number of powerful numbers $\le N$ is $\le \frac{\zeta(3/2)}{\zeta(3)} \sqrt{N} \approx 2.17 \sqrt{N}$ ($\le 6.8 \times 10^5$ at $N = 10^{11}$)
+- Modulus: $p = 998244353$ or $10^9 + 7$
+- Time limit: $2.0\text{ s}$, Memory limit: $256\text{ MB}$
+
+**Sample Trace ($N = 12$, $f(p) = 1$, $f(p^k) = 2$ for $k \ge 2$, and $g(n) = 1$ for all $n$)**:
+- At every prime $p$: $B_p(f; x) = 1 + x + 2x^2 + 2x^3 + \dots$ and $B_p(g; x) = \frac{1}{1 - x}$ (with prefix sum $G(x) = x$).
+- Bell series quotient: $B_p(h; x) = B_p(f; x)(1 - x) = (1 + x + 2x^2 + 2x^3 + \dots)(1 - x) = 1 + x^2$.
+- Thus $h(p) = 0$, $h(p^2) = 1$, and $h(p^k) = 0$ for $k \ge 3$. The powerful numbers $\le 12$ with $h(d) \neq 0$ are $d \in \{1, 4, 9\}$ with $h(1) = h(4) = h(9) = 1$.
+- Prefix sum: $\sum_{n=1}^{12} f(n) = h(1) G(12) + h(4) G(3) + h(9) G(1) = 12 + 3 + 1 = 16$ (matching direct evaluation where $f(n) = 1$ except at $n \in \{4, 8, 9, 12\}$ where $f(n) = 2$).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+When $f$ and $g$ are multiplicative and agree on all primes ($f(p) = g(p)$), their Bell series at every prime $p$ agree up to degree $1$: $B_p(f; x) \equiv B_p(g; x) \pmod{x^2}$. What does that imply about the degree-1 term of their quotient $B_p(h; x) = B_p(f; x) B_p(g; x)^{-1}$?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Because $B_p(f; x) = 1 + f(p) x + f(p^2) x^2 + \dots$ and $B_p(g; x) = 1 + g(p) x + g(p^2) x^2 + \dots$ with $f(p) = g(p)$, their ratio $B_p(h; x) = B_p(f; x) / B_p(g; x)$ has $[x^1] B_p(h; x) = f(p) - g(p) = 0$! Since $h$ is multiplicative and $h(p) = 0$ for every prime $p$, $h(n) = \prod_{p^k \parallel n} h(p^k) = 0$ whenever any prime divides $n$ to the first power ($k = 1$).
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+1. Sieve all primes $p \le \sqrt{N}$.
+2. For each prime $p \le \sqrt{N}$ (or in $O(\log^2 N)$ globally if $h(p^k)$ is a polynomial in $p^k$), compute $h(p^k)$ for $2 \le k \le \lfloor \log_p N \rfloor$ via the $O(k^2)$ Bell series recurrence $h(p^k) = f(p^k) - \sum_{j=1}^k g(p^j) h(p^{k-j})$.
+3. DFS over all powerful numbers $d = \prod p_i^{k_i} \le N$ (choosing only exponents $k_i \ge 2$ on primes $p_i \le \sqrt{N / d_{\text{cur}}}$), accumulating $h(d) G(\lfloor N / d \rfloor) \bmod p$.
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Mathematical Derivation
+
+Since $f$ and $g$ are multiplicative with $f(1) = g(1) = 1$, both are units in the Dirichlet ring $\mathcal{D}_f$, and their Dirichlet quotient $h = f *_D g^{-1}$ is also multiplicative. At each prime $p$, the Bell series satisfy:
+
+$$
+B_p(h; x) = \frac{B_p(f; x)}{B_p(g; x)} = \frac{1 + f(p) x + f(p^2) x^2 + \dots}{1 + g(p) x + g(p^2) x^2 + \dots} \quad \text{in } \mathbb{F}_p[[x]].
+$$
+
+Extracting $[x^1]$ from $B_p(h; x) B_p(g; x) = B_p(f; x)$ gives:
+
+$$
+h(p) + g(p) h(1) = f(p) \implies h(p) = f(p) - g(p) = 0.
+$$
+
+For higher prime powers $k \ge 2$, the truncated polynomial inversion recurrence in $\mathbb{F}_p[x]/(x^{E+1})$ gives:
+
+$$
+h(p^k) = f(p^k) - \sum_{j=1}^{k-1} g(p^j) h(p^{k-j}) - g(p^k).
+$$
+
+Because $h$ is multiplicative and $h(p) = 0$ for every prime $p$, any integer $n = \prod p_i^{e_i}$ with at least one exponent $e_i = 1$ has $h(n) = \prod h(p_i^{e_i}) = 0$. Thus $\operatorname{supp}(h)$ is contained in the **powerful numbers**:
+
+$$
+\mathcal{P}(N) = \left\{ d \le N : p \mid d \implies p^2 \mid d \right\}.
+$$
+
+Every powerful number $d$ can be written uniquely as $d = a^2 b^3$ with $b$ square-free, so $|\mathcal{P}(N)| \le \sum_{b=1}^{\lfloor N^{1/3} \rfloor} \sqrt{N / b^3} = O(\sqrt{N})$. Expanding $f = h *_D g$ on the prefix sum $\sum_{n=1}^N f(n)$ yields:
+
+$$
+\sum_{n=1}^N f(n) = \sum_{n=1}^N \sum_{d \mid n} h(d) \, g\!\left(\frac{n}{d}\right) = \sum_{\substack{d \in \mathcal{P}(N)}} h(d) \, G\!\left(\left\lfloor \frac{N}{d} \right\rfloor\right).
+$$
+
+```cpp
+// DFS over all O(sqrt(N)) powerful numbers d <= N, accumulating h(d) * G(N / d)
+void dfs_pn(int idx, ll d, mint hd) {
+    ans += hd * G_prefix(N / d);
+    for (int i = idx; i < (int)primes.size(); ++i) {
+        ll p = primes[i];
+        if (d > N / (p * p)) break;
+        ll pk = p * p;
+        for (int k = 2; d <= N / pk; ++k) {
+            if (h_pk[i][k].val() != 0) dfs_pn(i + 1, d * pk, hd * h_pk[i][k]);
+            if (pk > N / p) break;
+            pk *= p;
+        }
+    }
+}
+```
+
+#### Algorithm Contract
+
+- **Input & Exact Index Boundaries**: Integer $1 \le N \le 10^{11}$, prime-power evaluators for $f(p^k), g(p^k)$ with $f(p) = g(p)$, and fast prefix-sum oracle $G(\lfloor N/d \rfloor)$.
+- **Preconditions**: $f(1) = g(1) = 1 \in \mathbb{F}_p^\times$ and $f(p) = g(p)$ for all primes $p \le \sqrt{N}$.
+- **Postconditions (Output)**: Returns $\sum_{n=1}^N f(n) \bmod p$.
+- **Time & Space Complexity**: $O(\sqrt{N})$ time and $O(\sqrt{N})$ space to sieve primes up to $\sqrt{N}$, precompute $h(p^k)$ via Bell series division, and traverse all powerful numbers $d \le N$.
+- **Loop / Algebraic Invariant**: Each DFS state `(idx, d, hd)` visits a unique powerful number $d$ whose prime factors have indices $< \text{idx}$ (or is extended by $p_i^k$ with $i \ge \text{idx}$ and $k \ge 2$), with `hd` $= \prod_{p^k \parallel d} h(p^k)$.
+- **Failure Modes & Edge Cases**: When stepping prime powers `pk *= p` in the recursive DFS over powerful numbers $d \le N$, always guard against 64-bit integer overflow using division (`if (d > N / (p * p)) break;` and `if (pk > N / p) break;`) before multiplying, since $p^k$ or $d \cdot p^k$ can exceed $2^{63} - 1$ when $N = 10^{11}$ and $p \approx 3 \times 10^5$.
+
+</details>
+
+---
+
+### Mastery 2 (`#038`) — A Nameless Counting Problem
+
+- **Source**: [AtCoder Beginner Contest 288 Ex — A Nameless Counting Problem](https://atcoder.jp/contests/abc288/tasks/abc288_h)
+- **Prerequisites**: Bitwise XOR Cancellation, Parity Decomposition, Digit DP & EGF-to-OGF Hyperbolic Substitution (§24.1, §24.3)
+
+#### Problem Statement
+
+Given three non-negative integers $M, N, X$, find the number of non-decreasing sequences of $N$ integers $0 \le A_1 \le A_2 \le \dots \le A_N \le M$ such that their bitwise XOR sum equals $X$:
+
+$$
+A_1 \oplus A_2 \oplus \cdots \oplus A_N = X.
+$$
+
+Output the answer modulo $998244353$.
+
+#### Constraints
+
+- $0 \le M < 2^{30}$
+- $1 \le N \le 200$
+- $0 \le X < 2^{30}$
+- Modulus: $p = 998244353$
+- Time limit: $4.0\text{ s}$, Memory limit: $1024\text{ MB}$
+
+**Sample Trace ($M = 2, N = 2, X = 1$)**:
+- Non-decreasing pairs $0 \le A_1 \le A_2 \le 2$ with $A_1 \oplus A_2 = 1$:
+  - Unordered pairs of **distinct** elements in $[0, 2]$ with XOR $1$: only $\{0, 1\}$ (since $0 \oplus 1 = 1$, $0 \oplus 2 = 2$, $1 \oplus 2 = 3$).
+  - Since any duplicate pair $(v, v)$ cancels under XOR ($v \oplus v = 0$), every non-decreasing sequence of length $N = 2$ with XOR $1$ must consist of $k = 2$ odd-multiplicity values $\{0, 1\}$ and $0$ even-multiplicity pairs!
+  - Thus $(A_1, A_2) = (0, 1)$ is the unique solution (answer $= 1$).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+In any multiset of $N$ integers $\{A_1 \le A_2 \le \dots \le A_N\}$, the bitwise XOR $A_1 \oplus \dots \oplus A_N$ depends **only on the parity of the frequency of each value** $v \in [0, M]$! Specifically, if $k$ distinct values $v_1 < v_2 < \dots < v_k$ appear an **odd** number of times and all other values appear an **even** number of times, then $N \equiv k \pmod 2$ and the remaining $(N - k)/2$ pairs of identical elements can be assigned freely to any values in $[0, M]$!
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Compare two generating functions in the XOR group algebra $\mathbb{F}_p[\mathbb{Z}_2^{30}]$:
+1. The **OGF of multisets** (what the problem asks for): each value $v \in [0, M]$ contributes $1 + x^v u + u^2 + x^v u^3 + \dots = \frac{1 + x^v u}{1 - u^2}$, giving $\prod_{v=0}^M \frac{1 + x^v u}{1 - u^2} = (1 - u^2)^{-(M+1)} \prod_{v=0}^M (1 + x^v u)$.
+2. The **EGF of ordered tuples** $T_j$ in $[0, M]^j$ (easy to count via Digit DP): each value $v \in [0, M]$ contributes $\cosh(z) + x^v \sinh(z) = \cosh(z)(1 + x^v \tanh(z))$, giving $\cosh(z)^{M+1} \prod_{v=0}^M (1 + x^v \tanh(z))$.
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+1. Use MSB-to-LSB Digit DP in $O(N^2 \log M)$ to compute $T_j$ for $0 \le j \le N$: the number of ordered $j$-tuples in $[0, M]^j$ with XOR $X$.
+2. Substitute $z = \operatorname{artanh}(u) = \sum_{m \ge 0} \frac{u^{2m+1}}{2m+1}$ into the EGF $\sum_{j=0}^N T_j \frac{z^j}{j!} \bmod u^{N+1}$. Since $\cosh(\operatorname{artanh}(u)) = (1 - u^2)^{-1/2}$, multiplying the composed polynomial by $(1 - u^2)^{-(M+1)/2}$ produces $[x^X] \prod_{v=0}^M \frac{1 + x^v u}{1 - u^2}$! Extract $[u^N]$ in $O(N^2)$ polynomial operations.
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Mathematical Derivation
+
+Every non-decreasing sequence $0 \le A_1 \le A_2 \le \dots \le A_N \le M$ is uniquely identified by the multiplicity $c_v \ge 0$ of each value $v \in [0, M]$, where $\sum_{v=0}^M c_v = N$. Because $v \oplus v = 0$ in the XOR group $(\mathbb{Z}_2^{30}, \oplus)$, a value $v$ with multiplicity $c_v$ contributes $x^v$ to the XOR product if $c_v$ is odd, and $x^0 = 1$ if $c_v$ is even.
+
+Therefore, in the formal power series ring $\mathbb{F}_p[\mathbb{Z}_2^{30}][[u]]$ over the XOR group algebra, the bivariate OGF of non-decreasing sequences is:
+
+$$
+\Phi(x, u) = \prod_{v=0}^M \left(1 + x^v u + u^2 + x^v u^3 + \dots\right) = (1 - u^2)^{-(M+1)} \prod_{v=0}^M \left(1 + x^v u\right),
+$$
+
+and we seek $[x^X u^N] \Phi(x, u)$.
+
+On the other hand, let $T_j$ be the number of **ordered $j$-tuples** $(B_1, \dots, B_j) \in [0, M]^j$ (with repetition allowed) such that $B_1 \oplus \dots \oplus B_j = X$. By the exponential formula for labeled sequences, the EGF of ordered tuples in $\mathbb{F}_p[\mathbb{Z}_2^{30}][[z]]$ is:
+
+$$
+\begin{aligned}
+\Psi(x, z) &= \sum_{j=0}^{\infty} \left(\sum_{v=0}^M x^v\right)^j \frac{z^j}{j!} = \exp\!\left(\sum_{v=0}^M x^v z\right) = \prod_{v=0}^M \exp(x^v z) \\
+&= \prod_{v=0}^M \left(\sum_{m \ge 0} \frac{z^{2m}}{(2m)!} x^0 + x^v \sum_{m \ge 0} \frac{z^{2m+1}}{(2m+1)!}\right) \\
+&= \prod_{v=0}^M \big(\cosh(z) + x^v \sinh(z)\big),
+\end{aligned}
+$$
+
+where the last equality holds because $(x^v)^2 = x^{v \oplus v} = 1$ in $\mathbb{F}_p[\mathbb{Z}_2^{30}]$! Factoring out $\cosh(z)$ from each of the $M + 1$ terms yields:
+
+$$
+\Psi(x, z) = \cosh(z)^{M+1} \prod_{v=0}^M \big(1 + x^v \tanh(z)\big).
+$$
+
+Now substitute $z = \operatorname{artanh}(u) = u + \frac{u^3}{3} + \frac{u^5}{5} + \dots \in \mathbb{F}_p[[u]]$ (valid up to $u^N$ since $N \le 200 < p$). Using the identity $\cosh(\operatorname{artanh}(u)) = (1 - u^2)^{-1/2}$ and extracting $[x^X]$ on both sides gives:
+
+$$
+\sum_{j=0}^{\infty} T_j \frac{\operatorname{artanh}(u)^j}{j!} = (1 - u^2)^{-\frac{M+1}{2}} [x^X] \prod_{v=0}^M \left(1 + x^v u\right).
+$$
+
+Comparing this with $\Phi(x, u) = (1 - u^2)^{-(M+1)} \prod_{v=0}^M (1 + x^v u)$, we need only multiply by an extra factor of $(1 - u^2)^{-\frac{M+1}{2}}$ to obtain the exact OGF of our problem:
+
+$$
+\text{Ans} = [u^N] \left((1 - u^2)^{-\frac{M+1}{2}} \sum_{j=0}^N T_j \frac{\operatorname{artanh}(u)^j}{j!}\right) \pmod{998244353}.
+$$
+
+To compute $T_0, \dots, T_N$ in $O(N^2 \log M)$: run a Digit DP from bit $b = 29$ down to $0$ tracking how many of the $j$ elements remain tight to $M$. Even simpler: classify the $j$ elements by the highest bit $b$ where at least one element drops strictly below $M_b = 1$; below bit $b$, that loose element's bits are completely free in $\{0, 1\}$, so the XOR of bit $b' < b$ is automatically satisfied in exactly $2^{j-1}$ ways per bit!
+
+```cpp
+// Given T[0..N] (ordered j-tuples in [0, M]^j with XOR = X from O(N^2 log M) Digit DP):
+vector<mint> A(N + 1), B(N + 1); // B(u) = artanh(u) = u + u^3/3 + u^5/5 + ...
+for (int i = 1; i <= N; i += 2) B[i] = inv_small[i];
+vector<mint> pw(N + 1, 0); pw[0] = 1;
+for (int j = 0; j <= N; ++j) {
+    mint c = T[j] * ifac[j];
+    for (int i = 0; i <= N; ++i) A[i] += c * pw[i];
+    pw = poly_mul_trunc(pw, B, N); // O(N^2) truncated multiplication
+}
+// Multiply A(u) by (1 - u^2)^{-(M+1)/2} and extract A[N]
+```
+
+#### Algorithm Contract
+
+- **Input & Exact Index Boundaries**: $0 \le M, X < 2^{30}$, $1 \le N \le 200$, modulus $p = 998244353$.
+- **Preconditions**: $1, 2, \dots, N \in \mathbb{F}_p^\times$ ($N \le 200 < 998244353$).
+- **Postconditions (Output)**: Returns $[u^N]\big((1 - u^2)^{-(M+1)/2} \sum_{j=0}^N T_j \frac{\operatorname{artanh}(u)^j}{j!}\big) \bmod p$.
+- **Time & Space Complexity**: $O(N^2 \log M + N^3)$ time and $O(N^2)$ space.
+- **Loop / Algebraic Invariant**: Because $\prod_{v=0}^M (\cosh z + x^v \sinh z)\big|_{z = \operatorname{artanh}(u)} = (1 - u^2)^{-(M+1)/2} \prod_{v=0}^M (1 + x^v u)$, multiplying by $(1 - u^2)^{-(M+1)/2}$ produces $\prod_{v=0}^M \frac{1 + x^v u}{1 - u^2}$, whose $[x^X u^N]$ coefficient is the exact count of $N$-element multisets in $[0, M]$ with XOR $X$.
+- **Failure Modes & Edge Cases**: Because $M < 2^{30}$ can be much larger than $N \le 200$, when computing the generalized binomial coefficients of $(1 - u^2)^{-(M+1)/2}$, reduce the exponent $(M + 1) \bmod p$ before multiplying rising factorial terms, and ensure $2^{-1} \bmod p$ is used when halving $(M + 1)$ in $\mathbb{F}_p$.
+
+</details>
+
+::: {.callout-note}
+### Implementation Verification Footnote (Quarantined Research Templates R-07, R-08, R-50, R-51 & R-52)
+
+During the adversarial audit of the preliminary research notes for this chapter, five legacy code snippets were quarantined and replaced by the clean C++ engines in §24.1–§24.4:
+- **R-07 / R-08 (`fwt_or`, `fwt_and`, `fwt_xor`)**: Verified that the butterfly updates in §24.1 (`a[i + j + k] += sgn * a[i + j]` for OR, `a[i + j] += sgn * a[i + j + k]` for AND, and `u + v, u - v` scaled by $2^{-1}$ for XOR) match the exact Zeta, Möbius, and Walsh-Hadamard character matrices.
+- **R-50 (`subset_conv`)**: Re-derived in §24.2 using flat cache-friendly indexing `A[mask * (n + 1) + k]` and explicit rank-cleaning `C_S = [t^{|S|}] C_S(t)` so higher-rank garbage never contaminates subsequent subset convolutions.
+- **R-51 (`sps_ln`, `sps_exp_msb`, `sps_compose`)**: Replaced naive full-rank ODE loops where appropriate with the division-free MSB split (`sps_exp_msb`) and `Elegia`'s Taylor shift pyramid (`sps_compose`) in §24.3, eliminating division preconditions and halving the constant factor.
+- **R-52 (`dgf_exp`, `dgf_ln`)**: Grounded in §24.4 via the completely additive prime-multiplicity derivation $(\vartheta f)(n) = \Omega(n) f(n)$, explicitly guarding $\Omega(1) = 0$ and documenting the characteristic precondition $p > \lfloor \log_2 N \rfloor$.
+:::
+
+---
+
+## What's Next?
+
+With Bitwise FWT, Set Power Series $\mathcal{R}_n$, and the Dirichlet Ring $\mathcal{D}_f$ complete, you have finished all 24 chapters of the core curriculum! Proceed to test your diagnostic mastery without chapter hints in the **[Part VI Blind Checkpoint (CP-VI)](../checkpoints/cp06-part6-trees-qseries-sps-dirichlet.qmd)** and the final **[Multi-Perspective Synthesis Reserve (Syn-01–Syn-14)](../capstones/synthesis-reserve.qmd)**.

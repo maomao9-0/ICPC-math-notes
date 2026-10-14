@@ -1,0 +1,1364 @@
+---
+title: "09 — Causal Recurrences: Semi-Online CDQ Divide-and-Conquer NTT & Full-Online Relaxed Convolution"
+subtitle: "Part III · Online Convolutions, Implicit Inversion & Graph Enumeration"
+---
+
+::: {.callout-note icon=false}
+## Learning Objectives
+
+By the end of this chapter, you will be able to:
+
+1. **Diagnose Causal Contractive Recurrences**: Distinguish shift-invariant linear recurrences solvable offline via $(1 - G(x))^{-1}$ ([Chapter 01](ch01-ring-convolutions-newton-inv.qmd)) from **semi-online non-autonomous recurrences** $f_n = \psi_n\!\left(\sum_{i=0}^{n-1} f_i g_{n-i}\right)$ and **full-online self-referential recurrences** $f_n = \psi_n\!\left(\sum_{i=1}^{n-1} \alpha_i f_i \beta_{n-i} f_{n-i}\right)$.
+2. **Prove Fixed-Point Existence via Formal Valuations**: Formulate causal operators $\Phi : K[[x]] \to K[[x]]$ that are strictly contractive under the valuation metric $d_{\operatorname{val}}(F, G) = 2^{-\operatorname{val}(F - G)}$ and explain why their fixed points $F = \Phi(F)$ are uniquely determined coefficient-by-coefficient.
+3. **Execute Semi-Online CDQ Divide-and-Conquer NTT (`solve(l, r)`)**: Prove the **Lowest Common Ancestor (LCA) Partition Invariant**, trace the recursion on a concrete $N = 4$ example, and extend CDQ NTT to quadratic self-convolutions $F * F$ while avoiding **Failure Mode #13** (the missing factor of $2$ on $l > 0$ cross-terms).
+4. **Master Full-Online 0-Indexed Relaxed Convolution**: Derive van der Hoeven's and Nyaan's $O(N \log^2 N)$ `RelaxedConvolution` engine via the dyadic `lowbit(q + 1)` 2D grid block-tiling decomposition and apply the **3-Step Self-Referential Protocol**.
+5. **Replace Newton Iteration with 10-Line Causal ODE Loops**: Implement online `inv`, `ln`, `exp`, $\sqrt{\cdot}$, $F(x)^\alpha$, and **online Pólya / Euler multiset transforms** (`ABC 230 Ex`) in 10 lines of loop code on top of `RelaxedConvolution`, while respecting characteristic-$p$ division limits ($p > N$).
+:::
+
+---
+
+## 9.1 Causal Contractive Operators on $K[[x]]$
+
+### Concrete Combinatorial Motivation: When Offline Inversion Breaks
+
+In [Chapter 01](ch01-ring-convolutions-newton-inv.qmd), we saw that if a sequence $f_0, f_1, \dots, f_N \in K$ counts sequentially decomposed structures via the shift-invariant linear recurrence
+$$
+f_n = a_n + \sum_{i=0}^{n-1} f_i \, g_{n-i} \qquad (n \ge 0, \quad g_0 = 0),
+$$
+then translating into formal power series yields $F(x) = A(x) + F(x) G(x)$, which we solve **offline in a single pass** as $F(x) = A(x) (1 - G(x))^{-1} \bmod x^{N+1}$ in $O(N \log N)$ time using Newton inversion.
+
+Why does this offline algebraic shortcut work? Because every index $n$ obeys the **exact same linear rule**: the convolution sum $\sum_{i=0}^{n-1} f_i g_{n-i}$ is added directly to $a_n$ without any index-dependent rescaling, non-linear wrapper, or feedback into $g$.
+
+In competitive programming, four common structural twists immediately destroy this shift-invariant linearity while preserving **strict causality** (the property that $f_n$ depends only on earlier terms $f_0, f_1, \dots, f_{n-1}$):
+
+1. **Pointwise Division by $n$ (Formal Integration $\int$)**:
+   In differential equations such as $E'(x) = G'(x) E(x)$ ([Chapter 02](ch02-calculus-frobenius-sparse-ode-newton.qmd)), extracting $[x^{n-1}]$ yields
+   $$
+   e_n = \frac{1}{n} \sum_{i=0}^{n-1} e_i \cdot (n - i) g_{n-i} \qquad (n \ge 1, \quad e_0 = 1).
+   $$
+   Because of the outer $\frac{1}{n}$ factor, we cannot write $E(x)$ as $(1 - \widetilde{G}(x))^{-1}$; each coefficient $e_n$ must be divided by $n$ *before* it can participate in convolution products for $e_{n+1}, \dots, e_N$.
+2. **Non-Autonomous Index Multipliers**:
+   In problems with position-dependent constraints (`ARC 138 E`, `ARC 115 E`), the transition takes the form
+   $$
+   f_n = w_n \sum_{i=0}^{n-1} \alpha_i f_i \, g_{n-i},
+   $$
+   where $w_n$ and $\alpha_i$ are arbitrary sequences depending on the input array at index $n$ and $i$. Multiplying the entire series by $w_n$ pointwise is a Hadamard product $(W \odot ((A \odot F) * G))$, which does not commute with Cauchy multiplication.
+3. **Pointwise $\min / \max$ Envelopes Across Graph Edges**:
+   In time-expanded shortest-path or stochastic control problems (`CF 553E — Kyoya and Train`), a vertex $u$ at time $t$ chooses the best outgoing edge $e = (u, v)$:
+   $$
+   dp[u][t] = \min_{e = (u, v) \in \delta^+(u)} \left\{ c_e + \sum_{s=1}^{T - t} p_{e, s} \, dp[v][t + s] \right\}.
+   $$
+   The outer $\min$ is non-linear: $dp[u][t]$ is not known until all convolutions from later times $t + s$ have been accumulated, and only *after* taking the minimum over all outgoing edges can $dp[u][t]$ be fed back into incoming edges!
+4. **Quadratic or Multi-Branch Self-Referential Convolutions**:
+   In binary tree and permutation decompositions (`CF 438E`, `ABC 222 H`, `UOJ 50`, `AGC 060 D`), both factors of the convolution depend on $f$ itself:
+   $$
+   f_n = \psi_n\!\left( \sum_{i=1}^{n-1} \alpha_i f_i \cdot \beta_{n-i} f_{n-i} \right).
+   $$
+   Here the convolution kernel is not known in advance—it is being constructed on the fly as $f_1, f_2, \dots, f_{n-1}$ are discovered.
+
+### Formal Definition: Strictly Contractive Causal Operators
+
+To unify all four regimes under a single mathematical framework, recall from [Chapter 01](ch01-ring-convolutions-newton-inv.qmd) that the **valuation** $\operatorname{val}(A)$ of a nonzero series $A(x) = \sum_{n \ge 0} a_n x^n \in K[[x]]$ is the smallest index $n$ such that $a_n \neq 0$ (with $\operatorname{val}(0) = +\infty$), and the **ultrametric valuation distance** is
+$$
+d_{\operatorname{val}}(F, G) = 2^{-\operatorname{val}(F - G)}.
+$$
+Two series $F, G \in K[[x]]$ satisfy $\operatorname{val}(F - G) \ge n$ if and only if they agree on their first $n$ coefficients:
+$$
+\operatorname{val}(F - G) \ge n \iff F(x) \equiv G(x) \pmod{x^n} \iff [x^k]F(x) = [x^k]G(x) \;\;\forall\, 0 \le k < n.
+$$
+
+::: {.callout-important icon=false}
+## Definition 9.1 (Strictly Contractive Causal Operator & Fixed-Point Theorem)
+
+Let $K$ be any commutative ring. A map $\Phi : K[[x]] \to K[[x]]$ (not necessarily $K$-linear!) is called a **strictly contractive causal operator** if for all $F, G \in K[[x]]$ with $F \neq G$,
+$$
+\operatorname{val}\!\big(\Phi(F) - \Phi(G)\big) > \operatorname{val}(F - G),
+$$
+or equivalently, in the valuation metric, $d_{\operatorname{val}}(\Phi(F), \Phi(G)) \le \frac{1}{2} d_{\operatorname{val}}(F, G)$.
+
+**Coefficient Characterization**: $\Phi$ is strictly contractive and causal if and only if for every integer $n \ge 0$, there exists a function $\Phi_n : K^n \to K$ such that the $n$-th coefficient of $\Phi(F)$ depends **solely** on the strictly earlier coefficients $(f_0, f_1, \dots, f_{n-1})$:
+$$
+[x^n]\Phi(F) = \Phi_n(f_0, f_1, \dots, f_{n-1}).
+$$
+*(For $n = 0$, $\Phi_0()$ is a constant in $K$ independent of $F$.)*
+
+**Theorem (Causal Fixed-Point Uniqueness)**: Every strictly contractive causal operator $\Phi : K[[x]] \to K[[x]]$ possesses a **unique** fixed point $F^*(x) = \sum_{n \ge 0} f_n^* x^n \in K[[x]]$ satisfying $F^* = \Phi(F^*)$. Its coefficients are uniquely determined in causal order $n = 0, 1, 2, \dots$ by
+$$
+f_0^* = \Phi_0(), \qquad f_n^* = \Phi_n(f_0^*, f_1^*, \dots, f_{n-1}^*) \quad (n \ge 1).
+$$
+:::
+
+**Proof of Theorem 9.1**:
+We verify existence and uniqueness by induction on $n \ge 0$:
+
+1. For $n = 0$, if $F = \Phi(F)$, extracting $[x^0]$ yields $f_0 = [x^0]\Phi(F) = \Phi_0()$, which uniquely fixes $f_0^*$.
+2. Suppose $f_0^*, f_1^*, \dots, f_{n-1}^*$ are uniquely determined by the condition $F(x) \equiv \Phi(F)(x) \pmod{x^n}$. Then for any series $F$ matching these first $n$ coefficients, the $n$-th coefficient of $\Phi(F)$ is $[x^n]\Phi(F) = \Phi_n(f_0^*, \dots, f_{n-1}^*)$. Thus $f_n = [x^n]F$ equals $[x^n]\Phi(F)$ if and only if $f_n = \Phi_n(f_0^*, \dots, f_{n-1}^*)$, completing the induction. $\blacksquare$
+
+### The Causal Convolution Landscape: Semi-Online vs. Full-Online
+
+Theorem 9.1 guarantees that we can always compute $f_0^*, f_1^*, \dots, f_N^*$ sequentially. However, if each evaluation of $\Phi_n(f_0, \dots, f_{n-1})$ requires summing a convolution $\sum_{i=0}^{n-1} a_i b_{n-i}$ of length $n$, then evaluating $\Phi_0, \Phi_1, \dots, \Phi_N$ naively costs $\sum_{n=1}^N O(n) = O(N^2)$ operations.
+
+To accelerate this from $O(N^2)$ to $O(N \log^2 N)$, we classify causal convolution recurrences by **what is known before the recursion begins**:
+
+| Regime | Canonical Recurrence Form | What Is Known Offline? | Algorithmic Engine | Time & Space |
+| :--- | :--- | :--- | :--- | :--- |
+| **Offline Linear** ([Ch 01](ch01-ring-convolutions-newton-inv.qmd)) | $f_n = a_n + \sum_{i=0}^{n-1} f_i g_{n-i}$ | Kernel $g_{1 \dots N}$ and $a_{0 \dots N}$; no wrapper $\psi_n$ | Polynomial Inversion $A(x)(1 - G(x))^{-1}$ | $O(N \log N)$ time, $O(N)$ space |
+| **Semi-Online Causal** (§9.2) | $f_n = \psi_n\!\left(\sum_{i=0}^{n-1} \alpha_i(f_i) \, g_{n-i}\right)$ | Right factor $g_{1 \dots N}$ is **fully known in advance**; left factor $\alpha_i(f_i)$ is revealed at step $i$ | **CDQ Divide-and-Conquer NTT** (`solve(l, r)`) | $O(N \log^2 N)$ time, $O(N)$ space |
+| **Full-Online Causal** (§9.3–§9.4) | $f_n = \psi_n\!\left(\sum_{i=1}^{n-1} \alpha_i(f_i) \, \beta_{n-i}(f_{n-i})\right)$ | **Neither factor** is known in advance; $\alpha_q, \beta_q$ arrive dynamically at step $q$ | **Hoeven / Nyaan `RelaxedConvolution`** (`rc.next(a_q, b_q)`) or Self-CDQ NTT | $O(N \log^2 N)$ time, $O(N)$ space |
+
+::: {.callout-tip icon=false}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: Routing Causal Recurrences
+
+- **Diagnostic Signal**: You have derived a 1D (or graph-indexed) recurrence for $f_n$ ($0 \le n \le N \le 2.5 \times 10^5$) whose inner loop is a Cauchy sum $\sum_{i=0}^{n-1} A_i B_{n-i}$ (where $(i) + (n - i) = n$), **and** at least one of $A_i, B_{n-i}$ depends on $f$ itself while an outer operation $\psi_n$ (division by $n$, multiplication by $w_n$, $\min/\max$, or square/exponential wrapper) prevents factoring $(1 - G(x))$ out of $F(x)$.
+- **Reverse-Engineering Scratchpad**:
+  1. **Verify the Valuation Gap ($\operatorname{val} \ge 1$)**: Check that computing $f_n$ only requires $A_i$ for $i < n$ and $B_j$ for $j < n$ (or $B_{n-i}$ with $n - i \ge 1$ when $B$ is a known kernel $g$). If $i = n$ ($j = 0$) appears on the right-hand side, move the $j = 0$ term $A_n B_0$ to the left-hand side and solve for $f_n$ algebraically before proceeding!
+  2. **Check Factor Availability**:
+     - Is one of the two arrays ($B_k = g_k$ for $1 \le k \le N$) **completely fixed before the DP starts**? If yes, reach for **Semi-Online CDQ Divide-and-Conquer NTT** (§9.2): at node $[l, r]$, the slice $g[1 \dots r-l]$ is immediately available to convolve against the finalized left half $A[l \dots m]$.
+     - Do **both** arrays $A_i$ and $B_j$ depend on $f$ (or are you chaining two or more causal convolutions in sequence, as in $B = W \cdot \exp(G)$)? If yes, reach for **0-Indexed `RelaxedConvolution`** (§9.3): instantiate one `RelaxedConvolution` object per bilinear product and step $q = 0, 1, \dots, N$ in a simple `for` loop!
+:::
+
+---
+
+## 9.2 Semi-Online CDQ Divide-and-Conquer NTT (`solve(l, r)`)
+
+### The Divide-and-Conquer Strategy for Causal Transfers
+
+Suppose we want to compute $f_0, f_1, \dots, f_{N-1}$ governed by the semi-online recurrence
+$$
+f_n = \psi_n(S_n), \qquad S_n = \sum_{i=0}^{n-1} \alpha_i(f_i) \, g_{n-i} \qquad (0 \le n < N),
+$$
+where the kernel $g_1, g_2, \dots, g_{N-1} \in K$ is given offline, and for each index $n$, once the accumulator $S_n$ has received all contributions from $0 \le i < n$, we can evaluate $f_n = \psi_n(S_n)$ and $\alpha_n(f_n)$ in $O(1)$ time.
+
+How can we batch the $O(N^2)$ pairwise transfers $(i, n)$ with $0 \le i < n < N$ into fast polynomial multiplications without violating causality? We use **CDQ Divide-and-Conquer** on the index interval $[l, r]$:
+
+1. **Base Case ($l = r$)**: When the recursion reaches a single index $l$, we require the invariant that the accumulator $S_l$ has **already received** the contributions $\alpha_i(f_i) g_{l - i}$ from every $0 \le i < l$. We then finalize $f_l \gets \psi_l(S_l)$ in $O(1)$ time.
+2. **Recursive Case ($l < r$)**: Let $m = \lfloor (l + r) / 2 \rfloor$ split $[l, r]$ into a left half $[l, m]$ and a right half $[m + 1, r]$:
+   - **Step 1 (Solve Left Half)**: Recursively call `solve(l, m)`. By causality, no index in $[m + 1, r]$ can ever influence $[l, m]$. Thus, when `solve(l, m)` returns, every $f_i$ (and $\alpha_i(f_i)$) for $l \le i \le m$ is **100% finalized**.
+   - **Step 2 (Cross-Boundary NTT Transfer $[l, m] \to [m + 1, r]$)**: We must now transfer the causal contribution of every finalized left index $i \in [l, m]$ to every pending right index $j \in [m + 1, r]$. Notice that for $i \in [l, m]$ and $j \in [m + 1, r]$, the lag $k = j - i$ satisfies
+     $$
+     1 \le j - m \le k = j - i \le r - l.
+     $$
+     Define two polynomials of degrees $m - l$ and $r - l$ respectively:
+     $$
+     A_{[l, m]}(x) = \sum_{i=l}^{m} \alpha_i(f_i) \, x^{i - l}, \qquad B_{[1, r - l]}(x) = \sum_{k=1}^{r - l} g_k \, x^k.
+     $$
+     Multiply $C(x) = A_{[l, m]}(x) \cdot B_{[1, r - l]}(x)$ using a single NTT of length $L = 2^{\lceil \log_2(m - l + r - l + 1) \rceil} \le 4(r - l)$. For each $j \in [m + 1, r]$, the coefficient of $x^{j - l}$ in $C(x)$ is
+     $$
+     [x^{j - l}] C(x) = \sum_{\substack{l \le i \le m \\ 1 \le k \le r - l \\ (i - l) + k = j - l}} \alpha_i(f_i) \, g_k = \sum_{i=l}^{m} \alpha_i(f_i) \, g_{j - i}.
+     $$
+     Adding $[x^{j - l}] C(x)$ to $S_j$ for each $j = m + 1, \dots, r$ simultaneously delivers all transfers from $[l, m]$ to $[m + 1, r]$!
+   - **Step 3 (Solve Right Half)**: Recursively call `solve(m + 1, r)`.
+
+### Proof of Correctness: The LCA Partition Invariant
+
+Why does this three-step recursion add every causal pair $(i, j)$ with $0 \le i < j < N$ to $S_j$ **exactly once**, and always *before* the base case `solve(j, j)` is executed?
+
+::: {.callout-note icon=false}
+## Theorem 9.2 (The LCA Partition Invariant of CDQ NTT)
+
+Consider the binary recursion tree $\mathcal{T}$ of intervals $[l, r]$ generated by `solve(0, N - 1)` with midpoint $m = \lfloor (l + r) / 2 \rfloor$. For every ordered pair of indices $(i, j)$ with $0 \le i < j < N$:
+
+1. **Unique LCA Node**: There exists a **unique** internal node $[l, r] \in \mathcal{T}$ with midpoint $m = \lfloor (l + r) / 2 \rfloor$ such that
+   $$
+   l \le i \le m < j \le r.
+   $$
+   Specifically, $[l, r] = \operatorname{LCA}_{\mathcal{T}}(\text{leaf } i, \text{leaf } j)$ is the unique node where leaf $i$ branches into the left child $[l, m]$ and leaf $j$ branches into the right child $[m + 1, r]$.
+2. **Causal In-Order Sequencing**: Because `solve(l, r)` executes in **in-order traversal** (`Left Child` $\to$ `Cross-Transfer` $\to$ `Right Child`), at the moment $[l, r]$ performs its cross-boundary NTT:
+   - The entire subtree of $[l, m]$—including leaf `[i, i]`—has already finished, so $\alpha_i(f_i)$ holds its final value.
+   - The entire subtree of $[m + 1, r]$—including leaf `[j, j]`—has not yet begun, so the contribution $\alpha_i(f_i) g_{j - i}$ arrives in $S_j$ strictly before leaf `[j, j]` finalizes $f_j = \psi_j(S_j)$.
+:::
+
+```{mermaid}
+flowchart TD
+    N03["Node [0, 3], m = 1: Transfers {0,1} -> {2,3} (4 pairs)"]
+    N01["Node [0, 1], m = 0: Transfers {0} -> {1} (1 pair)"]
+    N23["Node [2, 3], m = 2: Transfers {2} -> {3} (1 pair)"]
+    L0["Leaf [0, 0]: Finalize f_0"]
+    L1["Leaf [1, 1]: Finalize f_1"]
+    L2["Leaf [2, 2]: Finalize f_2"]
+    L3["Leaf [3, 3]: Finalize f_3"]
+
+    N03 -->|"1. Recurse Left"| N01
+    N03 -->|"3. Recurse Right (after [0,1]->[2,3] NTT)"| N23
+    N01 -->|"1a. Left"| L0
+    N01 -->|"1c. Right (after [0]->[1] NTT)"| L1
+    N23 -->|"3a. Left"| L2
+    N23 -->|"3c. Right (after [2]->[3] NTT)"| L3
+```
+
+### Hand-Checkable Concrete Trace ($N = 4$)
+
+Let us trace `solve(0, 3)` on the concrete non-autonomous recurrence
+$$
+f_n = (n + 1) + \sum_{i=0}^{n-1} i f_i \, g_{n-i} + \sum_{i=0}^{n-1} f_i \, g_{n-i} = (n + 1) + \sum_{i=0}^{n-1} (i + 1) f_i \, g_{n-i} \qquad (0 \le n \le 3),
+$$
+with kernel $g_1 = 2, g_2 = 1, g_3 = 3$. Here $\alpha_i(f_i) = (i + 1) f_i$ and $\psi_n(S_n) = (n + 1) + S_n$. Initially $S = [0, 0, 0, 0]$.
+
+| Step | Active Node & Action | Polynomials Multiplied / Base Update | State of Accumulator $S = [S_0, S_1, S_2, S_3]$ & Finalized $f_i, \alpha_i$ | Causal Pairs $(i \to j)$ Delivered |
+| :-: | :--- | :--- | :--- | :--- |
+| **1** | **Leaf `[0, 0]`**: Base case | $f_0 = 1 + S_0 = 1$, $\alpha_0 = 1 \cdot f_0 = 1$ | $S = [0, 0, 0, 0]$; $f_0 = 1, \alpha_0 = 1$ | — |
+| **2** | **Node `[0, 1]`** ($m=0$): Transfer $\{0\} \to \{1\}$ | $A_{[0,0]}(x) = 1$, $B_{[1,1]}(x) = 2x \implies C(x) = 2x$; add $[x^1]C = 2$ to $S_1$ | $S = [0, \mathbf{2}, 0, 0]$ | $(0 \to 1)$ |
+| **3** | **Leaf `[1, 1]`**: Base case | $f_1 = 2 + S_1 = 4$, $\alpha_1 = 2 \cdot f_1 = 8$ | $S = [0, 2, 0, 0]$; $f_1 = 4, \alpha_1 = 8$ | — |
+| **4** | **Node `[0, 3]`** ($m=1$): Transfer $\{0, 1\} \to \{2, 3\}$ | $A_{[0,1]}(x) = 1 + 8x$, $B_{[1,3]}(x) = 2x + x^2 + 3x^3 \implies C(x) = 2x + 17x^2 + 11x^3 + 24x^4$; add $[x^2]C = 17$ to $S_2$ and $[x^3]C = 11$ to $S_3$ | $S = [0, 2, \mathbf{17}, \mathbf{11}]$ | $(0 \to 2), (1 \to 2), (0 \to 3), (1 \to 3)$ |
+| **5** | **Leaf `[2, 2]`**: Base case | $f_2 = 3 + S_2 = 20$, $\alpha_2 = 3 \cdot f_2 = 60$ | $S = [0, 2, 17, 11]$; $f_2 = 20, \alpha_2 = 60$ | — |
+| **6** | **Node `[2, 3]`** ($m=2$): Transfer $\{2\} \to \{3\}$ | $A_{[2,2]}(x) = 60$, $B_{[1,1]}(x) = 2x \implies C(x) = 120x$; add $[x^{3-2}]C = 120$ to $S_3$ | $S = [0, 2, 17, \mathbf{131}]$ | $(2 \to 3)$ |
+| **7** | **Leaf `[3, 3]`**: Base case | $f_3 = 4 + S_3 = 135$, $\alpha_3 = 4 \cdot f_3 = 540$ | $S = [0, 2, 17, 131]$; $f_3 = 135$ | — |
+
+**Hand-Check Verification**: All $\binom{4}{2} = 6$ causal pairs $(i, j)$ with $0 \le i < j \le 3$ are delivered across Steps 2, 4, and 6 ($1 + 4 + 1 = 6$), and $f_3 = 4 + 1 \cdot 1 \cdot 3 + 2 \cdot 4 \cdot 1 + 3 \cdot 20 \cdot 2 = 4 + 3 + 8 + 120 = 135$ matches!
+
+::: {.callout-note icon=false}
+## Algorithm Contract: Semi-Online CDQ Divide-and-Conquer NTT (`solve(l, r)`)
+
+- **Input & Index Boundaries**: Integer $N \ge 1$, known kernel array $g[1 \dots N-1] \in K^{N-1}$ (with $g_0 = 0$), and $O(1)$ callbacks $\psi_n(S_n)$ and $\alpha_n(f_n)$ on the $0$-indexed domain $[0, N-1]$.
+- **Preconditions**: Strict causality ($k = j - i \ge 1$, so $g_0 = 0$); any $k = 0$ term must be absorbed into $\psi_n$ beforehand. $K = \mathbb{F}_p$ is an NTT-friendly prime field (or $\mathbb{C}$ for FFT).
+- **Postconditions**: Upon termination of `solve(0, N - 1)`, $S[n] = \sum_{i=0}^{n-1} \alpha_i(f_i) g_{n-i}$ and $f[n] = \psi_n(S[n])$ are finalized for all $0 \le n \le N - 1$.
+- **Complexity**: At depth $d \in [0, \lceil \log_2 N \rceil]$, there are $2^d$ nodes of length $L \approx N / 2^d$, each performing one convolution of size $\le 2L$ in $O(L \log L)$ time. Summing across all $\log_2 N$ levels gives
+  $$
+  T(N) = 2 T(N / 2) + O(N \log N) = O(N \log^2 N) \text{ time}, \qquad O(N) \text{ space}.
+  $$
+- **1-Sentence Recursion Invariant**: Upon entry to `solve(l, r)`, the accumulator $S[j]$ for every $j \in [l, r]$ already contains the exact sum of all causal contributions $\alpha_i(f_i) g_{j-i}$ from indices $i \in [0, l - 1]$.
+- **Core Loop Snippet**:
+```cpp
+auto solve = [&](auto& self, int l, int r) -> void {
+    if (l == r) { f[l] = psi(l, S[l]); alpha[l] = get_alpha(l, f[l]); return; }
+    int m = (l + r) >> 1;
+    self(self, l, m);
+    Poly A(alpha.begin() + l, alpha.begin() + m + 1), B(g.begin(), g.begin() + (r - l) + 1);
+    Poly C = multiply(A, B); // g[0] = 0
+    for (int j = m + 1; j <= r; ++j) S[j] = (S[j] + C[j - l]) % MOD;
+    self(self, m + 1, r);
+};
+```
+:::
+
+### Extending CDQ NTT to Self-Convolution $C = F * F$ & Failure Mode #13
+
+What if the recurrence is **self-referential**, such as $f_n = \psi_n\!\left(\sum_{i=1}^{n-1} \alpha_i(f_i) \, \beta_{n-i}(f_{n-i})\right)$ where **both** factors $\alpha_i$ and $\beta_{n-i}$ are unknown until step $i$ and $n - i$?
+
+Suppose we pad $N$ to a power of $2$ so every CDQ node $[l, r]$ is a dyadic interval $[k \cdot 2^s, (k + 1) 2^s - 1]$ of length $2^s$ with midpoint $m = l + 2^{s-1} - 1$. Consider an ordered pair of positive indices $(i, j)$ with $i \ge 1, j \ge 1$ contributing $\alpha_i \beta_j$ to target index $n = i + j \in [m + 1, r]$. Which index is finalized *later*—$i$ or $j$?
+
+- **Case 1: The Root Left-Aligned Node ($l = 0$)**.
+  Here $[l, m] = [0, 2^{s-1} - 1]$ and $[m + 1, r] = [2^{s-1}, 2^s - 1]$. For any $n \in [m + 1, r]$, if both $i \le m$ and $j \le m$, then **both** $i$ and $j$ belong to $[0, m]$! Therefore, convolving $\alpha[0 \dots m]$ with $\beta[0 \dots m]$ once at node $[0, r]$ accounts for every pair $(i, j) \in [1, m] \times [1, m]$ summing to $n \in [m + 1, r]$ (including both $(i, j)$ and $(j, i)$ when $i \neq j$, and the diagonal $(i, i)$ once).
+- **Case 2: Interior Dyadic Nodes ($l > 0$)**.
+  Since $[l, r] = [k \cdot 2^s, (k + 1) 2^s - 1]$ with $k \ge 1$, we have $l = k \cdot 2^s \ge 2^s = r - l + 1$, so
+  $$
+  r - l < l.
+  $$
+  Now suppose $i + j = n \in [m + 1, r]$ where at least one of $i, j$ lies in $[l, m]$. If $i \in [l, m]$, then the partner index $j = n - i$ satisfies
+  $$
+  1 \le (m + 1) - m \le j = n - i \le r - l < l.
+  $$
+  Thus $j \in [1, r - l]$ lies **strictly to the left of $l$**! Because $[l, m]$ and $[1, r - l]$ are **disjoint**, an unordered pair $\{i, j\}$ with $i \in [l, m]$ and $j \in [1, r - l]$ corresponds to **two** ordered terms in $\sum_{a+b=n} \alpha_a \beta_b$:
+  1. $(a, b) = (i, j)$ with $a \in [l, m], b \in [1, r - l]$: contributed by $\alpha[l \dots m] * \beta[1 \dots r - l]$.
+  2. $(a, b) = (j, i)$ with $a \in [1, r - l], b \in [l, m]$: contributed by $\beta[l \dots m] * \alpha[1 \dots r - l]$.
+
+::: {.callout-warning icon=false}
+## Failure Mode #13: The Self-Convolution CDQ Symmetry Bug (`l == 0` vs. `l > 0` Missing Factor of 2)
+
+**The Bug**: When solving a symmetric self-convolution $S_n = \sum_{i=1}^{n-1} f_i f_{n-i}$ ($\alpha = \beta = f$, with $f_0 = 0$) via CDQ NTT, a common mistake is to write `C = multiply(f[l..m], f[0..r-l])` and add `C[j - l]` to `S[j]` at every node $[l, r]$. This produces the correct values at $l = 0$ (where `f[0..m] * f[0..m]` naturally includes both $(i, k)$ and $(k, i)$), but **under-counts every $l > 0$ transfer by a factor of $2$**!
+
+**Why It Happens**: For $l > 0$, `f[l..m]` contains indices $a \in [l, m]$, whereas `f[0..r-l]` contains indices $b \in [0, r-l]$. Because $r - l < l$ on a dyadic grid, the two index ranges $[l, m]$ and $[0, r-l]$ are **completely disjoint**! Convolving `f[l..m]` with `f[0..r-l]` only counts ordered pairs $(a, b)$ where the *first* index is in $[l, m]$ and the *second* is in $[0, r-l]$, completely omitting the symmetric ordered pair $(b, a)$ where the first index is in $[0, r-l]$ and the second is in $[l, m]$.
+
+**The 1-Line Remedy**:
+- Always pad the CDQ domain to $[0, 2^K - 1]$ so $r - l < l$ holds at every node with $l > 0$.
+- For **symmetric** self-convolution ($\alpha = \beta = f$, $f_0 = 0$), at $l = 0$ convolve `f[0..m] * f[0..m]` with weight `1`, and at $l > 0$ convolve `f[l..m] * f[0..r-l]` with weight **`2`**:
+```cpp
+Poly A(f.begin() + l, f.begin() + m + 1);
+Poly B(f.begin(), f.begin() + (l == 0 ? m : r - l) + 1);
+Poly C = multiply(A, B);
+long long sym = (l == 0 ? 1 : 2);
+for (int j = m + 1; j <= r; ++j)
+    S[j] = (S[j] + sym * C[j - l]) % MOD;
+```
+- For **asymmetric** bilinear products ($\alpha \neq \beta$), at $l = 0$ compute $\alpha[0 \dots m] * \beta[0 \dots m]$, and at $l > 0$ compute $\alpha[l \dots m] * \beta[0 \dots r - l] + \beta[l \dots m] * \alpha[0 \dots r - l]$.
+:::
+
+---
+
+## 9.3 Full-Online 0-Indexed Relaxed Convolution (van der Hoeven / Nyaan)
+
+### Why Stateless Online Engines Beat Tangled CDQ Trees
+
+While self-convolution CDQ NTT (§9.2) works well for a single quadratic equation like $F' = \frac{1}{2} A F^2 + 1$, what happens when a problem chains **two or more** causal products together—such as $B(x) = W(x) E(x)$ coupled with $E'(x) = G'(x) E(x)$ in `ABC 230 Ex` (§9.4), or $F(x) = 1 + \frac{x}{6}\big(F(x) \cdot (F(x)^2 + 3F(x^2)) + 2F(x^3)\big)$ in `LOJ 6538`?
+
+With recursive CDQ, chaining two products requires interleaving multiple `solve(l, r)` functions and manually tracking which cross-terms $l = 0$ vs. $l > 0$ have been doubled. In 1997, Joris van der Hoeven discovered **Relaxed Convolution** (popularized in competitive programming by `Nyaan` and `maspy`), which encapsulates the entire dyadic block schedule inside a **stateful streaming object**:
+
+- At each step $q = 0, 1, 2, \dots$, you push the newly discovered pair $(a_q, b_q)$ into `rc.next(a_q, b_q)`, and it **immediately returns** the exact $q$-th convolution coefficient
+  $$
+  c_q = \sum_{i=0}^{q} a_i \, b_{q - i}.
+  $$
+Because `rc.next(a_q, b_q)` is called inside a plain `for (int q = 0; q <= N; ++q)` loop, you can instantiate as many `RelaxedConvolution` objects as you want (`rc1`, `rc2`, `rc3`) and pipe the output of one directly into the input of the next!
+
+### The 2D Grid Block-Tiling Decomposition (`d = lowbit(q)`)
+
+How can `rc.next(a_q, b_q)` compute $c_q = \sum_{i+j=q} a_i b_j$ on the fly in $O(N \log^2 N)$ total time?
+
+Consider the infinite quarter-plane grid $\mathbb{Z}_{\ge 0} \times \mathbb{Z}_{\ge 0}$ of index pairs $(i, j)$. At step $q = 0$, $c_0 = a_0 b_0$. For every step $q \ge 1$, the anti-diagonal $i + j = q$ splits cleanly into:
+- **Two border cells** $(q, 0)$ and $(0, q)$, which contribute $a_q b_0 + a_0 b_q$ and are added **directly in $O(1)$ time** at step $q$; and
+- **The positive interior grid** $(i, j) \in \mathbb{Z}_{\ge 1} \times \mathbb{Z}_{\ge 1}$, which we partition into dyadic $d \times d$ blocks triggered at step $q \ge 1$ according to $d = \operatorname{lowbit}(q) = q \ \& \ -q = 2^k$ (the largest power of $2$ dividing $q$):
+
+1. **Power-of-Two Steps ($q = d = 2^k$, i.e., $q = 1, 2, 4, 8, 16, \dots$)**:
+   Convolve the single $d \times d$ square block on the main interior diagonal:
+   $$
+   A[1 \dots d] \times B[1 \dots d],
+   $$
+   and accumulate all terms with index sum $i + j > q$ into $c[q + 1 \dots 2q]$.
+2. **Off-Diagonal Interior Steps ($d < q$, i.e., $q = m \cdot d$ with $m \ge 3$ odd)**:
+   Convolve the **two** symmetric $d \times d$ off-diagonal blocks:
+   $$
+   \text{Block 1: } A[q - d + 1 \dots q] \times B[d \dots 2d - 1], \qquad \text{Block 2: } A[d \dots 2d - 1] \times B[q - d + 1 \dots q],
+   $$
+   and accumulate both products into $c[q + 1 \dots q + 2d - 1]$.
+
+::: {.callout-important icon=false}
+## Crucial Subtlety: Why Separating Border Cells (`i = 0`, `j = 0`) + Interior `lowbit(q)` Beats Pure 0-Indexed `lowbit(q + 1)`
+
+Why do we separate the border terms $a_q b_0 + a_0 b_q$ in $O(1)$ and apply $d = \operatorname{lowbit}(q)$ to the $1$-indexed interior $\mathbb{Z}_{\ge 1} \times \mathbb{Z}_{\ge 1}$, rather than applying a single $d = \operatorname{lowbit}(q + 1)$ block rule directly to the $0$-indexed grid $\mathbb{Z}_{\ge 0} \times \mathbb{Z}_{\ge 0}$?
+
+1. **No Missing Corner Cells**: On an unshifted $0$-indexed grid, triggering only a single block size $d = \operatorname{lowbit}(q + 1)$ at step $q = 5$ ($q + 1 = 6, d = 2$) would convolve $A[4 \dots 5] \times B[1 \dots 2]$, missing the border cell $(5, 0)$ because $5 + 1 = 6$ is divisible by $2^1$ whereas $0 + 1 = 1$ is only divisible by $2^0$! Separating the $i = 0$ and $j = 0$ borders in $O(1)$ shifts the interior to $(i, j) \ge (1, 1)$, so every step $q \ge 1$ needs **only a single block size $d = \operatorname{lowbit}(q)$** ($1$ convolution if $d = q$, or $2$ convolutions if $d < q$).
+2. **Built-In Self-Referential Causality**: Because the interior blocks at step $q$ convolve $A[q - d + 1 \dots q]$ with $B[d \dots 2d - 1]$, the **minimum sum of indices** in any interior block triggered at step $q$ is
+   $$
+   (q - d + 1) + d = q + 1 > q.
+   $$
+   Consequently, **every interior pair $(i, j) \in \mathbb{Z}_{\ge 1}^2$ with $i + j = q$ was ALREADY accumulated into $c_q$ during steps $1, 2, \dots, q - 1$!** At step $q$, the only terms missing from $c_q = \sum_{i=0}^q a_i b_{q-i}$ are the two border terms $a_0 b_q + a_q b_0$!
+:::
+
+Let us verify this on the interior grid $(i, j) \in \mathbb{Z}_{\ge 1} \times \mathbb{Z}_{\ge 1}$, where each cell $(i, j)$ shows the exact step $q = \text{step}(i, j)$ at which `d = lowbit(q)` computes $a_i b_j$ and adds it to $c_{i+j}$:
+
+```text
+Interior Grid (i >= 1, j >= 1) showing step q where a_i * b_j is accumulated (d = lowbit(q)):
+      j=1   j=2   j=3   j=4   j=5   j=6   j=7   j=8
+i=1 | q=1 | q=2 | q=3 | q=4 | q=5 | q=6 | q=7 | q=8 |
+i=2 | q=2 | q=2 | q=4 | q=4 | q=6 | q=6 | q=8 | q=8 |
+i=3 | q=3 | q=4 | q=4 | q=4 | q=6 | q=6 | q=8 | q=8 |
+i=4 | q=4 | q=4 | q=4 | q=4 | q=8 | q=8 | q=8 | q=8 |
+i=5 | q=5 | q=6 | q=6 | q=8 | q=8 | q=8 | q=8 | q=8 |
+i=6 | q=6 | q=6 | q=6 | q=8 | q=8 | q=8 | q=8 | q=8 |
+i=7 | q=7 | q=8 | q=8 | q=8 | q=8 | q=8 | q=8 | q=8 |
+i=8 | q=8 | q=8 | q=8 | q=8 | q=8 | q=8 | q=8 | q=8 |
+```
+
+Let us prove why this interior grid partitions $\mathbb{Z}_{\ge 1} \times \mathbb{Z}_{\ge 1}$ with zero omissions and zero duplicates, and why $\text{step}(i, j) < i + j$ for every $(i, j) \in \mathbb{Z}_{\ge 1}^2$:
+
+::: {.callout-note icon=false}
+## Theorem 9.3 (Exact Partition & Strict Causality of `lowbit(q)` Relaxed Convolution)
+
+For every integer $q \ge 1$ with $d = \operatorname{lowbit}(q)$:
+- If $d = q$, define $\mathcal{B}_q = [1, d] \times [1, d]$.
+- If $d < q$, define $\mathcal{B}_q = \big([q - d + 1, q] \times [d, 2d - 1]\big) \cup \big([d, 2d - 1] \times [q - d + 1, q]\big)$.
+
+Then:
+1. **Exact Partition**: The sets $\{\mathcal{B}_q\}_{q \ge 1}$ are pairwise disjoint and their union is all of $\mathbb{Z}_{\ge 1} \times \mathbb{Z}_{\ge 1}$.
+2. **Availability**: Every $(i, j) \in \mathcal{B}_q$ satisfies $\max(i, j) \le q$, so $a_i$ and $b_j$ are known at step $q$.
+3. **Strict Interior Causality**: Every $(i, j) \in \mathcal{B}_q$ satisfies $i + j \ge q + 1$. Consequently, for every $n \ge 1$, the entire interior sum
+   $$
+   c_n^{\text{int}} = \sum_{i=1}^{n-1} a_i \, b_{n - i}
+   $$
+   is **completely accumulated into $c_n$ by the end of step $q = n - 1$**!
+:::
+
+**Proof**:
+1. Given any cell $(i, j) \in \mathbb{Z}_{\ge 1}^2$, let $2^k$ be the unique power of $2$ such that $\min(i, j) \in [2^k, 2^{k+1} - 1]$, and set $d = 2^k$. Let $M = \max(i, j) \ge d$, and let $q = \lceil M / d \rceil \cdot d$ be the smallest multiple of $d$ that is $\ge M$.
+   - If $\operatorname{lowbit}(q) = d$, then $M \in [q - d + 1, q]$ and $\min(i, j) \in [d, 2d - 1]$, so $(i, j)$ belongs to the interior step $\mathcal{B}_q$.
+   - If $\operatorname{lowbit}(q) = 2^r > d$ (which happens if and only if $\lceil M / d \rceil$ is an even multiple of $2^{r-k}$, meaning $M \le q \le 2^r$), then since $M \ge d$, this can only happen when $q = 2^r$ itself and $1 \le i, j \le 2^r$, so $(i, j)$ belongs to the power-of-two square $\mathcal{B}_{2^r}$ (specifically inside $[1, 2^r]^2 \setminus [1, 2^{r-1}]^2$ because $\max(i, j) = M > q - d \ge 2^{r-1}$).
+   Thus every $(i, j) \in \mathbb{Z}_{\ge 1}^2$ belongs to a unique $\mathcal{B}_q$.
+2. By definition of $\mathcal{B}_q$, $\max(i, j) \le q$.
+3. If $d = q$, we only accumulate pairs with $i + j \ge q + 1$ (since any pair in $[1, d]^2$ with $i + j \le q = d$ has $i, j \le d - 1$, and because $d = 2^k \ge 2$ for $i + j \le d$, both $i, j \le 2^{k-1} - 1$ or $(i, j)$ was already covered at $q' = d / 2$!). And if $d < q$, every $(i, j) \in \mathcal{B}_q$ has $i + j \ge (q - d + 1) + d = q + 1$. Thus $\mathcal{B}_q$ only contributes to indices $n = i + j \ge q + 1$. $\blacksquare$
+
+### The 3-Step Self-Referential Protocol & Complete Engine
+
+Because $c_q^{\text{int}} = \sum_{i=1}^{q-1} a_i b_{q-i}$ is **already sitting in `c[q]` before step $q$ begins**, we obtain the universal **3-Step Self-Referential Protocol** at step $q \ge 1$:
+
+1. **Read Interior Sum**: Read `rc.c[q]`, which already equals $\sum_{i=1}^{q-1} a_i b_{q-i}$.
+2. **Resolve Step-$q$ Equations**: Use `rc.c[q]` (together with $a_0, b_0$) to solve for $f_q$, $a_q$, and $b_q$.
+3. **Commit Step $q$ (`rc.next(a_q, b_q)`)**: Call `rc.next(a_q, b_q)`, which adds the border terms $a_q b_0 + a_0 b_q$ to `c[q]`, runs the `lowbit(q)` block convolution(s) to push contributions into $c[q + 1 \dots 2q]$, and returns the finalized $c_q = \sum_{i=0}^q a_i b_{q-i}$!
+
+::: {.callout-note icon=false}
+## Algorithm Contract & Concise Core: `RelaxedConvolution` (van der Hoeven / Nyaan)
+
+- **Input & Index Boundaries**: Online stream of coefficient pairs $(a_q, b_q) \in K^2$ arriving sequentially at $0$-indexed steps $q = 0, 1, \dots, N$.
+- **Preconditions**: Step $q$ is invoked only after steps $0, 1, \dots, q - 1$ have completed; $K = \mathbb{F}_p$ is an NTT-friendly prime field.
+- **Postconditions**: Calling `next(a_q, b_q)` at step $q$ appends $a_q, b_q$, finalizes and returns $c_q = \sum_{i=0}^q a_i b_{q-i}$, and pre-accumulates $\mathcal{B}_q$ into `c[q + 1 .. q + 2d - 1]` so that `c[q + 1]` holds the exact interior sum $\sum_{i=1}^{q} a_i b_{q+1-i}$ prior to step $q + 1$.
+- **Complexity**: Across $N$ calls ($q = 0 \dots N - 1$), for each $d = 2^k \le N$, there are $\lfloor N / d \rfloor$ steps with $\operatorname{lowbit}(q) = d$, each doing $O(d \log d)$ work. Summing over $k = 0 \dots \lfloor \log_2 N \rfloor$ gives
+  $$
+  \sum_{k=0}^{\lfloor \log_2 N \rfloor} \frac{N}{2^k} \cdot O(2^k \log(2^k)) = O(N \log^2 N) \text{ time}, \qquad O(N) \text{ space}.
+  $$
+- **1-Sentence Loop Invariant**: Prior to the $q$-th call `next(a_q, b_q)` ($q \ge 1$), `c[q]` already holds the complete interior convolution sum $c_q^{\text{int}} = \sum_{i=1}^{q-1} a_i b_{q-i}$ from all positive index pairs $(i, j) \in \mathbb{Z}_{\ge 1}^2$ with $i + j = q$.
+
+```cpp
+struct RelaxedConvolution {
+    vector<long long> a, b, c;
+    long long next(long long aq, long long bq) {
+        int q = a.size(), d = q & -q; a.push_back(aq); b.push_back(bq);
+        if ((int)c.size() <= 2 * q + 2) c.resize(2 * q + 3, 0);
+        if (q == 0) return c[0] = aq * bq % MOD;
+        c[q] = (c[q] + aq * b[0] + a[0] * bq) % MOD;
+        auto add = [&](int la, int lb) {
+            Poly P = multiply({a.begin()+la, a.begin()+la+d}, {b.begin()+lb, b.begin()+lb+d});
+            for (int i = 0; i < (int)P.size(); ++i) if (la + lb + i > q) c[la + lb + i] = (c[la + lb + i] + P[i]) % MOD;
+        };
+        if (d == q) add(1, 1); else { add(q - d + 1, d); add(d, q - d + 1); }
+        return c[q];
+    }
+};
+```
+:::
+
+::: {.callout-tip icon=false}
+## Revisited Dual-Perspective Cross-Reference: Online Relaxed Convolution vs. Chapter 10 Newton Iteration
+
+Several landmark problems in Part III admit **dual solutions**—an online $O(N \log^2 N)$ solution using the tools of this chapter, and an offline $O(N \log N)$ Newton solution in [Chapter 10](ch10-implicit-equations-newton-unlabeled-trees-otter.qmd):
+
+1. **`#244` (`yukicoder 3029 — Colored Tree / Cactus Weight`)**:
+   - **Chapter 09 Perspective (Coupled Online Relaxed Convolution in $O(N \log^2 N)$)**: When two or more tree generating functions $(R(x), G(x))$ satisfy a coupled algebraic system $R(x) = x \Phi_1(R(x), G(x))$, $G(x) = x \Phi_2(R(x), G(x))$, the leading factor of $x$ makes the system strictly causal! Chaining `RelaxedConvolution` instances resolves $(r_n, g_n)$ step-by-step in $O(N \log^2 N)$ time with **zero Jacobian matrices** and under 15 lines of loop code.
+   - **Chapter 10 Perspective ($2 \times 2$ Coupled Jacobian Newton Iteration in $O(N \log N)$, `Ch 10.2` & `Ch 10 Int-1`)**: Linearizing the coupled system via the $2 \times 2$ Jacobian matrix $J_F(x)$ and inverting $\det J_F(x)$ halves the constant factor to $O(N \log N)$, which becomes essential when $N \ge 5 \times 10^5$ or when the equation is non-causal.
+2. **`#023` (`AtCoder ABC 230 Ex — Bullion`, `Ch 09 Int-2` vs. `Ch 10.3`)**:
+   - Solved in `Ch 09.4` & `Int-2` in $O(W \log^2 W)$ time via a single `RelaxedConvolution` instance coupled with a $4$-line harmonic divisor loop, and revisited in [Chapter 10.3](ch10-implicit-equations-newton-unlabeled-trees-otter.qmd) via $O(W \log W)$ Pólya–Euler Newton iteration.
+3. **`#249` (`HDU 5322 — Hope`)**:
+   - A non-autonomous DP recurrence with index-dependent multipliers $w_n = n!$ and $(n - i)^2$ where offline Newton inversion is algebraically impossible; Semi-Online CDQ NTT (`solve(l, r)`, §9.2) decouples the source weight from the lag kernel $(n - i)^2$ in $O(N \log^2 N)$ time.
+:::
+
+---
+
+## 9.4 10-Line Online Replacements for `inv`, `ln`, `exp`, and Pólya Euler Transforms
+
+One of the greatest practical payoffs of `RelaxedConvolution` is that **every major power series primitive from Chapters 01–03**—polynomial inversion, logarithm, exponential, square root, arbitrary power, and even coupled Pólya multiset transforms—can be written in **5 to 10 lines of loop code** without a single Newton iteration!
+
+### The Online Differential-Equation Dictionary
+
+Let us derive the exact 1-line `RelaxedConvolution` update for each primitive up to degree $N$:
+
+1. **Online Multiplicative Inverse $F(x) = A(x)^{-1} \bmod x^{N+1}$** (where $a_0 \in K^\times$):
+   Write $A(x) F(x) = 1$. For $q = 0$, $f_0 = a_0^{-1}$. For $q \ge 1$, $[x^q](A \cdot F) = 0 \implies a_0 f_q + a_q f_0 + \sum_{i=1}^{q-1} a_i f_{q-i} = 0$.
+   Equivalently, feed $(a_q, f_{q-1})$ into a shifted product $B(x) = \frac{A(x) - a_0}{x} \cdot F(x)$ where $[x^{q-1}]B = \sum_{i=1}^q a_i f_{q-i}$:
+   $$
+   f_0 = a_0^{-1}, \qquad f_q = -a_0^{-1} \cdot \texttt{rc.next}(a_q,\; f_{q-1}) \quad (q \ge 1).
+   $$
+   *(Why does `rc.next(a_q, f_{q-1})` need zero lookahead? Because at step $m = q - 1 \ge 0$, the inputs are $\tilde{a}_m = a_{m+1} = a_q$ and $f_m = f_{q-1}$, both of which are already known before $f_q$ is computed!)*
+
+2. **Online Exponential $E(x) = \exp(G(x)) \bmod x^{N+1}$** (where $g_0 = 0$ and $p > N$):
+   Differentiating gives $E'(x) = G'(x) E(x)$. Extracting $[x^{q-1}]$ for $q \ge 1$ yields
+   $$
+   q \, e_q = \sum_{i=1}^{q} (i g_i) \, e_{q-i} = [x^{q-1}] \big(G'(x) E(x)\big).
+   $$
+   Notice the index shift! At step $m = q - 1 \ge 0$, $[x^m] G'(x) = (m + 1) g_{m+1} = q g_q$ and $[x^m] E(x) = e_m = e_{q-1}$ are **both already known**! Thus:
+   $$
+   e_0 = 1, \qquad e_q = \frac{1}{q} \cdot \texttt{rc.next}(q \cdot g_q,\; e_{q-1}) \quad (1 \le q \le N).
+   $$
+
+3. **Online Logarithm $L(x) = \ln F(x) \bmod x^{N+1}$** (where $f_0 = 1$ and $p > N$):
+   From $L'(x) F(x) = F'(x)$, write $L'(x) = F'(x) - L'(x) (F(x) - 1)$. Extracting $[x^{q-1}]$ for $q \ge 1$ gives
+   $$
+   q \, \ell_q = q \, f_q - \sum_{i=1}^{q-1} (i \ell_i) \, f_{q-i} \implies \ell_q = f_q - \frac{1}{q} \cdot \texttt{rc.next}((q - 1)\ell_{q-1},\; f_q) \quad (q \ge 1, \text{ with } \ell_0 = 0).
+   $$
+
+4. **Online Square Root $S(x) = \sqrt{F(x)} \bmod x^{N+1}$** (where $f_0 = 1$ and $\operatorname{char}(K) \neq 2$):
+   Write $S(x) = 1 + T(x)$ with $T(0) = 0$. Then $F(x) = S(x)^2 = 1 + 2T(x) + T(x)^2 \implies 2 t_q = f_q - [x^q] T(x)^2$. Since $t_0 = 0$, at step $q \ge 1$ the interior sum $\sum_{i=1}^{q-1} t_i t_{q-i}$ is already in `rc.c[q]`, and the border terms $2 t_0 t_q = 0$ vanish! Thus:
+   $$
+   s_0 = 1, \qquad s_q = \frac{f_q - \texttt{rc.c}[q]}{2}, \qquad \texttt{rc.next}(s_q,\; s_q) \quad (q \ge 1, \text{ initialized with } \texttt{rc.next}(0, 0)).
+   $$
+
+5. **Online Power $H(x) = F(x)^\alpha \bmod x^{N+1}$** (where $f_0 = 1$ and $p > N$):
+   From $F(x) H'(x) = \alpha F'(x) H(x)$, rewrite as $H'(x) = \alpha F'(x) H(x) - \frac{F(x) - 1}{x} \cdot x H'(x)$, or chain Online $\ln$ into Online $\exp$ in two lines!
+
+| Operator | Differential / Algebraic Identity | 1-Line Update at Step $q = 1, 2, \dots, N$ (Index $m = q - 1$) | Characteristic Requirement |
+| :--- | :--- | :--- | :--- |
+| **`inv`** ($F = A^{-1}$, $a_0 = 1$) | $F = 1 - \frac{A - 1}{x} \cdot x F$ | `f[q] = (MOD - rc.next(a[q], f[q - 1])) % MOD;` | Any commutative ring $K$ ($a_0 \in K^\times$) |
+| **`exp`** ($E = \exp G$, $g_0 = 0$) | $E' = G' E$ | `e[q] = rc.next(q * g[q] % MOD, e[q - 1]) * inv[q] % MOD;` | $p > N$ ($1, \dots, N \in K^\times$) |
+| **`ln`** ($L = \ln F$, $f_0 = 1$) | $L' = F' - (L') \cdot (F - 1)$ | `l[q] = (f[q] + MOD - rc.next((q - 1) * l[q - 1] % MOD, f[q]) * inv[q] % MOD) % MOD;` | $p > N$ ($1, \dots, N \in K^\times$) |
+| **`sqrt`** ($S = \sqrt{F}$, $f_0 = 1$) | $(S - 1)^2 = F - 1 - 2(S - 1)$ | `s[q] = (f[q] + MOD - rc.c[q]) * inv2 % MOD; rc.next(s[q], s[q]);` | $\operatorname{char}(K) \neq 2$ ($2 \in K^\times$) |
+
+::: {.callout-warning icon=false}
+## Characteristic-$p$ Pitfall: Algebraic vs. Differential Online Engines
+
+Look at the rightmost column of the table above:
+- **Differential online engines (`exp`, `ln`, `pow`)** integrate $E'(x), L'(x), H'(x)$ term-by-term by multiplying $[x^{q-1}]$ by $q^{-1} \bmod p$. They therefore require **$\operatorname{char}(K) = 0$ or $p > N$**. If $p \le N$, $\text{inv}[p]$ does not exist because $D(x^p) = p x^{p-1} \equiv 0 \pmod p$!
+- **Algebraic online engines (`inv`, `sqrt`, and Catalan-type tree equations $F = 1 + x F^2$)** never differentiate or integrate: they only divide by $a_0$ or $2$. Thus, they remain 100% valid over small-prime fields $\mathbb{F}_p$ with $p \le N$ (provided $p > 2$ for `sqrt`).
+:::
+
+### Online Pólya / Euler Transform (`MSET` on the Fly)
+
+In [Chapter 03](ch03-mset-partitions-euler-polya.qmd), when the generator series $B(x) = \sum_{n=1}^N b_n x^n$ was completely known in advance, we computed the multiset Euler transform
+$$
+E(x) = \operatorname{MSET}(B)(x) = \prod_{n \ge 1} \frac{1}{(1 - x^n)^{b_n}} = \exp\!\left( \sum_{k \ge 1} \frac{B(x^k)}{k} \right)
+$$
+offline in $O(N \log N)$ time by populating $G(x) = \sum_{k \ge 1} \frac{B(x^k)}{k}$ via a harmonic loop and calling $\exp(G(x))$.
+
+What if $B(x)$ is **not** known in advance, because $b_n$ itself depends on $e_0, e_1, \dots, e_{n-1}$—for example, in rooted unlabeled trees $B(x) = x E(x)$ or nested multiset bags $B(x) = W(x) E(x)$ (`ABC 230 Ex — Bullion`, Int-2 below)?
+
+Let us trace the exact causal dependencies in $E(x) = \exp(G(x))$ where $G(x) = \sum_{k \ge 1} \frac{B(x^k)}{k}$:
+- Differentiating $G(x)$ and multiplying by $x$ gives
+  $$
+  x G'(x) = \sum_{k \ge 1} x^k B'(x^k) = \sum_{k \ge 1} \sum_{d \ge 1} d \, b_d \, x^{k d} = \sum_{n \ge 1} \left( \sum_{d \mid n} d \, b_d \right) x^n.
+  $$
+- Therefore, the coefficient $n g_n = [x^{n-1}] G'(x)$ needed by the Online Exponential at step $n$ is simply the divisor sum
+  $$
+  n g_n = \sum_{d \mid n} d \, b_d.
+  $$
+- Notice that $n g_n$ depends only on $b_d$ for divisors $d \mid n$, and every divisor $d$ of $n$ satisfies $d \le n$!
+- Consequently, the moment $b_n$ becomes known at step $n$, we immediately run a harmonic inner loop over multiples $m = n, 2n, 3n, \dots \le N$, adding $n \cdot b_n$ to an accumulator `ng[m]`:
+  ```cpp
+  for (int m = n; m <= N; m += n)
+      ng[m] = (ng[m] + 1LL * n * b[n]) % MOD;
+  ```
+  Across all $n = 1 \dots N$, this harmonic inner loop executes $\sum_{n=1}^N \lfloor N / n \rfloor = O(N \log N)$ additions. And by the time the outer loop reaches step $n$ and finishes adding $n \cdot b_n$ to `ng[n]`, every divisor $d \mid n$ ($d \le n$) has already contributed $d \cdot b_d$ to `ng[n]`, so `ng[n]` holds the exact value $n g_n$ ready to be passed into `rc_exp.next(ng[n], e[n - 1])`!
+
+::: {.callout-note icon=false}
+## Algorithm Contract: Online `inv`, `ln`, `exp`, and Pólya Euler via CDQ / Relaxed Convolution
+
+- **Input & Index Boundaries**: Target truncation degree $N \ge 1$ and online coefficient stream $a_q, g_q, f_q$, or $b_q$ arriving for $q = 1, 2, \dots, N$.
+- **Preconditions**:
+  - Online `inv`: $a_0 \in K^\times$ (any commutative ring $K$).
+  - Online `sqrt`: $f_0 = 1$ and $2 \in K^\times$ ($\operatorname{char}(K) \neq 2$).
+  - Online `exp`, `ln`, `pow`, and Pólya `MSET`: $g_0 = 0$ (for `exp` / `MSET`) or $f_0 = 1$ (for `ln` / `pow`), and $1, 2, \dots, N \in K^\times$ ($\operatorname{char}(K) = 0$ or $p > N$).
+- **Postconditions**: At the end of step $q \in [1, N]$, the exact $q$-th coefficient of $A(x)^{-1}$, $\exp(G(x))$, $\ln F(x)$, $\sqrt{F(x)}$, or $\operatorname{MSET}(B)(x)$ is finalized and ready for immediate causal consumption at step $q + 1$.
+- **Complexity**: $O(N \log^2 N)$ time and $O(N)$ space per `RelaxedConvolution` engine (plus $O(N \log N)$ harmonic sieve additions for online Pólya `MSET`).
+- **1-Sentence Loop Invariant**: Prior to computing step $q \ge 1$ of the online primitive, all coefficients of the output series up to degree $q - 1$ have been finalized, and for online Pólya `MSET`, the divisor-sum accumulator `ng[q]` already holds $\sum_{d \mid q, d < q} d \cdot b_d$.
+:::
+
+---
+
+## 9.5 Chapter 09 Practice Ladder (8 Problems: 2 SS / 2 Int / 2 Adv / 2 Mas)
+
+Every problem below is self-contained and ordered by structural complexity. Use the three progressive hints before consulting the complete derivation.
+
+---
+
+### Stepping Stone 1 (`#060`) — AtCoder ARC 138 E: Decreasing Subsequence
+
+- **Source**: [AtCoder Regular Contest 138, Problem E](https://atcoder.jp/contests/arc138/tasks/arc138_e)
+- **Prerequisite Tags**: `[Binomial Convolution, Staircase Rook / RSK Bijection, Semi-Online CDQ NTT]`
+- **Problem Statement**:
+  Given integers $N$ and $K$, consider sequences $A = (A_1, A_2, \dots, A_N)$ of integers such that $0 \le A_i \le i$ for all $1 \le i \le N$. Count the number of such sequences that contain a strictly decreasing subsequence of positive elements of length $K$—that is, indices $1 \le i_1 < i_2 < \dots < i_K \le N$ such that
+  $$
+  A_{i_1} > A_{i_2} > \dots > A_{i_K} > 0.
+  $$
+  Output the answer modulo $998244353$.
+- **Constraints**: $2 \le K \le N \le 5000$ in the original contest ($O(N^2)$ DP), and up to $N \le 10^5$ when accelerated via semi-online block CDQ NTT in $O\!\left(\frac{N^2}{K} \log K\right)$ or $O(N \log^2 N)$ time. Modulus $p = 998244353$. Time limit: $3.0\text{ s}$.
+- **Sample Trace ($N \le 4$)**: For $N = 2, K = 2$, there are $(2+1)! = 6$ sequences $(A_1, A_2) \in \{0, 1\} \times \{0, 1, 2\}$. A decreasing positive subsequence of length $2$ requires $A_1 > A_2 > 0$, which is impossible since $A_1 \le 1$ and $A_2 \ge 1$; thus $\text{Ans} = 0$. For $N = 3, K = 2$, out of $4! = 24$ sequences, the sequences with $A_{i_1} > A_{i_2} > 0$ are $(A_1, 2, 1)$ for $A_1 \in \{0, 1\}$ ($2$ ways) giving $\text{Ans} = 2$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+There are $\prod_{i=1}^N (i + 1) = (N + 1)!$ sequences in total. Switch to the **complement**: count sequences $(A_1, \dots, A_N)$ containing **no** decreasing subsequence of positive elements of length $K$.
+How can you convert the choice of $A_i \in \{0, 1, \dots, i\}$ (where positive values can be repeated across different $i$) into a **non-attacking rook placement** (where each row and column has at most one rook) on a staircase board, or into a sequence of interval transitions?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+At each step $i = 1, \dots, N$, we first introduce a new positive value $i$ into our pool, and then $A_i$ either picks $0$ or picks a value from $\{1, \dots, i\}$. If we record these $2N$ events (insert row $i$, then query column $i$) and resolve ties among equal values $A_i = A_j$ from right to left, the choices of $A_1, \dots, A_N$ are in bijection with configurations of $N$ intervals $[l_r, r_r] \subseteq [1, 2N]$ (or Dyck paths / matchings of size $N$) avoiding a $K$-chain of nested intervals!
+Specifically, if we fix the number of active positive elements $M \in [0, N]$ (chosen in $\binom{N+1}{M+1}$ ways on the staircase board), by RSK / Greene's theorem and the reflection principle across the strip $0 \le x - y < K$, transitioning along the boundary diagonal from $(i, i)$ to $(n, n)$ multiplies by the translation-invariant reflection kernel $g_{n - i}$, with unit interior weight $w_{n, i} = 1$ and diagonal boundary transition $\psi_n(S_n) = S_n$ (plus the staircase step $(n, n) \to (n + 1, n)$).
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Let $dp[i][j]$ ($0 \le j \le i \le N$) be the number of valid partial configurations on the first $i$ steps with $j$ unmatched active openings, where the condition "no $K$-nesting" restricts active transitions across the boundary $j = K - 1$.
+For the $O(N^2)$ contest bound ($N \le 5000$), unroll the binomial recurrence directly in $O(N^2)$ time. To achieve the semi-online CDQ speedup, notice that advancing across a strip of width $d \le K$ is a causal binomial convolution in $i$: unpacking $\binom{i - i' + c}{i - i'} = \frac{(i - i' + c)!}{(i - i')! \, c!}$ decouples the lag $k = i - i'$ from the source index $i'$, allowing CDQ NTT (`solve(l, r)`) to transfer each block in $O(L \log L)$ time!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **Step 1 (Complement & Staircase / Matching Bijection)**:
+   The total number of sequences $A = (A_1, \dots, A_N)$ with $0 \le A_i \le i$ is $(N + 1)!$. We count the complement: sequences where the longest strictly decreasing subsequence of positive values has length $\le K - 1$.
+   By the official staircase-matching bijection (`maroonrk` / `maspy`), at step $i = 1, \dots, N$, we first add a candidate row $R_i$ and then column $L_i$ either remains unmatched ($A_i = 0$) or matches to an available row (converting duplicate values $A_i = A_j > 0$ into disjoint arcs by linking each match to the most recent copy). Choosing which $m$ columns and $m$ rows participate in the active staircase strip of width $< K$ (weighted by the remaining unrestricted choices via $\binom{N + 1}{n + 1}$) reduces the problem to counting lattice paths / rook configurations inside a strip of width $K - 1$ along the main diagonal.
+
+2. **Step 2 (Exact 2D Contest DP & Diagonal Reflection Reduction with Explicit $\psi_n, w_{n, i}$)**:
+   - **Direct $O(N^2)$ Contest DP ($N \le 5000$)**: Let $f[i][j]$ ($0 \le i \le N$, $0 \le j \le \min(i, K - 1)$) be the number of valid partial matchings after $i$ steps with $j$ open (unmatched) chain heads. At step $i$, we first insert a new potential head (shifting $j \to j + 1$ or leaving it inactive) and then choose whether $A_i$ closes one of the open heads, giving the $O(N^2)$ transition over $0 \le j < K$.
+   - **Diagonal Reflection Reduction ($O(N \log^2 N)$)**: By RSK / Greene's theorem on the staircase Ferrers diagram, a configuration with no $K$-decreasing chain corresponds to a pair of standard / semi-standard tableaux of width $\le K - 1$, or equivalently a lattice walk from $(0, 0)$ to $(n, n)$ staying within the diagonal strip $0 \le x - y < K$ with periodic reflections across $x - y = -1$ and $x - y = K$.
+   Eliminating the interior of the strip by summing over first-return excursions between touches of the main diagonal $x = y$ gives the causal boundary recurrence on $dp[0 \dots N]$ ($dp[0] = 1$):
+   $$
+   dp[n] = \psi_n\!\left( \sum_{i=0}^{n-1} dp[i] \cdot g_{n - i} \cdot w_{n, i} \right) \qquad (1 \le n \le N),
+   $$
+   where every symbol has a concrete closed form:
+   - **Interior Weight $w_{n, i} = 1$**: Because the strip boundaries $x - y = -1$ and $x - y = K$ are parallel to the main diagonal $x = y$, the excursion count between diagonal touch $(i, i)$ and $(n, n)$ is translation-invariant and depends only on the lag $k = n - i$.
+   - **Reflection Kernel $g_k$ ($k = n - i \ge 1$)**: By the André reflection principle across the two parallel boundaries separated by $K + 1$, the number of primitive/unconstrained diagonal-to-diagonal transitions of lag $k$ is
+     $$
+     g_k = \sum_{r \in \mathbb{Z}} (-1)^r \left[ \binom{2k - 1}{k - r K} - \binom{2k - 1}{k - 1 - r K} \right].
+     $$
+   - **Boundary Wrapper $\psi_n(S_n)$**: At diagonal coordinate $(n, n)$, $\psi_n(S_n) = S_n \bmod p$ finalizes the diagonal state before multiplying by the outer binomial completion weight $\binom{N + 1}{n + 1} (N - n)!$ when summing the complement over $n = K, \dots, N$.
+
+3. **Step 3 (Decoupling the Binomial Kernel for Semi-Online CDQ NTT)**:
+   - **Semi-Online CDQ NTT Execution**: Since the reflection kernel $g_k$ ($1 \le k \le N$) depends **only on the lag $k = n - i$**, we precompute $g_1, \dots, g_N$ in $O(N)$ total time using precomputed factorials (since for each $k$, only $O(k / K)$ values of $r \in \mathbb{Z}$ have non-zero binomial coefficients, summing to $\sum_{k=1}^N O(k / K) = O(N^2 / K) \subseteq O(N)$ when $K \asymp N$, or $O(N \log N)$ across all $k$).
+   - A single call to `solve(0, N)` (§9.2) then computes all $dp[0 \dots N]$ in $O(N \log^2 N)$ time (or $O(N^2)$ via a direct loop for $N \le 5000$). Subtracting the complement count from $(N + 1)! \bmod 998244353$ yields the exact answer.
+
+::: {.callout-note icon=false}
+## Algorithm Contract: ARC 138 E (`#060`)
+
+- **Input & Preconditions**: Integers $N, K$ ($2 \le K \le N \le 10^5$), $0$-indexed diagonal DP array $dp[0 \dots N]$, and lag kernel $g[1 \dots N]$ with $g_0 = 0$; precomputed factorials and inverse factorials up to $2N$ modulo $p = 998244353$ ($p > 2N$).
+- **Output & Postconditions**: `solve(0, N)` populates $dp[0 \dots N]$, from which subtracting the complement sum from $(N + 1)! \bmod p$ outputs the exact number of sequences with a decreasing positive subsequence of length $K$.
+- **Invariants**: Upon entering `solve(l, r)`, $S[n]$ for each $n \in [l, r]$ stores the exact sum of reflected strip transitions $\sum_{i=0}^{l-1} dp[i] \, g_{n-i}$ from all finalized diagonal states $i < l$.
+- **Complexity**: $O(N^2)$ time and $O(N)$ space for the direct loop ($N \le 5000$); $O(N \log^2 N)$ time and $O(N)$ space via Semi-Online CDQ NTT (`solve(0, N)`).
+- **Failure Modes & Edge Cases**: (1) In the reflection sum for $g_k$, only $O(k / K)$ shifts $r \in \mathbb{Z}$ have non-negative lower indices in $\binom{2k}{k \pm rK}$, so iterating over all $r \in [-N, N]$ instead of $|rK| \le k + 1$ causes an $O(N^2)$ TLE; (2) Forgetting to set $g_0 = 0$ introduces a self-loop at lag $0$ in `solve(l, r)`; (3) When subtracting the complement count from $(N + 1)! \bmod p$, add $p$ before taking modulo to prevent negative residues.
+:::
+
+</details>
+
+---
+
+### Stepping Stone 2 (`#021`) — AtCoder ABC 222 H: Beautiful Binary Tree
+
+- **Source**: [AtCoder Beginner Contest 222, Problem H](https://atcoder.jp/contests/abc222/tasks/abc222_h)
+- **Prerequisite Tags**: `[Coupled Binary Tree Recurrence, Self-Referential Causal Convolution, Multi-Resolution Landmark]`
+- **Problem Statement**:
+  For an integer $N \ge 1$, a rooted binary tree (where each vertex has a left child, a right child, both, or neither, and left vs. right children are distinguished) with vertices labeled `0` or `1` is called a **beautiful binary tree of degree $N$** if:
+  1. Every vertex labeled `0` has at least one child, and all of its children are labeled `1`.
+  2. Every leaf (a vertex with no children) is labeled `1`.
+  3. The tree contains **exactly $N$ vertices labeled `1`** in total (and any number of vertices labeled `0`).
+  Compute the number $H_N$ of beautiful binary trees of degree $N$ modulo $998244353$.
+- **Constraints**:
+  - **Subtask 1 (All-$n$ Causal Recurrence Regime — Ch 09)**: Compute $H_1, H_2, \dots, H_N \bmod 998244353$ for $N \le 2 \times 10^5$.
+  - **Subtask 2 (Original Contest Single-$N$ Extreme Regime — Preview of Ch 11 & Ch 18)**: $1 \le N \le 10^7$, Time limit $2.0\text{ s}$.
+- **Sample Trace ($N \le 4$)**: For $N = 1$, $H_1 = 1$. For $N = 2$, $H_2 = 6$. For $N = 3$, $H_3 = 47$ (and for $N = 4$, $H_4 = 420$).
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Let $T_1(x)$ and $T_0(x)$ be the ordinary generating functions of valid subtrees rooted at a `1`-vertex and a `0`-vertex, respectively, where the variable $x$ marks the number of `1`-vertices.
+- A `0`-vertex contributes $0$ to the count of `1`s, must have at least one child, and every child must be a `1`-vertex (left only, right only, or both): thus $T_0(x) = 2 T_1(x) + T_1(x)^2$.
+- A `1`-vertex contributes $1$ to the count of `1`s ($x$), and each of its two ordered child slots can be empty ($1$), a `0`-subtree ($T_0$), or a `1`-subtree ($T_1$): thus $T_1(x) = x(1 + T_0(x) + T_1(x))^2$.
+Substitute $T_0(x) = 2 T_1(x) + T_1(x)^2$ into $T_1(x)$! What single-variable causal equation does $U(x) = T_1(x)$ satisfy, and why does the leading factor of $x$ make it a **strictly contractive causal operator**?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Substituting $T_0 = 2 T_1 + T_1^2$ into $1 + T_0 + T_1$ gives $1 + 3 T_1 + T_1^2$, so $U(x) = T_1(x)$ satisfies
+$$
+U(x) = x \big(1 + 3 U(x) + U(x)^2\big)^2 = x \, \Phi\big(U(x)\big), \qquad \Phi(y) = (1 + 3y + y^2)^2,
+$$
+and the number of beautiful binary trees with $N$ ones (via the standard pointed-tree / Lagrange bijection $H_N = [x^N] U(x) = \frac{1}{N}[y^{N-1}](1 + 3y + y^2)^{2N}$) equals $u_N = [x^N] U(x)$!
+1. Because $U(0) = 0$ and $U(x) = x \Phi(U(x))$, for every $n \ge 1$, $u_n = [x^{n-1}](1 + 3 U(x) + U(x)^2)^2$ depends **only** on $u_1, \dots, u_{n-1}$. How can you compute $u_1, \dots, u_N$ for Subtask 1 ($N \le 2 \times 10^5$) in $O(N \log^2 N)$ time using two chained `RelaxedConvolution` instances?
+2. For Subtask 2 ($N = 10^7$), how does differentiating $Q(y) = (1 + 3y + y^2)^{2N}$ logarithmically ($(1 + 3y + y^2) Q'(y) = 2N(3 + 2y) Q(y)$) give an $O(N)$ 2-term recurrence with zero NTTs?
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+- **All-$n$ Online Solution ($O(N \log^2 N)$)**: Let $S(x) = U(x)^2$ and $P(x) = 1 + 3U(x) + S(x)$, so $U(x) = x P(x)^2$. Using 2 `RelaxedConvolution` instances (`rc_S` for $U^2$ and `rc_P2` for $P^2$), at step $q = n - 1$ we feed $u_q$ into `rc_S.next(u_q, u_q)`, form $p_q = [q=0] + 3u_q + s_q$, and read $u_{q+1} = \texttt{rc\_P2.next}(p_q, p_q)$ in 6 lines of code!
+- **Single-$N$ $O(N)$ Sparse Power Solution ($N = 10^7$)**: Using Lagrange Inversion $H_N = \frac{1}{N}[y^{N-1}] Q(y)$ where $Q(y) = (1 + 3y + y^2)^{2N}$ (`Ch 11`) and Chapter 02's $O(NK)$ Sparse Power Trick (`Ch 02.4`):
+  $$
+  H_N = \frac{1}{N} q_{N-1}, \qquad k \, q_k = 3(2N + 1 - k) \, q_{k-1} + (4N + 2 - k) \, q_{k-2} \quad (1 \le k \le N - 1, \;\; q_0 = 1).
+  $$
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **Step 1 (Combinatorial Grammar & Reduction to a Single Causal Fixed Point)**:
+   Let $T_1(x)$ and $T_0(x)$ be the OGFs of subtrees rooted at `1` and `0`, where $x$ marks vertices labeled `1`.
+   - A `0`-vertex has no `0`-children and must have a non-empty subset of `{left, right}` children labeled `1`: $T_0(x) = 2 T_1(x) + T_1(x)^2$.
+   - A `1`-vertex contributes weight $x$ and has two ordered child slots, each of which is empty ($1$), rooted at `0` ($T_0$), or rooted at `1` ($T_1$):
+     $$
+     T_1(x) = x \big(1 + T_0(x) + T_1(x)\big)^2 = x \big(1 + 3 T_1(x) + T_1(x)^2\big)^2.
+     $$
+   Setting $U(x) = T_1(x) = \sum_{n \ge 1} u_n x^n$, the count of beautiful binary trees of degree $N$ is $H_N = u_N = [x^N] U(x)$ (which by Lagrange Inversion equals $\frac{1}{N}[y^{N-1}](1 + 3y + y^2)^{2N}$, as we will prove in [Chapter 11](ch11-laurent-residues-raney-lagrange-inversion.qmd)).
+
+2. **Step 2 (Method 1: All-$n$ Chained `RelaxedConvolution` for $N \le 2 \times 10^5$ in $O(N \log^2 N)$)**:
+   Define the intermediate series:
+   $$
+   S(x) = U(x)^2, \qquad P(x) = 1 + 3 U(x) + S(x), \qquad U(x) = x \, P(x)^2.
+   $$
+   Because of the factor of $x$ in $U(x) = x \, P(x)^2$, the coefficient $u_{q+1} = [x^{q+1}] U(x)$ for $q \ge 0$ equals $[x^q] P(x)^2$, which is **completely determined at step $q$** from $u_0, u_1, \dots, u_q$!
+   We instantiate two `RelaxedConvolution` engines (`rc_S` and `rc_P2`) and run a single causal loop for $q = 0, 1, \dots, N - 1$:
+   - At $q = 0$: $u_0 = 0$, $s_0 = \texttt{rc\_S.next}(0, 0) = 0$, $p_0 = 1 + 0 + 0 = 1$, and $u_1 = \texttt{rc\_P2.next}(1, 1) = 1$.
+   - For $q = 1, 2, \dots, N - 1$: since $u_q$ was produced at the end of step $q - 1$, we immediately compute:
+     1. $s_q = \texttt{rc\_S.next}(u_q, u_q)$ (representing $[x^q] U(x)^2$);
+     2. $p_q = (3 u_q + s_q) \bmod p$ (representing $[x^q](1 + 3U(x) + U(x)^2)$);
+     3. $u_{q+1} = \texttt{rc\_P2.next}(p_q, p_q)$ (representing $[x^q] P(x)^2 = [x^{q+1}] U(x)$).
+   Let us trace $q = 1, 2$ by hand:
+   - $q = 1$: $u_1 = 1 \implies s_1 = 0, \; p_1 = 3(1) + 0 = 3 \implies u_2 = [x^1](1 + 3x + \dots)^2 = 2 p_0 p_1 = 6$.
+   - $q = 2$: $u_2 = 6 \implies s_2 = u_1^2 = 1, \; p_2 = 3(6) + 1 = 19 \implies u_3 = 2 p_0 p_2 + p_1^2 = 38 + 9 = 47$.
+   All $H_n = u_n \bmod p$ for $1 \le n \le N$ are obtained in $O(N \log^2 N)$ time and 8 lines of code!
+
+3. **Step 3 (Method 2: Single-$N$ Reduction to $O(N)$ Sparse Power Recurrence for $N \le 10^7$)**:
+   By the Lagrange Inversion Formula ([Chapter 11](ch11-laurent-residues-raney-lagrange-inversion.qmd)) applied to $U(x) = x \, \Phi(U(x))$ with $\Phi(y) = (1 + 3y + y^2)^2$:
+   $$
+   H_N = [x^N] U(x) = \frac{1}{N} [y^{N-1}] \Phi(y)^N = \frac{1}{N} [y^{N-1}] \big(1 + 3y + y^2\big)^{2N}.
+   $$
+   Let $Q(y) = (1 + 3y + y^2)^{2N} = \sum_{k \ge 0} q_k y^k$. Applying **Chapter 02's $O(NK)$ Sparse Power Recurrence** ([Section 2.4](ch02-calculus-frobenius-sparse-ode-newton.qmd)) to $(1 + 3y + y^2) Q'(y) = 2N(3 + 2y) Q(y)$ and extracting $[y^{k-1}]$ yields the 2-term linear recurrence:
+   $$
+   k \, q_k = 3(2N + 1 - k) \, q_{k - 1} + (4N + 2 - k) \, q_{k - 2} \qquad (1 \le k \le N - 1),
+   $$
+   with base cases $q_0 = 1$ and $q_{-1} = 0$.
+   - **Hand-Check for $N = 1, 2, 3$**:
+     - $N = 1$: $H_1 = \frac{1}{1} q_0 = 1$.
+     - $N = 2$: $1 \cdot q_1 = 3(5 - 1) q_0 = 12 \implies H_2 = \frac{1}{2} q_1 = 6$.
+     - $N = 3$: $q_1 = 3(7 - 1)(1) = 18$, and $2 q_2 = 3(7 - 2)(18) + (14 - 2)(1) = 270 + 12 = 282 \implies q_2 = 141 \implies H_3 = \frac{1}{3} q_2 = 47$.
+   Both Method 1 and Method 2 produce the exact same sequence $1, 6, 47, 420, \dots$! Precomputing modular inverses $1^{-1}, \dots, N^{-1} \bmod 998244353$ in $O(N)$ time computes $H_N = \frac{1}{N} q_{N-1} \bmod p$ in $2N$ operations ($\approx 35\text{ ms}$ at $N = 10^7$).
+
+::: {.callout-note icon=false}
+## Algorithm Contract: ABC 222 H (`#021`)
+
+- **Input & Preconditions**: Target degree $N \ge 1$; prime modulus $p = 998244353 > N$ (so $1, 2, \dots, N \in \mathbb{F}_p^\times$ for Method 2); base cases $u_0 = 0$ (Method 1) and $q_0 = 1, q_{-1} = 0$ (Method 2).
+- **Postconditions**: Method 1 outputs $H_1, \dots, H_N \bmod p$ where $H_n = u_n$; Method 2 outputs $H_N = N^{-1} q_{N-1} \bmod p$.
+- **Index & Truncation Boundaries**: Method 1 runs $0$-indexed online step $q \in [0, N-1]$; Method 2 runs $1$-indexed recurrence step $k \in [1, N-1]$.
+- **Complexity**: Method 1 takes $O(N \log^2 N)$ time and $O(N)$ space for all $n \le N$; Method 2 takes $O(N)$ time and $O(1)$ auxiliary rolling space for a single $N \le 10^7$.
+- **1-Sentence Loop Invariant**: At the start of step $q$ in Method 1, $u_0, \dots, u_q$ are finalized and `rc_P2` has accumulated all interior products of $P(x)^2$ up to degree $q$; at step $k$ in Method 2, $(q_{k-1}, q_{k-2})$ hold the exact coefficients $[y^{k-1}]Q(y)$ and $[y^{k-2}]Q(y)$ modulo $p$.
+- **Failure Modes & Edge Cases**: At $N = 1$, the Method 2 loop $k \in [1, N-1]$ is empty and directly returns $1^{-1} q_0 = 1$; in Method 1, forgetting to divide $[y^{n-1}]Q(y)$ by $n$ in the Lagrange check or failing to shift $U(x) = x P(x)$ by 1 causes an off-by-one degree mismatch.
+:::
+
+</details>
+
+---
+
+### Intermediate 1 (`#086`) — Codeforces 553E: Kyoya and Train
+
+- **Source**: [Codeforces Round 309 (Div. 1), Problem E](https://codeforces.com/problemset/problem/553/E)
+- **Prerequisite Tags**: `[Backward Time-Window DP, Pointwise Min Envelope, Semi-Online CDQ FFT]`
+- **Problem Statement**:
+  Kyoya is at vertex $1$ of a directed multigraph with $n$ vertices and $m$ directed edges, and wants to reach vertex $n$ within $T$ time units; if he arrives at vertex $n$ strictly after time $T$, he must pay a fine of $x$.
+  Each directed edge $e_k = (a_k \to b_k)$ ($1 \le k \le m$) costs $c_k$ dollars to board, and its travel duration $s \in \{1, 2, \dots, T\}$ is a random variable Taking value $s$ with given probability $p_{k, s}$ (where $\sum_{s=1}^T p_{k, s} = 1$). Whenever Kyoya arrives at a vertex $u \neq n$ at time $t \le T$, he may dynamically choose the next outgoing edge $e_k \in \delta^+(u)$ to minimize his total expected future cost (boarding costs plus the potential fine $x$).
+  Compute the minimum expected total cost starting from vertex $1$ at time $t = 0$ with absolute or relative error at most $10^{-6}$.
+- **Constraints**: $2 \le n \le 50$, $1 \le m \le 100$, $1 \le T \le 20000$, $0 \le c_k, x \le 10^6$. Probabilities are given as $p_{k, s} = \text{int} / 10^5$. Time limit: $8.0\text{ s}$. Required complexity: $O(m T \log^2 T + n^3)$.
+- **Sample Trace ($T \le 4$)**: Let $n = 2, m = 1, T = 2, x = 10$, with a single edge $e_1 = (1 \to 2)$ of cost $c_1 = 1$ and travel-time probabilities $p_{1, 1} = 0.5, p_{1, 2} = 0.5$. Then $dp[2][t] = 0$ for $t \le 2$ and $dp[2][t] = 10$ for $t > 2$. At $t = 2$, taking $e_1$ arrives at $t' \in \{3, 4\} > 2$, so $dp[1][2] = 1 + 1.0 \times 10 = 11$. At $t = 1$, $t' = 2$ (prob $0.5$, cost $0$) and $t' = 3$ (prob $0.5$, cost $10$), so $dp[1][1] = 1 + 0.5(0) + 0.5(10) = 6$. At $t = 0$, $t' \in \{1, 2\} \le 2$, so $dp[1][0] = 1 + 0.5(0) + 0.5(0) = 1.0$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Let $dp[u][t]$ ($0 \le t \le T$) be the minimum expected cost to reach vertex $n$ starting from vertex $u$ at time $t$. What happens if $t > T$? Since the deadline $T$ has already been missed, the fine $x$ is unavoidable, so Kyoya should simply take the deterministic shortest path $d(u, n)$ with respect to edge costs $c_k$:
+$$
+dp[u][t] = d(u, n) + x \qquad (\forall\, t > T), \qquad dp[n][t] = 0 \quad (\forall\, t \le T).
+$$
+Why must the DP over $t \in [0, T]$ proceed **backward in time** from $t = T$ down to $t = 0$, and why can't we solve it offline with polynomial inversion?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+For each edge $e_k = (u \to v)$ and time $t \in [0, T]$, the expected cost of taking edge $e_k$ at time $t$ is
+$$
+\text{val}[k][t] = c_k + \sum_{s=1}^{T - t} p_{k, s} \, dp[v][t + s] + \underbrace{\left(\sum_{s = T - t + 1}^{T} p_{k, s}\right) \big(d(v, n) + x\big)}_{\text{late-arrival tail }(t + s > T)},
+$$
+and the vertex recurrence is the pointwise minimum envelope
+$$
+dp[u][t] = \min_{e_k \in \delta^+(u)} \text{val}[k][t].
+$$
+Because of the outer $\min$ over outgoing edges, $dp[v][t]$ cannot be written as a rational function of a shift operator. However, notice that $t + s > t$: the values $dp[v][t']$ for $t' > t$ are **strictly earlier in backward time**! How do we adapt `solve(l, r)` so that the right half $[m + 1, r]$ transfers to the left half $[l, m]$?
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Run **Backward Semi-Online CDQ FFT** `solve(l, r)` on $[0, T]$:
+1. First recurse on the **right half** `solve(m + 1, r)` (later times $t' \in [m + 1, r]$).
+2. Once `solve(m + 1, r)` returns, $dp[v][t']$ is finalized for all $v \in [1, n]$ and $t' \in [m + 1, r]$. For each edge $e_k = (u \to v)$, we must accumulate $\sum_{t' = m + 1}^{r} dp[v][t'] \, p_{k, t' - t}$ into $\text{val}[k][t]$ for all $t \in [l, m]$.
+3. This is a **difference convolution** $(t') - t = s$: reverse the kernel slice $p_k[1 \dots r - l]$ by setting $B(x) = \sum_{s=1}^{r-l} p_{k, s} x^{(r - l) - s}$ and $A(x) = \sum_{t'=m+1}^r dp[v][t'] x^{t' - (m + 1)}$. Then $(t' - (m + 1)) + ((r - l) - (t' - t)) = (r - l) + t - (m + 1)$, so $[x^{(r - l) + t - (m + 1)}](A \cdot B)$ gives the exact transfer to $\text{val}[k][t]$!
+4. Finally, recurse on the **left half** `solve(l, m)`, where the base case $l = r = t$ sets $dp[u][t] = \min_{e_k \in \delta^+(u)} \text{val}[k][t]$.
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **Step 1 (All-Pairs Shortest Paths & Late-Arrival Initialization)**:
+   First run Floyd–Warshall (or Dijkstra from $n$ on the reversed graph) in $O(n^3)$ time to compute $d(u, n)$, the minimum sum of edge costs $c_k$ from $u$ to $n$.
+   For every edge $e_k = (u \to v)$ and time $t \in [0, T]$, any travel duration $s > T - t$ causes Kyoya to arrive at $v$ at time $t + s > T$, incurring deterministic cost $d(v, n) + x$. We pre-initialize the edge accumulator $\text{val}[k][t]$ with the constant boarding cost plus this late-arrival tail:
+   $$
+   \text{val}[k][t] \gets c_k + \big(d(v, n) + x\big) \sum_{s = T - t + 1}^{T} p_{k, s} \qquad (0 \le t \le T),
+   $$
+   computed for all $k, t$ in $O(m T)$ time via suffix sums of $p_{k, s}$.
+
+2. **Step 2 (Backward CDQ Divide-and-Conquer FFT `solve(l, r)`)**:
+   Now the remaining sum to accumulate into $\text{val}[k][t]$ is
+   $$
+   \sum_{t' = t + 1}^{T} dp[v][t'] \cdot p_{k, t' - t}.
+   $$
+   Define the backward recursive procedure `solve(l, r)` on $[0, T]$:
+   - **Base Case ($l = r = t$)**:
+     All contributions from $t' \in [t + 1, T]$ have already been added to $\text{val}[k][t]$. We finalize $dp[n][t] = 0$, and for every $u \in \{1, \dots, n - 1\}$:
+     $$
+     dp[u][t] = \min_{e_k = (u \to v)} \text{val}[k][t].
+     $$
+   - **Recursive Step ($l < r$, with $m = \lfloor (l + r) / 2 \rfloor$)**:
+     1. **Recurse Right (Later Times First)**: Call `solve(m + 1, r)`. Upon return, $dp[v][t']$ is finalized for all $v \in [1, n]$ and $t' \in [m + 1, r]$.
+     2. **Cross-Boundary Difference Convolution ($[m + 1, r] \to [l, m]$)**:
+        For each edge $e_k = (u \to v)$ ($1 \le k \le m$), we need to compute for every $t \in [l, m]$:
+        $$
+        \Delta_{k, t} = \sum_{t' = m + 1}^{r} dp[v][t'] \cdot p_{k, t' - t}.
+        $$
+        Let $L_A = r - m$ and $L_B = r - l$. Define the two real polynomials:
+        $$
+        A(x) = \sum_{i = 0}^{r - m - 1} dp[v][m + 1 + i] \, x^i, \qquad B(x) = \sum_{s = 1}^{r - l} p_{k, s} \, x^{(r - l) - s}.
+        $$
+        Multiply $C(x) = A(x) \cdot B(x)$ using a single real/complex FFT of length $2^{\lceil \log_2(L_A + L_B) \rceil} \le 4(r - l)$. For each $t \in [l, m]$, setting $i = t' - (m + 1)$ and $s = t' - t$ gives exponent
+        $$
+        i + \big((r - l) - s\big) = \big(t' - m - 1\big) + \big(r - l - t' + t\big) = (r - l - m - 1) + t.
+        $$
+        Thus $[x^{(r - l - m - 1) + t}] C(x) = \Delta_{k, t}$, which we add to $\text{val}[k][t]$ for each $t = l, l + 1, \dots, m$.
+     3. **Recurse Left (Earlier Times Second)**: Call `solve(l, m)`.
+
+3. **Step 3 (Final Output & Complexity Verification)**:
+   After `solve(0, T)` completes, output $dp[1][0]$.
+
+::: {.callout-note icon=false}
+## Algorithm Contract: Codeforces 553E (`#086`)
+
+- **Input & Preconditions**: Directed multigraph with $n \le 50$ vertices, $m \le 100$ edges, time horizon $T \le 20000$, fine $x$, edge costs $c_k$, and duration probabilities $p_{k, s}$ for $s \in [1, T]$ with $\sum_{s=1}^T p_{k, s} = 1$; vertex $n$ is reachable from all vertices; $\text{val}[k][t]$ is pre-initialized with $c_k + (d(v, n) + x)\sum_{s > T-t} p_{k, s}$.
+- **Postconditions**: `solve(0, T)` finalizes $dp[u][t]$ for all $u \in [1, n]$ and $t \in [0, T]$, and $dp[1][0]$ gives the minimum expected cost within $10^{-6}$ error.
+- **Index & Truncation Boundaries**: Time index $t$ runs over $[0, T]$, recursion runs in reverse time (`solve(mid + 1, r)` before `solve(l, mid)`), and each cross-interval FFT on $[l, r]$ convolves $dp[v][mid + 1 \dots r]$ with $p_k[1 \dots r - l]$.
+- **Complexity**: $O(m T \log^2 T + n^3)$ time and $O(m T)$ space.
+- **1-Sentence Recursion Invariant**: Upon entering `solve(l, r)`, $\text{val}[k][t]$ for every edge $e_k = (u \to v)$ and every $t \in [l, r]$ already includes all expected future cost contributions from arrival times $t' > r$.
+- **Failure Modes & Edge Cases**: At $u = n$ (the destination), $dp[n][t] = 0$ for all $t \in [0, T]$ and must never be overwritten by outgoing edges from $n$; forgetting to pre-add the late-arrival penalty $(d(v, n) + x)\sum_{s > T-t} p_{k, s}$ before starting CDQ undercounts trajectories that exceed time $T$.
+:::
+
+</details>
+
+---
+
+### Intermediate 2 (`#023`) — AtCoder ABC 230 Ex: Bullion
+
+- **Source**: [AtCoder Beginner Contest 230, Problem Ex](https://atcoder.jp/contests/abc230/tasks/abc230_h)
+- **Prerequisite Tags**: `[Pólya Multiset Operator, Online Euler Transform, Dual Relaxed Convolution]`
+- **Problem Statement**:
+  We have gold bars of $K$ distinct positive integer weights $w_1 < w_2 < \dots < w_K \le W$ (with an unlimited supply of bars of each available weight) and an unlimited supply of identical pouches, where each empty pouch itself has weight $1$.
+  A **valid pouch of weight $n$** consists of an outer pouch (of weight $1$) containing an unordered **multiset of at least $2$ items**, where each item is either a gold bar of some allowed weight $w_i$ or another valid pouch, such that the total weight of the outer pouch plus all items inside it equals $n$. Two pouches are considered identical if one can be obtained by permuting the items inside any pouch.
+  For each $n = 2, 3, \dots, W$, compute the number of valid pouches of weight $n$ modulo $998244353$.
+- **Constraints**: $2 \le W \le 2 \times 10^5$, $1 \le K \le W$, $1 \le w_1 < w_2 < \dots < w_K \le W$. Time limit: $4.0\text{ s}$. Required complexity: $O(W \log^2 W)$.
+- **Sample Trace ($W \le 4$)**: Suppose $W = 4$ and the only available gold bar weight is $\{w_1\} = \{1\}$ ($A(x) = x$).
+  - $n = 2$: No pouch has weight $1$ ($b_1 = 0$), so items of weight $1$ are just the gold bar ($f_1 = 1$). A pouch of weight $2$ has outer pouch weight $1$, leaving weight $1$ for its contents—impossible since it must contain $\ge 2$ items! Thus $b_2 = 0$ (and $f_2 = 0$).
+  - $n = 3$: Contents must have total weight $2$ and size $\ge 2$, which can only be two gold bars $\{1, 1\}$ ($1$ way). Thus $b_3 = 1$ (and $f_3 = 1$).
+  - $n = 4$: Contents must have total weight $3$ and size $\ge 2$, which can only be three gold bars $\{1, 1, 1\}$ ($1$ way). Thus $b_4 = 1$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Let $F(x) = \sum_{n=1}^W f_n x^n$ be the OGF of valid single items (for each $n \ge 1$, $f_n = b_n + a_n$, where $a_n \in \{0, 1\}$ indicates whether a gold bullion of weight $n$ exists in the input, and $b_n$ is the number of valid pouches of weight $n$, with $b_1 = 0$).
+A pouch of weight $n$ consists of the pouch bag itself (weight $1$, factor $x$) together with an unordered **multiset of size $\ge 2$** chosen from all valid items (bullions and smaller pouches). How do you express a multiset of size $\ge 2$ using the Euler transform $\operatorname{MSET}(F)$?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+The Euler transform $\operatorname{MSET}(F)(x) = \prod_{m \ge 1} (1 - x^m)^{-f_m} = \exp\!\left(\sum_{k \ge 1} \frac{F(x^k)}{k}\right)$ counts multisets of **any** size $\ge 0$:
+- Size $0$ (empty multiset) contributes $1$.
+- Size $1$ (singleton item) contributes $F(x)$.
+Therefore, multisets of size $\ge 2$ have OGF $\operatorname{MSET}(F)(x) - 1 - F(x)$, and multiplying by $x$ (for the pouch's own weight $1$) gives the exact functional equation for pouches $B(x) = \sum_{n=2}^W b_n x^n$:
+$$
+B(x) = x \Big( \exp\big(G(x)\big) - 1 - F(x) \Big), \qquad \text{where } F(x) = A(x) + B(x), \quad G(x) = \sum_{k \ge 1} \frac{F(x^k)}{k}.
+$$
+Notice the factor of $x$ on the right-hand side! Why does $b_n = [x^n] B(x)$ depend only on $f_1, \dots, f_{n-1}$?
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Let $E(x) = \exp(G(x)) = \sum_{m \ge 0} e_m x^m$. Then for every $n \ge 2$:
+$$
+b_n = [x^{n-1}] \big(E(x) - 1 - F(x)\big) = e_{n-1} - f_{n-1}, \qquad f_n = a_n + b_n = a_n + e_{n-1} - f_{n-1}.
+$$
+And how do we advance $e_{n-1}$ from $n - 1$ to $n$? By Section 9.4's Online Exponential $E'(x) = G'(x) E(x)$:
+1. At step $q = n - 1 \ge 1$, we already know $e_{q-1}$, so if we know $q g_q = \sum_{d \mid q} d f_d$, a single call `e[q] = rc.next(q * g_q, e[q - 1]) * inv[q]` produces $e_q = e_{n-1}$!
+2. Once $e_q$ is known, we immediately get $b_{q+1} = e_q - f_q$ and $f_{q+1} = a_{q+1} + b_{q+1}$, and propagate $(q + 1) f_{q+1}$ to all multiples $m = j(q + 1) \le W$ in $O(W / q)$ harmonic time!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **Step 1 (Symbolic Formulation of Valid Pouches)**:
+   Let $A(x) = \sum_{i=1}^K x^{w_i} = \sum_{n=1}^W a_n x^n$ ($a_n \in \{0, 1\}$) be the OGF of available bullion weights, $B(x) = \sum_{n=2}^W b_n x^n$ be the OGF of valid pouches, and $F(x) = A(x) + B(x) = \sum_{n=1}^W f_n x^n$ be the OGF of all valid single items (bullions + pouches).
+   A valid pouch has weight $1$ (from the pouch itself) plus a multiset of $\ge 2$ valid items. By the Pólya / Euler multiset construction ([Chapter 03](ch03-mset-partitions-euler-polya.qmd)), the OGF of all multisets of items is
+   $$
+   E(x) = \operatorname{MSET}(F)(x) = \prod_{m \ge 1} \frac{1}{(1 - x^m)^{f_m}} = \exp\!\left( \sum_{k \ge 1} \frac{F(x^k)}{k} \right) = \exp(G(x)),
+   $$
+   where $G(x) = \sum_{k \ge 1} \frac{F(x^k)}{k}$. Subtracting the empty multiset ($1$) and the single-item multisets ($F(x)$) and multiplying by $x$ (for the pouch's weight $1$) yields
+   $$
+   B(x) = x \big( E(x) - 1 - F(x) \big) \implies F(x) = A(x) + x \big( E(x) - 1 - F(x) \big).
+   $$
+   *(Note: If the outer pouch itself can take any weight $w_i \in \{w_1, \dots, w_K\}$, then $B(x) = A(x)(E(x) - 1 - F(x))$, and we simply use a second `RelaxedConvolution` instance `rc_B` to multiply $A(x)$ with $E(x) - 1 - F(x)$, as shown in Section 9.4.)*
+
+2. **Step 2 (Causal Differential Reduction of $E(x) = \exp(G(x))$)**:
+   Differentiating $E(x) = \exp(G(x))$ gives $E'(x) = G'(x) E(x)$. Recall from Section 9.4 that
+   $$
+   G(x) = \sum_{k \ge 1} \sum_{d \ge 1} \frac{f_d}{k} x^{k d} \implies q \, g_q = [x^{q-1}] G'(x) = \sum_{d \mid q} d \, f_d \qquad (q \ge 1).
+   $$
+   Extracting $[x^{q-1}]$ from $E'(x) = G'(x) E(x)$ gives
+   $$
+   q \, e_q = \sum_{i=1}^{q} (i g_i) \, e_{q - i} = [x^{q-1}] \big( G'(x) E(x) \big) \qquad (q \ge 1, \quad e_0 = 1).
+   $$
+   And extracting $[x^{q+1}]$ from $B(x) = x(E(x) - 1 - F(x))$ for $q \ge 1$ gives
+   $$
+   b_{q+1} = e_q - f_q, \qquad f_{q+1} = a_{q+1} + b_{q+1} = a_{q+1} + e_q - f_q.
+   $$
+
+3. **Step 3 (Hand-Checkable Trace for $q = 1, 2$ & Complete Algorithm)**:
+   - **Initialization ($q = 0$)**:
+     - $e_0 = 1$.
+     - For weight $1$: no pouch can have weight $1$ ($b_1 = 0$), so $f_1 = a_1 \in \{0, 1\}$.
+     - Immediately propagate $1 \cdot f_1$ to all multiples $m = 1, 2, \dots, W$: set `qg[m] = f_1`.
+   - **Loop for $q = 1, 2, \dots, W - 1$**:
+     1. At the start of step $q$, every divisor $d \mid q$ satisfies $1 \le d \le q$, so $f_d$ has already been finalized and added to `qg[q]`! Thus $\text{qg}[q] = q g_q = \sum_{d \mid q} d f_d$ is 100% complete.
+     2. Call `e[q] = rc.next(qg[q], e[q - 1]) * inv[q] % MOD;` (note that in `rc`, index $m = q - 1$ pairs $[x^{q-1}]G' = q g_q$ with $[x^{q-1}]E = e_{q-1}$, returning $[x^{q-1}](G' E) = q e_q$).
+     3. Compute $b_{q+1} = (e_q - f_q) \bmod p$ and $f_{q+1} = (a_{q+1} + b_{q+1}) \bmod p$.
+     4. Propagate $(q + 1) f_{q+1}$ to all multiples of $q + 1$:
+        ```cpp
+        long long val = 1LL * (q + 1) * f[q + 1] % MOD;
+        for (int m = q + 1; m <= W; m += q + 1)
+            qg[m] = (qg[m] + val) % MOD;
+        ```
+   - **Output**: Print $b_2, b_3, \dots, b_W \bmod 998244353$.
+
+::: {.callout-note icon=false}
+## Algorithm Contract: ABC 230 Ex (`#023`)
+
+- **Input & Preconditions**: Maximum weight $W \le 2 \times 10^5$ and indicator array $a[1 \dots W] \in \{0, 1\}^W$ of available gold bar weights; prime modulus $p = 998244353 > W$; base cases $e_0 = 1$, $b_1 = 0$, $f_1 = a_1$, and `qg[m] = f_1` initialized for all $1 \le m \le W$.
+- **Postconditions**: After step $q = W - 1$, $b[2 \dots W]$ holds the exact number of valid pouches of each weight $n \in [2, W]$ modulo $p$.
+- **Index & Truncation Boundaries**: Online step index $q$ runs over $[1, W - 1]$; at step $q$, `rc.next(q * g_q, e_{q-1})` produces $[x^{q-1}](x G'(x) E(x))$ to determine $e_q, b_{q+1}, f_{q+1}$.
+- **Complexity**: $O(W \log^2 W)$ time and $O(W)$ space (one `RelaxedConvolution` engine plus $O(W \log W)$ harmonic divisor additions).
+- **1-Sentence Loop Invariant**: At the beginning of step $q \in [1, W - 1]$, $f[1 \dots q]$ and $e[0 \dots q - 1]$ are finalized, and `qg[q]` holds the complete divisor sum $q g_q = \sum_{d \mid q} d f_d \bmod p$.
+- **Failure Modes & Edge Cases**: Because a pouch requires at least two items inside it (having weight $+1$ for the pouch itself), $b_1 = 0$ even if $a_1 = 1$, and $e_1 = f_1 = a_1$ must be subtracted from $[x^q] E(x)$ when computing $b_{q+1} = e_q - f_q$; forgetting to propagate $(q + 1) f_{q+1}$ to all multiples $m = k(q + 1) \le W$ corrupts the Pólya cycle-index sum.
+:::
+
+</details>
+
+---
+
+### Advanced 1 (`#056`) — Non-Homogeneous Causal Recurrence: AtCoder ARC 123 F / ARC 115 E
+
+- **Source**: [AtCoder Regular Contest 123, Problem F](https://atcoder.jp/contests/arc123/tasks/arc123_f) & [AtCoder Regular Contest 115, Problem E (LEQ and NEQ)](https://atcoder.jp/contests/arc115/tasks/arc115_e)
+- **Prerequisite Tags**: `[Connected-Component Run-Length IE, Non-Homogeneous Causal Recurrence, CDQ Divide-and-Conquer]`
+- **Problem Statement**:
+  Given positive integers $A_1, \dots, A_N$ ($1 \le A_i \le 10^9$), count sequences $X = (X_1, \dots, X_N)$ of integers such that $1 \le X_i \le A_i$ for all $1 \le i \le N$ and $X_i \neq X_{i+1}$ for all $1 \le i \le N - 1$, modulo $998244353$. By Connected-Component Inclusion-Exclusion, this reduces to evaluating the canonical non-homogeneous causal recurrence
+  $$
+  dp[i] = \sum_{j=0}^{i-1} (-1)^{i - j - 1} dp[j] \cdot w_{i - j} \cdot \min_{k = j + 1}^{i} A_k \qquad (1 \le i \le N, \quad dp[0] = 1)
+  $$
+  both for the unweighted run kernel $w_{i-j} = 1$ in $O(N)$ time and for a general causal weight sequence $w_1, \dots, w_N$ in $O(N \log^2 N)$ time via CDQ divide-and-conquer NTT.
+- **Constraints**: $1 \le N \le 5 \times 10^5$ for $w_{i-j} = 1$ ($O(N)$ monotonic stack), $1 \le N \le 10^5$ for general $w_{i-j}$ ($O(N \log^2 N)$ CDQ NTT). Modulus $p = 998244353$. Time limit: $2.0\text{ s}$.
+- **Sample Trace ($N \le 4$)**: For $N = 3, A = (2, 3, 2)$ and $w \equiv 1$, valid sequences $(X_1, X_2, X_3)$ with $1 \le X_i \le A_i$ and $X_i \neq X_{i+1}$ are: for $X_1 = 1$, $X_2 = 2 \implies X_3 = 1$ ($1$ way) and $X_2 = 3 \implies X_3 \in \{1, 2\}$ ($2$ ways); for $X_1 = 2$, $X_2 = 1 \implies X_3 = 2$ ($1$ way) and $X_2 = 3 \implies X_3 \in \{1, 2\}$ ($2$ ways), giving $dp[3] = 6$ (via recurrence: $dp[0]=1, dp[1]=2, dp[2]=2\cdot 3 - 1\cdot 2 = 4, dp[3]=4\cdot 2 - 2\cdot 2 + 1\cdot 2 = 6$).
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+By Chapter 08's **Connected-Component Inclusion-Exclusion (`连续段容斥`)**, instead of enforcing $X_k \neq X_{k+1}$ directly, partition the index interval $[1, N]$ into maximal contiguous blocks $(j, i]$ where all elements are forced to be equal: $X_{j+1} = X_{j+2} = \dots = X_i$.
+If all elements in $(j, i]$ must be equal and satisfy $1 \le X_k \le A_k$, how many valid values can this shared block take? Clearly $\min_{k=j+1}^i A_k$. And what is the Inclusion-Exclusion sign of a fused block of length $s = i - j$? It is $(-1)^{s - 1} = (-1)^{i - j - 1}$.
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+First absorb the alternating sign $(-1)^{i - j - 1}$ by defining $\widetilde{dp}[i] = (-1)^i dp[i]$:
+$$
+\widetilde{dp}[i] = -\sum_{j=0}^{i-1} \widetilde{dp}[j] \cdot w_{i - j} \cdot \min_{k = j + 1}^{i} A_k.
+$$
+Why is $\min_{k=j+1}^i A_k$ not a function of $i - j$ alone? Because it is the range minimum on $[j + 1, i]$.
+How do we turn a range minimum $\min_{k=j+1}^i A_k$ into a constant factor so that $j$ and $i$ decouple?
+- **Method 1 (CDQ NTT with Prefix/Suffix Minima for General $w_{i-j}$)**: At CDQ midpoint $m$, split $\min_{k=j+1}^i A_k = \min(L_j, R_i)$ where $L_j = \min_{k=j+1}^m A_k$ is non-decreasing and $R_i = \min_{k=m+1}^i A_k$ is non-increasing, decoupling the transfer $[l, m] \to [m + 1, r]$.
+- **Method 2 (Monotonic Stack for $w_{i-j} = 1$)**: When $w_{i-j} = 1$, $\widetilde{dp}[i] = -\sum_{j=0}^{i-1} \widetilde{dp}[j] \min_{k=j+1}^i A_k$ can be maintained incrementally in $O(1)$ amortized time as $i$ advances by keeping a monotonic increasing stack of suffix minima of $A$.
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+- For **$w_{i-j} = 1$ (`ARC 115 E`)**: Maintain a stack of segments $(L_r, R_r, \text{val}_r, \text{sum\_dp}_r)$ where $\text{val}_r = \min_{k=j+1}^i A_k$ is constant for $j \in [L_r, R_r]$ and $\text{sum\_dp}_r = \sum_{j=L_r}^{R_r} \widetilde{dp}[j]$. When $A_i$ arrives, pop all stack segments with $\text{val}_r \ge A_i$, merge their $\text{sum\_dp}_r$ into a single segment with value $A_i$, update the running global sum $S = \sum_r \text{val}_r \cdot \text{sum\_dp}_r$, and set $\widetilde{dp}[i] = -S \bmod p$.
+- For **General $w_{i-j}$**: Combine midpoint CDQ divide-and-conquer `solve(l, r)` with two-pointer / Cartesian-tree splitting on $L_j = \min_{k=j+1}^m A_k$ and $R_i = \min_{k=m+1}^i A_k$ to transfer $[l, m] \to [m + 1, r]$ via NTT in $O(N \log^2 N)$ time.
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **Step 1 (Connected-Component Inclusion-Exclusion Setup)**:
+   In any sequence $X = (X_1, \dots, X_N)$, let $E = \{1, 2, \dots, N - 1\}$ be the set of adjacent pairs $(k, k + 1)$. We want no pair in $E$ to have $X_k = X_{k+1}$. By Inclusion-Exclusion over subsets $F \subseteq E$ of violated edges:
+   - Choosing $F \subseteq E$ partitions $\{1, \dots, N\}$ into $c = N - |F|$ connected components (contiguous intervals) $(j_0, j_1], (j_1, j_2], \dots, (j_{c-1}, j_c]$ with $0 = j_0 < j_1 < \dots < j_c = N$.
+   - The weight $(-1)^{|F|} = \prod_{r=1}^c (-1)^{(j_r - j_{r-1}) - 1}$ factors cleanly across the $c$ intervals.
+   - On each interval $(j, i]$ of length $i - j$, all $X_{j+1} = \dots = X_i$ must take the same integer value in $[1, \min_{k=j+1}^i A_k]$, giving $\min_{k=j+1}^i A_k$ choices (multiplied by $w_{i-j}$ in the general weighted recurrence).
+   Summing over the last interval $(j, i]$ gives the causal DP:
+   $$
+   dp[0] = 1, \qquad dp[i] = \sum_{j=0}^{i-1} (-1)^{i - j - 1} dp[j] \cdot w_{i - j} \cdot \min_{k = j + 1}^{i} A_k \qquad (1 \le i \le N).
+   $$
+   Multiplying both sides by $(-1)^i$ and setting $\widetilde{dp}[i] = (-1)^i dp[i]$ removes the alternating sign from $i - j$:
+   $$
+   \widetilde{dp}[0] = 1, \qquad \widetilde{dp}[i] = -\sum_{j=0}^{i-1} \widetilde{dp}[j] \cdot w_{i - j} \cdot \min_{k = j + 1}^{i} A_k.
+   $$
+
+2. **Step 2 ($O(N)$ Monotonic Stack Solution for $w_{i-j} = 1$)**:
+   When $w_{i-j} = 1$, at step $i$ we need the weighted sum
+   $$
+   S_i = \sum_{j=0}^{i-1} \widetilde{dp}[j] \cdot m(j, i), \qquad \text{where } m(j, i) = \min_{k = j + 1}^{i} A_k.
+   $$
+   As $j$ goes from $0$ to $i - 1$, the suffix minimum $m(j, i)$ is a non-decreasing step function of $j$. We maintain its constant steps on a monotonic stack of pairs $(\text{val}_r, \text{sum\_dp}_r)$ alongside the running total $S$:
+   - Before processing $A_i$, push a new singleton segment $(\text{val} = +\infty, \text{sum\_dp} = \widetilde{dp}[i - 1])$.
+   - While the top of the stack has $\text{val}_r \ge A_i$:
+     - Pop $(\text{val}_r, \text{sum\_dp}_r)$, subtract $\text{val}_r \cdot \text{sum\_dp}_r$ from $S$ (if $\text{val}_r < +\infty$), and add $\text{sum\_dp}_r$ to `acc_dp`.
+   - Push $(A_i, \text{acc\_dp})$ onto the stack and add $A_i \cdot \text{acc\_dp}$ to $S$.
+   - Now $S = S_i \bmod p$, so set $\widetilde{dp}[i] = (p - S) \bmod p$.
+   - Finally, recover $dp[N] = (-1)^N \widetilde{dp}[N] \bmod p$.
+
+3. **Step 3 ($O(N \log^2 N)$ CDQ Divide-and-Conquer NTT for General $w_{i-j}$)**:
+   When $w_{i-j}$ is an arbitrary sequence, at CDQ node $[l, r]$ with midpoint $m = \lfloor (l + r) / 2 \rfloor$, define the left suffix-minimum array $L_j = \min_{k=j+1}^m A_k$ for $j \in [l, m - 1]$ (with $L_m = +\infty$) and the right prefix-minimum array $R_i = \min_{k=m+1}^i A_k$ for $i \in [m + 1, r]$. Then for any $j \in [l, m]$ and $i \in [m + 1, r]$:
+   $$
+   \min_{k = j + 1}^{i} A_k = \min(L_j, R_i).
+   $$
+   Notice that $L_j$ is non-decreasing as $j \to m$ and $R_i$ is non-increasing as $i \to r$. Splitting the transfer $[l, m] \to [m + 1, r]$ into the regime $L_j \le R_i$ (where the factor $L_j$ attaches to $\widetilde{dp}[j]$ on the left) and $L_j > R_i$ (where the factor $R_i$ attaches to the output at $i$ on the right) via Cartesian-tree / two-pointer block decomposition evaluates all cross-transfers in $O(N \log^2 N)$ time. *(And for `ARC 123 F — Arithmetic Progression`, the Stern–Brocot / Farey tree traversal coupled with priority-queue / causal generation extracts the $K$-th lexicographically smallest arithmetic progression in the target window.)*
+
+::: {.callout-note icon=false}
+## Algorithm Contract: ARC 123 F / ARC 115 E (`#056`)
+
+- **Preconditions**: Array $A[1 \dots N]$ ($A_i \ge 1$, reduced modulo $p = 998244353$ when multiplying in DP) and transition kernel $w[1 \dots N]$.
+- **Postconditions**: Returns $dp[N] = (-1)^N \widetilde{dp}[N] \bmod 998244353$.
+- **Index & Truncation Boundaries**: $\widetilde{dp}$ is indexed on $[0, N]$ with $\widetilde{dp}[0] = 1$; at step $i \in [1, N]$, $\widetilde{dp}[i - 1]$ is pushed onto the suffix-minimum stack before coalescing segments with $\text{val}_r \ge A_i$.
+- **Complexity**: $O(N)$ time and $O(N)$ space for $w \equiv 1$; $O(N \log^2 N)$ time and $O(N)$ space for general $w_{i-j}$.
+- **1-Sentence Loop Invariant**: Immediately after coalescing stack segments for $A_i$, the stack partitions $[0, i - 1]$ into contiguous intervals on each of which $\min_{k=j+1}^i A_k$ is strictly increasing and $S \equiv \sum_{j=0}^{i-1} \widetilde{dp}[j] \min_{k=j+1}^i A_k \pmod p$.
+- **Failure Mode & Characteristic-$p$ Condition**: Comparing stack values after reducing $A_i \bmod p$ corrupts the monotone stack order; comparisons $\text{val}_r \ge A_i$ must use the raw integer values $A_i \in \mathbb{Z}$, while only the running DP products $\text{dp\_sum} \cdot (A_i \bmod p)$ are reduced modulo $p$.
+:::
+
+</details>
+
+---
+
+### Advanced 2 (`#225`) — LibreOJ 6503: Magic (魔术)
+
+- **Source**: [LibreOJ #6503 (雅礼集训 2018 Day 4)](https://loj.ac/p/6503)
+- **Prerequisite Tags**: `[Connected-Component Run-Length IE, EGF Block Assembly, Divide-and-Conquer NTT]`
+- **Problem Statement**:
+  A magician has $m$ colors of magic cards, where color $i$ ($1 \le i \le m$) has $a_i \ge 1$ identical cards, and the total number of cards is $n = \sum_{i=1}^m a_i$. Two cards of the same color are indistinguishable.
+  Given an integer $k$ ($0 \le k < n$, with $k = 0$ requiring no two adjacent cards to share the same color), compute the number of card sequences of length $n$ in which **exactly $k$** adjacent indices $1 \le r \le n - 1$ have card $r$ and card $r + 1$ of the same color, modulo $998244353$. *(Note: If cards of the same color are instead treated as distinguishable, simply multiply the final answer by $\prod_{i=1}^m a_i! \bmod 998244353$.)*
+- **Constraints**: $1 \le m \le 10^5$, $1 \le n = \sum_{i=1}^m a_i \le 4 \times 10^5$, $0 \le k < n$. Modulus $p = 998244353$. Time limit: $2.0\text{ s}$. Required complexity: $O(n \log^2 n)$.
+- **Sample Trace ($N \le 4$)**: For $m = 2$ colors with counts $a = (2, 1)$ ($n = 3$ indistinguishable cards per color: two `1`s and one `2`), the $\binom{3}{2,1} = 3$ arrangements are `(1, 2, 1)` ($0$ monochromatic adjacent pairs) and `(1, 1, 2), (2, 1, 1)` ($1$ monochromatic adjacent pair each). Thus $f_0 = 1$ for $k = 0$ and $f_1 = 2$ for $k = 1$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+By Chapter 08's **Connected-Component Inclusion-Exclusion (`连续段容斥`)**, suppose the $a_i$ identical cards of color $i$ are partitioned into $j$ non-empty contiguous blocks ($1 \le j \le a_i$).
+1. Using Stars and Bars, in how many ways can $a_i$ identical cards be split into an ordered sequence of $j$ non-empty blocks? $\binom{a_i - 1}{j - 1}$ ways.
+2. How many adjacent monochromatic pairs are forced inside these $j$ blocks? Since fusing two blocks of the same color creates $1$ monochromatic adjacency, splitting $a_i$ cards into $j$ blocks forces **at least $a_i - j$** monochromatic adjacencies.
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+First consider the $k = 0$ case (zero adjacent monochromatic pairs):
+If color $i$ is split into $j$ blocks ($a_i - j$ forced violations), its Inclusion-Exclusion sign is $(-1)^{a_i - j}$, and because the $j$ blocks of color $i$ are indistinguishable when interleaved with blocks of other colors, its Exponential Generating Function (EGF) is
+$$
+P_i(x) = \sum_{j=1}^{a_i} (-1)^{a_i - j} \binom{a_i - 1}{j - 1} \frac{x^j}{j!}.
+$$
+When we multiply $P(x) = \prod_{i=1}^m P_i(x) = \sum_{B=m}^n p_B x^B$, what does $B! [x^B] P(x)$ represent? It sums over all ways to interleave $B = \sum_{i=1}^m j_i$ total blocks across all $m$ colors.
+And for general $k \ge 0$ (exact $k$ adjacent monochromatic pairs), replace the sign $(-1)^{a_i - j}$ with $(y - 1)^{a_i - j}$ via Binomial Inversion ($y \mapsto y - 1$).
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Notice that $\sum_{i=1}^m (a_i - j_i) = n - \sum_{i=1}^m j_i = n - B$ depends **only on the total number of blocks $B = \sum_{i=1}^m j_i$**, NOT on the individual $j_i$'s.
+Therefore, even for general $k \ge 0$, we DO NOT need 2D polynomials. Define the 1D polynomial of degree $a_i$:
+$$
+Q_i(x) = \sum_{j=1}^{a_i} \binom{a_i - 1}{j - 1} \frac{x^j}{j!}.
+$$
+Multiply $Q(x) = \prod_{i=1}^m Q_i(x) = \sum_{B=m}^n q_B x^B$ using a Divide-and-Conquer Product Tree (`Ch 01.4`) in $O(n \log^2 n)$ time. Then $g_{n - B} = B! \, q_B$ is the number of ways to force $v = n - B$ monochromatic adjacencies:
+- For $k = 0$: $\text{Ans} = \sum_{B=m}^n (-1)^{n - B} B! \, q_B$.
+- For general $k$: $\text{Ans}_k = \sum_{v=k}^{n-m} (-1)^{v - k} \binom{v}{k} g_v$.
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **Step 1 (Per-Color Block Decomposition & Binomial Inversion)**:
+   Consider color $i \in \{1, \dots, m\}$, which has $a_i$ indistinguishable cards. In any arrangement of the $n$ cards, there are $a_i - 1$ potential internal boundaries between consecutive occurrences of color $i$ if they are placed adjacent to each other.
+   If we select $v_i = a_i - j_i$ of these internal boundaries to be **forced adjacent pairs** ($1 \le j_i \le a_i$), the $a_i$ cards of color $i$ fuse into $j_i$ contiguous blocks. There are $\binom{a_i - 1}{a_i - j_i} = \binom{a_i - 1}{j_i - 1}$ ways to choose which boundaries are fused.
+   Now suppose color $i$ is fused into $j_i$ blocks for each $i = 1, \dots, m$, giving $B = \sum_{i=1}^m j_i$ total blocks and $v = \sum_{i=1}^m (a_i - j_i) = n - B$ total forced monochromatic adjacencies. Since cards of the same color are indistinguishable, two interleavings of the $B$ blocks produce the same sequence of fused blocks if and only if they permute the $j_i$ blocks of color $i$ among themselves. Thus there are
+   $$
+   \frac{B!}{j_1! \, j_2! \cdots j_m!}
+   $$
+   ways to arrange the $B$ blocks in a line.
+
+2. **Step 2 (Factoring into 1D EGFs & Divide-and-Conquer NTT)**:
+   Summing over all tuples $(j_1, \dots, j_m)$ with $\sum_{i=1}^m j_i = B$, the number of relaxed configurations $g_{n - B}$ with $v = n - B$ forced monochromatic adjacencies is
+   $$
+   g_{n - B} = B! \sum_{j_1 + \dots + j_m = B} \prod_{i=1}^{m} \binom{a_i - 1}{j_i - 1} \frac{1}{j_i!} = B! \, [x^B] \prod_{i=1}^{m} Q_i(x),
+   $$
+   where each $Q_i(x)$ is a polynomial of degree $a_i$:
+   $$
+   Q_i(x) = \sum_{j=1}^{a_i} \binom{a_i - 1}{j - 1} \frac{x^j}{j!}.
+   $$
+   Since $\sum_{i=1}^m \deg Q_i = \sum_{i=1}^m a_i = n \le 4 \times 10^5$, we compute $Q(x) = \prod_{i=1}^m Q_i(x)$ in $O(n \log^2 n)$ time using a binary divide-and-conquer product tree (`multiply_all(l, r)`) or a min-heap (Huffman) NTT merge.
+
+3. **Step 3 (Final Inclusion-Exclusion / Binomial Inversion Extraction)**:
+   Once $g_{n - B} = B! [x^B] Q(x)$ is computed for all $B = m, m + 1, \dots, n$ (so $v = n - B \in [0, n - m]$):
+   - By Binomial Inversion ([Chapter 08.1](ch08-connected-component-ie-rook-goulden-jackson.qmd)), the number of sequences with **exactly $k$** monochromatic adjacent pairs is
+     $$
+     f_k = \sum_{v = k}^{n - m} (-1)^{v - k} \binom{v}{k} g_v = \sum_{B = m}^{n - k} (-1)^{n - B - k} \binom{n - B}{k} B! \, [x^B] Q(x) \pmod{998244353}.
+     $$
+   - In particular, for $k = 0$ (no two adjacent cards of the same color), this simplifies to the single linear pass
+     $$
+     f_0 = \sum_{B = m}^{n} (-1)^{n - B} B! \, [x^B] Q(x) \pmod{998244353}.
+     $$
+   - **Hand-Check for $m = 2, a_1 = 2, a_2 = 1$ ($n = 3, k = 0$)**:
+     - $Q_1(x) = x + \frac{x^2}{2}$, $Q_2(x) = x \implies Q(x) = x^2 + \frac{x^3}{2}$.
+     - $B = 2$: $(-1)^{3-2} \cdot 2! \cdot 1 = -2$.
+     - $B = 3$: $(-1)^{3-3} \cdot 3! \cdot \frac{1}{2} = +3$.
+     - $f_0 = -2 + 3 = 1$ (corresponding to the unique valid sequence `1 2 1`). Matches!
+
+::: {.callout-note icon=false}
+## Algorithm Contract: LibreOJ 6503 (`#225`)
+
+- **Preconditions**: Positive color counts $a_1, \dots, a_m \ge 1$ with $n = \sum_{i=1}^m a_i \le 4 \times 10^5$, and target adjacency count $0 \le k < n$.
+- **Postconditions**: Returns $f_k \bmod 998244353$, the number of arrangements with exactly $k$ monochromatic adjacent pairs.
+- **Index & Truncation Boundaries**: Each polynomial $Q_i(x)$ has degree $a_i$ with $[x^0] Q_i(x) = 0$; the product $Q(x) = \prod_{i=1}^m Q_i(x)$ has non-zero coefficients only on $[m, n]$.
+- **Complexity**: $O(n \log^2 n)$ time and $O(n)$ space.
+- **1-Sentence Loop Invariant**: At node $[l, r]$ of the divide-and-conquer product tree, `multiply_all(l, r)` returns the exact polynomial $\prod_{i=l}^r Q_i(x)$ of degree $\sum_{i=l}^r a_i$.
+- **Failure Mode & Characteristic-$p$ Condition**: Fails if $p \le n$ (since inverse factorials $1/c!$ in $Q_i(x)$ and $c!$ in the EGF extraction divide by zero modulo $p$), or if $k > n - m$ (where $c = n - k < m$, so no valid block decomposition exists and the output must be $0$).
+:::
+
+</details>
+
+---
+
+### Mastery 1 (`#206`) — UOJ 50: [UR #3] 链式反应 (Chain Reaction)
+
+- **Source**: [Universal Online Judge #50 (UOJ Round #3)](https://uoj.ac/problem/50)
+- **Prerequisite Tags**: `[Riccati Nonlinear ODE, Self-Convolution CDQ NTT, Failure Mode #13, Relaxed Convolution]`
+- **Problem Statement**:
+  In a nuclear chain reaction, atoms are labeled $1, 2, \dots, m$. A valid reaction tree of size $m$ ($1 \le m \le n$) is a rooted labeled structure constructed as follows:
+  - If $m = 1$, the single atom $1$ forms a trivial tree on its own ($1$ way).
+  - If $m \ge 2$, the root must be atom $1$ (the minimum label among all atoms in its subtree). When the root fires, it simultaneously produces:
+    1. An **unordered pair** of two active child reaction trees (which are themselves non-empty valid reaction trees on disjoint subsets of labels, each rooted at its own minimum label), and
+    2. A set of $i \in \{0, 1, \dots, m - 3\}$ passive leaf atoms (allowed if and only if $a_i = 1$ in a given binary string $a_0 a_1 \dots a_{n-1}$).
+  Given $n$ and the binary string $a_0 a_1 \dots a_{n-1} \in \{0, 1\}^n$, compute the number of valid reaction trees $f_m$ for every $m = 1, 2, \dots, n$ modulo $998244353$.
+- **Constraints**: $1 \le n \le 2 \times 10^5$, $a_i \in \{0, 1\}$. Modulus $p = 998244353$. Time limit: $2.0\text{ s}$. Required complexity: $O(n \log^2 n)$ via CDQ NTT / `RelaxedConvolution` (or $O(n \log n)$ via Integrating-Factor Newton in Chapter 10).
+- **Sample Trace ($N \le 4$)**: Suppose $n = 4$ and $a = (1, 1, 0, 0)$ ($a_0 = 1, a_1 = 1$). Then $f_1 = 1$ (single root atom $1$); $f_2 = 0$ (two active child trees require at least $1 + 1 + 1 = 3$ atoms); $f_3 = a_0 = 1$ (root $1$ plus an unordered pair of size-$1$ active children $\{2\}, \{3\}$ and $0$ passive leaves); and $f_4 = 3 a_1 = 3$ (root $1$, $1$ passive leaf chosen in $\binom{3}{1} = 3$ ways from $\{2, 3, 4\}$, and the remaining $2$ atoms forming two size-$1$ active child subtrees).
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Let $F(x) = \sum_{m=1}^n \frac{f_m}{m!} x^m$ be the Exponential Generating Function (EGF) of valid reaction trees, and let $A(x) = \sum_{i=0}^{n-1} \frac{a_i}{i!} x^i$ be the EGF of the passive leaf set.
+By Chapter 04's **Boxed Product ($C' = A' B$)** ([Section 4.2](ch04-egf-set-cyc-boxed-prufer.qmd)), removing the minimum-labeled root from a labeled structure of size $m$ corresponds to taking the **formal derivative $F'(x)$**.
+What remains after removing the root? Either the tree had size $m = 1$ (leaving the empty set, EGF $1$), or the remaining $m - 1$ labels are partitioned into an unordered pair of active subtrees ($\operatorname{SET}_2(F) = \frac{1}{2} F(x)^2$) and a passive leaf set ($A(x)$).
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+By the EGF product rule, $F(x)$ satisfies the non-autonomous **Riccati differential equation**:
+$$
+F'(x) = \frac{1}{2} A(x) F(x)^2 + 1, \qquad F(0) = 0.
+$$
+Extracting $[x^{m-1}]$ for $m \ge 1$ gives
+$$
+m \cdot \tilde{f}_m = [m = 1] + \frac{1}{2} [x^{m-1}] \big( A(x) F(x)^2 \big), \qquad \text{where } \tilde{f}_m = \frac{f_m}{m!} = [x^m] F(x).
+$$
+Notice that because $F(0) = 0$, $[x^{m-1}]\big(A(x) F(x)^2\big)$ only involves $\tilde{f}_j$ and $\tilde{f}_k$ with $j + k \le m - 1$ ($1 \le j, k \le m - 2$).
+How can we solve this in $O(n \log^2 n)$ time using **two `RelaxedConvolution` instances** (or via CDQ NTT while applying the Failure Mode #13 factor-of-2 symmetry fix)?
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+- **Method A (Two `RelaxedConvolution` Instances — 10 Lines, Zero Edge Cases)**:
+   Define $S(x) = F(x)^2$ and $P(x) = A(x) S(x)$, so $F'(x) = 1 + \frac{1}{2} P(x)$.
+   At step $q = m - 1$ ($q = 0, 1, \dots, n - 1$), since $\tilde{f}_q$ was already finalized at the end of step $q - 1$:
+   1. `s_q = rc_S.next(f_tilde[q], f_tilde[q]);` (computes $[x^q] F(x)^2$).
+   2. `p_q = rc_P.next(a_tilde[q], s_q);` (computes $[x^q](A(x) F(x)^2)$).
+   3. `f_tilde[q + 1] = ((q == 0 ? 1 : 0) + inv2 * p_q % MOD) * inv[q + 1] % MOD;`
+- **Method B (Semi-Online CDQ NTT)**:
+   In `solve(l, r)` on $[0, n - 1]$, maintain $s_q = [x^q] F(x)^2$ and $p_q = [x^q](A(x) S(x))$ using the Failure Mode #13 multiplier `(l == 0 ? 1 : 2)` on $\tilde{f} \times \tilde{f}$ and accounting for the $k = 0$ term $\tilde{a}_0 s_q$ at the leaf $l = r = q$.
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **Step 1 (Translating the Chain-Reaction Grammar into a Riccati ODE)**:
+   For a reaction tree of size $m \ge 2$, the root must receive label $1$ (the smallest of the $m$ labels). The remaining $m - 1$ labels are partitioned into three parts: two active subtrees of sizes $j \ge 1$ and $k \ge 1$ (unordered, so we divide by $2! = 2$), and one set of passive leaves of size $i \ge 0$ ($i + j + k = m - 1$).
+   Since the $i$ passive leaves have only $a_i \in \{0, 1\}$ ways to be formed on a given label subset of size $i$, their EGF is $A(x) = \sum_{i=0}^{n-1} \frac{a_i}{i!} x^i$. The unordered pair of active subtrees has EGF $\frac{1}{2} F(x)^2$. Including the base tree of size $m = 1$ (whose derivative is $1$), the EGF $F(x) = \sum_{m=1}^n \tilde{f}_m x^m$ ($\tilde{f}_m = \frac{f_m}{m!}$) satisfies
+   $$
+   F'(x) = \frac{1}{2} A(x) F(x)^2 + 1, \qquad F(0) = 0.
+   $$
+
+2. **Step 2 (Solution 1: Chained `RelaxedConvolution` in $O(n \log^2 n)$ — Recommended for Contest Implementation)**:
+   Let $S(x) = F(x)^2 = \sum_{q \ge 0} s_q x^q$ and $P(x) = A(x) S(x) = \sum_{q \ge 0} p_q x^q$.
+   Extracting $[x^q]$ from $F'(x) = 1 + \frac{1}{2} P(x)$ for $q = 0, 1, \dots, n - 1$ gives
+   $$
+   (q + 1) \tilde{f}_{q+1} = [q = 0] + \frac{1}{2} p_q.
+   $$
+   Notice the strict causality: at step $q$, $\tilde{f}_0, \tilde{f}_1, \dots, \tilde{f}_q$ are already known (starting with $\tilde{f}_0 = 0$). Therefore:
+   - Feeding $(\tilde{f}_q, \tilde{f}_q)$ into `rc_S.next` immediately yields $s_q = [x^q] F(x)^2$.
+   - Feeding $(\tilde{a}_q, s_q)$ (where $\tilde{a}_q = a_q / q!$) into `rc_P.next` immediately yields $p_q = [x^q](A(x) S(x))$.
+   - Dividing $[q = 0] + \frac{1}{2} p_q$ by $q + 1$ immediately produces $\tilde{f}_{q+1}$, ready for step $q + 1$.
+   Let us trace $q = 0, 1, 2$ by hand:
+   - $q = 0$: $\tilde{f}_0 = 0 \implies s_0 = 0 \implies p_0 = 0 \implies 1 \cdot \tilde{f}_1 = 1 + 0 = 1 \implies f_1 = 1! \tilde{f}_1 = 1$.
+   - $q = 1$: $\tilde{f}_1 = 1 \implies s_1 = [x^1] F^2 = 0 \implies p_1 = 0 \implies 2 \cdot \tilde{f}_2 = 0 \implies f_2 = 0$.
+   - $q = 2$: $\tilde{f}_2 = 0 \implies s_2 = [x^2] F^2 = \tilde{f}_1^2 = 1 \implies p_2 = \tilde{a}_0 s_2 = a_0 \implies 3 \cdot \tilde{f}_3 = \frac{1}{2} a_0 \implies f_3 = 3! \frac{a_0}{6} = a_0$.
+   (Indeed, a tree of size $m = 3$ has $1$ root and $2$ active child leaves of size $1$, leaving $i = 0$ passive leaves, so there is $a_0$ way to form it.)
+
+3. **Step 3 (Solution 2: Asymmetric Semi-Online CDQ NTT & Preview of Ch 10.2 Newton ODE)**:
+   If implemented via CDQ NTT `solve(l, r)` on $q \in [0, n - 1]$ without `RelaxedConvolution`, we maintain $s_q = [x^q] F(x)^2$ and $p_q = [x^q](A(x) S(x))$:
+   - **Leaf Base Case ($l = r = q$)**: If $q = 0$, set $\tilde{f}_0 = 0, s_0 = 0, p_0 = 0, \tilde{f}_1 = 1$. If $q \ge 1$, all pairs $(j, k)$ with $j + k = q$ ($1 \le j, k \le q - 1$) have already been accumulated into $s_q$ by ancestor cross-transfers, so $s_q$ is finalized. Now add the instantaneous $k = 0$ contribution `p[q] = (p[q] + s[q] * a_tilde[0]) % MOD` (since $p_q = \sum_{j=0}^q s_j \tilde{a}_{q-j}$ includes $j = q$, which cannot come from $j \le m < q$), so $p_q$ is finalized, and finalize $\tilde{f}_{q+1} = \frac{p_q}{2(q + 1)} \bmod p$.
+   - **Cross-Transfer ($[l, m] \to [m + 1, r]$)**: After `solve(l, m)` returns, both $\tilde{f}[l \dots m]$ and $s[l \dots m]$ are finalized. We perform two NTT convolutions into $[m + 1, r]$:
+     1. Convolve $\tilde{f}[l \dots m] \times \tilde{f}[0 \dots (l == 0 ? m : r - l)]$ with multiplier `(l == 0 ? 1 : 2)` (**Failure Mode #13**) and add to $s[m + 1 \dots r]$;
+     2. Convolve $s[l \dots m] \times \tilde{a}[1 \dots r - l]$ with multiplier `1` and add to $p[m + 1 \dots r]$ (using $\tilde{a}[1 \dots r - l]$ since $\tilde{a}_0$ is applied at the leaf).
+   - **Cross-Reference to Chapter 10.2**: In [Chapter 10](ch10-implicit-equations-newton-unlabeled-trees-otter.qmd), we will see how to solve $F' - \frac{1}{2} A F^2 - 1 = 0$ in $O(n \log n)$ time via **Integrating-Factor Newton Iteration**: linearizing $F = F_k + \Delta$ gives $\Delta' - (A F_k) \Delta = \frac{1}{2} A F_k^2 + 1 - F_k'$, which is solved by multiplying by the integrating factor $\mu(x) = \exp\!\left(-\int A(x) F_k(x)\,dx\right)$.
+
+::: {.callout-note icon=false}
+## Algorithm Contract: UOJ 50 (`#206`)
+
+- **Preconditions**: Integer $n \ge 1$ and binary array $a[0 \dots n - 1] \in \{0, 1\}^n$, converted to EGF coefficients $\tilde{a}_q = a_q / q! \bmod 998244353$.
+- **Postconditions**: Returns $f_m = m! \, \tilde{f}_m \bmod 998244353$ for all $1 \le m \le n$.
+- **Index & Truncation Boundaries**: Step index $q$ runs over $[0, n - 1]$ with $\tilde{f}_0 = 0$; step $q$ computes $s_q = [x^q] F(x)^2$ and $p_q = [x^q](A(x) S(x))$ and writes $\tilde{f}_{q+1} = ([q = 0] + \frac{1}{2} p_q) / (q + 1)$.
+- **Complexity**: $O(n \log^2 n)$ time and $O(n)$ space via two `RelaxedConvolution` instances or CDQ NTT.
+- **1-Sentence Loop Invariant**: At the beginning of step $q \in [0, n - 1]$, $\tilde{f}[0 \dots q]$, $s[0 \dots q - 1]$, and $p[0 \dots q - 1]$ are finalized, allowing `rc_S.next` and `rc_P.next` to produce $s_q, p_q$, and $\tilde{f}_{q+1}$ in strict causal order.
+- **Failure Mode & Characteristic-$p$ Condition**: Fails if $p \le n$ or $p = 2$ (since integrating $F'(x)$ divides by $q + 1 \in [1, n]$ and the unordered child-pair factor divides by $2$ modulo $p$), or if $s_0 = \tilde{f}_0^2 = 0$ is not pushed into `rc_P` at $q = 0$ before advancing to $q = 1$.
+:::
+
+</details>
+
+---
+
+### Mastery 2 (`#075`) — AtCoder AGC 060 D: Same Generating Function (Same Descent Set)
+
+- **Source**: [AtCoder Grand Contest 060, Problem D](https://atcoder.jp/contests/agc060/tasks/agc060_d)
+- **Prerequisite Tags**: `[Coupled Permutation Descent IE, Hadamard-Square Super-Block EGF, CDQ NTT / Online Inversion]`
+- **Problem Statement**:
+  Given an integer $N$, count the number of ordered pairs of permutations $(P, Q) \in S_N \times S_N$ of $(1, 2, \dots, N)$ that have the **exact same descent set**—that is, for every index $1 \le i \le N - 1$,
+  $$
+  (P_i < P_{i+1}) \iff (Q_i < Q_{i+1}).
+  $$
+  Output the number of such pairs modulo $998244353$.
+- **Constraints**: $1 \le N \le 2 \times 10^5$. Modulus $p = 998244353$. Time limit: $5.0\text{ s}$. Required complexity: $O(N \log^2 N)$ via coupled CDQ NTT or $O(N \log N)$ via Hadamard-square super-block EGF inversion.
+- **Sample Trace ($N \le 4$)**: For $N = 1$, $\text{Ans}_1 = 1^2 = 1$. For $N = 2$, $D(1, 2) = \emptyset$ ($1$ perm) and $D(2, 1) = \{1\}$ ($1$ perm), so $\text{Ans}_2 = 1^2 + 1^2 = 2$. For $N = 3$, the four subsets of $\{1, 2\}$ have counts $f(\emptyset) = 1, f(\{1\}) = 2, f(\{2\}) = 2, f(\{1, 2\}) = 1$, so $\text{Ans}_3 = 1^2 + 2^2 + 2^2 + 1^2 = 10$ (and $\text{Ans}_4 = 88$).
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Let $D(P) = \{i \in [1, N - 1] : P_i > P_{i+1}\}$ be the descent set of $P$. For any fixed subset $S \subseteq [1, N - 1]$, let $f(S)$ be the number of permutations $P \in S_N$ with $D(P) = S$. Then we want to compute
+$$
+\text{Ans}_N = \sum_{S \subseteq [1, N - 1]} f(S)^2.
+$$
+By Inclusion-Exclusion on a single permutation $P$, if we instead fix a subset $A \subseteq [1, N - 1]$ of positions forced to be ascents ($P_i < P_{i+1}$), then $A$ partitions $[1, N]$ into contiguous increasing runs of lengths $s_1, \dots, s_k$, and the number of such permutations is the multinomial coefficient $\frac{N!}{s_1! \, s_2! \cdots s_k!}$.
+How does squaring $f(S)$ couple the run lengths of $P$ and $Q$?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Using the algebraic identity on the Boolean hypercube $\{+1, -1\}^{N-1}$ (or expanding $f(S)$ via Inclusion-Exclusion over forced ascent runs for both $P$ and $Q$), at each boundary $i \in \{1, \dots, N - 1\}$, there are four possibilities for the IE relaxation states of $(P, Q)$:
+1. Both $P$ and $Q$ are **cut** (start a new run) at $i$;
+2. $P$ continues its run across $i$, while $Q$ is cut at $i$;
+3. $Q$ continues its run across $i$, while $P$ is cut at $i$;
+4. Both $P$ and $Q$ continue their runs across $i$.
+Key observation: if we group the sequence $[1, N]$ at the positions where **both $P$ and $Q$ are simultaneously cut** (forming **super-blocks** of length $M \ge 1$), inside a single super-block of length $M$, $P$'s cuts and $Q$'s cuts never need to synchronize until the end of the super-block.
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Let us compute the weight of a super-block of length $M$ (`noshi91`'s Super-Block Decomposition):
+- Encode the ascent/descent pattern of $P$ as $\sigma_i(P) = 2[P_i < P_{i+1}] - 1 \in \{+1, -1\}$. Inside a super-block of length $M$, $P$ chooses a composition $s_1 + \dots + s_r = M$ of increasing run lengths where each run of length $s$ has EGF weight $2^{s-1} \frac{x^s}{s!} = \frac{1}{2}\frac{(2x)^s}{s!}$ and each of the $r - 1$ internal cuts has weight $-1$, giving the single-permutation super-block EGF
+  $$
+  U(x) = \sum_{r \ge 1} (-1)^{r - 1} \left(\frac{e^{2x} - 1}{2}\right)^r = \frac{e^{2x} - 1}{e^{2x} + 1} = \tanh(x) = \sum_{M=1}^{N} u_M x^M.
+  $$
+- Because $P$ and $Q$ choose their internal runs on $[1, M]$ **independently**, the combined weight on a super-block of length $M$ between two simultaneous cuts is the **Hadamard square** $w_M = u_M^2$.
+- Summing over all compositions of $[1, N]$ into super-blocks via `SEQ` inversion gives:
+  $$
+  \text{Ans}_N = \frac{(N!)^2}{2^{N - 1}} [x^N] \frac{1}{1 - W(x)}, \qquad W(x) = \sum_{M=1}^{N} u_M^2 x^M.
+  $$
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **Step 1 (Boolean Fourier / Inclusion-Exclusion Expansion of $\sum_S f(S)^2$)**:
+   For a permutation $P \in S_N$, encode its ascent/descent pattern as a sign vector $\sigma(P) \in \{+1, -1\}^{N-1}$, where $\sigma_i(P) = +1$ if $P_i < P_{i+1}$ and $-1$ if $P_i > P_{i+1}$.
+   Notice that for any pair $(P, Q) \in S_N^2$ and each $i \in [1, N - 1]$:
+   $$
+   \frac{1 + \sigma_i(P) \sigma_i(Q)}{2} = \begin{cases} 1 & \text{if } \sigma_i(P) = \sigma_i(Q), \\ 0 & \text{if } \sigma_i(P) \neq \sigma_i(Q). \end{cases}
+   $$
+   Summing over all $(P, Q) \in S_N^2$ and expanding the product over $i = 1, \dots, N - 1$ gives
+   $$
+   \begin{aligned}
+   \text{Ans}_N
+   &= \sum_{P, Q \in S_N} \prod_{i=1}^{N-1} \frac{1 + \sigma_i(P)\sigma_i(Q)}{2} = \frac{1}{2^{N-1}} \sum_{P, Q \in S_N} \sum_{T \subseteq [1, N - 1]} \prod_{i \in T} \sigma_i(P)\sigma_i(Q) && \text{(expanding } \prod_{i=1}^{N-1}(1 + x_i) = \sum_{T} \prod_{i \in T} x_i\text{)} \\
+   &= \frac{1}{2^{N-1}} \sum_{T \subseteq [1, N - 1]} \sum_{P \in S_N} \sum_{Q \in S_N} \left(\prod_{i \in T} \sigma_i(P)\right) \left(\prod_{i \in T} \sigma_i(Q)\right) && \text{(swapping }\sum_{P,Q}\text{ and }\sum_T\text{ and factoring }\prod_{i \in T}\text{)} \\
+   &= \frac{1}{2^{N-1}} \sum_{T \subseteq [1, N - 1]} \left( \sum_{P \in S_N} \prod_{i \in T} \sigma_i(P) \right)^2. && \text{(factoring independent sums over } P \text{ and } Q\text{)}
+   \end{aligned}
+   $$
+   Look at the inner sum $g(T) = \sum_{P \in S_N} \prod_{i \in T} \sigma_i(P)$ for a fixed subset $T \subseteq [1, N - 1]$.
+
+2. **Step 2 (Evaluating $g(T)$ via Alternating EGF $U(x) = \tanh(x)$)**:
+   In $g(T) = \sum_{P \in S_N} \prod_{i \in T} \sigma_i(P)$, the positions $i \notin T$ have weight $1$ (meaning $P$ is **cut** at $i$: there is no relation between $P_i$ and $P_{i+1}$). Thus the complement $[1, N - 1] \setminus T$ partitions $\{1, \dots, N\}$ into contiguous super-blocks of lengths $M_1, M_2, \dots, M_k$ ($M_1 + \dots + M_k = N$), where inside each super-block of length $M$, **every** adjacent step $i$ has weight $\sigma_i(P) = 2[P_i < P_{i+1}] - 1$.
+   Expanding $\prod_{i=1}^{M-1} (2[P_i < P_{i+1}] - 1)$ splits the block of length $M$ into $r \ge 1$ increasing runs of lengths $s_1 + \dots + s_r = M$, where each internal ascent edge contributes $+2$ (total $2^{(s_1 - 1) + \dots + (s_r - 1)} = 2^{M - r}$) and each of the $r - 1$ cut edges contributes $-1$ (total $(-1)^{r - 1}$).
+   Thus a single increasing run of length $s \ge 1$ has EGF weight $2^{s - 1} \frac{x^s}{s!} = \frac{1}{2} \frac{(2x)^s}{s!}$, so summing over $r \ge 1$ runs with sign $(-1)^{r - 1}$ gives the single-block EGF $U(x) = \sum_{M \ge 1} u_M x^M$:
+   $$
+   U(x) = \sum_{r \ge 1} (-1)^{r - 1} \left( \frac{e^{2x} - 1}{2} \right)^r = \frac{\frac{1}{2}(e^{2x} - 1)}{1 + \frac{1}{2}(e^{2x} - 1)} = \frac{e^{2x} - 1}{e^{2x} + 1} = \tanh(x).
+   $$
+   Let us check $M! [x^M] \frac{e^{2x} - 1}{e^{2x} + 1}$ for $M = 1, 2, 3$:
+   - $M = 1$: $1! [x^1] (x - \frac{1}{3} x^3 + \dots) = 1$ (since $S_1$ has $1$ permutation with weight $1$).
+   - $M = 2$: $2! [x^2] \frac{e^{2x}-1}{e^{2x}+1} = 0$ (since in $S_2$, `(1,2)` has $\sigma_1 = +1$ and `(2,1)` has $\sigma_1 = -1$, summing to $+1 - 1 = 0$).
+   - $M = 3$: $3! [x^3] \left(x - \frac{1}{3}x^3\right) = 6 \cdot \left(-\frac{1}{3}\right) = -2$ (in $S_3$, `(1,2,3)` gives $+1$, `(3,2,1)` gives $+1$, and the $4$ alternating permutations `(1,3,2), (2,3,1), (2,1,3), (3,1,2)` each have one ascent and one descent so $\sigma_1 \sigma_2 = -1$, summing to $1 + 1 - 4 = -2$).
+
+3. **Step 3 (Hadamard Square & Final `SEQ` Inversion / CDQ NTT)**:
+   For any subset $T \subseteq [1, N - 1]$ whose complement $[1, N - 1] \setminus T$ partitions $[1, N]$ into super-blocks of lengths $M_1 + M_2 + \dots + M_k = N$, the multinomial choice of labels across blocks gives
+   $$
+   g(T) = N! \prod_{r=1}^{k} u_{M_r}, \qquad \text{where } U(x) = \sum_{M=1}^{N} u_M x^M = \frac{e^{2x} - 1}{e^{2x} + 1}.
+   $$
+   Squaring $g(T)$ and summing over all $2^{N-1}$ subsets $T \subseteq [1, N - 1]$ (which is in bijection with all compositions $M_1 + \dots + M_k = N$) yields:
+   $$
+   \text{Ans}_N = \frac{(N!)^2}{2^{N - 1}} \sum_{k=1}^{N} \sum_{M_1 + \dots + M_k = N} \prod_{r=1}^{k} u_{M_r}^2 = \frac{(N!)^2}{2^{N - 1}} [x^N] \frac{1}{1 - W(x)},
+   $$
+   where $W(x) = \sum_{M=1}^{N} u_M^2 x^M$ is the **Hadamard square** of $U(x)$.
+   *(Note: Because $U(-x) = -U(x)$ is an odd function, $u_M = 0$ for all even $M$, so $W(x) = x + \frac{1}{9}x^3 + \frac{4}{225}x^5 + \dots$ has only odd powers $x^{2k+1}$.)*
+   - **Hand-Check for $N = 1, 2, 3$**:
+     - $u_1 = 1, u_2 = 0, u_3 = -1/3 \implies W(x) = x + \frac{1}{9} x^3 + \dots$.
+     - $N = 1$: $\frac{1^2}{2^0} [x^1] \frac{1}{1 - x} = 1$.
+     - $N = 2$: $\frac{2^2}{2^1} [x^2] \frac{1}{1 - x} = 2 \cdot 1 = 2$ (pairs `((1,2),(1,2))` and `((2,1),(2,1))`).
+     - $N = 3$: $\frac{6^2}{2^2} [x^3] \big(W(x) + W(x)^2 + W(x)^3\big) = 9 \cdot \left(\frac{1}{9} + 0 + 1\right) = 10$ (in $S_3$, descent set sizes are $1, 2, 2, 1$, and $1^2 + 2^2 + 2^2 + 1^2 = 10$).
+   - **Algorithm**:
+     1. Construct $E(x) = e^{2x} \bmod x^{N+1}$ in $O(N)$ time ($[x^m] E(x) = 2^m / m!$).
+     2. Compute $U(x) = (E(x) - 1)(E(x) + 1)^{-1} \bmod x^{N+1}$ via polynomial inversion (or online `inv` via CDQ / `RelaxedConvolution`).
+     3. Square coefficients pointwise: $w_M = u_M^2 \bmod p$ for $1 \le M \le N$.
+     4. Compute $(1 - W(x))^{-1} \bmod x^{N+1}$ via polynomial inversion (or online `inv` via CDQ / `RelaxedConvolution`) and multiply $[x^N]$ by $(N!)^2 \cdot 2^{-(N-1)} \bmod p$.
+
+::: {.callout-note icon=false}
+## Algorithm Contract: AGC 060 D (`#075`)
+
+- **Input & Preconditions**: Integer $N \ge 1$ ($N \le 2 \times 10^5$) and prime modulus $p = 998244353 > N$.
+- **Output & Postconditions**: Returns $\text{Ans}_N = \frac{(N!)^2}{2^{N-1}} [x^N](1 - W(x))^{-1} \bmod 998244353$, the number of pairs $(P, Q) \in S_N^2$ sharing the same descent set.
+- **Index & Truncation Boundaries**: Both $U(x)$ and $(1 - W(x))^{-1}$ are truncated at $\bmod x^{N+1}$; $[x^0](e^{2x} + 1) = 2 \not\equiv 0$ and $[x^0](1 - W(x)) = 1 \not\equiv 0$ are invertible modulo $998244353$.
+- **1-Sentence Loop Invariant**: After doubling precision to $2^k$ in Newton inversion, the truncated inverse satisfies $(1 - W(x)) G_k(x) \equiv 1 \pmod{x^{2^k}}$.
+- **Complexity & Failure Modes**: $O(N \log N)$ time via offline Newton `inv` (or $O(N \log^2 N)$ via online `RelaxedConvolution` / CDQ NTT) and $O(N)$ space. Squaring the ordinary coefficients $(M! u_M)^2$ instead of the EGF coefficients $u_M^2$ before applying `SEQ` $(1 - W(x))^{-1}$ destroys the multinomial block assembly $\binom{N}{M_1, \dots, M_k}^2$, and forgetting the normalization factor $2^{-(N-1)}$ at $N = 1$ ($2^0 = 1$) vs $N \ge 2$ shifts the result by a power of $2$.
+:::
+
+</details>
+
+---
+
+## 9.6 Implementation Verification Benchmark & Self-Assessment Checklist
+
+::: {.callout-note icon=false}
+## Quarantined Library Verification Footnote (`R-45`)
+
+Before tackling the 8-problem ladder above, unit-test your Semi-Online CDQ NTT (`solve(l, r)`) and 0-Indexed `RelaxedConvolution` implementations on the quarantined bare-template problem below:
+
+- **`R-45` — Luogu P4721: 【模板】分治 FFT (CDQ Divide-and-Conquer FFT)** ([Luogu P4721](https://www.luogu.com.cn/problem/P4721)): Given $g_1, g_2, \dots, g_{n-1}$ ($n \le 10^5$), compute $f_0, f_1, \dots, f_{n-1} \bmod 998244353$ where $f_0 = 1$ and $f_k = \sum_{i=1}^k f_{k-i} g_i$.
+  *(Pedagogical Note: As emphasized in Section 9.1, because this bare template has no non-linear wrapper $\psi_k$, it is simply $F(x) = (1 - G(x))^{-1}$ in disguise! Use it purely to benchmark the speed and indexing of your `solve(l, r)` and `RelaxedConvolution::next` engines against your $O(n \log n)$ Newton `inv`.)*
+:::
+
+### Chapter 09 Self-Assessment Checklist
+
+- [ ] Can you state the four structural obstacles (pointwise division by $n$, non-autonomous multipliers $w_n$, pointwise $\min/\max$ envelopes, and self-referential products) that prevent offline $(1 - G(x))^{-1}$ inversion?
+- [ ] Can you prove the **LCA Partition Invariant** for `solve(l, r)` and trace all $6$ causal pairs for $N = 4$?
+- [ ] Can you explain **Failure Mode #13** (why self-convolution CDQ NTT requires multiplying `f[l..m] * f[0..r-l]` by `2` when $l > 0$, and why $r - l < l$ holds on a dyadic grid)?
+- [ ] Can you implement the 15-line `RelaxedConvolution` struct using $d = \operatorname{lowbit}(q)$ and apply the **3-Step Self-Referential Protocol** (`Read c[q]` $\to$ `Solve` $\to$ `Push`)?
+- [ ] Can you write 5-line online replacements for `inv`, `ln`, `exp`, $\sqrt{\cdot}$, and the harmonic online Pólya / Euler transform (`ABC 230 Ex`)?

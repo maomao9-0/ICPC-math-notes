@@ -1,0 +1,1309 @@
+---
+title: "01 — The Ring of Formal Power Series K[[x]], Valuation Topology & Newton Inversion"
+subtitle: "Part I · Foundations of Formal Power Series & The Symbolic Method"
+---
+
+::: {.callout-note icon=false}
+## Chapter Navigation & Dependencies
+
+- **Prerequisites**: None (Textbook Entry Point). Assumes familiarity with standard competitive programming polynomial convolution (`NTT` / `FFT`) and modular arithmetic.
+- **Core algebraic objects introduced**: Commutative ring of formal power series $K[[x]]$, polynomial subring $K[x]$, truncation quotient rings $K[[x]]/(x^N) \cong K[x]/(x^N)$, coefficient extraction operator $[x^n]$, $x$-adic valuation $\operatorname{val}(F)$, formal topology, and the group of units $K[[x]]^\times$.
+- **Core algorithmic engines introduced**: Difference (cross-correlation) convolution via polynomial reversal, $O(N)$ sparse reversible polynomial multiplication and division ("戻すDP"), 1D Newton multiplicative inversion (`inv(A, N)` in $O(N \log N)$), valuation-shifted quotient extraction, and Divide-and-Conquer product trees ($\prod_{i=1}^m P_i(x)$ in $O(S \log^2 S)$).
+- **Zero-Forward-Reference Covenant**: This chapter relies strictly on ring axioms, $x$-adic valuations, polynomial multiplication, and algebraic squaring modulo $x^{2^k}$. Formal derivatives $D$, formal logarithms $\ln$, and formal exponentials $\exp$ are deferred entirely to Chapter 02.
+:::
+
+---
+
+## 1.1 The Formal Ring $K[[x]]$ vs. Analytic Power Series
+
+In calculus and complex analysis, a power series $\sum_{n=0}^{\infty} a_n x^n$ is treated as a *function* of a real or complex number $x$. Before you can add, multiply, or invert such a series in analysis, you must ask whether the infinite sum converges in some neighborhood $|x| < R$ of the origin.
+
+In enumerative combinatorics and algorithm design, that analytic requirement is a distraction. Suppose $a_n = n!$ counts the number of permutations of $n$ distinct elements. As a complex-valued series, $\sum_{n=0}^{\infty} n! x^n$ diverges for every nonzero $x \in \mathbb{C}$ (its radius of convergence is $R = 0$). Yet the sequence of counts $(0!, 1!, 2!, 3!, \dots) = (1, 1, 2, 6, \dots)$ is a completely well-defined discrete object, and we still want to manipulate it algebraically. Even more starkly, in competitive programming our coefficients almost always live in a finite prime field $\mathbb{F}_p = \mathbb{Z}/p\mathbb{Z}$ (such as $p = 998244353$) or a composite residue ring $\mathbb{Z}/m\mathbb{Z}$, where Euclidean distance $|x|$ and analytic limits do not exist in the usual sense.
+
+To manipulate infinite sequences over *any* commutative ring $K$ without analytic convergence, we construct the **ring of formal power series** $K[[x]]$.
+
+### Sequences Packaged as Formal Sums
+
+Fix a commutative ring $K$ with additive identity $0$ and multiplicative identity $1$. Formally, a **formal power series** $F(x) \in K[[x]]$ is simply an infinite sequence of elements of $K$ indexed by the non-negative integers $\mathbb{N} = \{0, 1, 2, \dots\}$:
+
+$$
+F = (f_0, f_1, f_2, f_3, \dots) \in K^{\mathbb{N}}, \quad \text{written symbolically as} \quad F(x) = \sum_{n=0}^{\infty} f_n x^n.
+$$
+
+Here, the symbol $x$ is a **formal indeterminate**—a pure placeholder or clothes-hanger whose sole role is to record the index $n$ via its exponent $x^n$. We never substitute a numerical value for $x$ unless a finite number of terms is guaranteed to survive.
+
+To extract the $n$-th entry of the sequence $F(x)$ cleanly during algebraic manipulations, we define the **coefficient extraction operator** $[x^n] : K[[x]] \to K$:
+
+$$
+[x^n] F(x) = [x^n] \left(\sum_{k=0}^{\infty} f_k x^k\right) := f_n \quad (\text{with } [x^n]F(x) := 0 \text{ for all } n < 0).
+$$
+
+Two formal power series $F(x)$ and $G(x)$ are equal in $K[[x]]$, written $F(x) = G(x)$, if and only if $[x^n]F(x) = [x^n]G(x)$ for every integer $n \ge 0$.
+
+::: {.callout-note title="First Principles: Commutative Rings $R$, Units $R^\times$, and Fields $K$"}
+Throughout this book, our coefficient system is either a **commutative ring** $R$ (often denoted $K$ when the statement works uniformly for rings and fields) or a **field** $K$:
+
+- **Commutative Ring ($R$)**: A set equipped with addition ($+$), subtraction ($-$), and commutative multiplication ($\cdot$) with an additive identity $0$ and multiplicative identity $1$ (for example, the integers $\mathbb{Z}$, modular integers $\mathbb{Z}/m\mathbb{Z}$ for composite $m$, or polynomials $K[y]$). Division is **not** guaranteed in a general ring.
+- **Unit ($u \in R^\times$)**: An element $u \in R$ that possesses a multiplicative inverse $u^{-1} \in R$ satisfying $u \cdot u^{-1} = 1$. In $\mathbb{Z}/m\mathbb{Z}$, $u$ is a unit if and only if $\gcd(u, m) = 1$. The set of all units forms the **unit group** $R^\times$.
+- **Integral Domain**: A commutative ring with no nonzero **zero divisors** ($a \cdot b = 0 \implies a = 0$ or $b = 0$).
+- **Field ($K$)**: A commutative ring in which **every nonzero element is a unit** ($K^\times = K \setminus \{0\}$), such as $\mathbb{Q}$, $\mathbb{R}$, $\mathbb{C}$, or $\mathbb{F}_p = \mathbb{Z}/p\mathbb{Z}$ for a prime $p$.
+:::
+
+### Ring Operations and the Combinatorial Meaning of Convolution
+
+How do we turn the set of infinite sequences $K[[x]]$ into a commutative ring? We define addition term-by-term and multiplication via the **Cauchy product** (discrete convolution):
+
+1. **Formal Addition ($F + G$)**: Given $F(x) = \sum_{n \ge 0} f_n x^n$ and $G(x) = \sum_{n \ge 0} g_n x^n$, their sum encodes the disjoint union (or independent choice between two families) of objects of weight $n$:
+   $$
+   [x^n]\bigl(F(x) + G(x)\bigr) := [x^n]F(x) + [x^n]G(x) = f_n + g_n.
+   $$
+2. **Scalar Multiplication ($c \cdot F$)**: For any scalar $c \in K$, $[x^n]\bigl(c \cdot F(x)\bigr) := c \cdot f_n$. Together with addition, this makes $[x^n]$ a **$K$-linear operator**:
+   $$
+   [x^n]\bigl(\alpha F(x) + \beta G(x)\bigr) = \alpha [x^n]F(x) + \beta [x^n]G(x) \quad \forall \alpha, \beta \in K.
+   $$
+3. **Formal Multiplication / Cauchy Convolution ($F \cdot G$)**: Suppose $f_i$ counts the number of ways to build a left component of weight $i$, and $g_j$ counts the number of ways to build a right component of weight $j$. How many ways can we build an ordered pair of components whose combined weight is $n$? For each possible weight $i \in \{0, 1, \dots, n\}$ assigned to the left component, the right component must take the remaining weight $j = n - i$, giving $f_i g_{n-i}$ combinations. Summing over all valid splits $i + j = n$ defines the product $F(x)G(x)$:
+   $$
+   [x^n]\bigl(F(x)G(x)\bigr) := \sum_{i=0}^{n} f_i g_{n-i} = \sum_{\substack{i, j \ge 0 \\ i + j = n}} ([x^i]F(x)) \cdot ([x^j]G(x)).
+   $$
+
+::: {.callout-important}
+## Why Cauchy Multiplication Never Requires Analytic Convergence
+Notice that for any fixed target index $n \ge 0$, the sum $\sum_{i=0}^{n} f_i g_{n-i}$ contains **at most $n + 1$ terms**. Even though $F(x)$ and $G(x)$ each have infinitely many nonzero coefficients, computing the single coefficient $[x^n](F(x)G(x))$ is a strictly **finite** sum in the ring $K$. No limits, norms, or radii of convergence are ever invoked!
+:::
+
+Under these operations, $(K[[x]], +, \cdot)$ is a commutative ring with additive identity $0 = (0, 0, 0, \dots)$ and multiplicative identity $1 = 1x^0 + 0x^1 + \dots = (1, 0, 0, \dots)$. The **polynomial ring** $K[x]$ sits inside $K[[x]]$ as the subring of series with only finitely many nonzero coefficients (i.e., sequences $(f_n)_{n \ge 0}$ for which there exists an integer $D$ such that $f_n = 0$ for all $n > D$).
+
+### Index Geometry: Cauchy Sums vs. Difference (Cross-Correlation) Sums
+
+In dynamic programming and array counting problems, we frequently encounter two distinct two-variable summation patterns over finite arrays $a_0, a_1, \dots, a_N$ and $b_0, b_1, \dots, b_N$:
+
+- **Fixed-Sum (Cauchy) Pattern**: $c_s = \sum_{i+j=s} a_i b_j = \sum_{i=0}^{s} a_i b_{s-i}$. Here the indices move in *opposite* directions ($i$ increases while $j = s - i$ decreases), matching $[x^s]\bigl(A(x)B(x)\bigr)$ directly.
+- **Fixed-Difference (Cross-Correlation) Pattern**: $d_k = \sum_{j-i=k} a_i b_j = \sum_{i=0}^{N-k} a_i b_{i+k}$. Here both indices $i$ and $j = i + k$ move in the *same* direction!
+
+Whenever you need to evaluate a fixed-difference sum $d_k$ for all shifts $k$ simultaneously in $O(N \log N)$ time, you must convert the same-direction index step into an opposite-direction Cauchy step.
+
+::: {.callout-tip}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: Reversal for Difference Convolutions
+
+- **The Diagnostic Signal**: You have a transition or counting sum of the form $\sum_{i} a_i b_{i+k}$ or $\sum_{j-i=k} a_i b_j$ where the indices of the two arrays have a *constant difference* $j - i = k$ (or both indices have $+i$ with the *same sign*) rather than a constant sum $i + j = s$.
+- **The Reverse-Engineering Scratchpad**:
+  1. In a standard Cauchy product $[x^S]\bigl(\widetilde{A}(x) B(x)\bigr) = \sum_{u + j = S} \widetilde{a}_u b_j$, the exponent $u$ from the first polynomial and the exponent $j$ from the second polynomial must sum to a constant $S$.
+  2. In our target sum $\sum_{i=0}^{N} a_i b_{i+k}$, the second index is $j = i + k$, so $j - i = k$. To turn subtraction ($-i$) into addition ($+u$) while keeping all exponents non-negative for $0 \le i \le N$, substitute $u = N - i$ (so $i = N - u$).
+  3. Under $u = N - i$, the condition $j - i = k$ becomes $j + u = N + k$.
+  4. Therefore, if we define the **reversed polynomial** $A^{\text{rev}}(x) := x^N A(x^{-1}) = \sum_{i=0}^{N} a_i x^{N-i} = \sum_{u=0}^{N} a_{N-u} x^u$ (so $\widetilde{a}_u = a_{N-u} = a_i$), then:
+     $$
+     [x^{N+k}]\bigl(A^{\text{rev}}(x) B(x)\bigr) = \sum_{u + j = N + k} \widetilde{a}_u b_j = \sum_{i=0}^{N} a_i b_{i+k}.
+     $$
+:::
+
+#### Hand-Checkable Trace ($N = 3$)
+
+Let $A(x) = a_0 + a_1 x + a_2 x^2 + a_3 x^3$ and $B(x) = b_0 + b_1 x + b_2 x^2 + b_3 x^3$. Reversing the coefficient array of $A$ gives:
+
+$$
+A^{\text{rev}}(x) = x^3 A(x^{-1}) = a_3 + a_2 x + a_1 x^2 + a_0 x^3.
+$$
+
+Let us inspect the coefficients of $A^{\text{rev}}(x) B(x)$ around degree $N = 3$:
+
+- At degree $3 + 0 = 3$ (shift $k = 0$):
+  $$
+  [x^3]\bigl(A^{\text{rev}}(x)B(x)\bigr) = a_3 b_3 + a_2 b_2 + a_1 b_1 + a_0 b_0 = \sum_{i=0}^{3} a_i b_i.
+  $$
+- At degree $3 + 1 = 4$ (shift $k = 1$):
+  $$
+  [x^4]\bigl(A^{\text{rev}}(x)B(x)\bigr) = a_2 b_3 + a_1 b_2 + a_0 b_1 = \sum_{i=0}^{2} a_i b_{i+1}.
+  $$
+- At degree $3 + 2 = 5$ (shift $k = 2$):
+  $$
+  [x^5]\bigl(A^{\text{rev}}(x)B(x)\bigr) = a_1 b_3 + a_0 b_2 = \sum_{i=0}^{1} a_i b_{i+2}.
+  $$
+
+Every single shift $k \in \{-N, \dots, N\}$ is read off directly from $[x^{N+k}]\bigl(A^{\text{rev}}(x)B(x)\bigr)$ after a single polynomial multiplication of degree $2N$.
+
+::: {.callout-note icon=false}
+## Algorithm Contract: `cross_correlation(A, B)` — Reverse-Indexing Difference Convolution
+
+- **Inputs**: Arrays $A[0 \dots N]$ and $B[0 \dots M]$ over a commutative ring $K$.
+- **Procedure**: Construct the reversed polynomial $A^{\text{rev}}[k] = A[N - k]$ for $0 \le k \le N$, and compute the standard Cauchy product $C(x) = A^{\text{rev}}(x) \cdot B(x)$ of degree $N + M$.
+- **Postcondition & Index Boundaries**: For every shift $d \in [-N, M]$,
+  $$
+  \sum_{\substack{0 \le i \le N, \, 0 \le j \le M \\ j - i = d}} A[i]\, B[j] = [x^{N + d}] C(x) = C[N + d].
+  $$
+- **Time & Space Complexity**: $O((N + M) \log(N + M))$ time and $O(N + M)$ space.
+- **1-Sentence Invariant**: Reversing $A$ flips the sign of index $i$ so that the constant-difference condition $j - i = d$ becomes the constant-sum Cauchy condition $(N - i) + j = N + d$.
+:::
+
+### Truncation Quotient Rings $K[[x]]/(x^N)$
+
+On a physical computer, we cannot store infinitely many coefficients of $F(x) \in K[[x]]$. However, a typical competitive programming problem only asks for $[x^0]F(x), [x^1]F(x), \dots, [x^{N-1}]F(x)$ for some target bound $N \le 5 \times 10^5$.
+
+Observe a critical structural property of the Cauchy product $[x^n](F(x)G(x)) = \sum_{i=0}^{n} f_i g_{n-i}$: for every $0 \le n < N$, the value of $[x^n](F(x)G(x))$ depends **only** on the coefficients $f_0, \dots, f_{N-1}$ and $g_0, \dots, g_{N-1}$. Any term $f_i x^i$ or $g_j x^j$ with $i \ge N$ or $j \ge N$ can only contribute to powers $x^{i+j}$ with $i + j \ge N$.
+
+Algebraically, the set of series whose first $N$ coefficients are zero,
+
+$$
+(x^N) = x^N K[[x]] := \left\{ \sum_{n=N}^{\infty} h_n x^n \;\middle|\; h_n \in K \right\},
+$$
+
+forms an **ideal** of $K[[x]]$. Writing $F(x) \equiv G(x) \pmod{x^N}$ means $F(x) - G(x) \in (x^N)$, i.e., $[x^n]F(x) = [x^n]G(x)$ for all $0 \le n < N$. Passing to the **quotient ring** $K[[x]]/(x^N) \cong K[x]/(x^N)$ projects every infinite series $F(x)$ onto its degree-$(N-1)$ truncation polynomial $F(x) \bmod x^N = \sum_{n=0}^{N-1} f_n x^n$. Because the projection $K[[x]] \to K[[x]]/(x^N)$ is a ring homomorphism, addition, multiplication, and multiplicative inversion (when no division by $x$ occurs!) commute with truncation modulo $x^N$.
+
+---
+
+## 1.2 The $x$-Adic Valuation Topology & The Unit Criterion
+
+Even though we discarded complex-analytic convergence, we still frequently write infinite series sums and infinite products in combinatorics, such as the partition generating function
+
+$$
+\prod_{k=1}^{\infty} (1 + x^k) = (1 + x)(1 + x^2)(1 + x^3)\cdots \quad \text{or} \quad \sum_{k=0}^{\infty} G(x)^k.
+$$
+
+Since ring axioms only define *finite* sums and *finite* products, when does an infinite sum $\sum_{k=0}^{\infty} F_k(x)$ or infinite product $\prod_{k=1}^{\infty} (1 + G_k(x))$ make rigorous sense inside $K[[x]]$? And which formal power series $F(x) \in K[[x]]$ possess a multiplicative inverse $F(x)^{-1} \in K[[x]]$? Both questions are answered by the **$x$-adic valuation**.
+
+### The $x$-Adic Valuation $\operatorname{val}(F)$
+
+In a polynomial $P(x) \in K[x]$, the *degree* $\deg(P)$ measures the **highest** power of $x$ with a nonzero coefficient. In a formal power series $F(x) \in K[[x]]$, there is generally no highest power of $x$, so the right dual invariant is the **lowest** power of $x$ with a nonzero coefficient.
+
+**Definition 1.1 ($x$-Adic Valuation / Order).** For any nonzero formal power series $F(x) = \sum_{n=0}^{\infty} f_n x^n \in K[[x]]$, its **$x$-adic valuation** (or **order**, also written $\operatorname{ord}_x(F)$ or $\nu(F)$ for the $\mathfrak{m}$-adic valuation with respect to the maximal ideal $\mathfrak{m} = (x)$) $\operatorname{val}(F)$ is the smallest non-negative integer $n$ such that $[x^n]F(x) \neq 0$:
+
+$$
+\operatorname{val}(F) := \min\bigl\{ n \in \mathbb{N} : [x^n]F(x) \neq 0 \bigr\}.
+$$
+
+For the zero series $F(x) = 0$, we define $\operatorname{val}(0) := +\infty$. Equivalently, $\operatorname{val}(F) \ge N$ if and only if $F(x) \equiv 0 \pmod{x^N}$ (meaning $F(x)$ starts with at least $N$ leading zeros: $f_0 = f_1 = \dots = f_{N-1} = 0$).
+
+Let us verify the fundamental laws governing $\operatorname{val}(F)$ for any $F, G \in K[[x]]$:
+
+1. **Strong Triangle Inequality (Ultrametric Property)**:
+   $$
+   \operatorname{val}(F + G) \ge \min\bigl(\operatorname{val}(F), \operatorname{val}(G)\bigr),
+   $$
+   with strict equality $\operatorname{val}(F + G) = \min\bigl(\operatorname{val}(F), \operatorname{val}(G)\bigr)$ whenever $\operatorname{val}(F) \neq \operatorname{val}(G)$.
+   *Why?* If $u = \min(\operatorname{val}(F), \operatorname{val}(G))$, then for every $n < u$, both $[x^n]F = 0$ and $[x^n]G = 0$, so $[x^n](F + G) = 0 + 0 = 0$. If $\operatorname{val}(F) < \operatorname{val}(G)$, then at $n = \operatorname{val}(F)$ we have $[x^n]F \neq 0$ and $[x^n]G = 0$, so $[x^n](F + G) = [x^n]F \neq 0$.
+2. **Multiplicative Superadditivity**:
+   $$
+   \operatorname{val}(F \cdot G) \ge \operatorname{val}(F) + \operatorname{val}(G),
+   $$
+   with **exact equality** $\operatorname{val}(F \cdot G) = \operatorname{val}(F) + \operatorname{val}(G)$ whenever $K$ is an **integral domain** (such as $\mathbb{Q}$, $\mathbb{Z}$, or a prime field $\mathbb{F}_p$).
+   *Why?* Let $u = \operatorname{val}(F)$ and $v = \operatorname{val}(G)$, so $f_0 = \dots = f_{u-1} = 0$ ($f_u \neq 0$) and $g_0 = \dots = g_{v-1} = 0$ ($g_v \neq 0$). For any $n < u + v$, every pair $(i, j)$ with $i + j = n$ has either $i < u$ (so $f_i = 0$) or $j < v$ (so $g_j = 0$), which forces $[x^n](FG) = 0$. At $n = u + v$, the only potentially nonzero term in the sum $\sum_{i+j=u+v} f_i g_j$ is $i = u, j = v$, yielding:
+   $$
+   [x^{u+v}]\bigl(F(x)G(x)\bigr) = f_u g_v.
+   $$
+   If $K$ has no zero divisors, $f_u \neq 0$ and $g_v \neq 0$ guarantee $f_u g_v \neq 0$, so $\operatorname{val}(FG) = u + v$. (If $K$ is a composite ring like $\mathbb{Z}/8\mathbb{Z}$, $f_u g_v$ can vanish—for instance $(2x)(4x) = 8x^2 \equiv 0 \pmod 8$, giving $\operatorname{val}(FG) = +\infty > 1 + 1$).
+
+### The $x$-Adic Metric and Coefficient Stabilization
+
+Using $\operatorname{val}$, we can measure how "close" two formal power series $F(x)$ and $G(x)$ are by how many leading coefficients they agree on. Define the **$x$-adic distance**:
+
+$$
+d(F, G) := 2^{-\operatorname{val}(F - G)} \quad (\text{with } 2^{-\infty} := 0).
+$$
+
+Two series are close in $K[[x]]$ if their difference is divisible by a high power of $x$. A sequence of series $S_0(x), S_1(x), S_2(x), \dots$ converges to a limit series $S(x)$ in this topology if and only if $\operatorname{val}(S_k - S) \to \infty$ as $k \to \infty$. Because $d$ is an ultrametric, $(S_k)$ is a **Cauchy sequence** if and only if adjacent differences vanish to ever-higher order: $\operatorname{val}(S_{k+1} - S_k) \to \infty$ as $k \to \infty$, and $K[[x]]$ is **complete** with respect to $d(F, G)$ (every Cauchy sequence stabilizes coefficient-by-coefficient to a unique limit $S(x) \in K[[x]]$; this is why Newton's method $G_{k+1} \equiv G_k \pmod{x^{2^k}}$, where $\operatorname{val}(G_{k+1} - G_k) \ge 2^k \to \infty$, is guaranteed to converge in $K[[x]]$). In plain algorithmic terms, this is the **Principle of Coefficient Stabilization**:
+
+::: {.callout-note}
+## Coefficient Stabilization Criterion for Infinite Sums, Products, and Compositions
+
+1. **Infinite Formal Sums $\sum_{k=0}^{\infty} F_k(x)$**: The infinite sum converges in $K[[x]]$ if and only if $\lim_{k \to \infty} \operatorname{val}(F_k) = +\infty$.
+   - *Concrete Meaning*: For every fixed exponent $n \ge 0$, there exists an index $K_n$ such that $\operatorname{val}(F_k) > n$ (i.e., $[x^n]F_k(x) = 0$) for all $k \ge K_n$. Consequently, $[x^n]\sum_{k=0}^{\infty} F_k(x) = \sum_{k=0}^{K_n - 1} [x^n]F_k(x)$ is a **finite sum** in $K$!
+2. **Infinite Formal Products $\prod_{k=1}^{\infty} \bigl(1 + G_k(x)\bigr)$**: Assuming $\operatorname{val}(G_k) \ge 1$ for all $k$, the infinite product converges in $K[[x]]$ if and only if $\lim_{k \to \infty} \operatorname{val}(G_k) = +\infty$.
+   - *Concrete Meaning*: To compute $\prod_{k=1}^{\infty} (1 + G_k(x)) \bmod x^N$, every factor with $\operatorname{val}(G_k) \ge N$ satisfies $1 + G_k(x) \equiv 1 \pmod{x^N}$ and can be completely ignored!
+3. **Formal Composition $(F \circ G)(x) = F(G(x)) = \sum_{k=0}^{\infty} f_k G(x)^k$**: If $F(x)$ has infinitely many nonzero terms, the substitution $F(G(x))$ is well-defined in $K[[x]]$ for arbitrary $F \in K[[x]]$ if and only if **$\operatorname{val}(G) \ge 1$** (equivalently, $[x^0]G(x) = g_0 = 0$).
+   - *Why?* When $\operatorname{val}(G) \ge 1$, we have $\operatorname{val}(G^k) \ge k \cdot \operatorname{val}(G) \ge k \to \infty$ as $k \to \infty$. Thus, to compute $[x^n]F(G(x))$, every power $G(x)^k$ with $k > n$ has $[x^n]G(x)^k = 0$, reducing $[x^n]F(G(x))$ to the finite sum $\sum_{k=0}^{n} f_k [x^n]G(x)^k$. Conversely, if $g_0 \neq 0$, then even the constant term $[x^0]F(G(x)) = \sum_{k=0}^{\infty} f_k g_0^k$ would require an infinite sum inside $K$, which is algebraically undefined!
+:::
+
+### The Unit Criterion in $K[[x]]$
+
+In a commutative ring $R$, an element $u \in R$ is called a **unit** (written $u \in R^\times$) if there exists an element $v \in R$ such that $u \cdot v = 1$.
+
+In the polynomial ring $K[x]$ over an integral domain $K$ (like $\mathbb{Q}[x]$ or $\mathbb{F}_p[x]$), the only units are nonzero constant polynomials $f_0 \in K^\times$, because $\deg(P \cdot Q) = \deg(P) + \deg(Q) = 0 \implies \deg(P) = \deg(Q) = 0$. For example, $1 - x$ is **not** invertible in $\mathbb{Q}[x]$: no finite-degree polynomial multiplies $1 - x$ to give $1$.
+
+What happens when we pass to the larger ring of formal power series $K[[x]]$? Remarkably, almost every series with a nonzero constant term becomes invertible!
+
+**Theorem 1.1 (The Unit Theorem for $K[[x]]$).** *Let $K$ be any commutative ring. A formal power series $F(x) = \sum_{n=0}^{\infty} f_n x^n \in K[[x]]$ is a unit in $K[[x]]$ (i.e., there exists $G(x) = \sum_{n=0}^{\infty} g_n x^n \in K[[x]]$ such that $F(x)G(x) = 1$) if and only if its constant term $f_0 = [x^0]F(x)$ is a unit in the coefficient ring $K$ ($f_0 \in K^\times$). Moreover, when $f_0 \in K^\times$, the inverse $G(x) = F(x)^{-1}$ is unique.*
+
+*Step-by-Step Verbalized Proof*:
+1. **Necessity ($\implies$)**: Suppose $F(x)G(x) = 1$ in $K[[x]]$. Extract the coefficient of $x^0$ on both sides using the definition of the Cauchy product at $n = 0$:
+   $$
+   [x^0]\bigl(F(x)G(x)\bigr) = f_0 g_0 = [x^0]1 = 1_K.
+   $$
+   Because $f_0 g_0 = 1_K$ in $K$, the constant term $f_0$ possesses a multiplicative inverse $g_0 = f_0^{-1} \in K$, which by definition means $f_0 \in K^\times$.
+2. **Sufficiency & Uniqueness ($\Longleftarrow$)**: Conversely, suppose $f_0 \in K^\times$, so the multiplicative inverse $f_0^{-1}$ exists uniquely in $K$. We want to construct a sequence $g_0, g_1, g_2, \dots \in K$ satisfying $[x^n]\bigl(F(x)G(x)\bigr) = [x^n]1$ for every $n \ge 0$.
+   - For $n = 0$, the equation $f_0 g_0 = 1$ uniquely forces:
+     $$
+     g_0 = f_0^{-1}.
+     $$
+   - For each $n \ge 1$, the coefficient $[x^n]1$ on the right-hand side is $0$. Expanding $[x^n]\bigl(F(x)G(x)\bigr) = 0$ and separating the $i = 0$ term ($f_0 g_n$) from the remaining terms ($1 \le i \le n$) yields:
+     $$
+     f_0 g_n + \sum_{i=1}^{n} f_i g_{n-i} = 0.
+     $$
+   - Subtracting the sum from both sides and multiplying by $f_0^{-1} \in K^\times$ expresses $g_n$ uniquely in terms of the already-determined coefficients $g_0, g_1, \dots, g_{n-1}$:
+     $$
+     g_n = -f_0^{-1} \sum_{i=1}^{n} f_i g_{n-i} \quad (n \ge 1). \qquad \square
+     $$
+
+::: {.callout-warning}
+## Local Algebraic Hypothesis: Field Elements vs. Ring Units & Nilpotent Polynomials
+
+Always distinguish three algebraic settings when dividing by $F(x)$:
+
+1. **$K$ is a Field (e.g., $\mathbb{Q}$ or $\mathbb{F}_p$ with $p = 998244353$)**: Every nonzero scalar is a unit ($K^\times = K \setminus \{0\}$), so $F(x)$ is invertible in $K[[x]]$ if and only if $f_0 \neq 0$ (i.e., $\operatorname{val}(F) = 0$).
+2. **$K$ is an Integral Domain that is Not a Field (e.g., $\mathbb{Z}$)**: Here $\mathbb{Z}^\times = \{+1, -1\}$. Thus $F(x) \in \mathbb{Z}[[x]]$ has an inverse with *integer* coefficients if and only if $f_0 = \pm 1$. For instance, $(2 - x)^{-1} = \sum_{n \ge 0} 2^{-n-1} x^n$ exists in $\mathbb{Q}[[x]]$ (since $2 \in \mathbb{Q}^\times$), but **not** in $\mathbb{Z}[[x]]$ (since $2 \notin \mathbb{Z}^\times$).
+3. **$K$ is a Composite Ring with Zero Divisors (e.g., $\mathbb{Z}/m\mathbb{Z}$ with $m$ composite, or $\mathbb{Z}/2^{64}\mathbb{Z}$ in `uint64_t`)**: Here $f_0 \in (\mathbb{Z}/m\mathbb{Z})^\times$ if and only if $\gcd(f_0, m) = 1$. Even if $f_0 \not\equiv 0 \pmod m$, if $\gcd(f_0, m) > 1$ (e.g., $f_0 = 2$ modulo $m = 8$), then $F(x)$ is **not invertible** in $(\mathbb{Z}/m\mathbb{Z})[[x]]$.
+   - *Curiosity in Composite Rings*: In $K[x]$ over a ring with nilpotent elements ($c \neq 0$ with $c^k = 0$), a polynomial of positive degree can actually have a *finite-degree polynomial inverse*! For example, in $(\mathbb{Z}/8\mathbb{Z})[x]$, since $2^3 = 8 \equiv 0 \pmod 8$, the linear polynomial $1 - 2x$ satisfies
+     $$
+     (1 - 2x)(1 + 2x + 4x^2) = 1 - 8x^3 \equiv 1 \pmod 8,
+     $$
+     so $(1 - 2x)^{-1} = 1 + 2x + 4x^2$ terminates at degree $2$! Over an integral domain $K$, by contrast, $(1 - cx)^{-1} = \sum_{n \ge 0} c^n x^n$ is always a genuinely infinite series for $c \neq 0$.
+:::
+
+---
+
+## 1.3 Formal Geometric Series & 1D Newton Inversion (`inv`)
+
+The recurrence $g_n = -f_0^{-1} \sum_{i=1}^{n} f_i g_{n-i}$ from Theorem 1.1 proves that $F(x)^{-1}$ exists whenever $f_0 \in K^\times$, and it immediately provides a naive $O(N^2)$ algorithm to compute $g_0, g_1, \dots, g_{N-1}$. Can we compute the first $N$ coefficients of $F(x)^{-1}$ in $O(N \log N)$ time?
+
+Before deriving the fast algorithm, let us connect multiplicative inversion to combinatorics via the **formal geometric series**.
+
+### The Formal Geometric Series and Renewal Counting
+
+Let $G(x) \in K[[x]]$ be any formal power series with $\operatorname{val}(G) \ge 1$ (so $[x^0]G(x) = 0$). By the Coefficient Stabilization Criterion (§1.2), the infinite sum $\sum_{k=0}^{\infty} G(x)^k$ converges in $K[[x]]$. What occurs when we multiply this sum by $1 - G(x)$? For any target degree $n \ge 0$, only terms up to $k = n$ contribute to $[x^n]$, and the finite telescoping identity $(1 - G(x))\sum_{k=0}^{n} G(x)^k = 1 - G(x)^{n+1} \equiv 1 \pmod{x^{n+1}}$ holds for every $n$. Therefore, in $K[[x]]$:
+
+$$
+\frac{1}{1 - G(x)} = (1 - G(x))^{-1} = \sum_{k=0}^{\infty} G(x)^k = 1 + G(x) + G(x)^2 + G(x)^3 + \cdots \quad \bigl(\operatorname{val}(G) \ge 1\bigr).
+$$
+
+**Combinatorial Meaning (Sequences of Blocks / Renewal Processes)**:
+Suppose $G(x) = \sum_{w=1}^{\infty} g_w x^w$ ($g_0 = 0$) counts the number of "prime blocks" (or single steps in a walk / single parts in a composition) of positive weight $w \ge 1$. Then:
+
+- $[x^n]G(x)^k$ counts ordered sequences of **exactly $k$ blocks** whose weights sum to $n$.
+- Summing over all $k \ge 0$, $[x^n]\frac{1}{1 - G(x)} = \sum_{k=0}^{n} [x^n]G(x)^k$ counts ordered sequences of **any number $k \ge 0$ of blocks** whose total weight is $n$. (In Chapter 03 (§3.1), we will formalize this as the `SEQ` operator of the Symbolic Method).
+
+Notice also that any series $A(x)$ with $a_0 \in K^\times$ can be written as $A(x) = a_0\bigl(1 - G(x)\bigr)$ where $G(x) = 1 - a_0^{-1} A(x)$ has $\operatorname{val}(G) \ge 1$. Thus, inverting $A(x)$ is algebraically equivalent to summing the geometric series of $G(x)$.
+
+### 1D Newton Inversion: Doubling Precision via Valuation Squaring
+
+Suppose we are given $A(x) \in K[[x]]$ with $a_0 = [x^0]A(x) \in K^\times$, and we want to compute $G(x) = A(x)^{-1} \bmod x^N$. Instead of computing one coefficient at a time in $O(N^2)$ time, we can **double the number of correct coefficients in a single step**, jumping from precision $x^m$ to precision $x^{2m}$ for $m = 1, 2, 4, 8, \dots$.
+
+Note that our derivation below uses **zero calculus** (no derivatives or Taylor expansions): it is a pure consequence of the multiplicative valuation property $\operatorname{val}(R^2) \ge 2\operatorname{val}(R)$!
+
+::: {.callout-tip}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: 1D Newton Doubling (`inv`)
+
+- **The Diagnostic Signal**: We know the inverse $G_k(x)$ of $A(x)$ up to precision $\bmod\, x^{m}$ (where $m = 2^k$), meaning $A(x)G_k(x) \equiv 1 \pmod{x^m}$. We want to construct an updated polynomial $G_{k+1}(x)$ that satisfies $A(x)G_{k+1}(x) \equiv 1 \pmod{x^{2m}}$ using only polynomial multiplications.
+- **The Reverse-Engineering Scratchpad**:
+  1. Look at the **residual error** of our current approximation $G_k(x)$: define $R_k(x) := 1 - A(x)G_k(x)$.
+  2. By hypothesis, $A(x)G_k(x) \equiv 1 \pmod{x^m}$, which means the first $m$ coefficients of $R_k(x)$ are zero:
+     $$
+     \operatorname{val}(R_k) = \operatorname{val}\bigl(1 - A(x)G_k(x)\bigr) \ge m.
+     $$
+  3. How can we immediately jump from $\operatorname{val} \ge m$ to $\operatorname{val} \ge 2m$? By **squaring the residual**! Using the valuation product rule $\operatorname{val}(R_k^2) \ge \operatorname{val}(R_k) + \operatorname{val}(R_k) \ge 2m$, we automatically have:
+     $$
+     \bigl(1 - A(x)G_k(x)\bigr)^2 \equiv 0 \pmod{x^{2m}}.
+     $$
+  4. Expand the square algebraically:
+     $$
+     1 - 2A(x)G_k(x) + A(x)^2 G_k(x)^2 \equiv 0 \pmod{x^{2m}}.
+     $$
+  5. Isolate $1$ on one side and factor out $A(x)$ from the remaining two terms:
+     $$
+     A(x) \cdot \underbrace{G_k(x)\bigl(2 - A(x)G_k(x)\bigr)}_{:=\, G_{k+1}(x)} \equiv 1 \pmod{x^{2m}}.
+     $$
+  6. Reading off the bracketed cofactor gives the exact doubling recurrence:
+     $$
+     G_{k+1}(x) := G_k(x)\bigl(2 - A(x)G_k(x)\bigr) \bmod x^{2m}.
+     $$
+:::
+
+Let us pause to appreciate how clean this is: the geometric series identity $\frac{1}{1 - R_k} = 1 + R_k + R_k^2 + \dots$ truncated at $R_k^2 \equiv 0 \pmod{x^{2m}}$ simply multiplies our current approximation $G_k(x)$ by $1 + R_k(x) = 1 + (1 - A(x)G_k(x)) = 2 - A(x)G_k(x)$!
+
+### Hand-Checkable Trace ($N = 4$): Inverting Fibonacci's Denominator
+
+Let us trace Newton inversion by hand on $A(x) = 1 - x - x^2 \bmod x^4$, whose inverse is the Fibonacci generating function $1 + x + 2x^2 + 3x^3 + \dots$:
+
+1. **Base Case ($k = 0, m = 2^0 = 1$)**:
+   - The constant term is $a_0 = [x^0]A(x) = 1 \in K^\times$.
+   - Set $G_0(x) = a_0^{-1} = 1 \pmod{x^1}$.
+2. **First Doubling Step ($m = 1 \to 2m = 2$)**:
+   - Truncate $A(x) \bmod x^2 = 1 - x$.
+   - Compute $A(x)G_0(x) \bmod x^2 = (1 - x)(1) = 1 - x$.
+   - Compute the correction factor $2 - A(x)G_0(x) \bmod x^2 = 2 - (1 - x) = 1 + x$.
+   - Multiply by $G_0(x) = 1$:
+     $$
+     G_1(x) = 1 \cdot (1 + x) \bmod x^2 = 1 + x.
+     $$
+3. **Second Doubling Step ($m = 2 \to 2m = 4$)**:
+   - Truncate $A(x) \bmod x^4 = 1 - x - x^2$.
+   - Multiply $A(x)G_1(x) \bmod x^4$:
+     $$
+     (1 - x - x^2)(1 + x) = 1 + (1 - 1)x + (-1 - 1)x^2 - x^3 = 1 - 2x^2 - x^3.
+     $$
+     Notice the invariant: the $x^1$ term vanished, confirming $A(x)G_1(x) \equiv 1 \pmod{x^2}$!
+   - Compute $2 - A(x)G_1(x) \bmod x^4 = 2 - (1 - 2x^2 - x^3) = 1 + 2x^2 + x^3$.
+   - Multiply by $G_1(x) = 1 + x$ and truncate $\bmod x^4$:
+     $$
+     G_2(x) = (1 + x)(1 + 2x^2 + x^3) \bmod x^4 = 1 + x + 2x^2 + (1 + 2)x^3 = 1 + x + 2x^2 + 3x^3.
+     $$
+
+In just two doubling steps, we recovered $[x^0 \dots x^3](1 - x - x^2)^{-1} = (1, 1, 2, 3)$.
+
+### Algorithm Contract: 1D Newton Inversion (`inv`)
+
+::: {.callout-note icon=false}
+## Algorithm Contract: `inv(A, N)` — Multiplicative Inverse in $K[[x]]/(x^N)$
+
+- **Input**:
+  - Array $A[0 \dots N-1] \in K^N$ representing $A(x) = \sum_{n=0}^{N-1} a_n x^n \bmod x^N$, where $N \ge 1$.
+- **Algebraic Preconditions**:
+  - **Unit Constant Term**: $a_0 = A[0] \in K^\times$ must be invertible in the ring $K$. (Over $\mathbb{F}_p$, $a_0 \not\equiv 0 \pmod p$; over $\mathbb{Z}/m\mathbb{Z}$, $\gcd(a_0, m) = 1$).
+  - **No Characteristic Restriction**: Because the iteration $G_{k+1} = G_k(2 - A G_k)$ performs **zero divisions by exponents $2, 3, \dots, N$**, it works over *any* commutative ring $K$ regardless of characteristic (provided $K$ supports fast polynomial multiplication).
+- **Output**:
+  - Array $G[0 \dots N-1] \in K^N$ representing the unique polynomial $G(x) \bmod x^N$ such that $A(x)G(x) \equiv 1 \pmod{x^N}$.
+- **Loop Invariant**:
+  - After $k$ iterations (with precision $m = 2^k$), $\operatorname{val}\bigl(1 - A(x)G_k(x)\bigr) \ge m$, meaning $G_k[0 \dots m-1]$ matches the exact coefficients $[x^0 \dots x^{m-1}]A(x)^{-1}$, and no earlier coefficient is ever modified in subsequent steps.
+- **Complexity**:
+  - Let $\mathcal{M}(m) = \Theta(m \log m)$ denote the time to multiply two polynomials of degree $< m$. Since the work doubles at each scale $m = 1, 2, 4, \dots, 2^{\lceil \log_2 N \rceil}$, the geometric sum of work is:
+    $$
+    T(N) = \sum_{k=0}^{\lceil \log_2 N \rceil - 1} O\bigl(\mathcal{M}(2^k)\bigr) = O\bigl(\mathcal{M}(N)\bigr) = O(N \log N) \text{ time}, \quad O(N) \text{ auxiliary space}.
+    $$
+  - *Implementation Constant Remark ($1.5\,\mathcal{M}(N)$ NTT Optimization)*: Naive evaluation of $G_k(2 - A G_k) \bmod x^{2m}$ uses two length-$2m$ polynomial multiplications per step (totaling $2\,\mathcal{M}(2m) \approx 4\,\mathcal{M}(N)$ across all levels). In an NTT-friendly prime field, since $A G_k \equiv 1 \pmod{x^m}$, the lower $m$ coefficients of $A G_k$ are already known to be $1, 0, \dots, 0$, and the product $(A \bmod x^{2m}) \cdot G_k$ has degree $< 3m - 1$. Performing the cyclic convolution in a transform of length $2m$ (reusing the length-$2m$ forward NTT of $G_k$) requires only **3 NTT calls of length $2m$** per step instead of 6, reducing the total work across all levels to $\approx 1.5\,\mathcal{M}(N)$.
+:::
+
+---
+
+## 1.4 Quotient Extraction, Valuation-Shift Precision & Divide-and-Conquer Product Trees
+
+With addition, multiplication, and `inv(A, N)` in hand, we can evaluate general rational series $Q(x) = \frac{B(x)}{A(x)} \bmod x^N$ and large polynomial products $\prod_{i=1}^m P_i(x) \bmod x^N$. However, three major pitfalls separate a textbook formula from a correct, fast competitive programming solution:
+
+1. **Dividing when $[x^0]A(x) = 0$** (Canonical Failure Mode #1: Precision loss under valuation shift);
+2. **Using heavy $O(N \log N)$ NTT `inv` when $A(x) = 1 \pm x^w$ is sparse** (missing $O(N)$ Reversible DP);
+3. **Multiplying $m$ polynomials sequentially** in $O(m N \log N)$ instead of using a degree-balanced product tree in $O(S \log^2 S)$.
+
+Let us master each of these in turn.
+
+### Canonical Failure Mode #1: Precision Loss in Valuation-Shifted Division
+
+Suppose a combinatorial specification yields an equation of the form
+
+$$
+A(x) Q(x) = B(x),
+$$
+
+where $Q(x) = \sum_{n=0}^{\infty} q_n x^n$ is the unknown generating function we want to compute up to $x^{N-1}$ (i.e., $Q(x) \bmod x^N$), and $A(x)$ has **zero constant term**: $a_0 = 0$.
+
+Because $[x^0]A(x) = 0$, $A(x)$ is **not a unit** in $K[[x]]$, so calling `inv(A, N)` directly will crash with a division-by-zero error at $a_0^{-1}$!
+
+Can we still solve $A(x)Q(x) = B(x)$ for $Q(x) \bmod x^N$? Suppose $\operatorname{val}(A) = v \ge 1$ is finite, and $[x^v]A(x) = a_v \in K^\times$. For a solution $Q(x) \in K[[x]]$ to exist at all, comparing valuations on both sides requires $\operatorname{val}(B) = \operatorname{val}(AQ) \ge \operatorname{val}(A) = v$, so the first $v$ coefficients of $B(x)$ must also be zero: $b_0 = b_1 = \dots = b_{v-1} = 0$.
+
+Factoring out $x^v$ from both $A(x)$ and $B(x)$ gives:
+
+$$
+A(x) = x^v \widetilde{A}(x) \quad \text{and} \quad B(x) = x^v \widetilde{B}(x),
+$$
+
+where $\widetilde{A}(x) = \sum_{n=0}^{\infty} a_{n+v} x^n$ now has constant term $[x^0]\widetilde{A}(x) = a_v \in K^\times$! Cancelling $x^v$ reduces the equation to $\widetilde{A}(x) Q(x) = \widetilde{B}(x)$, which can be solved via $Q(x) = \widetilde{B}(x) \widetilde{A}(x)^{-1}$.
+
+**Here is the trap that breaks countless contest submissions**: what precision must we compute $A(x)$ and $B(x)$ to before shifting down by $x^v$?
+
+::: {.callout-warning}
+## Failure Mode #1 (#1A & #1B): Valuation-Shift Precision Loss in $B(x)/A(x) \bmod x^N$ & Trailing NTT Buffer Contamination
+
+- **Part A — The Valuation-Shift Trap (Truncating Before Shifting)**:
+  Suppose you need $Q(x) \bmod x^N$, and you compute $A(x)$ and $B(x)$ to the target precision $\bmod\, x^N$ (arrays of length $N$, storing indices $0, 1, \dots, N-1$). When you divide both series by $x^v$ (shifting index $n+v \mapsto n$), the shifted series $\widetilde{A}(x) = x^{-v} A(x)$ and $\widetilde{B}(x) = x^{-v} B(x)$ only have known coefficients for $0 \le n < N - v$!
+  - In exact modular arithmetic:
+    $$
+    A(x) \equiv B(x) \pmod{x^N} \quad \Longleftrightarrow \quad x^{-v} A(x) \equiv x^{-v} B(x) \pmod{x^{N - v}}.
+    $$
+  - If you zero-pad $\widetilde{A}$ and $\widetilde{B}$ back to length $N$ and run `inv(A_tilde, N)`, the last $v$ coefficients $[x^{N-v}]Q(x), \dots, [x^{N-1}]Q(x)$ are computed using garbage zeros for $a_N, \dots, a_{N+v-1}$ and $b_N, \dots, b_{N+v-1}$!
+- **Concrete Counterexample ($N = 3, v = 1$)**:
+  Suppose $A(x) = x - x^2 + x^3$ ($v = 1$) and $B(x) = x + 5x^3$, so the exact quotient in $K[[x]]$ is
+  $$
+  Q(x) = \frac{B(x)}{A(x)} = \frac{1 + 5x^2}{1 - x + x^2} = (1 + 5x^2)(1 + x - x^3 + \dots) \equiv 1 + x + 5x^2 \pmod{x^3}.
+  $$
+  - *Buggy pipeline (truncate $\bmod\, x^3$ before shifting)*: Truncating $A, B \bmod x^3$ first drops the $x^3$ terms, giving $A_{\text{trunc}}(x) = x - x^2$ and $B_{\text{trunc}}(x) = x$. Shifting by $x^1$ gives $\widetilde{A}_{\text{trunc}}(x) = 1 - x \bmod x^2$ and $\widetilde{B}_{\text{trunc}}(x) = 1 \bmod x^2$. Zero-padding back to length $3$ and inverting computes $\frac{1}{1 - x} \equiv 1 + x + x^2 \pmod{x^3}$, producing $[x^2]Q = 1$ instead of the true $[x^2]Q = 5$!
+- **The Exact Remedy for Part A**:
+  Whenever $\operatorname{val}(A) = v \ge 1$ and you require $Q(x) = B(x)/A(x) \bmod x^N$:
+  1. Verify that $b_0 = b_1 = \dots = b_{v-1} = 0$ (so $\operatorname{val}(B) \ge v$) and $a_v = [x^v]A(x) \in K^\times$.
+  2. Evaluate both $A(x)$ and $B(x)$ to precision **$\bmod\, x^{N + v}$** (indices $0$ through $N + v - 1$) *before* dividing by $x^v$.
+  3. Form $\widetilde{A}[n] = A[n + v]$ and $\widetilde{B}[n] = B[n + v]$ for $0 \le n < N$, which are now exact $\bmod\, x^N$.
+  4. Compute $Q(x) = \widetilde{B}(x) \cdot \operatorname{inv}(\widetilde{A}, N) \bmod x^N$.
+- **Part B — Trailing NTT Buffer Contamination in Newton Doubling**:
+  When advancing Newton iteration from precision $m$ to $2m$ via
+  $$
+  G_{k+1}(x) \equiv G_k(x)\bigl(2 - A(x) G_k(x)\bigr) \pmod{x^{2m}},
+  $$
+  implementations typically perform cyclic NTT convolutions of length $L = 4m$ (or $2m$ with cyclic wrap-around). Two silent buffer bugs occur if trailing coefficients are not zeroed:
+  1. **Unclean Input Slice (`[2m, 4m)`)**: Passing the full polynomial $A(x)$ instead of its prefix $A(x) \bmod x^{2m}$ into the length-$4m$ DFT buffer leaks high-degree terms $a_{2m}, \dots, a_{4m-1}$ into the cyclic product.
+  2. **Unclean Output Truncation (`[2m, 4m)`)**: After computing $G_{k+1}$ via inverse NTT of length $4m$, coefficients at indices $[2m, 4m)$ contain cyclic garbage from degree $[2m, 3m-2]$. If these positions are not explicitly zeroed out (`fill(G.begin() + 2 * m, G.end(), 0)`) before the next doubling step $2m \to 4m$, they corrupt the forward DFT of $G_{k+1}$ in the subsequent iteration!
+:::
+
+### Sparse Multiplications & Reversible DP ("戻すDP")
+
+Not every polynomial division requires an $O(N \log N)$ Newton inversion! In knapsack, coin-change, and sliding-window DP problems, we constantly multiply or divide a generating function $F(x) \bmod x^N$ by a **2-term sparse binomial** of the form $1 + c x^w$ (where $w \ge 1$ and $c \in K$, typically $c = \pm 1$).
+
+Let $G(x) = (1 + c x^w) F(x) \bmod x^N$. Comparing coefficients of $x^n$ gives the recurrence:
+
+$$
+g_n = [x^n]\bigl((1 + c x^w)F(x)\bigr) = f_n + c \cdot f_{n-w} \quad (\text{where } f_{n-w} = 0 \text{ for } n < w).
+$$
+
+Conversely, suppose we already have $G(x) \bmod x^N$ and we want to **undo** the factor $(1 + c x^w)$—that is, compute $F(x) = \frac{G(x)}{1 + c x^w} \bmod x^N$. In the Japanese competitive programming community, this technique is famously called **戻すDP (Reversible DP / Undoing DP)**. Rearranging the equation $g_n = f_n + c \cdot f_{n-w}$ to solve for $f_n$ gives:
+
+$$
+f_n = g_n - c \cdot f_{n-w}.
+$$
+
+Both operations take **strictly $O(N)$ time and $O(1)$ auxiliary memory** in-place on a single array $A[0 \dots N-1]$, and the only difference between multiplying by $(1 + c x^w)$ and dividing by $(1 + c x^w)$ is the **loop direction**!
+
+| Operation on $A(x) \bmod x^N$ | Mathematical Formula | In-Place Loop Direction & Update | Why Loop Direction Matters (Invariant) |
+| :--- | :--- | :--- | :--- |
+| **Multiply by $(1 + c x^w)$** <br> (e.g., 0/1 Knapsack item add) | $A_{\text{new}}(x) = A_{\text{old}}(x)(1 + c x^w)$ | **Downward** ($n = N-1$ down to $w$): <br> `A[n] += c * A[n - w]` | Needs the **old** (unmodified) value $A_{\text{old}}[n-w]$ before index $n-w$ is updated. |
+| **Divide by $(1 + c x^w)$** <br> (e.g., 0/1 Knapsack item erase) | $A_{\text{new}}(x) = \frac{A_{\text{old}}(x)}{1 + c x^w}$ | **Upward** ($n = w$ up to $N-1$): <br> `A[n] -= c * A[n - w]` | Needs the **new** (already solved) value $A_{\text{new}}[n-w]$ to cancel its contribution to $n$. |
+| **Divide by $(1 - c x^w)$** <br> (e.g., Unbounded Coin add) | $A_{\text{new}}(x) = \frac{A_{\text{old}}(x)}{1 - c x^w}$ | **Upward** ($n = w$ up to $N-1$): <br> `A[n] += c * A[n - w]` | Special case of row 2 with $-c$: $A_{\text{new}}[n] = A_{\text{old}}[n] + c \cdot A_{\text{new}}[n-w]$. |
+| **Multiply by $(1 - c x^w)$** <br> (e.g., Unbounded Coin erase) | $A_{\text{new}}(x) = A_{\text{old}}(x)(1 - c x^w)$ | **Downward** ($n = N-1$ down to $w$): <br> `A[n] -= c * A[n - w]` | Special case of row 1 with $-c$: $A_{\text{new}}[n] = A_{\text{old}}[n] - c \cdot A_{\text{old}}[n-w]$. |
+
+::: {.callout-important}
+## Why Reversible DP Works Without Conditional Branches
+Because $1 + c x^w$ has constant term $1 \in K^\times$, it is **always a unit in $K[[x]]/(x^N)$**. Moreover, because multiplication in $K[[x]]/(x^N)$ is commutative and associative, if a state polynomial is a product of many factors $P(x) = \prod_{i \in S} (1 + c_i x^{w_i}) \bmod x^N$, you can remove **any** factor $(1 + c_k x^{w_k})$—regardless of the chronological order in which factors were inserted— simply by dividing $P(x)$ by $(1 + c_k x^{w_k})$ in $O(N)$ time!
+:::
+
+::: {.callout-note icon=false}
+## Algorithm Contract: `add_factor` / `remove_factor` — Reversible Sparse Factor Sweeps
+
+- **Preconditions**: Polynomial $F(x) \bmod x^N$ over **any** commutative ring $K$ (no division or field structure required since $[x^0](1 \pm c x^w) = 1 \in K^\times$), step $1 \le w < N$, scalar $c \in K$.
+- **Index Boundaries & Loop Direction**:
+  - **Multiplication** $F \leftarrow F \cdot (1 + c x^w) \bmod x^N$: **Backward** loop `for (int i = N - 1; i >= w; --i) F[i] += c * F[i - w];`
+  - **Division** $F \leftarrow F / (1 + c x^w) \bmod x^N$: **Forward** loop `for (int i = w; i < N; ++i) F[i] -= c * F[i - w];`
+- **Time & Space Complexity**: $O(N)$ time per factor operation, $O(1)$ auxiliary space (in-place).
+- **1-Sentence Loop Invariant**: In the backward sweep, before updating index $i$, $F[i - w]$ still holds the pre-transition coefficient $F_{\text{old}}[i - w]$; in the forward sweep, before updating index $i$, $F[i - w]$ already holds the solved quotient coefficient $F_{\text{new}}[i - w]$.
+:::
+
+### Divide-and-Conquer Product Trees ($\prod_{i=1}^m P_i(x)$)
+
+Suppose a problem gives $m$ polynomials $P_1(x), P_2(x), \dots, P_m(x)$ whose degrees sum to $S = \sum_{i=1}^m \deg(P_i)$, and asks for their full product $P(x) = \prod_{i=1}^m P_i(x)$ (or its truncation $\bmod\, x^N$).
+
+- **The Sequential Trap ($O(m S \log S)$)**: If you accumulate the product one factor at a time (`acc = acc * P[i]`), and each $P_i$ has degree $1$ ($m = S$), the $i$-th step multiplies a polynomial of degree $i-1$ by a polynomial of degree $1$. Using FFT/NTT on the accumulator costs $\sum_{i=1}^S O(i \log i) = O(S^2 \log S)$ (or $O(S^2)$ with naive multiplication)—a guaranteed Time Limit Exceeded when $S = 2 \times 10^5$!
+- **The Divide-and-Conquer / Min-Heap Remedy ($O(S \log^2 S)$)**:
+  Instead of unbalanced sequential multiplication, always multiply polynomials of **comparable degree**:
+  1. **Balanced Recursion (`prod(L, R)`)**: Split the range $[L, R]$ at $M = \lfloor(L+R)/2\rfloor$, recursively compute $P_{[L, M]}(x)$ and $P_{[M+1, R]}(x)$, and multiply them with a single FFT/NTT call. If all $P_i$ have roughly equal degrees, the recursion tree has depth $\lceil \log_2 m \rceil$, and the total degree of all polynomials at every single depth level of the tree is exactly $S$. Thus each level costs $\sum O(d_j \log d_j) = O(S \log S)$ time, giving $O(S \log S \log m) \subseteq O(S \log^2 S)$ total time.
+  2. **Huffman / Degree-Ordered Min-Heap**: What if the input degrees $\deg(P_i)$ are wildly skewed (e.g., one polynomial of degree $S/2$ and $S/2$ polynomials of degree $1$)? Put all $m$ polynomials into a **min-priority queue ordered by $\deg(P)$**. Repeatedly pop the two smallest-degree polynomials $A(x)$ and $B(x)$, multiply them in $O((\deg A + \deg B)\log(\deg A + \deg B))$ time, and push $A(x)B(x)$ back into the heap. Every time a polynomial participates in a multiplication, the degree of the resulting merged polynomial is at least **double** the degree of the smaller factor, guaranteeing that each unit of degree participates in at most $O(\log S)$ merges for a worst-case bound of $O(S \log^2 S)$.
+  3. **Frequency Grouping Optimization (Pre-Binomial Collapse)**: Before building a product tree over linear or sparse factors $\prod_{i=1}^m (1 + c x^{w_i})$, count the multiplicity $cnt[w]$ of each weight $w$. Any factor with $w = 1$ (or identical $w$) repeated $c$ times can be collapsed immediately into $(1 + x)^c = \sum_{k=0}^c \binom{c}{k} x^k$ in $O(c)$ time using precomputed factorials! (In Chapter 02 (§2.5) and Chapter 03 (§3.2), we will also see how $\ln / \exp$ collapses $\prod_{i=1}^m (1 + c_i x^{w_i}) \bmod x^N$ in $O(N \log N)$ when $p > N$).
+
+::: {.callout-note icon=false}
+## Algorithm Contract: `prod_tree(P, N)` — Divide-and-Conquer & Min-Heap Product Tree
+
+- **Preconditions**: Sequence of polynomials $P_1(x), \dots, P_k(x)$ over ring $K$ with total degree sum $S = \sum_{i=1}^k \deg(P_i)$, and optional truncation bound $x^N$.
+- **Postcondition**: Returns $\prod_{i=1}^k P_i(x) \bmod x^N$.
+- **Time & Space Complexity**: $O(S \log^2 S)$ time (or $O(S \log S \log k)$ with balanced midpoint splitting / Min-Heap by degree), $O(S)$ space.
+- **Loop / Algebraic Invariant**: In the recursive segment tree over indices $1 \le L \le R \le k$ with midpoint $M = \lfloor (L + R)/2 \rfloor$, each call on $[L, R]$ partitions the index interval into disjoint halves $[L, M] \sqcup [M + 1, R]$ so every factor $P_i(x)$ ($1 \le i \le k$) is multiplied into the product exactly once (bounding the sum of convolution sizes across each tree depth by $S$); in the min-heap formulation, after $t$ merges ($0 \le t < k-1$), the priority queue contains $k - t$ polynomials whose product equals $\prod_{i=1}^k P_i(x) \bmod x^N$, and each merge pops the two smallest-degree polynomials $A, B$ and pushes $(A \cdot B) \bmod x^N$.
+:::
+
+::: {.callout-warning}
+## Failure Mode #1b: Degree-Bound Explosion & Missing Zero-Trim in D&C Product Trees
+
+When multiplying $k$ polynomials $P_1(x), \dots, P_k(x)$ modulo $x^N$ using a Divide-and-Conquer tree or Min-Heap:
+1. **Missing $\bmod x^N$ Cap**: If intermediate products are not truncated to degree $\min(\deg A + \deg B, N - 1)$ immediately after each convolution, a product of $k$ polynomials of degree $N - 1$ grows to degree $k(N - 1)$, degrading an $O(N \log^2 N)$ truncated product into $O(k N \log(kN))$.
+2. **Untrimmed High-Degree Zeros**: If an intermediate product has leading high-degree coefficients that cancel to $0 \pmod p$ (or if a factor is padded to a power-of-two NTT buffer size $2^{\lceil \log_2 d \rceil}$ and pushed back into the Min-Heap without stripping trailing high-degree zeros), the heap key `P.size()` overestimates the true algebraic degree $\deg(P)$, corrupting the Huffman merging order and inflating subsequent FFT sizes. Always call `P.resize(min((int)P.size(), N))` followed by stripping trailing high-degree zeros before re-inserting into the heap.
+:::
+
+---
+
+## 1.5 Progressive Problem Set (4-Tier Practice Ladder)
+
+We now apply the algebraic and algorithmic tools of Chapter 01 across eight carefully selected problems spanning four difficulty tiers. Work through each problem statement and try to spot the **Diagnostic Signal** before opening the progressive hints.
+
+---
+
+### Stepping Stone 1 (`#019`) — Redistribution
+- **Source**: [AtCoder Beginner Contest 178 — Problem D](https://atcoder.jp/contests/abc178/tasks/abc178_d)
+- **Prerequisites**: Formal geometric series $(1 - G(x))^{-1}$ (§1.3), coefficient extraction $[x^S]$ (§1.1).
+
+#### Problem Statement & Exact Constraints
+Given an integer $S$ ($1 \le S \le 2000$), find the number of ordered sequences of positive integers $(a_1, a_2, \dots, a_k)$ (of any length $k \ge 1$) such that:
+
+1. $a_i \ge 3$ for every $1 \le i \le k$, and
+2. $a_1 + a_2 + \dots + a_k = S$.
+
+Output the answer modulo $10^9 + 7$.
+*Target Complexity*: $O(S)$ time and $O(S)$ (or $O(1)$) space.
+- **Sample Trace ($S = 7$)**: The ordered tuples of integers $\ge 3$ summing to $7$ are $(7)$, $(3, 4)$, and $(4, 3)$, giving **3** valid sequences.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Each term $a_i$ in the sequence is chosen independently from the allowed set $\{3, 4, 5, \dots\}$, and the total weight $\sum_{i=1}^k a_i = S$ is a Cauchy sum of $k$ choices. What polynomial or power series $G(x)$ represents a single term $a_i \in \{3, 4, 5, \dots\}$, and what is $[x^S]G(x)^k$?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+A single block $a_i \ge 3$ has generating function $G(x) = x^3 + x^4 + x^5 + \dots = x^3(1 + x + x^2 + \dots) = \frac{x^3}{1 - x}$. Notice that $\operatorname{val}(G) = 3 \ge 1$, so the formal geometric series $\sum_{k=1}^{\infty} G(x)^k = \frac{G(x)}{1 - G(x)}$ converges in $\mathbb{Z}[[x]]$. Simplify the rational expression $\frac{x^3/(1-x)}{1 - x^3/(1-x)}$.
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Multiplying numerator and denominator by $1 - x$ gives $F(x) = \frac{x^3}{1 - x - x^3}$. You can extract $[x^S]F(x)$ in two ways, both in $O(S)$ time:
+1. Multiply both sides by $1 - x - x^3$ to get $(1 - x - x^3)F(x) = x^3$, which gives the linear recurrence $f_n = f_{n-1} + f_{n-3}$ for $n \ge 4$ with $f_3 = 1$.
+2. Alternatively, expand $G(x)^k = x^{3k}(1-x)^{-k}$ using the negative binomial series $[x^S]x^{3k}(1-x)^{-k} = \binom{S - 2k - 1}{k - 1}$ and sum over $1 \le k \le \lfloor S/3 \rfloor$.
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Combinatorial Specification as a Formal Geometric Series
+We are counting ordered $k$-tuples $(a_1, \dots, a_k)$ of integers $a_i \ge 3$ summing to $S$, summed over all lengths $k \ge 1$.
+For a single part $a_i \in \{3, 4, 5, \dots\}$, there is exactly $1$ choice of each weight $w \ge 3$ and $0$ choices of weights $0, 1, 2$. Thus the generating function for a single part is:
+
+$$
+G(x) = \sum_{w=3}^{\infty} 1 \cdot x^w = x^3 \sum_{m=0}^{\infty} x^m = \frac{x^3}{1 - x} \in \mathbb{Z}[[x]].
+$$
+
+By definition of the Cauchy product, for a fixed length $k \ge 1$, the number of $k$-tuples $(a_1, \dots, a_k)$ with $a_1 + \dots + a_k = S$ is $[x^S]G(x)^k$. Since $\operatorname{val}(G) = 3 \ge 1$, we have $\operatorname{val}(G^k) = 3k \to \infty$ as $k \to \infty$, so the infinite sum over all lengths $k \ge 1$ converges in $\mathbb{Z}[[x]]$:
+
+$$
+F(x) = \sum_{k=1}^{\infty} G(x)^k = \frac{G(x)}{1 - G(x)} = \frac{\frac{x^3}{1 - x}}{1 - \frac{x^3}{1 - x}}.
+$$
+
+Multiplying numerator and denominator by the unit $1 - x \in \mathbb{Z}[[x]]^\times$ yields the closed rational form:
+
+$$
+F(x) = \frac{x^3}{1 - x - x^3}.
+$$
+
+#### 2. Hand-Checkable Trace ($S \le 6$)
+Let us check the first few coefficients of $F(x) = x^3(1 - (x + x^3))^{-1}$:
+- For $S = 1, 2$: $\operatorname{val}(F) = 3$, so $f_1 = f_2 = 0$ (no sequence of integers $\ge 3$ can sum to $1$ or $2$).
+- For $S = 3$: $f_3 = 1$, corresponding to $(3)$.
+- For $S = 4$: $f_4 = 1$, corresponding to $(4)$.
+- For $S = 5$: $f_5 = 1$, corresponding to $(5)$.
+- For $S = 6$: $f_6 = 2$, corresponding to $(6)$ and $(3, 3)$.
+
+#### 3. Extraction Method A: Denominator Clearing (Recurrence in $O(S)$)
+Multiply both sides of $F(x) = \frac{x^3}{1 - x - x^3}$ by the denominator $1 - x - x^3$:
+
+$$
+(1 - x - x^3) F(x) = x^3.
+$$
+
+Extracting $[x^n]$ on both sides via linearity gives:
+
+$$
+f_n - f_{n-1} - f_{n-3} = [x^n]x^3 = \begin{cases} 1 & \text{if } n = 3, \\ 0 & \text{if } n \neq 3. \end{cases}
+$$
+
+Thus $f_0 = f_1 = f_2 = 0$, $f_3 = 1$, and $f_n = (f_{n-1} + f_{n-3}) \bmod (10^9 + 7)$ for $4 \le n \le S$.
+
+#### 4. Extraction Method B: Direct Summation over Length $k$
+Notice that $[x^m](1 - x)^{-k} = [x^m](1 + x + x^2 + \dots)^k = \binom{m + k - 1}{k - 1}$ counts weak compositions of $m$ into $k$ non-negative integer parts via stars-and-bars (and will be derived algebraically via iterated formal differentiation in Chapter 02, §2.1). By the valuation-shift rule $[x^S]\bigl(x^{3k} H(x)\bigr) = [x^{S-3k}] H(x)$ and the negative binomial series $[x^m](1 - x)^{-k} = \binom{m + k - 1}{k - 1}$ applied at $m = S - 3k$:
+
+$$
+\begin{aligned}
+[x^S] \bigl(x^3(1 - x)^{-1}\bigr)^k
+&= [x^S] x^{3k}(1 - x)^{-k}
+&& \text{(factor out the minimum weight } 3k \text{ of } k \text{ parts)} \\[4pt]
+&= [x^{S-3k}](1 - x)^{-k}
+&& \text{(shift index by } 3k \text{ remaining distributes across } k \text{ bins)} \\[4pt]
+&= \binom{(S - 3k) + k - 1}{k - 1}
+&& \text{(apply } [x^m](1 - x)^{-k} = \binom{m + k - 1}{k - 1} \text{ at } m = S - 3k\text{)} \\[4pt]
+&= \binom{S - 2k - 1}{k - 1}.
+&& \text{(simplify } S - 3k + k - 1 = S - 2k - 1\text{)}
+\end{aligned}
+$$
+
+Summing over all valid part counts $1 \le k \le \lfloor S/3 \rfloor$:
+
+$$
+[x^S] F(x) = \sum_{k=1}^{\lfloor S/3 \rfloor} \binom{S - 2k - 1}{k - 1} \pmod{10^9 + 7}.
+$$
+
+#### 5. Algorithm Contract
+- **Input & Preconditions**: Integer $S$ ($1 \le S \le 2000$); prime modulus $p = 10^9 + 7$.
+- **Postconditions (Output)**: Returns $[x^S] \frac{x^3}{1 - x - x^3} \bmod (10^9 + 7)$.
+- **Time & Space Complexity**: $O(S)$ time and $O(S)$ space (or $O(1)$ auxiliary space using a 3-element rolling buffer for Method A).
+- **Loop / Algebraic Invariant**: After step $n$ ($3 \le n \le S$), $f_n = [x^n] x^3(1 - x - x^3)^{-1} \bmod p$ holds via the exact relation $(1 - x - x^3)F(x) = x^3$.
+- **Failure Modes & Edge Cases**: When $S < 3$, $\lfloor S/3 \rfloor = 0$ so the answer is $0$ (guard array bounds when initializing `f[3] = 1` if allocating size $S + 1$ for $S \in \{1, 2\}$).
+
+</details>
+
+---
+
+### Stepping Stone 2 (`#043`) — `#(subset sum = K)` with Add and Erase
+- **Source**: [AtCoder Beginner Contest 321 — Problem F](https://atcoder.jp/contests/abc321/tasks/abc321_f)
+- **Prerequisites**: Unit theorem in $K[[x]]/(x^{K+1})$ (§1.2), Reversible DP / sparse multiplication and division by $(1 + x^v)$ (§1.4).
+
+#### Problem Statement & Exact Constraints
+You have an initially empty box of balls and an integer target $K$. You are given $Q$ queries ($1 \le Q, K \le 5000$). Each query has one of two types:
+
+- `+ v`: Insert a ball with integer value $v$ ($1 \le v \le K$) into the box.
+- `- v`: Remove one ball with integer value $v$ from the box (it is guaranteed that the box currently contains at least one ball with value $v$).
+
+Balls with identical values are treated as **distinct** (labelled by their insertion event). After each query, output the number of subsets of balls currently in the box whose values sum to $K$, modulo $998244353$.
+*Target Complexity*: $O(K)$ time per query ($O(QK)$ total time) and $O(K)$ space.
+- **Sample Trace ($K = 4$, queries `+ 1`, `+ 3`, `+ 4`, `- 1`)**: After `+ 1, + 3, + 4`, the polynomial is $(1+x)(1+x^3)(1+x^4) \equiv 1 + x + x^3 + 2x^4 \pmod{x^5}$, giving $[x^4] = 2$ subsets ($\{1, 3\}$ and $\{4\}$); after `- 1`, dividing by $(1 + x)$ leaves $(1+x^3)(1+x^4) \equiv 1 + x^3 + x^4 \pmod{x^5}$, giving $[x^4] = 1$ subset ($\{4\}$).
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+At any moment, if the box contains balls with values $v_1, v_2, \dots, v_m$, choosing a subset of balls means making an independent binary decision (skip = $x^0$, take = $x^{v_i}$) for each ball $i$. What polynomial $P(x) \bmod x^{K+1}$ encodes the subset-sum counts, and what happens to $P(x)$ on `+ v` vs. `- v`?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+The subset-sum generating function is $P(x) = \prod_{i=1}^m (1 + x^{v_i}) \bmod x^{K+1}$.
+- Query `+ v` multiplies $P(x)$ by $(1 + x^v) \bmod x^{K+1}$.
+- Query `- v` removes a factor $(1 + x^v)$, which is equivalent to **multiplying by $(1 + x^v)^{-1} \bmod x^{K+1}$** (i.e., dividing $P(x)$ by $1 + x^v$).
+Since $[x^0](1 + x^v) = 1 \in \mathbb{F}_{998244353}^\times$, $1 + x^v$ is a unit in $\mathbb{F}_{998244353}[[x]]/(x^{K+1})$, and multiplication is commutative, so we can divide out $(1 + x^v)$ regardless of when ball $v$ was added!
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Maintain an array `dp[0..K]` initialized to `dp[0] = 1` and `dp[1..K] = 0`.
+- On `+ v`: loop $n$ **downward** from $K$ down to $v$, setting `dp[n] = (dp[n] + dp[n - v]) % MOD`.
+- On `- v`: loop $n$ **upward** from $v$ up to $K$, setting `dp[n] = (dp[n] - dp[n - v] + MOD) % MOD`.
+Output `dp[K]` after each query.
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Translating Dynamic Subset Sum to the Quotient Ring $\mathbb{F}_p[x]/(x^{K+1})$
+Let $p = 998244353$. For a single ball of value $v$, we either exclude it (contributing weight $0$, i.e., $1 x^0$) or include it (contributing weight $v$, i.e., $1 x^v$). Thus each ball of value $v$ corresponds to the binomial factor $(1 + x^v)$.
+
+Because choices across distinct balls in the multiset $M = \{v_1, v_2, \dots, v_m\}$ are independent and weights add, the number of subsets summing to $n$ ($0 \le n \le K$) is $[x^n] P_M(x)$, where
+
+$$
+P_M(x) = \prod_{v \in M} (1 + x^v) \bmod x^{K+1} \in \mathbb{F}_p[x]/(x^{K+1}).
+$$
+
+Initially $M = \emptyset$, so $P_\emptyset(x) = 1$.
+
+#### 2. Algebraic Reversibility of `+ v` and `- v`
+- **Inserting $v$ (`+ v`)**: $P_{\text{new}}(x) \equiv P_{\text{old}}(x)(1 + x^v) \pmod{x^{K+1}}$. Extracting $[x^n]$ for $0 \le n \le K$:
+  $$
+  p_{\text{new}, n} = p_{\text{old}, n} + p_{\text{old}, n - v} \quad (p_{\text{old}, j} := 0 \text{ for } j < 0).
+  $$
+- **Erasing $v$ (`- v`)**: By the Unit Theorem (Theorem 1.1), since $[x^0](1 + x^v) = 1 \in \mathbb{F}_p^\times$, the polynomial $1 + x^v$ has a **unique multiplicative inverse** $(1 + x^v)^{-1}$ in $\mathbb{F}_p[[x]]/(x^{K+1})$. Furthermore, because multiplication in $\mathbb{F}_p[x]/(x^{K+1})$ is commutative and associative, if $M' = M \setminus \{v\}$, then:
+  $$
+  P_M(x) \equiv P_{M'}(x) (1 + x^v) \pmod{x^{K+1}} \quad \Longleftrightarrow \quad P_{M'}(x) \equiv P_M(x)(1 + x^v)^{-1} \pmod{x^{K+1}}.
+  $$
+  Notice that we do **not** need to expand $(1 + x^v)^{-1} = 1 - x^v + x^{2v} - \dots$ explicitly! Instead, from the identity $P_{\text{old}}(x) \equiv P_{\text{new}}(x)(1 + x^v) \pmod{x^{K+1}}$, we read off $[x^n]$:
+  $$
+  p_{\text{old}, n} = p_{\text{new}, n} + p_{\text{new}, n - v} \quad \Longrightarrow \quad p_{\text{new}, n} = p_{\text{old}, n} - p_{\text{new}, n - v}.
+  $$
+
+#### 3. In-Place Loop Invariants
+```cpp
+// Add ball of weight v: multiply by (1 + x^v) mod x^(K+1)
+for (int n = K; n >= v; --n)
+    dp[n] = (dp[n] + dp[n - v]) % 998244353;
+
+// Erase ball of weight v: divide by (1 + x^v) mod x^(K+1)
+for (int n = v; n <= K; ++n)
+    dp[n] = (dp[n] - dp[n - v] + 998244353) % 998244353;
+```
+
+#### 4. Algorithm Contract
+- **Input & Preconditions**: Target sum $K \le 5000$ and $Q \le 5000$ queries of the form `+ v` or `- v` ($1 \le v \le K$), where every `- v` is preceded by an unmatched `+ v`; modulus $p = 998244353$.
+- **Postconditions (Output)**: After each query $q$, outputs $\text{dp}[K] = [x^K] \prod_{v \in M_q} (1 + x^v) \bmod 998244353$.
+- **Time & Space Complexity**: $O(K)$ time per query ($O(QK)$ total time) and $O(K)$ space.
+- **Loop / Algebraic Invariant**: After query $q$, $\sum_{n=0}^K \text{dp}[n] x^n \equiv \prod_{v \in M_q} (1 + x^v) \pmod{x^{K+1}}$; inside `+ v`, the descending loop $n = K \dots v$ reads pre-transition $\text{dp}_{\text{old}}[n - v]$, whereas inside `- v`, the ascending loop $n = v \dots K$ reads already-updated quotient coefficients $\text{dp}_{\text{new}}[n - v]$.
+- **Failure Modes & Edge Cases**: Reversing the loop direction (ascending on `+ v` or descending on `- v`) multiplies by $(1 - x^v)^{-1}$ or $(1 - x^v)$ instead of $(1 + x^v)^{\pm 1}$; if $v > K$, $(1 + x^v) \equiv 1 \pmod{x^{K+1}}$, so the loop safely performs $0$ iterations.
+
+</details>
+
+---
+
+### Intermediate 1 (`#004`) — Coin (`fps_24_g`)
+- **Source**: [AtCoder `fps-24` Contest — Problem G (Coin)](https://atcoder.jp/contests/fps-24/tasks/fps_24_g)
+- **Prerequisites**: Unbounded knapsack / partition generating functions $(1 - x^j)^{-1}$ (§1.3), sliding-window Reversible DP (§1.4).
+
+#### Problem Statement & Exact Constraints
+You are given positive integers $N, M, L$ ($1 \le N, M \le 5000$, $1 \le L \le M$). For each $k = 1, 2, \dots, M - L + 1$, suppose you have an unlimited supply of coins of the $L$ denominations:
+
+$$
+S_k = \{k, k + 1, k + 2, \dots, k + L - 1\}.
+$$
+
+Order of coins does not matter (we are counting multisets of coins from $S_k$ summing to $N$). For every $k = 1, 2, \dots, M - L + 1$, compute the number of ways to form total value $N$ using only coins from $S_k$, modulo $998244353$.
+*Target Complexity*: $O((N + M)N)$ time and $O(N)$ space.
+- **Sample Trace ($N = 4, M = 3, L = 2$)**: For $k = 1$, $S_1 = \{1, 2\}$ has $[x^4]\frac{1}{(1-x)(1-x^2)} = 3$ multisets ($\{1,1,1,1\}, \{1,1,2\}, \{2,2\}$); for $k = 2$, $S_2 = \{2, 3\}$ has $[x^4]\frac{1}{(1-x^2)(1-x^3)} = 1$ multiset ($\{2,2\}$).
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Since coin order does not matter and each denomination $j \in S_k$ can be used $0, 1, 2, \dots$ times, choosing the multiplicity $m_j \ge 0$ of coin $j$ contributes weight $m_j \cdot j$, which corresponds to the geometric series $1 + x^j + x^{2j} + \dots = \frac{1}{1 - x^j}$. What is the generating function $F_k(x) \bmod x^{N+1}$ for window $S_k$?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+For window $k$, the generating function is $F_k(x) = \prod_{j=k}^{k+L-1} \frac{1}{1 - x^j} \bmod x^{N+1}$.
+Compare $F_{k+1}(x)$ and $F_k(x)$ when the window slides by $1$ from $[k, k+L-1]$ to $[k+1, k+L]$:
+$$
+F_{k+1}(x) = F_k(x) \cdot \frac{1 - x^k}{1 - x^{k+L}} \bmod x^{N+1}.
+$$
+How fast can we multiply $F_k(x)$ by $(1 - x^k)$ and divide by $(1 - x^{k+L})$?
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+1. Initialize $F_1(x) \bmod x^{N+1}$ by starting with $F(x) = 1$ and dividing by $(1 - x^j)$ for $j = 1, 2, \dots, L$ (each an upward loop `dp[n] += dp[n - j]` in $O(N)$ time, taking $O(LN)$ total).
+2. To slide from $k$ to $k+1$:
+   - **Remove coin $k$**: multiply by $(1 - x^k)$ via a **downward** loop `dp[n] -= dp[n - k]` for $n = N$ down to $k$.
+   - **Add coin $k + L$**: divide by $(1 - x^{k+L})$ via an **upward** loop `dp[n] += dp[n - (k + L)]` for $n = k + L$ up to $N$.
+Output `dp[N]` after each window $k$.
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Unbounded Coin-Change Generating Function
+For a fixed window $S_k = \{k, k+1, \dots, k+L-1\}$, choosing a multiset of coins summing to $N$ is equivalent to choosing a non-negative multiplicity $m_j \in \{0, 1, 2, \dots\}$ for each coin denomination $j \in S_k$ such that $\sum_{j=k}^{k+L-1} j \cdot m_j = N$.
+For each denomination $j \ge 1$, the possible weight contributions $0 \cdot j, 1 \cdot j, 2 \cdot j, \dots$ form the formal geometric series:
+
+$$
+1 + x^j + x^{2j} + x^{3j} + \dots = \frac{1}{1 - x^j} \in \mathbb{F}_p[[x]] \quad (p = 998244353).
+$$
+
+Because choices of multiplicities across distinct denominations $j \in S_k$ are independent, the generating function for window $S_k$ is the Cauchy product of these factors:
+
+$$
+F_k(x) = \prod_{j=k}^{k+L-1} \frac{1}{1 - x^j} \bmod x^{N+1},
+$$
+
+and the answer for window $k$ is $[x^N]F_k(x)$.
+
+#### 2. Sliding-Window Ratio in $\mathbb{F}_p[[x]]/(x^{N+1})$
+Computing $F_k(x)$ from scratch for each $k$ would take $O(L N)$ per window, or $O(M L N) \approx 1.25 \times 10^{11}$ operations—far too slow for $N, M \le 5000$.
+Instead, observe the algebraic ratio between consecutive windows $F_k(x)$ and $F_{k+1}(x)$:
+
+$$
+F_{k+1}(x) = \left(\prod_{j=k+1}^{k+L} \frac{1}{1 - x^j}\right) = F_k(x) \cdot (1 - x^k) \cdot (1 - x^{k+L})^{-1} \bmod x^{N+1}.
+$$
+
+Since both $1 - x^k$ and $1 - x^{k+L}$ have constant term $1 \in \mathbb{F}_p^\times$, they are units in $\mathbb{F}_p[[x]]/(x^{N+1})$ for all $k \ge 1$.
+- **Multiplying by $(1 - x^k)$** cancels the unbounded coin $k$ in $O(N)$ time (downward loop: `dp[n] = (dp[n] - dp[n - k]) mod p` for $n = N$ down to $k$).
+- **Dividing by $(1 - x^{k+L})$** inserts the unbounded coin $k + L$ in $O(N)$ time (upward loop: `dp[n] = (dp[n] + dp[n - (k + L)]) mod p` for $n = k + L$ up to $N$; note that if $k + L > N$, $1 - x^{k+L} \equiv 1 \pmod{x^{N+1}}$, so the loop does zero iterations!).
+
+#### 3. Algorithm Contract
+- **Input & Preconditions**: Integers $N, M, L$ ($1 \le N, M \le 5000, 1 \le L \le M$); prime modulus $p = 998244353$.
+- **Postconditions (Output)**: Sequence of answers $[x^N] F_k(x) \bmod 998244353$ for every window $k = 1, 2, \dots, M - L + 1$.
+- **Time & Space Complexity**: $O(LN)$ initialization plus $O((M - L)N)$ sliding transitions $= O(MN)$ total time; $O(N)$ space.
+- **Loop / Algebraic Invariant**: After window transition $k$, $\sum_{n=0}^N \text{dp}[n] x^n \equiv \prod_{j=k}^{k+L-1} (1 - x^j)^{-1} \pmod{x^{N+1}}$; multiplying by $(1 - x^k)$ uses a descending loop $n = N \dots k$, while dividing by $(1 - x^{k+L})$ uses an ascending loop $n = k + L \dots N$.
+- **Failure Modes & Edge Cases**: When $k > N$ or $k + L > N$, the corresponding factor $(1 - x^w) \equiv 1 \pmod{x^{N+1}}$, so the loop over $n \in [w, N]$ naturally executes $0$ iterations without out-of-bounds access.
+
+</details>
+
+---
+
+### Intermediate 2 (`#077`) — Candies
+- **Source**: [AtCoder Educational DP Contest — Problem M](https://atcoder.jp/contests/dp/tasks/dp_m)
+- **Prerequisites**: Bounded geometric polynomials $\frac{1 - x^{a+1}}{1 - x}$ (§1.3), $O(K)$ sparse polynomial multiplication and division (§1.4).
+
+#### Problem Statement & Exact Constraints
+There are $N$ children, numbered $1, 2, \dots, N$, and $K$ indistinguishable candies ($1 \le N \le 100$, $0 \le K \le 10^5$). Child $i$ must receive between $0$ and $a_i$ candies inclusive ($0 \le a_i \le K$). Find the number of ways to distribute all $K$ candies among the $N$ children so that no candies are left over, modulo $10^9 + 7$.
+*Target Complexity*: $O(NK)$ time and $O(K)$ space.
+- **Sample Trace ($N = 2, K = 3, a = (2, 2)$)**: The polynomial is $\frac{1-x^3}{1-x} \cdot \frac{1-x^3}{1-x} = (1+x+x^2)^2 = 1 + 2x + 3x^2 + 2x^3 + x^4$, so $[x^3] = 2$ ways: $(c_1, c_2) \in \{(1, 2), (2, 1)\}$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+We are counting integer tuples $(c_1, c_2, \dots, c_N)$ such that $0 \le c_i \le a_i$ and $c_1 + c_2 + \dots + c_N = K$. What polynomial represents the valid candy counts $c_i \in \{0, 1, \dots, a_i\}$ for child $i$?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Child $i$ contributes the polynomial $P_i(x) = 1 + x + x^2 + \dots + x^{a_i}$. Naive multiplication by $P_i(x)$ takes $O(K \cdot a_i)$ time, which is $O(K^2)$ when $a_i \approx K$.
+How can we compress the $(a_i + 1)$-term dense polynomial $1 + x + \dots + x^{a_i}$ into a ratio of two **2-term sparse** polynomials? Use the finite geometric series identity:
+$$
+1 + x + x^2 + \dots + x^{a_i} = \frac{1 - x^{a_i + 1}}{1 - x}.
+$$
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+To multiply the current DP polynomial $F(x) \bmod x^{K+1}$ by $\frac{1 - x^{a_i + 1}}{1 - x}$ in $O(K)$ time:
+1. First divide $F(x)$ by $(1 - x)$ in $O(K)$ time (upward prefix sum: `dp[n] = (dp[n] + dp[n - 1]) % MOD` for $n = 1 \dots K$).
+2. Then multiply by $(1 - x^{a_i + 1})$ in $O(K)$ time (downward sparse subtraction: `dp[n] = (dp[n] - dp[n - a_i - 1] + MOD) % MOD` for $n = K$ down to $a_i + 1$).
+Repeating this for all $N$ children gives $[x^K]F(x)$ in $O(NK)$ time!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. From Bounded Integer Compositions to Sparse Rational Factors
+A valid distribution is an ordered $N$-tuple $(c_1, \dots, c_N)$ with $c_i \in \{0, 1, \dots, a_i\}$ and $\sum_{i=1}^N c_i = K$. Since each child $i$ independently contributes $c_i \in \{0, 1, \dots, a_i\}$ candies, child $i$'s choice is encoded by the polynomial:
+
+$$
+P_i(x) = \sum_{c=0}^{a_i} x^c = 1 + x + x^2 + \dots + x^{a_i}.
+$$
+
+In the ring $\mathbb{F}_p[[x]]$ ($p = 10^9 + 7$), multiplying $P_i(x)$ by $1 - x$ telescopes all interior terms:
+
+$$
+(1 - x)(1 + x + x^2 + \dots + x^{a_i}) = 1 - x^{a_i + 1} \quad \Longrightarrow \quad P_i(x) = \frac{1 - x^{a_i + 1}}{1 - x}.
+$$
+
+Therefore, the generating function for all $N$ children is:
+
+$$
+F(x) = \prod_{i=1}^{N} P_i(x) = \prod_{i=1}^{N} \frac{1 - x^{a_i + 1}}{1 - x} \bmod x^{K+1},
+$$
+
+and the required number of distributions is $[x^K]F(x)$.
+
+#### 2. Algebraic Interpretation of Prefix-Sum DP Optimization
+In standard DP tutorials, transitioning from child $i-1$ to child $i$ via sliding-window prefix sums $\sum_{c=0}^{a_i} \text{dp}[n - c] = \text{pref}[n] - \text{pref}[n - a_i - 1]$ is taught as an ad-hoc array trick. In $K[[x]]/(x^{K+1})$, it is simply **factoring a dense $(a_i + 1)$-term polynomial into two 2-term sparse operations**:
+
+1. **Division by $(1 - x)$ (Prefix Sum)**: Computing $H(x) = \frac{F(x)}{1 - x} \bmod x^{K+1}$ obeys $h_n = f_n + h_{n-1}$ (upward loop $n = 1 \dots K$).
+2. **Multiplication by $(1 - x^{a_i + 1})$ (Window Tail Subtraction)**: Computing $F_{\text{new}}(x) = (1 - x^{a_i + 1})H(x) \bmod x^{K+1}$ obeys $f_{\text{new}, n} = h_n - h_{n - a_i - 1}$ (downward loop $n = K$ down to $a_i + 1$).
+
+#### 3. Algorithm Contract
+- **Input & Preconditions**: Integers $N \le 100, K \le 10^5$, capacities $0 \le a_i \le K$; prime modulus $p = 10^9 + 7$.
+- **Postconditions (Output)**: Returns $[x^K] \prod_{i=1}^N \frac{1 - x^{a_i+1}}{1 - x} \bmod (10^9 + 7)$.
+- **Time & Space Complexity**: $O(NK)$ time and $O(K)$ space.
+- **Loop / Algebraic Invariant**: After processing child $i$, $\sum_{n=0}^K \text{dp}[n] x^n \equiv \prod_{j=1}^i \frac{1 - x^{a_j+1}}{1 - x} \pmod{x^{K+1}}$; within step $i$, the ascending pass divides by $(1 - x)$ and the subsequent descending pass multiplies by $(1 - x^{a_i+1})$.
+- **Failure Modes & Edge Cases**: When $K = 0$, the unique valid distribution is $(0, \dots, 0)$, giving $\text{dp}[0] = 1$; when $a_i = 0$, $(1 - x^{a_i+1})/(1 - x) = 1$, and the upward pass followed by the downward pass at $a_i + 1 = 1$ leaves $\text{dp}[0 \dots K]$ unchanged.
+
+</details>
+
+---
+
+### Advanced 1 (`#049`) — 注文の多い高橋商店 (Busy Takahashi Store)
+- **Source**: [AtCoder Regular Contest 028 — Problem D](https://atcoder.jp/contests/arc028/tasks/arc028_d)
+- **Prerequisites**: Bounded composition generating functions (§1.3), Reversible DP / leave-one-out polynomial precomputation (§1.4).
+
+#### Problem Statement & Exact Constraints
+A store sells $N$ types of items, numbered $1, 2, \dots, N$. There are $a_i$ indistinguishable copies of item $i$ in stock ($1 \le N, M \le 2000$, $1 \le a_i \le M$). You are given $Q$ independent queries ($1 \le Q \le 5 \times 10^5$).
+In the $q$-th query, you are given two integers $(k_q, x_q)$ ($1 \le k_q \le N$, $0 \le x_q \le a_{k_q}$): find the number of ways to select a total of $M$ items from the store such that **item $k_q$ is selected exactly $x_q$ times**, modulo $10^9 + 7$.
+*Target Complexity*: $O(NM + Q)$ time and $O(NM)$ space.
+- **Sample Trace ($N = 3, M = 2, a = (1, 2, 1)$, query $k = 2, x = 1$)**: Removing item $2$ leaves items $1$ and $3$ with polynomial $F^{(-2)}(t) = (1+t)^2 = 1 + 2t + t^2$. To reach total $M = 2$ when item $2$ contributes $x = 1$, the remaining items must contribute $M - x = 1$, giving $[t^1]F^{(-2)}(t) = 2$ ways.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Because $Q = 5 \times 10^5$ is huge while $N, M \le 2000$, we cannot spend $O(M)$ time per query. Notice that if item $k$ is forced to be chosen **exactly $x$ times**, then the remaining $N - 1$ items (all items *except* item $k$) must collectively supply the remaining $M - x$ items!
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Let $F_{\text{all}}(x) = \prod_{i=1}^{N} \frac{1 - x^{a_i + 1}}{1 - x} \bmod x^{M+1}$ be the generating function for all $N$ items.
+For a fixed item $k \in \{1, \dots, N\}$, the generating function for all items *except* item $k$ is:
+$$
+F^{(-k)}(x) = \frac{F_{\text{all}}(x)}{P_k(x)} = F_{\text{all}}(x) \cdot \frac{1 - x}{1 - x^{a_k + 1}} \bmod x^{M+1}.
+$$
+If we precompute the coefficient table of $F^{(-k)}(x) \bmod x^{M+1}$ for every $k = 1, \dots, N$, how fast can we answer any query $(k, x)$?
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+1. Compute $F_{\text{all}}(x) \bmod x^{M+1}$ once in $O(NM)$ time (exactly as in Intermediate 2).
+2. Notice that $(1 - x) F_{\text{all}}(x) \bmod x^{M+1}$ does not depend on $k$! Let $D(x) = (1 - x) F_{\text{all}}(x) \bmod x^{M+1}$, computed once in $O(M)$ time (`D[n] = F_all[n] - F_all[n - 1]`).
+3. For each item $k = 1, \dots, N$, obtain $F^{(-k)}(x) = \frac{D(x)}{1 - x^{a_k + 1}} \bmod x^{M+1}$ in $O(M)$ time via a single upward pass (`F_without[k][n] = D[n] + F_without[k][n - a_k - 1]`).
+4. Answer each query $(k_q, x_q)$ in **$O(1)$ time**: if $M - x_q < 0$, output $0$; otherwise output $[x^{M - x_q}]F^{(-k_q)}(x) = \text{F\_without}[k_q][M - x_q]$.
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Leave-One-Out Factorization in $\mathbb{F}_p[[x]]/(x^{M+1})$
+Let $p = 10^9 + 7$. As established in Problem `#077` (Candies), item $i$ with stock $a_i$ has generating function
+
+$$
+P_i(x) = 1 + x + x^2 + \dots + x^{a_i} = \frac{1 - x^{a_i + 1}}{1 - x} \in \mathbb{F}_p[[x]],
+$$
+
+and the full store generating function is $F_{\text{all}}(x) = \prod_{i=1}^{N} P_i(x) \bmod x^{M+1}$.
+
+In query $(k, x_q)$, item $k$ is fixed to multiplicity $x_q \in [0, a_k]$, leaving $M - x_q$ items to be chosen from the remaining $N - 1$ item types $\{1, \dots, N\} \setminus \{k\}$. The generating function for those $N - 1$ item types is:
+
+$$
+F^{(-k)}(x) = \prod_{i \neq k} P_i(x) \bmod x^{M+1}.
+$$
+
+Since $[x^0]P_k(x) = 1 \in \mathbb{F}_p^\times$, $P_k(x)$ is a unit in $\mathbb{F}_p[[x]]/(x^{M+1})$, so we can recover $F^{(-k)}(x)$ directly from $F_{\text{all}}(x)$ by multiplying by $P_k(x)^{-1} = \frac{1 - x}{1 - x^{a_k + 1}}$:
+
+$$
+F^{(-k)}(x) \equiv F_{\text{all}}(x) \cdot \frac{1 - x}{1 - x^{a_k + 1}} \pmod{x^{M+1}}.
+$$
+
+#### 2. Sharing the Numerator $(1 - x)F_{\text{all}}(x)$ Across All $N$ Items
+Observe that the numerator $D(x) := (1 - x) F_{\text{all}}(x) \bmod x^{M+1}$ is **independent of $k$**!
+1. We first compute $F_{\text{all}}[0 \dots M]$ in $O(NM)$ time.
+2. We compute $D[0 \dots M]$ in $O(M)$ time via $D[0] = F_{\text{all}}[0]$ and $D[n] = (F_{\text{all}}[n] - F_{\text{all}}[n - 1]) \bmod p$ for $1 \le n \le M$.
+3. Then, for each $k \in \{1, \dots, N\}$, we compute the row $F^{(-k)}[0 \dots M] = \frac{D(x)}{1 - x^{a_k + 1}} \bmod x^{M+1}$ via the upward recurrence:
+   $$
+   F^{(-k)}[n] = \begin{cases} D[n] & \text{if } 0 \le n \le a_k, \\ \bigl(D[n] + F^{(-k)}[n - a_k - 1]\bigr) \bmod p & \text{if } a_k + 1 \le n \le M. \end{cases}
+   $$
+4. Finally, for each of the $Q$ queries $(k_q, x_q)$, the number of valid selections is simply $F^{(-k_q)}[M - x_q]$ (or $0$ if $x_q > M$).
+
+#### 3. Algorithm Contract
+- **Input & Preconditions**: Integers $N, M \le 2000$, item stocks $1 \le a_i \le M$, and $Q \le 5 \times 10^5$ queries $(k_q, x_q)$ with $0 \le x_q \le a_{k_q}$; prime modulus $p = 10^9 + 7$.
+- **Postconditions (Output)**: For each query $(k_q, x_q)$, outputs $[x^{M - x_q}] F^{(-k_q)}(x) \bmod (10^9 + 7)$.
+- **Time & Space Complexity**: $O(NM + Q)$ time ($O(NM)$ precomputation and $O(1)$ per query) and $O(NM)$ space.
+- **Loop / Algebraic Invariant**: For every $k \in \{1, \dots, N\}$, $F^{(-k)}(x) \equiv D(x)(1 - x^{a_k+1})^{-1} \equiv \prod_{i \neq k} P_i(x) \pmod{x^{M+1}}$, where $D(x) \equiv (1 - x)F_{\text{all}}(x) \pmod{x^{M+1}}$.
+- **Failure Modes & Edge Cases**: If $x_q > M$, the remaining sum $M - x_q < 0$ is impossible so the answer is $0$; in `D[n] = (F_all[n] - F_all[n - 1] + p) % p`, always add $p$ before modulo to avoid negative remainders.
+
+</details>
+
+---
+
+### Advanced 2 (`#097`) — Nikita and Order Statistics
+- **Source**: [Codeforces Round 488 (Div. 1) — Problem E (993E)](https://codeforces.com/problemset/problem/993/E)
+- **Prerequisites**: Difference (cross-correlation) convolution via polynomial reversal $C^{\text{rev}}(x) = x^N C(x^{-1})$ (§1.1), fast polynomial multiplication over $\mathbb{Z}$ (64-bit precision FFT or 2-prime NTT).
+
+#### Problem Statement & Exact Constraints
+You are given an array $a_1, a_2, \dots, a_N$ of $N$ integers and a threshold integer $X$ ($1 \le N \le 2 \times 10^5$, $-10^9 \le a_i, X \le 10^9$).
+For every integer $k = 0, 1, 2, \dots, N$, count the number of contiguous subarrays $a[l \dots r]$ ($1 \le l \le r \le N$) that contain **exactly $k$ elements strictly less than $X$**. Output the $N + 1$ exact counts (no modulus!).
+*Target Complexity*: $O(N \log N)$ time and $O(N)$ space.
+- **Sample Trace ($N = 3, X = 2, a = [1, 2, 1]$)**: The indicators $b_i = [a_i < 2]$ are $(1, 0, 1)$, so prefix sums are $(s_0, s_1, s_2, s_3) = (0, 1, 1, 2)$ with frequency array $(c_0, c_1, c_2, c_3) = (1, 2, 1, 0)$. The subarray counts for $k = 0, 1, 2, 3$ are $(1, 3, 2, 0)$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Replace each element $a_i$ by a binary indicator $b_i = [a_i < X] \in \{0, 1\}$, and build the prefix sum array $s_0, s_1, \dots, s_N$ where $s_0 = 0$ and $s_r = \sum_{m=1}^r b_m$. A subarray $[l, r]$ ($1 \le l \le r \le N$) contains $k$ elements $< X$ if and only if $s_r - s_{l-1} = k$. Let $c_v$ be the frequency of value $v$ in the prefix sum array $(s_0, s_1, \dots, s_N)$. How is the answer for $k$ expressed in terms of the frequency array $c_0, c_1, \dots, c_N$?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+- For **$k = 0$**: we need pairs $(l-1, r)$ with $0 \le l-1 < r \le N$ and $s_r = s_{l-1} = v$. Since $s_r$ is non-decreasing, any two equal prefix sums at distinct indices automatically have $l - 1 < r$ in one order, giving $\sum_{v=0}^{N} \binom{c_v}{2}$ subarrays.
+- For **$k \ge 1$**: since $k > 0$ and $s$ is non-decreasing, $s_r - s_{l-1} = k$ automatically implies $r > l - 1$! Thus the count for $k \ge 1$ is:
+  $$
+  \text{ans}_k = \sum_{v=0}^{N - k} c_v \cdot c_{v + k}.
+  $$
+  Look at the indices $v$ and $v + k$: their **difference** is $k$. Apply the Difference Convolution Scratchpad from §1.1!
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Define the frequency polynomial $C(x) = \sum_{v=0}^{N} c_v x^v$ and its reversal $C^{\text{rev}}(x) = x^N C(x^{-1}) = \sum_{v=0}^{N} c_v x^{N - v}$.
+Then for every $k \in \{1, 2, \dots, N\}$:
+$$
+\text{ans}_k = \sum_{v=0}^{N-k} c_v c_{v+k} = [x^{N + k}] \bigl(C^{\text{rev}}(x) C(x)\bigr).
+$$
+Notice that the maximum possible coefficient is $\binom{N+1}{2} \approx 2 \times 10^{10} > 2^{31}$, so standard single-prime NTT mod $998244353$ will overflow! Use either 64-bit `double`/`long double` FFT (with splitting if needed) or 2-prime NTT (e.g., $p_1 = 998244353, p_2 = 1004535809$ with CRT, since $p_1 p_2 \approx 10^{18} \gg 2 \times 10^{10}$).
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Prefix-Sum Reduction to Frequency Histogram
+Define $b_i = 1$ if $a_i < X$ and $b_i = 0$ otherwise ($1 \le i \le N$), and form the prefix sums $s_0 = 0$, $s_r = \sum_{m=1}^{r} b_m$ for $1 \le r \le N$. Notice that $0 = s_0 \le s_1 \le \dots \le s_N \le N$.
+
+A subarray $a[l \dots r]$ ($1 \le l \le r \le N$) corresponds bijectively to a pair of prefix-sum indices $(i, j) = (l - 1, r)$ satisfying $0 \le i < j \le N$, and its count of elements $< X$ is $s_j - s_i$.
+Let $c_v := \#\{ r \in \{0, 1, \dots, N\} : s_r = v \}$ be the number of prefix sums equal to $v$, for $0 \le v \le N$.
+
+#### 2. Separating $k = 0$ (Ordering Constraint Active) from $k \ge 1$ (Ordering Automatic)
+- **Case $k = 0$**: We need pairs $(i, j)$ with $0 \le i < j \le N$ and $s_j - s_i = 0$, i.e., $s_i = s_j = v$. Among the $c_v$ indices where $s_r = v$, any unordered pair of distinct indices gives a unique ordered pair $(i, j)$ with $i < j$:
+  $$
+  \text{ans}_0 = \sum_{v=0}^{N} \frac{c_v(c_v - 1)}{2}.
+  $$
+  *(Why not read $k=0$ directly from $[x^N](C^{\text{rev}}(x)C(x)) = \sum_{v=0}^N c_v^2$? Because $\sum c_v^2$ counts diagonal pairs $i = j$ as well as both orders $(i, j)$ and $(j, i)$; of course $\text{ans}_0 = \frac{1}{2}\bigl([x^N](C^{\text{rev}}C) - (N + 1)\bigr)$ works too!)*
+- **Case $k \ge 1$**: Since $s_0 \le s_1 \le \dots \le s_N$ is monotonically non-decreasing, if $s_j - s_i = k \ge 1$, then $s_j > s_i$, which **automatically guarantees $j > i$**! Thus every pair of indices $(i, j)$ with $s_i = v$ and $s_j = v + k$ satisfies $0 \le i < j \le N$. Summing over all $v \in \{0, 1, \dots, N - k\}$ gives:
+  $$
+  \text{ans}_k = \sum_{v=0}^{N - k} c_v \cdot c_{v + k} \quad (1 \le k \le N).
+  $$
+
+#### 3. Difference Convolution via Polynomial Reversal
+Let $C(x) = \sum_{j=0}^{N} c_j x^j$ and $C^{\text{rev}}(x) = x^N C(x^{-1}) = \sum_{i=0}^{N} c_i x^{N - i}$. Multiplying $C^{\text{rev}}(x)$ and $C(x)$ in $\mathbb{Z}[x]$ gives:
+
+$$
+C^{\text{rev}}(x) C(x) = \left(\sum_{i=0}^{N} c_i x^{N - i}\right)\left(\sum_{j=0}^{N} c_j x^j\right) = \sum_{i=0}^{N} \sum_{j=0}^{N} c_i c_j x^{N + j - i}.
+$$
+
+Extracting $[x^{N + k}]$ collects all terms with $N + j - i = N + k$, i.e., $j = i + k$:
+
+$$
+[x^{N + k}]\bigl(C^{\text{rev}}(x) C(x)\bigr) = \sum_{i=0}^{N - k} c_i c_{i + k} = \text{ans}_k \quad (1 \le k \le N).
+$$
+
+#### 4. Algorithm Contract
+- **Input & Preconditions**: Array $a_1, \dots, a_N$ ($1 \le N \le 2 \times 10^5$) and threshold $X$; exact integer output over $\mathbb{Z}$ (no modulus).
+- **Postconditions (Output)**: Exact subarray counts $\text{ans}_0, \text{ans}_1, \dots, \text{ans}_N \in [0, \binom{N+1}{2}]$.
+- **Time & Space Complexity**: $O(N \log N)$ time (one FFT / 2-prime NTT of size $2^{\lceil \log_2(2N+1) \rceil} \le 2^{19}$) and $O(N)$ space.
+- **Loop / Algebraic Invariant**: $C^{\text{rev}}(x) C(x) = \sum_{d=-N}^{N} \bigl(\sum_{v} c_v c_{v+d}\bigr) x^{N+d}$, so $[x^{N+k}](C^{\text{rev}} C)$ extracts the exact lag-$k$ auto-correlation for $1 \le k \le N$.
+- **Failure Modes & Edge Cases**: Reading $[x^N](C^{\text{rev}} C) = \sum c_v^2$ directly for $k = 0$ overcounts diagonal terms $i = j$ and unordered pairs $(i, j)$ vs. $(j, i)$ (use $\sum_{v=0}^N \binom{c_v}{2}$ instead); using a single 32-bit NTT prime $998244353$ overflows when $\text{ans}_0 = \binom{N+1}{2} \approx 2 \times 10^{10}$.
+
+</details>
+
+---
+
+### Mastery 1 (`#066`) — BBQ Hard
+- **Source**: [AtCoder Grand Contest 001 — Problem E](https://atcoder.jp/contests/agc001/tasks/agc001_e)
+- **Prerequisites**: Bivariate formal power series $K[[x, y]]$, Pascal lattice-path denominator $(1 - x - y)^{-1}$ (§1.3), difference/offset convolution via negative-exponent origin shift (§1.1).
+
+#### Problem Statement & Exact Constraints
+You are given $N$ pairs of positive integers $(A_1, B_1), (A_2, B_2), \dots, (A_N, B_N)$, where $2 \le N \le 2 \times 10^5$ and $1 \le A_i, B_i \le 2000$.
+Evaluate the exact double sum over all unordered pairs $\{i, j\}$ ($1 \le i < j \le N$):
+
+$$
+S = \sum_{1 \le i < j \le N} \binom{A_i + A_j + B_i + B_j}{A_i + A_j} \pmod{10^9 + 7}.
+$$
+
+*Target Complexity*: $O\bigl(N + (\max A)(\max B)\bigr)$ time and $O\bigl((\max A)(\max B)\bigr)$ space.
+- **Sample Trace ($N = 2, (A_1, B_1) = (1, 1), (A_2, B_2) = (1, 2)$)**: The single pair $(1, 2)$ has $\binom{1+1+1+2}{1+1} = \binom{5}{2} = 10$ paths, which equals $\frac{1}{2}\bigl(q_{M+1, M+2} + q_{M+1, M+1} - \binom{4}{2} - \binom{6}{2}\bigr) = \frac{1}{2}(16 + 25 - 6 - 15) = 10$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+With $N = 2 \times 10^5$, we cannot iterate over all $\binom{N}{2} \approx 2 \times 10^{10}$ pairs $(i, j)$. Instead, look at the asymmetry in the constraints: $N = 2 \times 10^5$ is huge, while $A_i, B_i \le 2000$ are tiny!
+What combinatorial object is counted by $\binom{X + Y}{X}$? It is the number of northeast lattice paths of $(+1, 0)$ and $(0, +1)$ steps of total displacement $(\Delta x, \Delta y) = (X, Y)$, or equivalently the coefficient $[x^X y^Y] \frac{1}{1 - x - y}$ in the bivariate ring $\mathbb{Z}[[x, y]]$.
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+For a single pair $(i, j)$, the displacement is $(\Delta x, \Delta y) = (A_i + A_j, B_i + B_j)$. Notice how $i$ and $j$ are coupled inside $\binom{(A_i + A_j) + (B_i + B_j)}{A_i + A_j}$!
+How do we decouple the starting point $i$ from the ending point $j$?
+- Write $\Delta x = A_j - (-A_i)$ and $\Delta y = B_j - (-B_i)$!
+- In generating function terms:
+  $$
+  \binom{A_i + A_j + B_i + B_j}{A_i + A_j} = [x^{A_i + A_j} y^{B_i + B_j}] \frac{1}{1 - x - y} = [x^{A_j} y^{B_j}] \left( \frac{x^{-A_i} y^{-B_i}}{1 - x - y} \right).
+  $$
+  Summing over all $i = 1, \dots, N$ by linearity of $[x^{A_j} y^{B_j}]$ packs **all $N$ starting points $i$ simultaneously** into a single bivariate series:
+  $$
+  F(x, y) := \frac{\sum_{i=1}^{N} x^{-A_i} y^{-B_i}}{1 - x - y}.
+  $$
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Since dividing by $1 - x - y$ means satisfying the 2D Pascal recurrence $\text{dp}[u][v] = \text{dp}[u-1][v] + \text{dp}[u][v-1] + \text{init}[u][v]$:
+1. Shift the origin by $(M, M) = (2000, 2000)$ so that every negative coordinate $(-A_i, -B_i)$ maps to a non-negative array index $(M - A_i, M - B_i) \in [0, 2M]^2$.
+2. For each $i = 1, \dots, N$, increment `dp[M - A[i]][M - B[i]] += 1`.
+3. Run the 2D upward division by $(1 - x - y)$ across the grid $u, v \in [0, 2M]$: `dp[u][v] += dp[u - 1][v] + dp[u][v - 1]`.
+4. Now `dp[M + A[j]][M + B[j]]` equals $\sum_{i=1}^{N} \binom{A_i + A_j + B_i + B_j}{A_i + A_j}$. Sum this over all $j = 1, \dots, N$, subtract the $i = j$ self-pairs $\sum_{j=1}^{N} \binom{2A_j + 2B_j}{2A_j}$, and multiply by $2^{-1} \bmod (10^9 + 7)$!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Bivariate Formal Geometric Series in $\mathbb{F}_p[[x, y]]$
+In the bivariate formal power series ring $\mathbb{F}_p[[x, y]]$ ($p = 10^9 + 7$), a single northeast step on the integer grid is either a horizontal step $(+1, 0)$ represented by $x$ or a vertical step $(0, +1)$ represented by $y$, so one step has generating function $G(x, y) = x + y$.
+Since $\operatorname{val}(x + y) = 1$, the formal geometric series $\frac{1}{1 - (x + y)} = \sum_{k=0}^{\infty} (x + y)^k$ converges, and its coefficient of $x^X y^Y$ counts lattice paths from $(0, 0)$ to $(X, Y)$:
+
+$$
+[x^X y^Y] \frac{1}{1 - x - y} = \binom{X + Y}{X} \quad (X, Y \ge 0).
+$$
+
+#### 2. Decoupling $i$ and $j$ via Origin-Offset Shift
+In our target sum, each term is $\binom{(A_i + A_j) + (B_i + B_j)}{A_i + A_j} = [x^{A_i + A_j} y^{B_i + B_j}] \frac{1}{1 - x - y}$.
+Notice the index Shift Identity: for any monomial $x^a y^b$ and series $H(x, y)$, extracting $[x^{A_i + A_j} y^{B_i + B_j}] H(x, y)$ is identical to multiplying $H(x, y)$ by $x^{-A_i} y^{-B_i}$ (or shifting by $x^{M - A_i} y^{M - B_i}$ for $M = 2000$) and extracting $[x^{M + A_j} y^{M + B_j}]$:
+
+$$
+\binom{A_i + A_j + B_i + B_j}{A_i + A_j} = [x^{M + A_j} y^{M + B_j}] \left( \frac{x^{M - A_i} y^{M - B_i}}{1 - x - y} \right).
+$$
+
+Now sum over all $i = 1, \dots, N$ and use the **linearity of the coefficient extraction operator $[x^{M + A_j} y^{M + B_j}]$** to pull the sum over $i$ *inside* the numerator:
+
+$$
+\sum_{i=1}^{N} \binom{A_i + A_j + B_i + B_j}{A_i + A_j} = [x^{M + A_j} y^{M + B_j}] \left( \frac{\sum_{i=1}^{N} x^{M - A_i} y^{M - B_i}}{1 - x - y} \right).
+$$
+
+Let $P(x, y) := \sum_{i=1}^{N} x^{M - A_i} y^{M - B_i}$ (which has non-negative exponents since $1 \le A_i, B_i \le M = 2000$), and let
+
+$$
+Q(x, y) := \frac{P(x, y)}{1 - x - y} \bmod (x^{2M+1}, y^{2M+1}).
+$$
+
+Clearing the denominator gives $(1 - x - y) Q(x, y) = P(x, y)$, or componentwise for $0 \le u, v \le 2M$:
+
+$$
+q_{u, v} = p_{u, v} + q_{u - 1, v} + q_{u, v - 1} \pmod p.
+$$
+
+#### 3. Accounting for Diagonal ($i = j$) and Unordered ($i < j$) Symmetry
+Once the table $q_{u, v}$ ($0 \le u, v \le 2M$) is computed in a single 2D sweep, for each $j \in \{1, \dots, N\}$ the entry $q_{M + A_j, M + B_j}$ equals $\sum_{i=1}^{N} \binom{A_i + A_j + B_i + B_j}{A_i + A_j}$.
+Summing $q_{M + A_j, M + B_j}$ over all $j = 1, \dots, N$ counts every unordered pair $\{i, j\}$ ($i < j$) **twice** (once as $(i, j)$ and once as $(j, i)$) and includes the $N$ diagonal terms $i = j$. Therefore:
+
+$$
+S = \frac{1}{2} \left( \sum_{j=1}^{N} q_{M + A_j, M + B_j} - \sum_{j=1}^{N} \binom{2A_j + 2B_j}{2A_j} \right) \pmod{10^9 + 7}.
+$$
+
+#### 4. Algorithm Contract
+- **Input & Preconditions**: $N \le 2 \times 10^5$ pairs $(A_i, B_i)$ with $1 \le A_i, B_i \le M = 2000$; prime modulus $p = 10^9 + 7$.
+- **Postconditions (Output)**: Returns $S = \sum_{1 \le i < j \le N} \binom{A_i + A_j + B_i + B_j}{A_i + A_j} \bmod (10^9 + 7)$.
+- **Time & Space Complexity**: $O(N + M^2)$ time and $O(M^2)$ space for the $(2M + 1) \times (2M + 1)$ grid.
+- **Loop / Algebraic Invariant**: After the 2D row-major sweep over $0 \le u, v \le 2M$, $q_{u, v} = [x^u y^v] \frac{P(x, y)}{1 - x - y} = \sum_{i=1}^N \binom{(u - M + A_i) + (v - M + B_i)}{u - M + A_i} \bmod p$.
+- **Failure Modes & Edge Cases**: Multiple items with identical $(A_i, B_i)$ must **add** $+1$ to $p_{M-A_i, M-B_i}$ (do not overwrite with `= 1`!); remember to subtract the $i = j$ diagonal terms $\binom{2A_j + 2B_j}{2A_j}$ before multiplying by $2^{-1} \bmod p$.
+
+</details>
+
+---
+
+### Mastery 2 (`#107`) — Red-White Fence
+- **Source**: [Codeforces Educational Round 75 — Problem F (1251F)](https://codeforces.com/problemset/problem/1251/F)
+- **Prerequisites**: Polynomial modelling of multiplicity constraints (§1.1), frequency grouping / binomial power collapse $(1 + 2x)^{c_1}(1 + x)^{2c_2}$ (§1.4), NTT convolution.
+
+#### Problem Statement & Exact Constraints
+You have $N$ white boards and $K$ red boards ($1 \le N \le 3 \times 10^5$, $1 \le K \le 5$). The $i$-th white board has integer length $a_i$ ($1 \le a_i \le 3 \times 10^5$), and the $j$-th red board has integer length $b_j$ ($1 \le b_j \le 3 \times 10^5$, all $b_j$ distinct).
+To build a valid fence:
+
+1. Choose **exactly one** red board of some length $R = b_j$, and place it in the middle.
+2. Choose any subset of $m \ge 0$ white boards, all of whose lengths must be **strictly less than $R$**, and arrange them in **strictly increasing order of length** to the left of the red board, and in **strictly decreasing order of length** to the right of the red board.
+3. Boards of the same color and same length are considered **indistinguishable** within the fence shape (two fences are different if and only if the sequence of board lengths from left to right is different, or the position of the red board is different).
+
+A fence built from $1$ red board of length $R$ and $m$ white boards has total perimeter $2(R + m + 1)$.
+You are given $Q$ queries ($1 \le Q \le 3 \times 10^5$), each specifying an integer perimeter $P_q$ ($2 \le P_q \le 1.2 \times 10^6$). For each query, output the number of distinct valid fences with perimeter $P_q$, modulo $998244353$.
+*Target Complexity*: $O\bigl(K N \log N + Q K\bigr)$ time and $O(K N)$ space.
+- **Sample Trace ($N = 2, K = 1, a = [1, 2], b = [3]$)**: Both white board lengths $1, 2 < 3$ have multiplicity $1$ ($c_1 = 2, c_2 = 0$), so $F_3(x) = (1 + 2x)^2 = 1 + 4x + 4x^2$, giving $1, 4, 4$ valid fences for $m = 0, 1, 2$ (perimeters $P = 8, 10, 12$).
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Notice first that $K \le 5$ is tiny! We can solve the problem independently for each of the $K$ red boards $R = b_j$ ($1 \le j \le K$) and sum the answers for each query $P_q$.
+Fix a red board of length $R$. For a white board length $v < R$:
+- Because the left side is **strictly increasing** in length, at most **one** board of length $v$ can be placed on the left.
+- Because the right side is **strictly decreasing** in length, at most **one** board of length $v$ can be placed on the right.
+- Once we decide for each distinct length $v < R$ whether $v$ appears on the left (0 or 1 times) and whether $v$ appears on the right (0 or 1 times), the sorting order on both sides is **uniquely determined**!
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Fix $R = b_j$. Group all available white board lengths $v < R$ by their multiplicity $cnt[v]$ in the input array $a$:
+1. **Multiplicity $cnt[v] = 1$**: We only have $1$ copy of length $v$. We can either:
+   - Use $0$ copies of $v$ ($1$ way: neither side),
+   - Use $1$ copy of $v$ ($2$ ways: put it on the Left, or put it on the Right).
+   What polynomial in $x$ (where the exponent of $x$ tracks the number of white boards $m$ used) represents this length $v$? It is **$1 + 2x$**!
+2. **Multiplicity $cnt[v] \ge 2$**: Even if we have $100$ copies of length $v$, strict monotonicity allows at most $1$ on the Left and $1$ on the Right (and copies of the same length $v$ are indistinguishable!). Thus we can:
+   - Use $0$ copies of $v$ ($1$ way),
+   - Use $1$ copy of $v$ ($2$ ways: Left or Right),
+   - Use $2$ copies of $v$ ($1$ way: one on Left and one on Right).
+   What polynomial in $x$ represents this length $v$? It is **$1 + 2x + x^2 = (1 + x)^2$**!
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+For a fixed red board $R = b_j$, let:
+- $c_1 = \#\{ v < R : cnt[v] = 1 \}$ be the number of distinct lengths $< R$ appearing exactly once.
+- $c_2 = \#\{ v < R : cnt[v] \ge 2 \}$ be the number of distinct lengths $< R$ appearing at least twice.
+Then the generating function counting valid fences with red board $R$ and $m$ white boards is simply:
+$$
+F_R(x) = (1 + 2x)^{c_1} (1 + 2x + x^2)^{c_2} = (1 + 2x)^{c_1} (1 + x)^{2c_2}.
+$$
+Expand $A(x) = (1 + 2x)^{c_1} = \sum_{i=0}^{c_1} \binom{c_1}{i} 2^i x^i$ and $B(x) = (1 + x)^{2c_2} = \sum_{j=0}^{2c_2} \binom{2c_2}{j} x^j$ in $O(N)$ time using factorials, multiply $F_R(x) = A(x)B(x)$ with **one NTT call** in $O(N \log N)$ time, and for each query $P_q$, sum $[x^{m}]F_R(x)$ where $m = \frac{P_q}{2} - R - 1$ over all $K \le 5$ red boards!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Perimeter Formula & Bijection to Per-Length Placement Decisions
+Let us verify the perimeter of a fence consisting of one red board of length $R$ and $m$ white boards.
+- Each of the $m + 1$ boards has top width $1$ and bottom width $1$, contributing $2(m + 1)$ horizontal perimeter.
+- Since the board heights increase up to the tallest board $R$ (all white boards have length $< R$) and then decrease down from $R$, the sum of all vertical rises on the left equals $R$, and the sum of all vertical drops on the right equals $R$, contributing $2R$ vertical perimeter.
+- Thus a fence with red board $R$ and $m$ white boards has perimeter $P = 2(R + m + 1)$, which uniquely determines the required number of white boards $m$:
+  $$
+  m = \frac{P}{2} - R - 1 \quad (\text{valid only if } P \text{ is even and } 0 \le m \le N).
+  $$
+
+Now fix a red board of length $R$. Because white boards of the same length are indistinguishable and the sequences of lengths on the left and right of $R$ must be strictly increasing and strictly decreasing respectively, a valid fence is uniquely specified by choosing, for each distinct length $v \in \{1, \dots, R - 1\}$, an ordered pair $(L_v, R_v) \in \{0, 1\}^2$ indicating whether a board of length $v$ appears on the left ($L_v$) and/or on the right ($R_v$), subject to $L_v + R_v \le cnt[v]$.
+
+#### 2. Collapsing $N$ Factors into Two Binomial Powers via Frequency Grouping
+For each distinct length $v < R$ with $cnt[v] \ge 1$, let $x$ mark the number of white boards $L_v + R_v$ of length $v$ placed in the fence:
+
+- **Case 1 ($cnt[v] = 1$)**: The constraint $L_v + R_v \le 1$ allows $(L_v, R_v) \in \{(0, 0), (1, 0), (0, 1)\}$, contributing:
+  $$
+  P_{\text{single}}(x) = 1 \cdot x^0 + 2 \cdot x^1 = 1 + 2x.
+  $$
+- **Case 2 ($cnt[v] \ge 2$)**: The constraint $L_v + R_v \le cnt[v]$ does not restrict $(L_v, R_v) \in \{0, 1\}^2$ at all! All four pairs $\{(0, 0), (1, 0), (0, 1), (1, 1)\}$ are valid, contributing:
+  $$
+  P_{\text{multi}}(x) = 1 \cdot x^0 + 2 \cdot x^1 + 1 \cdot x^2 = 1 + 2x + x^2 = (1 + x)^2.
+  $$
+
+Let $c_1(R) := \#\{v < R : cnt[v] = 1\}$ and $c_2(R) := \#\{v < R : cnt[v] \ge 2\}$. Because placement choices for distinct lengths $v < R$ are completely independent, the generating function $F_R(x)$ for red board $R$ is the product over all $v < R$:
+
+$$
+F_R(x) = \prod_{\substack{v < R \\ cnt[v] = 1}} (1 + 2x) \prod_{\substack{v < R \\ cnt[v] \ge 2}} (1 + x)^2 = (1 + 2x)^{c_1(R)} (1 + x)^{2 c_2(R)}.
+$$
+
+Rather than running a product tree over $c_1(R) + c_2(R)$ factors, the binomial theorem gives the coefficients of both factors in $O(N)$ time directly:
+
+$$
+(1 + 2x)^{c_1} = \sum_{i=0}^{c_1} \binom{c_1}{i} 2^i x^i, \qquad (1 + x)^{2c_2} = \sum_{j=0}^{2c_2} \binom{2c_2}{j} x^j.
+$$
+
+Multiplying these two polynomials of degree $\le N$ via a single NTT modulo $998244353$ yields all coefficients of $F_R(x)$ in $O(N \log N)$ time!
+
+#### 3. Answering the $Q$ Queries
+For each query perimeter $P_q$:
+- If $P_q$ is odd, the answer is $0$.
+- Otherwise, for each of the $K$ red boards $R = b_1, \dots, b_K$, compute $m_j = P_q / 2 - b_j - 1$; if $0 \le m_j \le \deg(F_{b_j})$, add $[x^{m_j}] F_{b_j}(x)$ to the query total modulo $998244353$.
+
+#### 4. Algorithm Contract
+- **Input & Preconditions**: $N \le 3 \times 10^5$ white boards $a_i$, $K \le 5$ distinct red boards $b_j$, and $Q \le 3 \times 10^5$ perimeter queries $P_q$; prime modulus $p = 998244353$.
+- **Postconditions (Output)**: For each query $P_q$, outputs $\sum_{j=1}^K [x^{P_q/2 - b_j - 1}] F_{b_j}(x) \bmod 998244353$ (or $0$ if $P_q$ is odd).
+- **Time & Space Complexity**: $O(K N \log N + QK)$ time ($K$ NTTs of degree $\le N$ plus $O(K)$ lookup per query) and $O(KN)$ space.
+- **Loop / Algebraic Invariant**: For each red board $R = b_j$, $F_R(x) = (1 + 2x)^{c_1(R)} (1 + x)^{2c_2(R)}$ has degree $c_1(R) + 2c_2(R) \le N$, and $[x^m]F_R(x)$ equals the exact number of valid fences with middle board $R$ and $m$ white boards.
+- **Failure Modes & Edge Cases**: Odd perimeters $P_q \bmod 2 \neq 0$ cannot be formed and must return $0$; also check both $m_j \ge 0$ and $m_j \le \deg(F_{b_j})$ before indexing into $F_{b_j}$.
+
+</details>
+
+---
+
+## 1.6 Quarantined Bare-Engine Verification Templates
+
+To keep our practice ladder focused on genuine mathematical modelling and algebraic design, bare verification templates (which hand you a polynomial or recurrence in the input and ask for a library call) are quarantined from the main problem ladder. You may use the following judge problems as unit tests for the engines built in this chapter:
+
+| Quarantine ID | Judge / Problem Title | Engine Verified & Reason for Quarantine |
+| :--- | :--- | :--- |
+| **`R-01`** | **Luogu P3803 — Polynomial Multiplication (FFT)** | Bare polynomial multiplication $\mathbb{Z}[x]$ template; zero combinatorial modelling. |
+| **`R-02`** | **Library Checker — `convolution_mod`** | Bare NTT convolution modulo $998244353$ unit test. |
+| **`R-03`** | **Library Checker — `convolution_mod_1000000007` / Luogu P4245 (MTT)** | Arbitrary-modulus convolution (3-prime NTT + CRT / split-precision FFT) unit test. |
+| **`R-04`** | **Library Checker — `inv_of_formal_power_series` / Luogu P4238** | Direct unit test for §1.3 `inv(A, N)` ($G_{k+1} = G_k(2 - A G_k) \bmod x^{2^{k+1}}$). |
+| **`R-11`** | **Library Checker — `product_of_polynomial_sequence`** | Direct unit test for §1.4 Divide-and-Conquer / Min-Heap product tree $\prod_{i=1}^m P_i(x)$ in $O(S \log^2 S)$. |
+| **`R-44`** | **Codeforces 632E — Thief in a Shop** | Bare boolean binary exponentiation $P(x)^k$ after origin shift; zero algebraic insight beyond FFT thresholding. |
+| **`R-47`** | **AtCoder EDPC M — Candies (as a Wave 2B IE template)** | Retained in Chapter 01 (`Int-2 #077`) as the canonical introduction to $\frac{1 - x^{a+1}}{1-x}$ prefix-sum division; quarantined from later Inclusion-Exclusion chapters. |
+| **`R-60`** | **CSES 1095 — Exponentiation** | Bare scalar binary exponentiation $a^b \bmod p$ prerequisite check. |
+
+---
+
+## 1.7 Pre-Submission Diagnostic Checklist & Chapter Summary
+
+Before submitting any solution built on Chapter 01's ring operations, run through this 5-point diagnostic checklist:
+
+1. **Sum vs. Difference Convolution (§1.1)**: Did you check whether the indices sum to $n$ ($i + j = n$, Cauchy product $A(x)B(x)$) or differ by $k$ ($j - i = k$, cross-correlation $[x^{N+k}] A^{\text{rev}}(x) B(x)$)? For self-correlation $k = 0$, did you account for diagonal $i = j$ terms and unordered pair symmetry?
+2. **Unit Constant-Term Precondition (§1.2–§1.3)**: Before calling `inv(F, N)` or running an upward division sweep for $1 / B(x)$, is $f_0 = [x^0]F(x) \in K^\times$ guaranteed to be invertible in $K$? If $\operatorname{val}(F) = v > 0$, did you factor out $x^v$ first?
+3. **Newton Doubling Truncation & Buffer Hygiene (`Failure Modes #1 & #1B`, §1.3)**: Inside step $k$ of `inv(F, N)`, did you truncate the input slice $F_k = F \bmod x^{2^{k+1}}$ *before* transforming, zero out the upper half $[2m, 4m)$ of the NTT scratch buffers, and truncate the output $G_{k+1} \bmod x^{2^{k+1}}$ *immediately after* IFFT?
+4. **Loop Order for Sparse Factor Multiply vs. Divide (§1.4)**:
+   - Multiplying by $(1 + c x^w)$ (0/1 subset sum): **downward loop** $n = N \dots w$.
+   - Dividing by $(1 + c x^w)$ (undoing a 0/1 factor) or dividing by $(1 - c x^w)$ (unbounded knapsack / geometric series): **upward loop** $n = w \dots N$.
+   - Bounded multiplicity $1 + x + \dots + x^a = \frac{1 - x^{a+1}}{1 - x}$: multiply by $(1 - x^{a+1})$ (downward) and divide by $(1 - x)$ (upward prefix sum).
+5. **Product Tree Cap & Identical-Factor Grouping (`Failure Mode #15`, §1.4)**: When multiplying $m$ polynomials $\prod_{i=1}^m P_i(x) \bmod x^{N+1}$, did you group identical factors $(1 + c x^w)^{cnt}$ first (or defer to Chapter 03's $O(N \log N)$ $\ln/\exp$ transform when $p > N$), and did you cap every intermediate node in `prod_tree` to $\min(\deg, N)$?
+

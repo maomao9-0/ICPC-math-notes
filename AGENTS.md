@@ -19,6 +19,7 @@ These notes assume the reader already has a comprehensive, tested competitive-pr
 
 # Website conventions
 
+- The baseline chapters use reading-order directories `00-foundations` through `20-frontier-capstones`; the companion FPS track lives in `chapters/`, `checkpoints/`, and `capstones/`. Preserve both tracks when updating navigation.
 - This is a Quarto website. Keep `_quarto.yml` navigation in sync with added or renamed pages.
 - Keep the interface minimal and reading-first: use neutral colors, flat surfaces, and no promotional hero sections, decorative gradients, or ornamental cards.
 - Use `.qmd` paths for internal links and verify the site with `quarto render` after structural edits.

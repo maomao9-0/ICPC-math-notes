@@ -1,0 +1,1916 @@
+---
+title: "Chapter 05: Rational Generating Functions $K(x)$, Euclidean Division & The Bostan–Mori Algorithm"
+---
+
+::: {.callout-note}
+## Prerequisites & Learning Objectives
+
+**Prerequisites**:
+
+- **Chapter 01 (Algebraic Foundations of Formal Power Series $K[[x]]$)**: Formal power series ring $K[[x]]$, Laurent polynomials $K[x, x^{-1}]$, valuation $\operatorname{val}(F)$, unit inversion criterion $[x^0]Q(x) \in K^\times$, Newton's method for polynomial inversion $Q(x)^{-1} \bmod x^n$ in $\mathcal{O}(n \log n)$ time, and the coefficient extraction operator $[x^n]$.
+- **Chapter 02 (Formal Calculus, $\ln/\exp$ & The Frobenius Endomorphism)**: Formal differentiation $D_x$, logarithmic derivative $Q'(x)/Q(x)$, and the Frobenius endomorphism $(A(x) + B(x))^p \equiv A(x^p) + B(x^p) \pmod p$ in prime characteristic $p$.
+
+**Learning Objectives**:
+
+1. **Translate Between Constant-Coefficient Linear Recurrences and Rational Series**: Prove the exact correspondence between a $d$-th order recurrence $a_n = \sum_{i=1}^d c_i a_{n-i}$ ($n \ge d$) and a rational generating function $F(x) = P(x)/Q(x)$ with $\deg P < d$ and $Q(x) = 1 - \sum_{i=1}^d c_i x^i$, using both the **Iverson Bracket Global Equation Method** and the **Transfer-Matrix Resolvent** $\mathbf{u}^\top (I - xT)^{-1} \mathbf{v}$.
+2. **Execute Fast Polynomial Euclidean Division (`divmod`) via Formal Reversal**: Reduce polynomial quotient-and-remainder division $A(x) = Q(x)B(x) + R(x)$ ($\deg R < \deg B$) to power series inversion in $K[[x]]/(x^{n-m+1})$ via formal degree-indexed reversal $A^R(x) = x^n A(1/x)$ in $\mathcal{O}(n \log n)$ time, while eliminating off-by-one reversal bugs when trailing or leading coefficients vanish.
+3. **Extract Distant Coefficients via the Bostan–Mori Algorithm**: Compute $[x^N]\frac{P(x)}{Q(x)}$ for $N \le 10^{18}$ in $\mathcal{O}(d \log d \log N)$ time by multiplying numerator and denominator by $Q(-x)$, implement the **NTT Half-Spectrum Doubling Optimization** ($\frac{2}{3}\mathcal{M}(d)\log_2 N$, cutting per-step NTTs from $6$ to $4$), and apply **Frobenius Bostan–Mori $\bmod p$** when the prime modulus $p$ is small.
+4. **Analyze Rational Series via Partial Fractions and Synthesize Unknown Recurrences via Berlekamp–Massey**: Decompose rational functions via the **Heaviside Cover-Up Method** and local coordinate shifts, and recover the minimal characteristic polynomial $Q(x)$ of an unknown degree-$d$ recurrent sequence from its first $2d$ terms in $\mathcal{O}(d^2)$ field operations via the **Berlekamp–Massey Algorithm**.
+:::
+
+---
+
+## 5.1 Rational Series $P(x)/Q(x)$ & Constant-Coefficient Linear Recurrences
+
+In Chapter 01, we learned how to invert any formal power series $Q(x) \in K[[x]]$ whose constant term $[x^0]Q(x)$ is a unit in $K$ to arbitrary precision $\bmod x^N$ in $\mathcal{O}(N \log N)$ time. In this chapter, we restrict our attention to the rich subfamily of series that can be written as the quotient of two *finite-degree polynomials*:
+
+$$
+F(x) = \frac{P(x)}{Q(x)} = P(x) \cdot Q(x)^{-1} \in K[[x]], \qquad P(x), Q(x) \in K[x], \quad [x^0]Q(x) \in K^\times.
+$$
+
+Why do quotients of finite polynomials deserve an entire chapter when we can already invert any series $\bmod x^N$? Because a general formal power series requires $\Theta(N)$ data to specify its first $N$ coefficients, whereas a rational generating function $P(x)/Q(x)$ of degree $d = \max(\deg P + 1, \deg Q)$ is completely determined by at most $2d + 1$ field elements—even if we ask for its $N$-th coefficient at $N = 10^{18}$.
+
+### Concrete Combinatorial Motivation: Tiling with Monominoes and Dominoes
+
+Before stating the general algebraic theorem, let us examine the concrete combinatorial question that gives rise to rational generating functions.
+
+Suppose we want to count the number $a_n$ of ways to tile a $1 \times n$ board using $1 \times 1$ squares (monominoes) and $1 \times 2$ rectangles (dominoes). Every valid tiling of a board of length $n \ge 2$ ends with either:
+
+- a $1 \times 1$ monomino covering the last cell, leaving a valid tiling of length $n - 1$ ($a_{n-1}$ ways), or
+- a $1 \times 2$ domino covering the last two cells, leaving a valid tiling of length $n - 2$ ($a_{n-2}$ ways).
+
+Together with the base cases $a_0 = 1$ (the empty tiling) and $a_1 = 1$ (a single monomino), the sequence $(a_n)_{n \ge 0}$ satisfies the **constant-coefficient homogeneous linear recurrence**
+
+$$
+a_n = a_{n-1} + a_{n-2} \qquad \text{for all } n \ge 2.
+$$
+
+If we pack the sequence $(a_n)_{n \ge 0}$ into an ordinary generating function $F(x) = \sum_{n=0}^{\infty} a_n x^n$, shifting the index by $1$ corresponds to multiplying $F(x)$ by $x$, and shifting the index by $2$ corresponds to multiplying $F(x)$ by $x^2$. Subtracting $x F(x)$ and $x^2 F(x)$ from $F(x)$ aligns $a_n - a_{n-1} - a_{n-2}$ as the coefficient of $x^n$ for every $n \ge 2$, cancelling infinitely many terms at once and leaving behind a polynomial of degree $< 2$!
+
+### The Fundamental Theorem of Rational Generating Functions
+
+::: {.callout-important}
+## Theorem 5.1 (Equivalence of Linear Recurrences and Rational Generating Functions)
+
+Let $K$ be a commutative ring, and let $c_1, c_2, \dots, c_d \in K$ be fixed recurrence coefficients with $d \ge 1$. For any sequence $(a_n)_{n \ge 0}$ in $K$ with ordinary generating function $F(x) = \sum_{n=0}^{\infty} a_n x^n \in K[[x]]$, define the **feedback (denominator) polynomial**
+
+$$
+Q(x) = 1 - c_1 x - c_2 x^2 - \cdots - c_d x^d = 1 - \sum_{i=1}^{d} c_i x^i \in K[x].
+$$
+
+Note that $[x^0]Q(x) = 1 \in K^\times$, so $Q(x)$ is unconditionally invertible in $K[[x]]$ over *any* commutative ring $K$ (regardless of characteristic or field structure). Then the following two statements are equivalent:
+
+1. **Linear Recurrence**: For every integer $n \ge d$, the sequence satisfies the $d$-th order homogeneous linear recurrence
+
+   $$
+   a_n = c_1 a_{n-1} + c_2 a_{n-2} + \cdots + c_d a_{n-d}.
+   $$
+
+2. **Proper Rational Generating Function**: There exists a polynomial $P(x) \in K[x]$ of degree **strictly less than $d$** ($\deg P < d$) such that
+
+   $$
+   F(x) = \frac{P(x)}{Q(x)} \qquad \text{in } K[[x]].
+   $$
+
+   Moreover, the numerator polynomial $P(x)$ is uniquely determined from the $d$ initial values $a_0, a_1, \dots, a_{d-1}$ by the **truncated convolution formula**:
+
+   $$
+   P(x) = \big(F_{<d}(x) \cdot Q(x)\big) \bmod x^d, \qquad \text{where } F_{<d}(x) = \sum_{n=0}^{d-1} a_n x^n.
+   $$
+:::
+
+#### Single-Step Verbalized Derivation via the Iverson Bracket Global Equation Method
+
+Why does $P(x) = (F_{<d}(x)Q(x)) \bmod x^d$ hold, and how do we convert a recurrence with boundary exceptions into a single equation over all $n \ge 0$ without messy index-shifting errors? We use the **Iverson bracket** $[S]$, which evaluates to $1$ if statement $S$ is true and $0$ if $S$ is false.
+
+Let us write a single equation for $a_n$ valid for **every non-negative integer $n \ge 0$**, adopting the convention that $a_k = 0$ for all negative indices $k < 0$:
+
+$$
+a_n = \sum_{i=1}^{d} c_i a_{n-i} + r_n, \qquad (n \ge 0),
+$$
+
+where $r_n = a_n - \sum_{i=1}^{\min(n, d)} c_i a_{n-i}$ is the **boundary correction term** (the discrepancy between the actual initial value $a_n$ and what the recurrence would predict from earlier terms). Now we follow a four-step chain of equalities:
+
+1. **Characterization of the recurrence via vanishing tail corrections**: The recurrence $a_n = \sum_{i=1}^d c_i a_{n-i}$ holds for all $n \ge d$ if and only if the correction sequence $r_n$ vanishes for all $n \ge d$ (that is, $r_n = r_n \cdot [n < d]$).
+2. **Summing over all $n \ge 0$ against $x^n$**: Multiply both sides of $a_n - \sum_{i=1}^d c_i a_{n-i} = r_n$ by $x^n$ and sum over all $n \ge 0$:
+
+   $$
+   \sum_{n=0}^{\infty} a_n x^n - \sum_{i=1}^{d} c_i x^i \sum_{n=i}^{\infty} a_{n-i} x^{n-i} = \sum_{n=0}^{\infty} r_n x^n.
+   $$
+
+3. **Re-indexing the shifted sums**: In the inner sum on the left-hand side, substituting $m = n - i$ (which ranges over $m \ge 0$) replaces $\sum_{n=i}^{\infty} a_{n-i} x^{n-i}$ with $F(x)$:
+
+   $$
+   F(x) - \left(\sum_{i=1}^{d} c_i x^i\right) F(x) = \sum_{n=0}^{\infty} r_n x^n \iff F(x) \cdot Q(x) = \sum_{n=0}^{\infty} r_n x^n.
+   $$
+
+4. **Truncating at $x^d$**: Because $r_n = 0$ for all $n \ge d$, the right-hand side is a polynomial $P(x) = \sum_{n=0}^{d-1} r_n x^n$ of degree $< d$. Furthermore, for $0 \le n < d$, the coefficient $[x^n](F(x)Q(x))$ depends only on the coefficients of $F(x)$ and $Q(x)$ of degree $\le n < d$, so replacing $F(x)$ with its degree-$(d-1)$ prefix $F_{<d}(x) = \sum_{n=0}^{d-1} a_n x^n$ does not alter any coefficient below $x^d$:
+
+   $$
+   P(x) = \big(F(x) Q(x)\big) \bmod x^d = \big(F_{<d}(x) Q(x)\big) \bmod x^d. \quad \blacksquare
+   $$
+
+::: {.callout-tip}
+## What If $\deg P \ge \deg Q$? (Improper Rational Functions)
+
+If $F(x) = \frac{P(x)}{Q(x)}$ has $\deg P \ge \deg Q = d$, polynomial Euclidean division (Section 5.2) splits $P(x) = E(x) Q(x) + R(x)$ with $\deg R < d$. Dividing by $Q(x)$ yields
+
+$$
+F(x) = E(x) + \frac{R(x)}{Q(x)}.
+$$
+
+Since $E(x)$ is a finite polynomial of degree $\deg P - d$, it only modifies the initial coefficients $a_0, a_1, \dots, a_{\deg P - d}$! For every $n > \deg P - d + (d - 1) = \deg P$, the sequence $a_n$ still satisfies the exact same homogeneous linear recurrence $a_n = \sum_{i=1}^d c_i a_{n-i}$.
+:::
+
+### Hand-Checkable Concrete Trace ($d = 3$)
+
+Let us trace Theorem 5.1 by hand on a concrete sequence to verify that no off-by-one ambiguity remains.
+
+Suppose $d = 3$ and a sequence $(a_n)_{n \ge 0}$ has initial values $a_0 = 1, a_1 = 2, a_2 = 5$ and satisfies
+
+$$
+a_n = 2a_{n-1} + a_{n-2} - 2a_{n-3} \qquad (n \ge 3).
+$$
+
+- **Step 1 (Direct recurrence calculation for $n = 3, 4$)**:
+  - $a_3 = 2a_2 + a_1 - 2a_0 = 2(5) + 2 - 2(1) = 10$.
+  - $a_4 = 2a_3 + a_2 - 2a_1 = 2(10) + 5 - 2(2) = 21$.
+- **Step 2 (Denominator polynomial $Q(x)$)**:
+  Reading the coefficients $c_1 = 2, c_2 = 1, c_3 = -2$, we have
+
+  $$
+  Q(x) = 1 - 2x - x^2 + 2x^3.
+  $$
+
+- **Step 3 (Numerator polynomial $P(x)$ via truncated convolution)**:
+  Multiply the initial prefix $F_{<3}(x) = 1 + 2x + 5x^2$ by $Q(x) = 1 - 2x - x^2 + 2x^3$ and discard all powers $x^3$ and higher:
+
+  $$
+  \begin{aligned}
+  [x^0]P(x) &= a_0 = 1, \\
+  [x^1]P(x) &= a_1 - 2a_0 = 2 - 2(1) = 0, \\
+  [x^2]P(x) &= a_2 - 2a_1 - a_0 = 5 - 2(2) - 1 = 0.
+  \end{aligned}
+  $$
+
+  Every correction term after $x^0$ vanishes! Thus $P(x) = 1$, and $F(x) = \frac{1}{1 - 2x - x^2 + 2x^3}$.
+- **Step 4 (Cross-check)**: Expanding $\frac{1}{1 - 2x - x^2 + 2x^3} = \frac{1}{(1-x)(1+x)(1-2x)}$ up to $x^4$ gives $(1 + x + x^2 + x^3 + x^4)(1 - 2x)^{-1}$ in even/odd combinations, or directly $1 + 2x + 5x^2 + 10x^3 + 21x^4 + \cdots$, matching $a_3 = 10$ and $a_4 = 21$.
+
+::: {.callout-note}
+## Algorithm Contract: Rational Numerator Synthesis from Recurrence Prefix (`rational_from_recurrence`)
+
+- **Signature**: `pair<Poly, Poly> rational_from_recurrence(const Poly& F_prefix, const vector<Field>& c)` over a commutative ring $R$.
+- **Preconditions**:
+  1. $c = (c_1, \dots, c_d) \in R^d$ defines the order-$d$ linear recurrence $a_n = \sum_{j=1}^d c_j a_{n-j}$ for all $n \ge d$.
+  2. `F_prefix` $= F_{<d}(x) = \sum_{i=0}^{d-1} a_i x^i \in R[x]$ contains the exact $d$ initial values $a_0, \dots, a_{d-1}$.
+- **Postconditions**:
+  1. Returns $(P(x), Q(x))$ where $Q(x) = 1 - \sum_{j=1}^d c_j x^j$ (with $\deg Q \le d$ and $[x^0]Q(x) = 1 \in R^\times$) and $P(x) = (F_{<d}(x) \cdot Q(x)) \bmod x^d$ (with $\deg P \le d - 1$).
+  2. In $R[[x]]$, $P(x) \cdot Q(x)^{-1} = \sum_{n \ge 0} a_n x^n$.
+- **Core Invariant**: Truncating the product $F_{<d}(x) Q(x)$ modulo $x^d$ captures the exact boundary discrepancy $[x^n](F(x)Q(x)) = a_n - \sum_{j=1}^n c_j a_{n-j}$ on $0 \le n < d$, while all coefficients for $n \ge d$ vanish identically by the recurrence law.
+- **Complexity**: $\mathcal{O}(d \log d)$ ring operations via a single truncated polynomial multiplication of degree $< d$ (or $\mathcal{O}(d^2)$ naive for small $d$), using $\mathcal{O}(d)$ auxiliary space.
+:::
+
+### The Transfer-Matrix Method & Resolvent Identity
+
+In many competitive programming problems—such as counting paths of length $n$ in a directed graph, or running a dynamic programming transition over a finite set of $d$ states—a sequence $a_n$ is not presented as a single scalar recurrence of order $d$, but rather as the output of a **$d$-state linear transition system**:
+
+$$
+\mathbf{v}^{(n)} = T \mathbf{v}^{(n-1)} = T^n \mathbf{v}^{(0)}, \qquad a_n = \mathbf{u}^\top T^n \mathbf{v}^{(0)},
+$$
+
+where $T \in K^{d \times d}$ is a fixed $d \times d$ **transfer matrix**, $\mathbf{v}^{(0)} \in K^d$ is the initial state vector, and $\mathbf{u} \in K^d$ is the final projection vector collecting valid ending states.
+
+How do we see that $a_n = \mathbf{u}^\top T^n \mathbf{v}^{(0)}$ has a rational generating function $P(x)/Q(x)$ of degree $\le d$?
+
+- **The Matrix Geometric Series (Resolvent)**: Over the ring $K[[x]]^{d \times d}$ of $d \times d$ matrices with formal power series entries, the matrix $I - xT$ has constant term $I$ (which is invertible). Its inverse is the geometric series
+
+  $$
+  (I - xT)^{-1} = \sum_{n=0}^{\infty} x^n T^n.
+  $$
+
+- **Applying Cramer's Rule**: Multiplying on the left by $\mathbf{u}^\top$ and on the right by $\mathbf{v}^{(0)}$ gives the scalar generating function
+
+  $$
+  F(x) = \sum_{n=0}^{\infty} \big(\mathbf{u}^\top T^n \mathbf{v}^{(0)}\big) x^n = \mathbf{u}^\top (I - xT)^{-1} \mathbf{v}^{(0)} = \frac{\mathbf{u}^\top \operatorname{adj}(I - xT) \mathbf{v}^{(0)}}{\det(I - xT)},
+  $$
+
+  where $\operatorname{adj}(I - xT)$ is the classical adjugate (cofactor transpose) matrix of $I - xT$.
+
+Because each entry of $I - xT$ has degree at most $1$ in $x$:
+
+1. Each cofactor of $I - xT$ is the determinant of a $(d-1) \times (d-1)$ submatrix, so every entry of $\operatorname{adj}(I - xT)$ is a polynomial in $x$ of degree **at most $d - 1$**. Thus the numerator $P(x) = \mathbf{u}^\top \operatorname{adj}(I - xT) \mathbf{v}^{(0)}$ automatically satisfies $\deg P < d$.
+2. The denominator $Q(x) = \det(I - xT)$ is a polynomial in $x$ of degree at most $d$ with $[x^0]Q(x) = \det(I) = 1$. Notice that $Q(x) = x^d \det(x^{-1}I - T) = x^d \chi_T(x^{-1})$ is the **reversed characteristic polynomial** of $T$. By the Cayley–Hamilton Theorem, $\chi_T(T) = \mathbf{0}$, which immediately implies that the sequence $a_n = \mathbf{u}^\top T^n \mathbf{v}^{(0)}$ satisfies the $d$-th order recurrence defined by $Q(x) = \det(I - xT)$!
+
+::: {.callout-note}
+## Companion Matrix Complexity vs. Bostan–Mori
+
+Conversely, any $d$-th order scalar recurrence $a_n = \sum_{i=1}^d c_i a_{n-i}$ can be written as a $d \times d$ matrix transition $\mathbf{v}^{(n)} = C \mathbf{v}^{(n-1)}$ where $\mathbf{v}^{(n)} = (a_n, a_{n-1}, \dots, a_{n-d+1})^\top$ and $C$ is the **Frobenius companion matrix** whose first row is $(c_1, c_2, \dots, c_d)$ and whose subdiagonal consists of $1$s.
+
+Computing $C^N$ by binary matrix exponentiation takes $\mathcal{O}(d^3 \log N)$ operations. In Section 5.3, we will see that working directly with the rational function $P(x)/Q(x)$ via the **Bostan–Mori algorithm** reduces this cost from $\mathcal{O}(d^3 \log N)$ to $\mathcal{O}(d \log d \log N)$—turning an infeasible $d = 10^5$ transition into a half-second runtime!
+:::
+
+---
+
+## 5.2 Polynomial Euclidean Division (`divmod`) via Formal Reversal
+
+Up to this point, whenever we divided two polynomials $A(x)$ and $B(x)$ in $K[[x]]$, we computed the formal power series quotient $A(x) B(x)^{-1} \bmod x^N$, which eliminates the **lowest** powers of $x$ first and requires $[x^0]B(x) \in K^\times$.
+
+In classical polynomial algebra $K[x]$, however, **Euclidean division (`divmod`)** eliminates the **highest** powers of $x$ first! Given a dividend polynomial $A(x)$ of degree $n$ and a divisor polynomial $B(x)$ of degree $m$ whose leading coefficient $b_m = [x^m]B(x)$ is a unit in $K^\times$, there exist unique polynomials $Q(x), R(x) \in K[x]$ such that
+
+$$
+A(x) = Q(x) B(x) + R(x), \qquad \text{with } \deg R < m \text{ (or } R(x) = 0\text{)}.
+$$
+
+When $n < m$, the quotient is trivially $Q(x) = 0$ and the remainder is $R(x) = A(x)$. When $n \ge m$, naive long division takes $\Theta((n - m + 1)m)$ operations—quadratic in the degree! How can we reduce Euclidean division in $K[x]$ to formal power series inversion in $K[[x]]$ so that we can solve it in $\mathcal{O}(n \log n)$ time?
+
+### The Diagnostic Signal & Reverse-Engineering Scratchpad
+
+- **The Diagnostic Signal**: You need the polynomial quotient $Q(x)$ and remainder $R(x)$ satisfying $A(x) = Q(x)B(x) + R(x)$ with $\deg R < \deg B$, where the cancellation happens from the **top degrees** ($x^n, x^{n-1}, \dots, x^m$) downward rather than from $x^0$ upward. Notice that $[x^0]B(x)$ might even be zero (for instance, dividing by $B(x) = x^2 + x$), so $B(x)$ is not directly invertible in $K[[x]]$; instead, we are guaranteed that the *leading* coefficient $[x^m]B(x)$ is a unit in $K^\times$.
+- **The Reverse-Engineering Scratchpad**:
+  1. Power series inversion mod $x^L$ knows how to ignore *high* degrees ($\ge L$) and invert a series whose *constant* term $[x^0]$ is a unit.
+  2. In Euclidean division $A(x) = Q(x)B(x) + R(x)$, the quotient $Q(x)$ has degree $n - m$ ($n - m + 1$ coefficients), while the unwanted remainder $R(x)$ sits in the *low* degrees ($< m$), and the guaranteed unit $b_m = [x^m]B(x)$ sits at the *top* of $B(x)$.
+  3. How do we flip "top degrees" and "bottom degrees" in a polynomial of fixed degree $d$? Substitute $x \leftarrow 1/x$ and multiply by $x^d$! This operation—called **formal degree-$d$ reversal**—maps the leading coefficient $[x^d]$ to the constant term $[x^0]$, and maps the low-degree remainder $R(x)$ ($\deg R \le m-1$) into high powers of $x$ divisible by $x^{n - m + 1}$!
+  4. Once the remainder is pushed into $x^{n-m+1} K[x]$, reducing modulo $x^{n-m+1}$ annihilates $R$ completely and leaves a pure product for the reversed quotient $Q^R(x) \bmod x^{n-m+1}$!
+
+### Formal Reversal and the Exact Algebraic Derivation
+
+Let us make this degree-indexed reversal completely rigorous. For any non-negative integer $d$ and any polynomial $P(x) = \sum_{i=0}^d p_i x^i \in K[x]$ of formal degree at most $d$, we define its **degree-$d$ formal reversal** $\operatorname{Rev}_d(P)(x)$ (written $P^R(x)$ when the reference degree $d$ is fixed) by reversing its coefficient array $(p_0, p_1, \dots, p_d)$:
+
+$$
+\operatorname{Rev}_d(P)(x) = x^d P(x^{-1}) = \sum_{i=0}^{d} p_{d-i} x^i.
+$$
+
+Let $n = \deg A \ge m = \deg B$, where $b_m = [x^m]B(x) \in K^\times$. Note that in $A(x) = Q(x)B(x) + R(x)$, the quotient $Q(x)$ has formal degree $n - m$, and the remainder $R(x)$ has formal degree at most $m - 1$. Now follow the five-step single-step derivation:
+
+1. **Substitute $x \leftarrow x^{-1}$ into the Euclidean division identity**:
+
+   $$
+   A(x^{-1}) = Q(x^{-1}) B(x^{-1}) + R(x^{-1}) \qquad \text{in } K[x, x^{-1}].
+   $$
+
+2. **Multiply both sides by $x^n$, splitting $x^n = x^{n-m} \cdot x^m$ on the first term and $x^n = x^{n-m+1} \cdot x^{m-1}$ on the remainder term**:
+
+   $$
+   x^n A(x^{-1}) = \big(x^{n-m} Q(x^{-1})\big) \big(x^m B(x^{-1})\big) + x^{n-m+1} \big(x^{m-1} R(x^{-1})\big).
+   $$
+
+3. **Rewrite each parenthesized factor as a formal reversal at its exact reference degree**:
+   Since $\deg A = n$, $\deg Q \le n - m$, $\deg B = m$, and $\deg R \le m - 1$, each factor is a genuine polynomial in $K[x]$:
+
+   $$
+   \operatorname{Rev}_n(A)(x) = \operatorname{Rev}_{n-m}(Q)(x) \cdot \operatorname{Rev}_m(B)(x) + x^{n-m+1} \operatorname{Rev}_{m-1}(R)(x).
+   $$
+
+4. **Project modulo $x^{n-m+1}$ in $K[[x]]$**:
+   Because $\operatorname{Rev}_{m-1}(R)(x) \in K[x]$ contains no negative powers of $x$, the term $x^{n-m+1}\operatorname{Rev}_{m-1}(R)(x)$ vanishes identically modulo $x^{n-m+1}$:
+
+   $$
+   \operatorname{Rev}_n(A)(x) \equiv \operatorname{Rev}_{n-m}(Q)(x) \cdot \operatorname{Rev}_m(B)(x) \pmod{x^{n-m+1}}.
+   $$
+
+5. **Invert $\operatorname{Rev}_m(B)(x)$ modulo $x^{n-m+1}$ and un-reverse**:
+   What is the constant term of $\operatorname{Rev}_m(B)(x)$? By definition,
+
+   $$
+   [x^0]\operatorname{Rev}_m(B)(x) = [x^m]B(x) = b_m \in K^\times.
+   $$
+
+   Even if $[x^0]B(x) = 0$, the reversed divisor $\operatorname{Rev}_m(B)(x)$ is **guaranteed to be a unit** in $K[[x]]$ because $b_m \in K^\times$. Furthermore, since $\operatorname{Rev}_{n-m}(Q)(x)$ has degree at most $n - m$, knowing it modulo $x^{n-m+1}$ determines all $n - m + 1$ of its coefficients! Thus:
+
+   $$
+   \operatorname{Rev}_{n-m}(Q)(x) = \Big(\operatorname{Rev}_n(A)(x) \cdot \operatorname{Rev}_m(B)(x)^{-1}\Big) \bmod x^{n-m+1},
+   $$
+
+   from which we recover $Q(x) = \operatorname{Rev}_{n-m}\big(\operatorname{Rev}_{n-m}(Q)\big)(x)$ by reversing the $(n - m + 1)$-element array, and finally recover the remainder by one polynomial multiplication and subtraction:
+
+   $$
+   R(x) = A(x) - Q(x) B(x) \pmod{x^m}.
+   $$
+
+   (In fact, since we already know $\deg R < m$, we only need the lowest $m$ coefficients of $A(x) - Q(x)B(x)$!)
+
+### Hand-Checkable Concrete Trace ($n = 4, m = 2$)
+
+Let us divide $A(x) = 2 + 0x + 3x^2 - x^3 + 2x^4$ ($n = 4$) by $B(x) = 0 + x + x^2$ ($m = 2$) over $\mathbb{Q}$. Notice that $[x^0]B(x) = 0$, so $B(x)$ is *not* invertible in $\mathbb{Q}[[x]]$, yet Euclidean division still works effortlessly!
+
+- **Step 1 (Reversal at exact reference degrees $n=4, m=2$, with quotient length $L = n - m + 1 = 3$)**:
+  - $\operatorname{Rev}_4(A)(x) = 2 - x + 3x^2 + 0x^3 + 2x^4 \equiv 2 - x + 3x^2 \pmod{x^3}$.
+  - $\operatorname{Rev}_2(B)(x) = 1 + x + 0x^2 = 1 + x$, which has constant term $[x^0]\operatorname{Rev}_2(B) = [x^2]B = 1 \in \mathbb{Q}^\times$.
+- **Step 2 (Series inversion modulo $x^3$)**:
+  - $\operatorname{Rev}_2(B)(x)^{-1} = (1 + x)^{-1} \equiv 1 - x + x^2 \pmod{x^3}$.
+- **Step 3 (Multiply modulo $x^3$ to find $\operatorname{Rev}_2(Q)(x)$)**:
+
+  $$
+  \operatorname{Rev}_2(Q)(x) = (2 - x + 3x^2)(1 - x + x^2) \bmod x^3 = 2 - 3x + 6x^2.
+  $$
+
+- **Step 4 (Un-reverse at degree $n - m = 2$ and compute remainder $R(x)$)**:
+  - Reversing $(2, -3, 6)$ gives $Q(x) = 6 - 3x + 2x^2$.
+  - Subtracting $Q(x)B(x) = (6 - 3x + 2x^2)(x + x^2) = 6x + 3x^2 - x^3 + 2x^4$ from $A(x)$ gives
+
+    $$
+    R(x) = A(x) - Q(x)B(x) = 2 - 6x \qquad (\deg R = 1 < 2 = \deg B).
+    $$
+
+::: {.callout-warning}
+## Failure Mode & Remedy: Off-by-One Reversal Degree Bugs When Leading or Trailing Coefficients Vanish
+
+One of the most insidious implementation bugs in polynomial libraries occurs when a naive helper function `reverse(P)` simply reverses a `std::vector` in-place after stripping trailing zeros, without tracking the **explicit reference degree $d$** of the reversal operator $\operatorname{Rev}_d$:
+
+1. **Bug 1 (Trailing zeros on $A(x)$ before reversal)**: Suppose $A(x)$ was stored in a buffer of padded NTT length $8$, even though its true degree is $n = 4$ (so $a_5 = a_6 = a_7 = 0$). If you reverse the length-$8$ vector instead of stripping leading zeros down to true degree $n = 4$, you compute $\operatorname{Rev}_7(A)(x) = x^3 \operatorname{Rev}_4(A)(x)$, shifting every coefficient of $\operatorname{Rev}_{n-m}(Q)$ by $x^3$ and corrupting the quotient!
+2. **Bug 2 (Vanishing constant term on $Q(x)$ during un-reversal)**: Suppose the true quotient is $Q(x) = 0 + 3x + 2x^2$ ($n - m = 2$). Its reversed polynomial is $\operatorname{Rev}_2(Q)(x) = 2 + 3x + 0x^2$. If your multiplication routine automatically strips trailing zeros from $\operatorname{Rev}_2(Q)(x)$ before you reverse the array back, the vector shrinks from `[2, 3, 0]` (length $3$) to `[2, 3]` (length $2$), and reversing it yields `[3, 2]` ($3 + 2x$) instead of `[0, 3, 2]` ($3x + 2x^2$)!
+
+**Remedy**:
+- **Before reversal**: Strip high-degree zeros from $A(x)$ and $B(x)$ so that $n = \deg A$ and $m = \deg B$ are exact, with $[x^n]A \neq 0$ and $[x^m]B \in K^\times$.
+- **During un-reversal**: Force the buffer for $\operatorname{Rev}_{n-m}(Q)(x)$ to have exact length $L = n - m + 1$ (padding with high-degree zeros up to index $n - m$ if needed) *before* reversing the array to obtain $Q(x)$, and only strip high-degree zeros from $Q(x)$ *after* the reversal is complete.
+:::
+
+::: {.callout-note}
+## Algorithm Contract: Fast Polynomial Euclidean Division (`divmod`)
+
+- **Input**: Dividend polynomial $A(x) = \sum_{i=0}^n a_i x^i \in K[x]$ and divisor polynomial $B(x) = \sum_{i=0}^m b_i x^i \in K[x]$.
+- **Preconditions**: $B(x) \neq 0$, and after stripping any high-degree zero coefficients from $B(x)$, its true leading coefficient $b_m = [x^m]B(x)$ is a unit in $K^\times$.
+- **Output**: Unique pair of polynomials $(Q(x), R(x)) \in K[x] \times K[x]$ such that $A(x) = Q(x)B(x) + R(x)$ and $\deg R < m$ (with $\deg(0) = -\infty$).
+- **Index & Boundary Contract**:
+  1. Strip high-degree zeros from $A$ and $B$ to determine exact degrees $n = \deg A$ and $m = \deg B$. If $n < m$, return $Q(x) = 0$ and $R(x) = A(x)$ immediately.
+  2. Set $L = n - m + 1$. Form $A_{\text{rev}}(x) = \sum_{i=0}^{L-1} a_{n-i} x^i$ and $B_{\text{rev}}(x) = \sum_{i=0}^{\min(m, L-1)} b_{m-i} x^i$.
+  3. Compute $B_{\text{rev}}(x)^{-1} \bmod x^L$ via Newton series inversion (valid since $[x^0]B_{\text{rev}} = b_m \in K^\times$), and set $Q_{\text{rev}}(x) = (A_{\text{rev}}(x) \cdot B_{\text{rev}}(x)^{-1}) \bmod x^L$ padded to exact length $L$.
+  4. Reverse the length-$L$ coefficient array of $Q_{\text{rev}}$ to obtain $Q(x) = \sum_{i=0}^{L-1} ([x^{L-1-i}]Q_{\text{rev}}) x^i$, and compute $R(x) = (A(x) - Q(x)B(x)) \bmod x^m$.
+- **Key Invariant**: Because $\deg R \le m - 1$, the term $x^{n-m+1}\operatorname{Rev}_{m-1}(R)(x)$ has valuation at least $n - m + 1 = L$, so reducing modulo $x^L$ isolates $\operatorname{Rev}_{n-m}(Q)(x)$ with zero interference from $R(x)$.
+- **Complexity**: One series inversion of length $L = n - m + 1$, one multiplication of length $L$, and one multiplication of degrees $(n-m) \times m$, taking $\mathcal{O}(n \log n)$ time and $\mathcal{O}(n)$ auxiliary space.
+:::
+
+---
+
+## 5.3 The Bostan–Mori Algorithm for $[x^N] P(x)/Q(x)$
+
+Suppose we have converted a linear recurrence of order $d$ into a rational generating function $F(x) = \frac{P(x)}{Q(x)}$ with $\deg P < d$ and $\deg Q = d$, and we need the single coefficient $[x^N]\frac{P(x)}{Q(x)}$ for $N = 10^{18}$.
+
+Expanding $Q(x)^{-1} \bmod x^{N+1}$ via Newton's method takes $\mathcal{O}(N \log N)$ time, which is impossible for $N = 10^{18}$. Classical companion-matrix exponentiation takes $\mathcal{O}(d^3 \log N)$ time, or $\mathcal{O}(d \log d \log N)$ if we compute $x^N \bmod Q^R(x)$ via polynomial `divmod` at each bit of $N$ (the Fiduccia algorithm). Yet polynomial `divmod` inside a binary exponentiation loop requires a fresh Newton inversion at every step (or heavy precomputation) with large constant factors.
+
+In 2020, Alin Bostan and Ryuhei Mori introduced a breathtakingly simple divide-and-conquer algorithm that computes $[x^N]\frac{P(x)}{Q(x)}$ using **only two polynomial multiplications of degree $d$ per bit of $N$**—no polynomial inversion, no companion matrices, and a constant factor so small that it can be further cut to $\frac{2}{3}\mathcal{M}(d)\log_2 N$ in the NTT domain!
+
+### The Diagnostic Signal & Reverse-Engineering Scratchpad
+
+- **The Diagnostic Signal**: You need a single distant coefficient $[x^N]\frac{P(x)}{Q(x)}$ (where $N$ is huge, e.g., $N \le 10^{18}$, while $d = \deg Q$ is moderate, e.g., $d \le 10^5$), and you want to halve the target index $N \leftarrow \lfloor N / 2 \rfloor$ at each step without increasing the degree $d$ of the rational function.
+- **The Reverse-Engineering Scratchpad**:
+  1. Why is it hard to halve $N$ in $[x^N]\frac{P(x)}{Q(x)}$? If the denominator were a function of $x^2$ alone—say $V(x^2)$—then its expansion $V(x^2)^{-1} = \sum_{k=0}^\infty v_k x^{2k}$ would contain **only even powers of $x$**!
+  2. In that case, when we multiply $U(x) \cdot V(x^2)^{-1}$, the even powers of $U(x)$ only ever contribute to even powers of the product, and the odd powers of $U(x)$ only ever contribute to odd powers of the product! We could simply discard half the terms of $U(x)$ (keeping the even terms if $N$ is even, or the odd terms if $N$ is odd) and replace $x^2 \leftarrow x$, halving $N \leftarrow \lfloor N/2 \rfloor$!
+  3. How do we force a general polynomial $Q(x)$ into a polynomial in $x^2$? Recall the difference-of-squares identity $(A - B)(A + B) = A^2 - B^2$: if we group $Q(x) = Q_{\text{even}}(x^2) + x Q_{\text{odd}}(x^2)$, then replacing $x$ with $-x$ flips the sign of the odd part:
+
+     $$
+     Q(-x) = Q_{\text{even}}(x^2) - x Q_{\text{odd}}(x^2).
+     $$
+
+  4. Therefore, multiplying $Q(x)$ by $Q(-x)$ cancels all odd powers of $x$ by symmetry:
+
+     $$
+     Q(x) Q(-x) = \big(Q_{\text{even}}(x^2)\big)^2 - x^2 \big(Q_{\text{odd}}(x^2)\big)^2 = V(x^2),
+     $$
+
+     where $V(x)$ is a polynomial of the **exact same degree $d$** as $Q(x)$!
+
+### Single-Step Verbalized Derivation of the Bostan–Mori Halving Step
+
+Let $P(x), Q(x) \in K[x]$ with $\deg P < \deg Q = d$ and $[x^0]Q(x) \in K^\times$ (where $\operatorname{char}(K) \neq 2$ when using NTT; notice the polynomial identity itself uses only addition, subtraction, and multiplication, so it holds over *any* commutative ring $K$!). We derive the recurrence for $[x^N]\frac{P(x)}{Q(x)}$ in four single-step equalities:
+
+1. **Multiply numerator and denominator by $Q(-x)$**:
+   Since $[x^0]Q(-x) = [x^0]Q(x) \in K^\times$, $Q(-x)$ is a unit in $K[[x]]$, so multiplying top and bottom by $Q(-x)$ leaves the formal power series unchanged:
+
+   $$
+   \frac{P(x)}{Q(x)} = \frac{P(x) Q(-x)}{Q(x) Q(-x)}.
+   $$
+
+2. **Verify that $Q(x)Q(-x)$ is an even polynomial $V(x^2)$**:
+   Let $W(x) = Q(x)Q(-x)$. Substituting $x \leftarrow -x$ gives $W(-x) = Q(-x)Q(x) = W(x)$, so $[x^{2k+1}]W(x) = -[x^{2k+1}]W(x)$ (or directly from $Q = Q_e(x^2) + x Q_o(x^2)$, $W(x) = Q_e(x^2)^2 - x^2 Q_o(x^2)^2$). Thus every odd coefficient of $Q(x)Q(-x)$ is identically zero, and there exists a unique polynomial $V(x) \in K[x]$ of degree $d$ such that
+
+   $$
+   Q(x) Q(-x) = V(x^2), \qquad \text{where } [x^k]V(x) = [x^{2k}]\big(Q(x)Q(-x)\big).
+   $$
+
+3. **Split the numerator $U(x) = P(x)Q(-x)$ by parity of powers**:
+   Separate $U(x) = P(x)Q(-x)$ into its even-index and odd-index coefficients:
+
+   $$
+   U(x) = P(x) Q(-x) = U_0(x^2) + x U_1(x^2),
+   $$
+
+   where $[x^k]U_0(x) = [x^{2k}]U(x)$ and $[x^k]U_1(x) = [x^{2k+1}]U(x)$. Dividing by $V(x^2)$ yields the parity decomposition of the entire series:
+
+   $$
+   \frac{P(x)}{Q(x)} = \frac{U_0(x^2)}{V(x^2)} + x \frac{U_1(x^2)}{V(x^2)}.
+   $$
+
+4. **Extract $[x^N]$ according to the parity of $N$**:
+   Because $\frac{U_0(x^2)}{V(x^2)}$ contains only even powers of $x$ and $x \frac{U_1(x^2)}{V(x^2)}$ contains only odd powers of $x$, the two terms never interfere at index $N$:
+
+   $$
+   [x^N]\frac{P(x)}{Q(x)} = \begin{cases}
+   [x^{N/2}] \dfrac{U_0(x)}{V(x)} & \text{if } N \text{ is even}, \\[10pt]
+   [x^{(N-1)/2}] \dfrac{U_1(x)}{V(x)} & \text{if } N \text{ is odd}.
+   \end{cases}
+   $$
+
+#### Why Does the Degree Bound $\deg P < \deg Q$ Remain Invariant?
+
+Let us check the degrees after one step: since $\deg P \le d - 1$ and $\deg Q = d$, their product $U(x) = P(x)Q(-x)$ has degree $\deg U \le 2d - 1$. Therefore:
+
+- $U_0(x)$ collects the even-indexed coefficients $0, 2, \dots, 2(d-1)$ of $U(x)$, so $\deg U_0 \le d - 1 < d$.
+- $U_1(x)$ collects the odd-indexed coefficients $1, 3, \dots, 2d-1$ of $U(x)$, so $\deg U_1 \le d - 1 < d$.
+- $V(x)$ collects the even-indexed coefficients $0, 2, \dots, 2d$ of $Q(x)Q(-x)$, so $\deg V = d$.
+
+Thus the new numerator $\widetilde{P}(x) \in \{U_0(x), U_1(x)\}$ and new denominator $V(x)$ again satisfy $\deg \widetilde{P} < \deg V = d$! After $\lfloor \log_2 N \rfloor + 1$ halving steps, $N$ reaches $0$, at which point $[x^0]\frac{P(x)}{Q(x)} = \frac{P(0)}{Q(0)}$.
+
+### Hand-Checkable Concrete Trace: Fibonacci $N = 5$
+
+Let us trace the Bostan–Mori algorithm by hand to compute the $5$-th Fibonacci number $F_5 = 5$ from
+
+$$
+F(x) = \frac{P(x)}{Q(x)} = \frac{x}{1 - x - x^2} \qquad (N = 5).
+$$
+
+- **Step 1 ($N = 5$, odd $\implies$ keep odd part $U_1$, set $N \leftarrow (5-1)/2 = 2$)**:
+  - $P(x) = x$, $Q(x) = 1 - x - x^2$, so $Q(-x) = 1 + x - x^2$.
+  - Numerator product: $U(x) = P(x)Q(-x) = x(1 + x - x^2) = x + x^2 - x^3 = (x^2) + x(1 - x^2)$.
+     Since $N = 5$ is odd, we select $U_1(x) = 1 - x$.
+  - Denominator product: $Q(x)Q(-x) = (1 - x^2)^2 - x^2 = 1 - 3x^2 + x^4 = V(x^2)$, so $V(x) = 1 - 3x + x^2$.
+  - State after Step 1: $[x^2]\frac{1 - x}{1 - 3x + x^2}$.
+- **Step 2 ($N = 2$, even $\implies$ keep even part $U_0$, set $N \leftarrow 2/2 = 1$)**:
+  - $P(x) = 1 - x$, $Q(x) = 1 - 3x + x^2$, so $Q(-x) = 1 + 3x + x^2$.
+  - Numerator product: $U(x) = (1 - x)(1 + 3x + x^2) = 1 + 2x - 2x^2 - x^3 = (1 - 2x^2) + x(2 - x^2)$.
+     Since $N = 2$ is even, we select $U_0(x) = 1 - 2x$.
+  - Denominator product: $Q(x)Q(-x) = (1 + x^2)^2 - 9x^2 = 1 - 7x^2 + x^4 = V(x^2)$, so $V(x) = 1 - 7x + x^2$.
+  - State after Step 2: $[x^1]\frac{1 - 2x}{1 - 7x + x^2}$.
+- **Step 3 ($N = 1$, odd $\implies$ keep odd part $U_1$, set $N \leftarrow (1-1)/2 = 0$)**:
+  - $P(x) = 1 - 2x$, $Q(x) = 1 - 7x + x^2$, so $Q(-x) = 1 + 7x + x^2$.
+  - Numerator product: $U(x) = (1 - 2x)(1 + 7x + x^2) = 1 + 5x - 13x^2 - 2x^3 = (1 - 13x^2) + x(5 - 2x^2)$.
+     Since $N = 1$ is odd, we select $U_1(x) = 5 - 2x$.
+  - Denominator product: $Q(x)Q(-x) = (1 + x^2)^2 - 49x^2 = 1 - 47x^2 + x^4 \implies V(x) = 1 - 47x + x^2$.
+  - State after Step 3: $[x^0]\frac{5 - 2x}{1 - 47x + x^2} = \frac{5}{1} = 5 = F_5$.
+
+| Halving Step | Current $N$ | Parity of $N$ | Current $P(x)$ | Current $Q(x)$ | $U(x) = P(x)Q(-x)$ | Next $P(x)$ | Next $Q(x) = V(x)$ |
+| :--- | :---: | :---: | :--- | :--- | :--- | :--- | :--- |
+| Initial | $5$ | Odd | $x$ | $1 - x - x^2$ | $x^2 + x(1 - x^2)$ | $1 - x$ | $1 - 3x + x^2$ |
+| After Step 1 | $2$ | Even | $1 - x$ | $1 - 3x + x^2$ | $(1 - 2x^2) + x(2 - x^2)$ | $1 - 2x$ | $1 - 7x + x^2$ |
+| After Step 2 | $1$ | Odd | $1 - 2x$ | $1 - 7x + x^2$ | $(1 - 13x^2) + x(5 - 2x^2)$ | $5 - 2x$ | $1 - 47x + x^2$ |
+| Terminal ($N=0$) | $0$ | Base | $5 - 2x$ | $1 - 47x + x^2$ | — | Output $P(0)/Q(0) = 5$ | — |
+
+### The NTT Half-Spectrum Doubling Optimization ($\frac{2}{3}\mathcal{M}(d)\log_2 N$)
+
+If we implement each Bostan–Mori step naively using black-box polynomial multiplication of degree $d$ (which requires an NTT buffer of size $2L$ where $L = 2^{\lceil \log_2(d+1) \rceil}$), each step computes two products $P(x)Q(-x)$ and $Q(x)Q(-x)$, costing **6 NTTs of length $2L$** per bit of $N$ (Equivalent to $2 \mathcal{M}(d) \log_2 N$).
+
+By working **directly in the NTT point-value domain**, we can avoid ever moving back to the coefficient domain inside the main loop and cut the cost to **4 NTTs of length $L$** per step—a **$3\times$ speedup** ($\frac{2}{3}\mathcal{M}(d)\log_2 N$)! Here are the four algebraic observations that make this possible:
+
+1. **Zero-Cost Point-Value Reflection ($\widehat{Q}(-x)$ from $\widehat{Q}(x)$)**:
+   Suppose we know the length-$2L$ NTT evaluations $\widehat{Q}_k = Q(\omega_{2L}^k)$ for $0 \le k < 2L$, where $\omega_{2L}$ is a primitive $2L$-th root of unity. Since $-1 = \omega_{2L}^L$, evaluating $Q(-x)$ at $\omega_{2L}^k$ is simply
+
+   $$
+   Q(-\omega_{2L}^k) = Q(\omega_{2L}^{k+L}) = \widehat{Q}_{(k + L) \bmod 2L}
+   $$
+
+   (or in bit-reversed butterfly layout, swapping adjacent pairs $\widehat{Q}_{2j} \leftrightarrow \widehat{Q}_{2j+1}$!). Thus $\widehat{Q}(-x)$ requires **zero NTTs**—it is just an index permutation of $\widehat{Q}(x)$!
+2. **Half-Spectrum Extraction of $V(x)$ and $U_{N \bmod 2}(x)$ (No Length-$2L$ Inverse NTT!)**:
+   For $0 \le j < L$, the two points $\omega_{2L}^j$ and $-\omega_{2L}^j = \omega_{2L}^{j+L}$ both square to $\big(\omega_{2L}^j\big)^2 = \omega_L^j$. Therefore:
+   - The length-$L$ NTT of $V(x)$ is obtained directly from the first $L$ pointwise products:
+
+     $$
+     \widehat{V}_j = V(\omega_L^j) = Q(\omega_{2L}^j) Q(-\omega_{2L}^j) = \widehat{Q}_j \cdot \widehat{Q}_{j+L} \qquad (0 \le j < L).
+     $$
+
+   - Similarly, since $U(x) = U_0(x^2) + x U_1(x^2)$, adding and subtracting $U(\omega_{2L}^j)$ and $U(-\omega_{2L}^j)$ gives the length-$L$ NTT evaluations of $U_0$ and $U_1$ directly in the frequency domain:
+
+     $$
+     \widehat{U}_{0, j} = \frac{U(\omega_{2L}^j) + U(-\omega_{2L}^j)}{2}, \qquad \widehat{U}_{1, j} = \frac{U(\omega_{2L}^j) - U(-\omega_{2L}^j)}{2 \omega_{2L}^j} \qquad (0 \le j < L).
+     $$
+
+3. **NTT Length Doubling (`ntt_double`)**:
+   At the end of step $s$, we already possess the **length-$L$ NTT evaluations** $\widehat{P}_{\text{new}}(\omega_L^j)$ and $\widehat{Q}_{\text{new}}(\omega_L^j)$ for $0 \le j < L$. To proceed to step $s+1$, we need their length-$2L$ NTT evaluations at the odd powers $\omega_{2L}^{2j+1} = \omega_{2L} \cdot \omega_L^j$. We obtain these by applying a **length-$L$ Inverse NTT** to recover the degree-$d$ coefficient array, multiplying coefficient $i$ by $\omega_{2L}^i$, and applying a **length-$L$ Forward NTT**!
+4. **Operation Count per Bit of $N$**:
+   Doubling $\widehat{P}$ takes $1$ INTT($L$) + $1$ NTT($L$), and doubling $\widehat{Q}$ takes $1$ INTT($L$) + $1$ NTT($L$)—a total of **4 NTTs of length $L$** per bit of $N$ (compared to 6 NTTs of length $2L$ in the naive version). Since $4 \text{ NTT}(L) \approx 2 \text{ NTT}(2L) = \frac{2}{3}\mathcal{M}(d)$, the asymptotic cost is $\frac{2}{3}\mathcal{M}(d)\log_2 N$!
+
+```cpp
+// Structural Loop Snippet: Half-Spectrum Bostan–Mori Step (Length L = 2^k > d)
+// Invariant at loop start: P_hat[0..L-1] and Q_hat[0..L-1] hold the length-L NTTs of P and Q.
+while N > 0:
+    P_hat_2L = ntt_double(P_hat, L)   // 1 INTT(L) + twist by w_{2L}^i + 1 NTT(L) -> size 2L
+    Q_hat_2L = ntt_double(Q_hat, L)   // 1 INTT(L) + twist by w_{2L}^i + 1 NTT(L) -> size 2L
+    for j = 0 to L - 1:
+        u_pos = P_hat_2L[j]     * Q_hat_2L[j + L]
+        u_neg = P_hat_2L[j + L] * Q_hat_2L[j]
+        if N is even:
+            P_hat[j] = (u_pos + u_neg) * inv2
+        else:
+            P_hat[j] = (u_pos - u_neg) * inv2 * inv_w2L[j]
+        Q_hat[j] = Q_hat_2L[j] * Q_hat_2L[j + L]
+    N = floor(N / 2)
+```
+
+### Characteristic-$p$ Extension: Frobenius Bostan–Mori $\bmod p$
+
+What happens when we work over a finite field $\mathbb{F}_p$ of small prime characteristic $p$ (such as $p = 2$, where $Q(-x) = Q(x)$ and $2$ is not invertible, or a small prime $p \le d$)?
+
+Over $\mathbb{F}_p[x]$, the **Frobenius endomorphism** $(a + b)^p = a^p + b^p$ gives the identity
+
+$$
+Q(x)^p = \left(\sum_{i=0}^{d} q_i x^i\right)^p = \sum_{i=0}^{d} q_i^p x^{pi} = \sum_{i=0}^{d} q_i x^{pi} = Q(x^p) \pmod p.
+$$
+
+Therefore, instead of multiplying top and bottom by $Q(-x)$ to reach an even denominator $V(x^2)$, we can multiply numerator and denominator by $Q(x)^{p-1}$ to obtain $Q(x)^p = Q(x^p)$ with **zero denominator multiplications**:
+
+$$
+[x^N]\frac{P(x)}{Q(x)} = [x^N]\frac{P(x) Q(x)^{p-1}}{Q(x)^p} = [x^N]\frac{P(x) Q(x)^{p-1}}{Q(x^p)} = \left[x^{\lfloor N/p \rfloor}\right] \frac{U_{N \bmod p}(x)}{Q(x)},
+$$
+
+where $U_{r}(x)$ collects every $p$-th coefficient of $U(x) = P(x)Q(x)^{p-1}$ in residue class $r = N \bmod p$. Notice that the denominator $Q(x)$ **does not even change** from one step to the next! In particular, for $p = 2$ over $\mathbb{F}_2[x]$, $Q(x)^2 = Q(x^2)$ directly, so $[x^N]\frac{P(x)}{Q(x)} = [x^{\lfloor N/2 \rfloor}]\frac{U_{N \bmod 2}(x)}{Q(x)}$!
+
+::: {.callout-warning}
+## Failure Mode & Remedy: Calling Bostan–Mori When $[x^0]Q(x) = 0$ or $\deg P \ge \deg Q$
+
+1. **Failure Mode 1 ($[x^0]Q(x) = 0$)**: If $Q(x)$ has valuation $v = \operatorname{val}(Q) \ge 1$ (so $Q(x) = x^v \widetilde{Q}(x)$ with $\widetilde{Q}(0) \neq 0$), then $Q(0) = 0$ and the base case $P(0)/Q(0)$ divides by zero!
+   - **Remedy**: Factor out $x^v$ from $Q(x)$. If $P(x)$ is not divisible by $x^v$, split $P(x) = P_{<v}(x) + x^v \widetilde{P}(x)$; the quotient $\frac{P(x)}{Q(x)}$ is a formal Laurent series whose $x^N$ coefficient ($N \ge 0$) is $[x^{N+v}]\frac{P(x)}{\widetilde{Q}(x)}$.
+2. **Failure Mode 2 ($\deg P \ge \deg Q$)**: Suppose $P(x) = x^3$ and $Q(x) = 1 - x$ ($\deg P = 3 \ge \deg Q = 1$), and you ask for $[x^1]\frac{x^3}{1-x} = 0$. If your loop clips $U(x) = P(x)Q(-x)$ to length $2 \deg Q = 2$ assuming $\deg P < \deg Q$, it will silently drop $x^3$ and corrupt the answer!
+   - **Remedy**: Either maintain the true degree of $P(x)$ at each halving step ($\deg \widetilde{P} \le \lfloor (\deg P + \deg Q) / 2 \rfloor$, which rapidly shrinks toward $\deg Q - 1$), or perform one initial polynomial `divmod` $P(x) = E(x)Q(x) + R(x)$ ($\deg R < \deg Q$) so that $[x^N]\frac{P(x)}{Q(x)} = [x^N]E(x) + [x^N]\frac{R(x)}{Q(x)}$.
+:::
+
+::: {.callout-note}
+## Algorithm Contract: The Bostan–Mori Algorithm (`bostan_mori(P, Q, N)`)
+
+- **Input**: Polynomials $P(x), Q(x) \in K[x]$ with $\deg Q = d$, and target index $N \in \mathbb{Z}_{\ge 0}$.
+- **Preconditions**: $\deg Q = d \ge 1$, $\deg P < d$ (if $\deg P \ge d$, first reduce $P(x) = E(x)Q(x) + R(x)$ via `divmod(P, Q)` from §5.2, add $[x^N]E(x)$ when $N \le \deg E$, and replace $P \leftarrow R$), $[x^0]Q(x) \in K^\times$ is a unit (normalizable to $1$ over a field), and $N \ge 0$ is a 64-bit integer. (If using the Half-Spectrum NTT variant, $K = \mathbb{F}_p$ is an NTT-friendly prime field with $2^{\lceil \log_2(2d+1) \rceil} \mid (p - 1)$.)
+- **Output**: The single coefficient $[x^N]\big(P(x) Q(x)^{-1}\big) \in K$.
+- **Step-by-Step Contract**:
+  1. While $N > 0$:
+     - Form $Q(-x)$ by negating odd-indexed coefficients of $Q(x)$: $[x^i]Q(-x) = (-1)^i [x^i]Q(x)$.
+     - Multiply $U(x) = P(x) \cdot Q(-x)$ and $W(x) = Q(x) \cdot Q(-x)$.
+     - Set $r = N \bmod 2$. Update $P(x) \leftarrow \sum_{k} ([x^{2k+r}]U(x)) x^k$, $Q(x) \leftarrow \sum_{k=0}^d ([x^{2k}]W(x)) x^k$, and $N \leftarrow \lfloor N / 2 \rfloor$.
+  2. When $N = 0$, return $([x^0]P(x)) \cdot ([x^0]Q(x))^{-1} \in K$.
+- **Key Invariant**: At the end of each iteration, the updated pair $(P_{\text{new}}, Q_{\text{new}}, N_{\text{new}})$ satisfies $[x^{N_{\text{new}}}]\frac{P_{\text{new}}(x)}{Q_{\text{new}}(x)} = [x^N]\frac{P(x)}{Q(x)}$, with $[x^0]Q_{\text{new}}(x) = ([x^0]Q(x))^2 \in K^\times$, $\deg P_{\text{new}} < d$, and $\deg Q_{\text{new}} = d$.
+- **Complexity**: $\mathcal{O}(d \log d \log N)$ field operations ($\frac{2}{3}\mathcal{M}(d)\log_2 N$ with Half-Spectrum NTT) and $\mathcal{O}(d)$ space.
+:::
+
+---
+
+## 5.4 Partial Fraction Decomposition & The Berlekamp–Massey Algorithm
+
+Sections 5.1–5.3 answered the **Forward Problem**: *given* a known linear recurrence or rational function $P(x)/Q(x)$, compute its $N$-th coefficient. We now study two foundational tools that unlock the **Analytical Structure** and the **Inverse Problem** of rational generating functions:
+
+1. **Partial Fraction Decomposition (PFD)**: How do the roots of $Q(x)$ give an explicit closed-form sum of geometric progressions and binomial coefficients for $[x^n]\frac{P(x)}{Q(x)}$?
+2. **The Berlekamp–Massey Algorithm**: Suppose a problem hides a linear recurrence inside a complex DP, determinant, or combinatorial model, and you can only afford to compute the first $2d$ values $a_0, a_1, \dots, a_{2d-1}$ by brute force or DP. How do you **discover** the shortest feedback polynomial $Q(x)$ in $\mathcal{O}(d^2)$ time?
+
+### Partial Fraction Decomposition & The Heaviside Cover-Up Method
+
+Suppose $K$ is a field over which the denominator polynomial $Q(x)$ of degree $d$ (with $Q(0) = 1$) splits completely into linear factors:
+
+$$
+Q(x) = \prod_{j=1}^{s} (1 - r_j x)^{m_j}, \qquad \sum_{j=1}^{s} m_j = d,
+$$
+
+where $r_1, \dots, r_s \in K^\times$ are the distinct **reciprocal roots** of $Q(x)$ (that is, $x = r_j^{-1}$ are the roots of $Q(x) = 0$, and $r_j$ are the roots of the reversed characteristic polynomial $Q^R(r) = 0$). For any polynomial $P(x) \in K[x]$ with $\deg P < d$, the rational function $\frac{P(x)}{Q(x)}$ decomposes uniquely into a sum of **principal parts**:
+
+$$
+\frac{P(x)}{Q(x)} = \sum_{j=1}^{s} \sum_{k=1}^{m_j} \frac{c_{j, k}}{(1 - r_j x)^k} \implies [x^n]\frac{P(x)}{Q(x)} = \sum_{j=1}^{s} \left(\sum_{k=1}^{m_j} c_{j, k} \binom{n + k - 1}{k - 1}\right) r_j^n.
+$$
+
+::: {.callout-tip}
+### Diagnostic Signal & Reverse-Engineering Scratchpad: Heaviside Cover-Up & Local Coordinate Shift
+- **Diagnostic Signal**: You have a rational generating function $F(x) = P(x)/Q(x)$ whose denominator factors completely into linear powers $Q(x) = \prod_{j=1}^s (1 - r_j x)^{m_j}$, and you want an explicit closed-form formula for $[x^n]F(x)$ or the partial fraction coefficients $c_{j,k}$.
+- **Reverse-Engineering Scratchpad**:
+  1. **Simple poles ($m_i = 1$)**: In $\frac{P(x)}{Q(x)} = \sum_{i=1}^d \frac{c_i}{1 - r_i x}$, clearing the $(1 - r_i x)$ denominator and evaluating at the pole $x = r_i^{-1}$ kills every other summand, leaving $c_i = \lim_{x \to r_i^{-1}} (1 - r_i x)\frac{P(x)}{Q(x)}$. How do we avoid factoring out $(1 - r_i x)$ from $Q(x)$ by hand? Since $Q(r_i^{-1}) = 0$, formal differentiation $Q(x) = (1 - r_i x)Q_i(x) \implies Q'(r_i^{-1}) = -r_i Q_i(r_i^{-1})$ replaces $\prod_{j \neq i}(1 - r_j r_i^{-1})$ with $\frac{Q'(r_i^{-1})}{-r_i}$, giving $c_i = \frac{-r_i P(r_i^{-1})}{Q'(r_i^{-1})}$.
+  2. **Repeated poles ($m_j > 1$)**: Differentiating $P(x)/\widetilde{Q}_j(x)$ $m_j - k$ times creates a messy quotient-rule explosion and divides by $(m_j - k)!$ (which fails in characteristic $p \le m_j$). Instead, work backward from the target denominator $(1 - r_j x)^{m_j}$: set $u = 1 - r_j x$ so that the pole becomes $u = 0$ and $(1 - r_j x)^{-k} = u^{-k}$. Then finding $c_{j, m_j}, \dots, c_{j, 1}$ is simply reading off the first $m_j$ Taylor coefficients of $P(r_j^{-1}(1-u)) \cdot \widetilde{Q}_j(r_j^{-1}(1-u))^{-1} \bmod u^{m_j}$ via Chapter 01 truncated series inversion—which is **100% division-free in $m_j$**!
+:::
+
+#### Case 1: Distinct Reciprocal Roots ($m_1 = \cdots = m_d = 1$) via Heaviside Cover-Up
+
+When $Q(x) = \prod_{i=1}^d (1 - r_i x)$ has $d$ distinct reciprocal roots $r_1, \dots, r_d$, how do we compute each coefficient $c_i$ in $\frac{P(x)}{Q(x)} = \sum_{i=1}^d \frac{c_i}{1 - r_i x}$ without solving a $d \times d$ linear system?
+
+- **Method A (Direct Cover-Up)**: Multiply both sides by $(1 - r_i x)$ and evaluate at $x = r_i^{-1}$. On the right-hand side, every term $j \neq i$ acquires a factor of $(1 - r_i r_j^{-1}) = 0$ and vanishes, leaving $c_i$:
+
+  $$
+  c_i = \left. \frac{P(x)(1 - r_i x)}{Q(x)} \right|_{x = r_i^{-1}} = \frac{P(r_i^{-1})}{\prod_{j \neq i} (1 - r_j r_i^{-1})}.
+  $$
+
+- **Method B (Derivative Formula via Formal Differentiation)**: Differentiating $Q(x) = (1 - r_i x) \prod_{j \neq i} (1 - r_j x)$ via the product rule gives $Q'(x) = -r_i \prod_{j \neq i}(1 - r_j x) + (1 - r_i x)(\cdots)$. Evaluating at $x = r_i^{-1}$ isolates $\prod_{j \neq i}(1 - r_j r_i^{-1}) = -\frac{Q'(r_i^{-1})}{r_i}$, yielding the **L'Hôpital / Heaviside derivative formula**:
+
+  $$
+  c_i = \frac{-r_i P(r_i^{-1})}{Q'(r_i^{-1})} \implies \frac{P(x)}{Q(x)} = \sum_{i=1}^{d} \frac{-r_i P(r_i^{-1})}{Q'(r_i^{-1}) (1 - r_i x)}.
+  $$
+
+#### Case 2: Repeated Roots ($m_j > 1$) via Division-Free Local Coordinate Shift $u = 1 - r_j x$
+
+When a factor $(1 - r_j x)^{m_j}$ has multiplicity $m_j > 1$ (which happens extremely often in competitive programming when $Q(x) = (1-x)^a (1+x)^b$!), differentiating $m_j - 1$ times by hand is tedious and divides by $(m_j - k)!$ (failing when $p \le m_j$). Instead, we use a **local coordinate shift** $u = 1 - r_j x$ that is completely **division-free in $m_j$** (valid over any field $K$ regardless of $\operatorname{char}(K)$):
+
+1. Set $u = 1 - r_j x$, so that $x = r_j^{-1}(1 - u)$.
+2. Factor $Q(x) = (1 - r_j x)^{m_j} \widetilde{Q}_j(x) = u^{m_j} \widetilde{Q}_j\big(r_j^{-1}(1-u)\big)$, where $\widetilde{Q}_j(r_j^{-1}) \neq 0$.
+3. Expand the regular quotient $H_j(u) = \frac{P\big(r_j^{-1}(1-u)\big)}{\widetilde{Q}_j\big(r_j^{-1}(1-u)\big)} \bmod u^{m_j}$ in $K[[u]]$ using direct binomial expansion of $(1-u)^k$ and Chapter 01 truncated series inversion of length $m_j$:
+
+   $$
+   H_j(u) \equiv h_0 + h_1 u + \cdots + h_{m_j - 1} u^{m_j - 1} \pmod{u^{m_j}}.
+   $$
+
+4. Dividing by $u^{m_j} = (1 - r_j x)^{m_j}$ immediately reads off the entire principal part at $r_j$:
+
+   $$
+   \frac{H_j(u)}{u^{m_j}} = \frac{h_0}{(1 - r_j x)^{m_j}} + \frac{h_1}{(1 - r_j x)^{m_j - 1}} + \cdots + \frac{h_{m_j - 1}}{1 - r_j x} + \mathcal{O}(1),
+   $$
+
+   so $c_{j, m_j - t} = h_t = [u^t] H_j(u)$ for $0 \le t < m_j$!
+
+::: {.callout-note}
+## Algorithm Contract: Partial Fraction Decomposition (`partial_fraction_decompose`)
+
+- **Signature**: `vector<vector<Field>> partial_fraction_decompose(Poly P, const vector<Field>& r, const vector<int>& mult)` over any field $K$ (note: the local coordinate shift $u = 1 - r_j x$ is division-free in $m_j$, requiring only $r_j - r_i \in K^\times$ for $i \neq j$; $\operatorname{char}(K) > \max_j m_j$ is only needed if one evaluates $\binom{n+k-1}{k-1}$ by factorial division $(k-1)!^{-1}$ instead of Lucas's theorem or Pascal's triangle).
+- **Preconditions**:
+  1. $Q(x) = \prod_{j=1}^s (1 - r_j x)^{m_j}$ with distinct non-zero reciprocal roots $r_1, \dots, r_s \in K^\times$ and multiplicities $\sum_{j=1}^s m_j = d$.
+  2. $\deg P < d$ (after Euclidean `divmod` reduction if needed).
+- **Postconditions**:
+  1. For each reciprocal root $r_j$, returns the coefficient vector $(c_{j,1}, \dots, c_{j,m_j}) \in K^{m_j}$ such that $\frac{P(x)}{Q(x)} = \sum_{j=1}^s \sum_{k=1}^{m_j} \frac{c_{j,k}}{(1 - r_j x)^k}$.
+  2. For every $n \ge 0$, $[x^n]\frac{P(x)}{Q(x)} = \sum_{j=1}^s r_j^n \sum_{k=1}^{m_j} c_{j,k} \binom{n+k-1}{k-1}$.
+- **Core Invariant**: Under the local coordinate shift $x = r_j^{-1}(1 - u)$, the factor $(1 - r_j x)^{m_j}$ becomes $u^{m_j}$, isolating $c_{j, m_j - t} = [u^t]\big(P(r_j^{-1}(1-u)) \cdot \widetilde{Q}_j(r_j^{-1}(1-u))^{-1} \bmod u^{m_j}\big)$ for $0 \le t < m_j$.
+- **Complexity**: $\mathcal{O}(d \, m_j)$ field operations per root via direct binomial expansion of $P(r_j^{-1}(1-u)) \bmod u^{m_j}$ and truncated series inversion mod $u^{m_j}$ (or $\mathcal{O}(d \log^2 d)$ across all roots using the polynomial Taylor shift we will develop in Chapter 06, §6.3); reduces to $\mathcal{O}(d)$ evaluation per simple root ($m_j = 1$) via Heaviside cover-up $c_{j,1} = -r_j P(r_j^{-1}) / Q'(r_j^{-1})$.
+:::
+
+---
+
+### The Berlekamp–Massey Algorithm: Discovering Unknown Recurrences
+
+Now suppose you are solving a problem where a sequence $a_0, a_1, a_2, \dots$ over a **field** $K$ is known (or suspected) to satisfy a homogeneous linear recurrence of order at most $d$,
+
+$$
+a_n = c_1 a_{n-1} + c_2 a_{n-2} + \cdots + c_L a_{n-L} \qquad (L \le d),
+$$
+
+but the coefficients $c_1, \dots, c_L$ are unknown. How can we reconstruct the shortest feedback polynomial $C(x) = 1 - c_1 x - \cdots - c_L x^L$ from a short prefix $a_0, a_1, \dots, a_{N-1}$?
+
+#### The Diagnostic Signal & Reverse-Engineering Scratchpad
+
+- **The Diagnostic Signal**: A problem asks for the $N$-th term ($N \le 10^{18}$) of a sequence defined by a small-state DP, transfer matrix, or determinant of dimension $d \le 5000$. Computing $a_0, \dots, a_{2d-1}$ takes $\mathcal{O}(d^2)$ or $\mathcal{O}(d \cdot \operatorname{nnz}(T))$ time, whereas building the characteristic polynomial analytically is either algebraically intractable or takes $\mathcal{O}(d^3)$ Gaussian elimination.
+- **The Reverse-Engineering Scratchpad**:
+  1. We process the terms $a_0, a_1, \dots, a_{N-1}$ online, one index $n$ at a time, maintaining the shortest recurrence $C(x) = 1 - c_1 x - \cdots - c_L x^L$ that successfully predicts $a_L, a_{L+1}, \dots, a_{n-1}$.
+  2. When $a_n$ arrives, we test whether our current recurrence predicts $a_n$ by computing the **discrepancy** (prediction error):
+
+     $$
+     \Delta_n = a_n - \sum_{i=1}^{L} c_i a_{n-i} = \sum_{i=0}^{L} C_i a_{n-i} = [x^n]\big(C(x) A(x)\big),
+     $$
+
+     where $C_0 = 1$ and $C_i = -c_i$ for $i \ge 1$.
+  3. If $\Delta_n = 0$, our current recurrence $C(x)$ already works at index $n$! We keep $C(x)$ unchanged and move to $n + 1$.
+  4. What if $\Delta_n \neq 0$? We want to *cancel* this non-zero error $\Delta_n$ at index $n$ without destroying the zeros we already achieved at indices $L_{\text{new}}, \dots, n - 1$!
+  5. How can we manufacture a polynomial whose convolution with $A(x)$ is $0$ at every index below $n$, and non-zero at index $n$? Suppose we saved a **previous witness polynomial** $B(x)$ from an earlier step $m < n$ where $B(x)$ failed with non-zero discrepancy $\Delta_m \neq 0$ (and succeeded up to $m - 1$).
+  6. Shifting $B(x)$ by $x^{n - m}$ moves its non-zero discrepancy $\Delta_m$ from index $m$ to index $m + (n - m) = n$, while keeping all discrepancies immediately before $n$ equal to zero! Therefore, subtracting $\frac{\Delta_n}{\Delta_m} x^{n - m} B(x)$ from $C(x)$ gives a new polynomial
+
+     $$
+     C_{\text{new}}(x) = C(x) - \frac{\Delta_n}{\Delta_m} x^{n - m} B(x)
+     $$
+
+     whose discrepancy at index $n$ is $\Delta_n - \frac{\Delta_n}{\Delta_m} \Delta_m = 0$!
+
+### Single-Step Verbalized Derivation of the Massey Length Update ($L_{\text{new}} = \max(L, n + 1 - L)$)
+
+To make sure $C_{\text{new}}(x)$ is not merely a valid recurrence up to index $n$, but has the **minimum possible order (register length)** $L_{\text{new}}$, we must carefully track the **formal order $L$** (which may exceed $\deg C(x)$ if trailing recurrence coefficients are zero) so that $C(x)$ is valid on the exact interval $[L, n-1]$.
+
+Suppose that at step $m < n$, a previous recurrence $B(x)$ of order $L_B$ worked for all indices in $[L_B, m-1]$ and failed at index $m$ with discrepancy $\Delta_m \neq 0$. Let us trace the exact interval of validity of $C_{\text{new}}(x) = C(x) - \frac{\Delta_n}{\Delta_m} x^{n-m} B(x)$ step by step:
+
+1. **Interval where $C(x)$ has zero discrepancy**: By induction, $[x^k]\big(C(x)A(x)\big) = 0$ for all $k \in [L, n-1]$, and $[x^n]\big(C(x)A(x)\big) = \Delta_n$.
+2. **Interval where $x^{n-m} B(x)$ has zero discrepancy**: Since $[x^j]\big(B(x)A(x)\big) = 0$ for all $j \in [L_B, m-1]$ and equals $\Delta_m$ at $j = m$, multiplying by $x^{n-m}$ shifts every index by $n - m$. Putting $k = j + (n - m)$ shows that $[x^k]\big(x^{n-m} B(x) A(x)\big) = 0$ for all $k \in [L_B + n - m, n - 1]$, and equals $\Delta_m$ at $k = n$.
+3. **Intersection of valid intervals and cancellation at $k = n$**: On the intersection of $[L, n-1]$ and $[L_B + n - m, n - 1]$, both terms have discrepancy $0$, and at $k = n$ their discrepancies cancel: $\Delta_n - \frac{\Delta_n}{\Delta_m}\Delta_m = 0$. Therefore, $C_{\text{new}}(x)$ has zero discrepancy for all
+
+   $$
+   k \in \big[\max(L, L_B + n - m), \, n\big].
+   $$
+
+4. **Choosing the witness $B(x)$ to minimize $L_B - m$**: To make the new order $L_{\text{new}} = \max(L, L_B + n - m)$ as small as possible, we should store as our witness $(B(x), m, \Delta_m)$ the most recent failing polynomial that **strictly increased the order $L$**! By Massey's Theorem (1969), whenever a failure at step $m$ causes the order to jump from $L_B$ to $L = m + 1 - L_B$, we have $L_B - m = 1 - L$. Substituting $L_B - m = 1 - L$ into $\max(L, n + L_B - m)$ gives the celebrated **Massey length update**:
+
+   $$
+   L_{\text{new}} = \max(L, n + 1 - L).
+   $$
+
+   Whenever $n + 1 - L > L$ (i.e., $2L \le n$), the order $L$ strictly increases to $n + 1 - L$, and the *old* polynomial $C(x)$ (with its failure index $m \leftarrow n$ and discrepancy $\Delta_m \leftarrow \Delta_n$) becomes the new witness $B(x)$!
+
+#### Why $2d$ Terms Uniquely Determine a Degree-$d$ Recurrence
+
+Suppose the sequence $(a_n)_{n \ge 0}$ actually satisfies a true linear recurrence $Q_{\text{true}}(x) = 1 - \sum_{i=1}^d q_i x^i$ of order $d$, and we run Berlekamp–Massey on the first $2d$ terms $a_0, a_1, \dots, a_{2d-1}$, producing a polynomial $C(x)$ of minimal order $L \le d$. Could $C(x)$ fail to predict $a_{2d}, a_{2d+1}, \dots$?
+
+No! Both $\frac{P_C(x)}{C(x)}$ (with $\deg P_C < L \le d$) and $\frac{P_{\text{true}}(x)}{Q_{\text{true}}(x)}$ (with $\deg P_{\text{true}} < d$) agree on their first $2d$ coefficients $a_0, \dots, a_{2d-1}$:
+
+$$
+\frac{P_C(x)}{C(x)} \equiv \frac{P_{\text{true}}(x)}{Q_{\text{true}}(x)} \pmod{x^{2d}} \iff P_C(x) Q_{\text{true}}(x) - P_{\text{true}}(x) C(x) \equiv 0 \pmod{x^{2d}}.
+$$
+
+Look at the degree of the polynomial $P_C(x) Q_{\text{true}}(x) - P_{\text{true}}(x) C(x)$: since $\deg P_C < d$, $\deg Q_{\text{true}} \le d$, $\deg P_{\text{true}} < d$, and $\deg C \le d$, the entire left-hand side is a polynomial of degree **at most $2d - 1$**! A polynomial of degree $< 2d$ that is divisible by $x^{2d}$ must be **identically zero**:
+
+$$
+P_C(x) Q_{\text{true}}(x) = P_{\text{true}}(x) C(x) \implies \frac{P_C(x)}{C(x)} = \frac{P_{\text{true}}(x)}{Q_{\text{true}}(x)} \quad \text{in } K[[x]].
+$$
+
+### Hand-Checkable Concrete Trace of Berlekamp–Massey
+
+Let us trace Berlekamp–Massey by hand on the 6-term sequence $(a_0, a_1, a_2, a_3, a_4, a_5) = (1, 2, 4, 9, 20, 44)$ over $\mathbb{Q}$.
+
+- **Initialization**: $C(x) = 1$, $B(x) = 1$, $L = 0$, $m = -1$, $\Delta_m = 1$ (with the convention $x^{n - (-1)} B(x) = x^{n+1}$ before the first failure).
+- **$n = 0$ ($a_0 = 1$)**: $\Delta_0 = a_0 = 1 \neq 0$. Since $2L = 0 \le 0$, $L$ increases to $0 + 1 - 0 = 1$.
+  - $C_{\text{new}}(x) = 1 - \frac{1}{1} x^{0 - (-1)} (1) = 1 - x$.
+  - Update witness: $B(x) \leftarrow 1$, $L \leftarrow 1$, $m \leftarrow 0$, $\Delta_m \leftarrow 1$.
+- **$n = 1$ ($a_1 = 2$)**: $\Delta_1 = a_1 - a_0 = 2 - 1 = 1 \neq 0$. Since $2L = 2 > 1$, $L = 1$ does *not* increase.
+  - $C_{\text{new}}(x) = (1 - x) - \frac{1}{1} x^{1 - 0} (1) = 1 - 2x$. (Witness $B(x) = 1, m = 0, \Delta_m = 1$ unchanged.)
+- **$n = 2$ ($a_2 = 4$)**: $\Delta_2 = a_2 - 2a_1 = 4 - 2(2) = 0$. Recurrence $a_n = 2a_{n-1}$ works! $C(x) = 1 - 2x$ unchanged.
+- **$n = 3$ ($a_3 = 9$)**: $\Delta_3 = a_3 - 2a_2 = 9 - 2(4) = 1 \neq 0$. Since $2L = 2 \le 3$, $L$ increases to $3 + 1 - 1 = 3$.
+  - $C_{\text{new}}(x) = (1 - 2x) - \frac{1}{1} x^{3 - 0}(1) = 1 - 2x - x^3$.
+  - Update witness: $B(x) \leftarrow 1 - 2x$, $L \leftarrow 3$, $m \leftarrow 3$, $\Delta_m \leftarrow 1$.
+- **$n = 4$ ($a_4 = 20$)**: $\Delta_4 = a_4 - 2a_3 - a_1 = 20 - 2(9) - 2 = 0$. $C(x) = 1 - 2x - x^3$ unchanged!
+- **$n = 5$ ($a_5 = 44$)**: $\Delta_5 = a_5 - 2a_4 - a_2 = 44 - 2(20) - 4 = 0$. $C(x) = 1 - 2x - x^3$ unchanged!
+
+| Step $n$ | Term $a_n$ | Discrepancy $\Delta_n$ | Updated $C(x)$ | Register Length $L$ | Witness $(B(x), m, \Delta_m)$ after Step $n$ |
+| :---: | :---: | :---: | :--- | :---: | :--- |
+| Init | — | — | $1$ | $0$ | $(1, -1, 1)$ |
+| $0$ | $1$ | $1$ | $1 - x$ | $1$ | $(1, 0, 1)$ |
+| $1$ | $2$ | $1$ | $1 - 2x$ | $1$ | $(1, 0, 1)$ |
+| $2$ | $4$ | $0$ | $1 - 2x$ | $1$ | $(1, 0, 1)$ |
+| $3$ | $9$ | $1$ | $1 - 2x - x^3$ | $3$ | $(1 - 2x, 3, 1)$ |
+| $4$ | $20$ | $0$ | $1 - 2x - x^3$ | $3$ | $(1 - 2x, 3, 1)$ |
+| $5$ | $44$ | $0$ | $1 - 2x - x^3$ | $3$ | $(1 - 2x, 3, 1)$ |
+
+Thus the sequence satisfies $a_n = 2a_{n-1} + a_{n-3}$ with denominator $Q(x) = 1 - 2x - x^3$!
+
+::: {.callout-warning}
+## Failure Mode & Remedy: Feeding $< 2d$ Terms, Non-Generic Krylov Projections, or Non-Field Moduli into Berlekamp–Massey
+
+1. **Failure Mode 1 (Under-Sampling $< 2d$ Terms & Non-Generic Krylov Projections)**: Look at $n = 1, 2$ in the trace above: the sequence $(1, 2, 4, 9, 20, 44)$ begins with $(1, 2, 4)$, which looks like the degree-$1$ geometric progression $a_n = 2a_{n-1}$ ($L = 1$), predicting $a_3 = 8$! Similarly, $a_n = \binom{n}{0} + \binom{n}{1} + \binom{n}{2}$ ($1, 2, 4, 7, 11, \dots$) has order $d = 3$ and requires $2d = 6$ terms. In general, a degree-$d$ recurrent sequence can masquerade as a lower-degree sequence for up to $2d - 1$ terms.
+   - **Mandatory 2-Step Validation Protocol**:
+     - *Step A (Check Buffer)*: Always supply $M \ge 2d + k_{\text{check}}$ terms (with $k_{\text{check}} \ge 2$ to $5$ extra terms beyond $2d$) and assert that the discovered recurrence $C(x)$ has discrepancy $\Delta_n = 0$ across all $k_{\text{check}}$ buffer positions.
+     - *Step B (Random Krylov Probing)*: When finding the minimal polynomial of a sparse $d \times d$ linear operator $T$ via scalar observations $a_n = \mathbf{u}^\top T^n \mathbf{v}$, never choose deterministic unit vectors $\mathbf{u} = \mathbf{e}_1, \mathbf{v} = \mathbf{e}_1$ (which may lie orthogonal to a cyclic invariant subspace of $T$ and return a proper divisor of the minimal polynomial). Always sample $\mathbf{u}, \mathbf{v} \in \mathbb{F}_p^d$ uniformly at random; by the Schwartz–Zippel lemma, the probability that $a_n$ has a strictly smaller minimal polynomial than $T$ is at most $2d / p$.
+2. **Failure Mode 2 (Non-prime modulus $M$ where $\gcd(\Delta_m, M) > 1$)**: The update $C_{\text{new}}(x) = C(x) - \frac{\Delta_n}{\Delta_m} x^{n-m} B(x)$ divides by $\Delta_m$. Over a composite ring $\mathbb{Z}/M\mathbb{Z}$, $\Delta_m$ may be a non-zero zero-divisor!
+   - **Remedy**: Only run standard Berlekamp–Massey over a prime field $\mathbb{F}_p$ (or factor $M = \prod p_i^{e_i}$ and use Reeds–Sloane over $\mathbb{Z}/p^e\mathbb{Z}$ + Chinese Remainder Theorem, or compute the recurrence over 2–3 distinct NTT primes and reconstruct via CRT).
+:::
+
+::: {.callout-note}
+## Algorithm Contract: The Berlekamp–Massey Algorithm & The Krylov–BM–Bostan–Mori Pipeline
+
+- **Input**: Sequence prefix $(a_0, a_1, \dots, a_{M-1}) \in K^M$ over a **field** $K$, where $M \ge 2d$.
+- **Preconditions**: $K$ is a field (so every $\Delta_m \neq 0$ has a multiplicative inverse $\Delta_m^{-1} \in K^\times$), and $(a_n)_{n \ge 0}$ is generated by a linear recurrence of order at most $d \le \lfloor M / 2 \rfloor$.
+- **Output**: Minimal feedback polynomial $C(x) = 1 - c_1 x - \cdots - c_L x^L \in K[x]$ ($L \le d$) such that $\sum_{i=0}^L C_i a_{n-i} = 0$ for all $L \le n < M$.
+- **Step-by-Step Contract**:
+  1. Initialize $C(x) \leftarrow 1$, $B(x) \leftarrow 1$, $L \leftarrow 0$, $m \leftarrow -1$, $\Delta_m \leftarrow 1$.
+  2. For $n = 0, 1, \dots, M - 1$:
+     - Compute $\Delta_n = \sum_{i=0}^L ([x^i]C(x)) \cdot a_{n-i} \in K$.
+     - If $\Delta_n = 0$, continue to the next $n$.
+     - Save $T(x) \leftarrow C(x)$, and update $C(x) \leftarrow C(x) - (\Delta_n \cdot \Delta_m^{-1}) x^{n - m} B(x)$.
+     - If $2L \le n$, set $L \leftarrow n + 1 - L$, $B(x) \leftarrow T(x)$, $m \leftarrow n$, and $\Delta_m \leftarrow \Delta_n$.
+  3. Return $C(x)$ of degree $\le L$.
+- **Core Invariant**: After processing prefix $a_0, \dots, a_n$, $C(x)$ has minimal register length $L = L_{n+1}$ annihilating $[x^k](A(x)C(x)) = 0$ for all $L \le k \le n$, while the witness tuple $(B(x), m, \Delta_m)$ records the most recent prior polynomial whose length increased ($L_{m+1} > L_m$), guaranteeing the Massey degree bound $L \ge \max(L_n, n + 1 - L_n)$ at every non-zero discrepancy $\Delta_n \neq 0$.
+- **The Sparse Transfer-Matrix Pipeline (Krylov + BM + Bostan–Mori)**:
+  To compute $a_N = \mathbf{u}^\top T^N \mathbf{v}^{(0)}$ for a $d \times d$ matrix $T$ with $\operatorname{nnz}(T)$ non-zero entries:
+  1. Compute $a_n = \mathbf{u}^\top \mathbf{v}^{(n)}$ for $0 \le n < 2d$ iteratively via $\mathbf{v}^{(n)} = T \mathbf{v}^{(n-1)}$ in $\mathcal{O}(d \cdot \operatorname{nnz}(T))$ time.
+  2. Feed $a_0, \dots, a_{2d-1}$ into Berlekamp–Massey to obtain $Q(x) = C(x)$ ($\deg Q = L \le d$) in $\mathcal{O}(d^2)$ time.
+  3. Compute $P(x) = \big((\sum_{n=0}^{L-1} a_n x^n) Q(x)\big) \bmod x^L$ in $\mathcal{O}(L \log L)$ time, and extract $[x^N]\frac{P(x)}{Q(x)}$ via Bostan–Mori in $\mathcal{O}(L \log L \log N)$ time!
+- **Complexity**: $\mathcal{O}(M \cdot L) \subseteq \mathcal{O}(d^2)$ field operations and $\mathcal{O}(d)$ space.
+:::
+
+---
+
+## 5.5 Practice Problems (4-Tier Ladder)
+
+This practice ladder develops complete fluency across rational generating functions: from sparse 2-term denominator recurrences and run-length transfer rational series in **Tier 1 (Stepping Stones)**, to bounded knapsack products modulo non-prime integers and transfer-matrix square moments in **Tier 2 (Intermediate)**, to denominator sparsification ($(1-x)Q(x)$) and parity-split rational generating functions in **Tier 3 (Advanced)**, and finally to Berlekamp–Massey / Stirling-Binet power sums of recurrent sequences and negative-binomial difference telescoping in **Tier 4 (Mastery)**.
+
+---
+
+### Tier 1: Stepping Stones
+
+---
+
+#### Stepping Stone 1 (`#104`) — Magic Gems
+
+- **Source**: [Codeforces Educational Round 60 — Problem 1117D](https://codeforces.com/problemset/problem/1117/D)
+- **Prerequisites**: Rational OGF of ordered compositions (`§5.1`), Bostan–Mori distant coefficient extraction (`§5.3`), Companion Matrix exponentiation (`§5.1`).
+
+##### Problem Statement & Exact Constraints
+
+You want to create a row of gems of total space $N$. Initially, each Magic Gem takes $1$ unit of space. Each Magic Gem can either remain a $1$-unit gem or be split into $M$ Normal Gems, each taking $1$ unit of space (so a split gem occupies $M$ consecutive units of space as a block of $M$ normal gems). Count the number of distinct configurations of gems that occupy **exactly** $N$ units of space, modulo $10^9 + 7$.
+
+- **Constraints**:
+  - **Original Contest Regime**: $1 \le N \le 10^{18}$, $2 \le M \le 100$.
+  - **Extended Polynomial Regime**: $1 \le N \le 10^{18}$, $2 \le M \le 10^5$ (modulo $p = 998244353$ or $10^9 + 7$).
+- **Required Complexity**: $\mathcal{O}(M^3 \log N)$ via companion matrix for $M \le 100$; $\mathcal{O}(M \log M \log N)$ via Bostan–Mori for $M \le 10^5$ and $N \le 10^{18}$; and $\mathcal{O}(N / M)$ when $N \le 10^7$.
+- **Sample Trace ($N \le 4$)**: For $N = 4, M = 2$: $a_0 = 1, a_1 = 1, a_2 = a_1 + a_0 = 2, a_3 = a_2 + a_1 = 3, a_4 = a_3 + a_2 = 5$ (corresponding to the $5$ configurations of space $4$: $1+1+1+1$, $1+1+2$, $1+2+1$, $2+1+1$, and $2+2$, where $2$ denotes a split gem occupying $M = 2$ units).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Every valid configuration of total length $N$ is an ordered sequence (composition) of blocks, where each block is either an unsplit Magic Gem of length $1$ (weight $x^1$) or a split cluster of $M$ Normal Gems of total length $M$ (weight $x^M$). What is the weight OGF $B(x)$ of a single block, and what is the OGF $\sum_{k \ge 0} B(x)^k$ of all ordered sequences of blocks?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Since a single block has generating function $B(x) = x + x^M$, summing over all $k \ge 0$ blocks yields the rational generating function
+
+$$
+F(x) = \sum_{k=0}^{\infty} (x + x^M)^k = \frac{1}{1 - x - x^M}.
+$$
+
+How can you extract $[x^N]F(x)$ in two different ways: (1) by expanding $(1 - (x + x^M))^{-1}$ via the binomial theorem when $N / M$ is small, and (2) by treating $Q(x) = 1 - x - x^M$ as a degree-$M$ denominator when $N \le 10^{18}$?
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+For $N \le 10^{18}$, apply the Bostan–Mori algorithm directly to $P(x) = 1$ and $Q(x) = 1 - x - x^M$ in $\mathcal{O}(M \log M \log N)$ time (or binary exponentiation of the $M \times M$ companion matrix in $\mathcal{O}(M^3 \log N)$ time when $M \le 100$). Notice also that in the polynomial modular exponentiation view $x^N \bmod (x^M - x^{M-1} - 1)$, reducing a degree-$(2M-2)$ product modulo the **3-sparse** divisor $x^M - x^{M-1} - 1$ takes $\mathcal{O}(M)$ time, giving an $\mathcal{O}(M \log M \log N)$ (or even $\mathcal{O}(M^2 \log N)$) algorithm without any polynomial division!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+##### 1. Combinatorial Specification & Rational Generating Function
+
+Each gem in the final sequence is either an unsplit gem of size $1$ (contributing $x^1$) or a split block of size $M$ (contributing $x^M$). Thus the generating function for a single block is $B(x) = x + x^M$. Since a configuration of total size $N$ is an ordered sequence of $r \ge 0$ blocks whose sizes sum to $N$, the ordinary generating function is
+
+$$
+F(x) = \sum_{r=0}^{\infty} B(x)^r = \sum_{r=0}^{\infty} (x + x^M)^r = \frac{1}{1 - x - x^M}.
+$$
+
+By Theorem 5.1, the denominator $Q(x) = 1 - x - x^M$ corresponds to the $M$-th order constant-coefficient linear recurrence
+
+$$
+a_n = a_{n-1} + a_{n-M} \qquad (n \ge M),
+$$
+
+with initial values $a_0 = a_1 = \cdots = a_{M-1} = 1$ (since for $0 \le n < M$, no block of size $M$ can fit, so the only configuration is $n$ blocks of size $1$).
+
+##### 2. Perspective A: Decoupled Binomial Expansion ($\mathcal{O}(N / M)$ Regime)
+
+If $N / M$ is moderate, we can extract $[x^N]\frac{1}{1 - x - x^M}$ directly by grouping $1 - x - x^M = (1 - x) - x^M$:
+
+1. Factor out $(1 - x)$ from the denominator:
+
+   $$
+   \frac{1}{1 - x - x^M} = \frac{1}{(1 - x)\left(1 - \frac{x^M}{1 - x}\right)} = \sum_{k=0}^{\infty} \frac{x^{kM}}{(1 - x)^{k + 1}},
+   $$
+
+   where $k$ counts the exact number of split blocks of size $M$.
+2. Extract $[x^N]$ term by term. Since $x^{kM}$ uses $kM$ units of space, the factor $(1 - x)^{-(k+1)}$ must supply the remaining $N - kM$ units of space:
+
+   $$
+   a_N = [x^N]\frac{1}{1 - x - x^M} = \sum_{k=0}^{\lfloor N / M \rfloor} [x^{N - kM}] \frac{1}{(1 - x)^{k + 1}} = \sum_{k=0}^{\lfloor N / M \rfloor} \binom{(N - kM) + k}{k} = \sum_{k=0}^{\lfloor N / M \rfloor} \binom{N - k(M - 1)}{k}.
+   $$
+
+   Combinatorially, choosing $k$ blocks of size $M$ leaves $N - kM$ blocks of size $1$, giving $N - kM + k = N - k(M - 1)$ total blocks from which we choose the $k$ positions of the size-$M$ blocks.
+
+##### 3. Perspective B: Bostan–Mori & Sparse Polynomial Modulo ($\mathcal{O}(M \log M \log N)$ Regime)
+
+When $N \le 10^{18}$ is astronomical:
+
+- **Method 1 (Bostan–Mori)**: Initialize $P(x) = 1$ ($\deg P = 0 < M$) and $Q(x) = 1 - x - x^M$ ($\deg Q = M$). In each of the $\lfloor \log_2 N \rfloor + 1 \le 60$ iterations, multiply $U(x) = P(x)Q(-x)$ and $V(x^2) = Q(x)Q(-x)$, keep the parity slice $U_{N \bmod 2}(x)$ and $V(x)$, and set $N \leftarrow \lfloor N / 2 \rfloor$. Because modulus $10^9 + 7$ is not NTT-friendly, either use 3-prime NTT / MTT (studied systematically in Chapter 07, §7.2) for $M \le 10^5$, or for $M \le 100$ compute the degree-$M$ convolutions in $\mathcal{O}(M^2)$ time per bit ($\mathcal{O}(M^2 \log N)$ total, which is $M = 100$ times faster than $\mathcal{O}(M^3 \log N)$ matrix exponentiation!).
+- **Method 2 (3-Sparse Division-Free Remainder)**: Equivalently, by the Cayley–Hamilton Theorem on the companion matrix of $Q^R(x) = x^M - x^{M-1} - 1$, we can compute $R(x) = x^N \bmod (x^M - x^{M-1} - 1)$ via binary exponentiation. Whenever we square a polynomial of degree $\le M - 1$ to obtain $D(x) = \sum_{i=0}^{2M-2} d_i x^i$, we reduce high degrees $i = 2M - 2$ down to $M$ in **linear $\mathcal{O}(M)$ time** using the rule $x^i \equiv x^{i-1} + x^{i-M} \pmod{x^M - x^{M-1} - 1}$:
+  - For $i = 2M - 2$ down to $M$: add $d_i$ to $d_{i-1}$ and $d_{i-M}$, then set $d_i \leftarrow 0$.
+  Finally, since $a_0 = a_1 = \cdots = a_{M-1} = 1$, we output $\sum_{i=0}^{M-1} r_i \bmod (10^9 + 7)$.
+
+##### 4. Algorithm & Complexity Contract
+
+- **Preconditions & Postconditions**: Input integers $N \ge 1$, $M \ge 2$, and modulus $p = 10^9 + 7$. Output $[x^N](1 - x - x^M)^{-1} \bmod p$.
+- **Core Invariant**: At each Bostan–Mori halving step, $\deg P < \deg Q = M$ and $[x^0]Q(x) = 1 \in K^\times$; in the modular exponentiation view, $x^N \equiv \sum_{i=0}^{M-1} r_i x^i \pmod{x^M - x^{M-1} - 1}$.
+- **Boundary Cases**: For $0 \le N < M$, the answer is $1$. For $N = M$, the answer is $a_M = a_{M-1} + a_0 = 1 + 1 = 2$.
+- **Complexity**: $\mathcal{O}(M \log M \log N)$ time (or $\mathcal{O}(M^2 \log N)$ without FFT for $M \le 100$, taking $\approx 6 \times 10^5$ operations vs. $6 \times 10^7$ for matrix multiplication) and $\mathcal{O}(M)$ space.
+
+</details>
+
+---
+
+#### Stepping Stone 2 (`#034`) — At Most 2 Colors
+
+- **Source**: [AtCoder Beginner Contest 279 — Task G](https://atcoder.jp/contests/abc279/tasks/abc279_g)
+- **Prerequisites**: Run-length decomposition (`§5.1`), Rational series from geometric composition $(1 - B(x))^{-1}$ (`§5.1`), Constant-coefficient linear recurrence extraction (`§5.1`).
+
+##### Problem Statement & Exact Constraints
+
+There are $N$ cells arranged in a row, numbered $1$ to $N$ from left to right. You want to paint each cell in one of $C$ colors such that **every contiguous subsegment of $K$ consecutive cells contains at most $2$ distinct colors**. Find the number of valid colorings of the $N$ cells, modulo $998244353$.
+
+- **Constraints**: $2 \le K \le N \le 10^6$, $1 \le C < 998244353$, Modulus $p = 998244353$, Time Limit $2.0\text{ s}$.
+- **Required Complexity**: $\mathcal{O}(N)$ time and $\mathcal{O}(N)$ (or $\mathcal{O}(K)$) space via the exact 2-lag linear recurrence derived from the rational OGF.
+- **Sample Trace ($N \le 4$)**: For $N = 3, K = 3, C = 3$: $g_0 = 1, g_1 = 2g_0 = 2$, prefix sum $s_1 = g_0 + g_1 = 3$, and $[x^3]F(x) = C + C(C-1)s_1 = 3 + 3(2)(3) = 21$ (out of $3^3 = 27$ total colorings, only the $3! = 6$ rainbow permutations use $3$ distinct colors).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Compress the coloring of the $N$ cells into maximal monochromatic contiguous blocks (runs) of lengths $L_1, L_2, \dots, L_m \ge 1$ ($L_1 + \cdots + L_m = N$), where adjacent runs have strictly different colors ($c_i \neq c_{i+1}$). Under this run-length view, when does a window of length $K$ contain $3$ or more colors?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+A window of length $K$ spans $\ge 3$ runs (say, the last cell of run $i-1$, all of run $i$, and the first cell of run $i+1$) if and only if $1 + L_i + 1 \le K$, i.e., $L_i \le K - 2$, AND the colors $c_{i-1}$ and $c_{i+1}$ are different! Therefore, for each transition from run $i$ to run $i+1$ ($1 \le i \le m-1$):
+
+- If $1 \le L_i \le K - 2$, the next color $c_{i+1}$ **must equal** $c_{i-1}$ ($1$ choice) whenever $i \ge 2$!
+- If $L_i \ge K - 1$, then run $i$ is wide enough to separate run $i-1$ and run $i+1$ outside any length-$K$ window, so $c_{i+1}$ can be any color $\neq c_i$ ($C - 1$ choices)!
+
+What is the transfer generating function $B(x)$ of a single interior run $L_i$ ($2 \le i \le m-1$)?
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Notice that for an interior run $L_i$, every length $L_i \ge 1$ has $1$ base choice ($c_{i+1} = c_{i-1}$), and lengths $L_i \ge K - 1$ have $C - 2$ **additional** choices ($c_{i+1} \notin \{c_i, c_{i-1}\}$):
+
+$$
+B(x) = \sum_{L=1}^{K-2} 1 \cdot x^L + \sum_{L=K-1}^{\infty} (C - 1) x^L = \frac{x}{1 - x} + \frac{(C - 2) x^{K-1}}{1 - x} = \frac{x + (C - 2)x^{K-1}}{1 - x}.
+$$
+
+Substitute $B(x)$ into the total OGF $F(x) = \frac{C x}{1 - x} + \frac{C(C-1) x^2}{(1 - x)^2 (1 - B(x))}$, clear the $(1 - x)$ denominators, and read off the 2-term linear recurrence!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+##### 1. Run-Length Decomposition & Local Window Constraint
+
+Every coloring of $\{1, \dots, N\}$ is uniquely represented by a sequence of $m \ge 1$ maximal monochromatic runs of lengths $L_1, L_2, \dots, L_m \ge 1$ with $\sum_{i=1}^m L_i = N$ and colors $c_1, c_2, \dots, c_m \in \{1, \dots, C\}$ satisfying $c_i \neq c_{i+1}$ for all $1 \le i < m$.
+
+When does a coloring violate the condition that every length-$K$ window has $\le 2$ colors?
+
+- If $m = 1$ (one monochromatic run of length $N$), only $1$ color is used; always valid.
+- If $m \ge 2$, a window of length $K$ can intersect at most two runs unless there is some interior run $i \in \{2, \dots, m - 1\}$ of length $L_i \le K - 2$, in which case the window of length $L_i + 2 \le K$ centered on run $i$ contains the last cell of run $i - 1$ (color $c_{i-1}$), all of run $i$ (color $c_i$), and the first cell of run $i + 1$ (color $c_{i+1}$).
+- Conversely, if for every interior run $i \in \{2, \dots, m - 1\}$ with $L_i \le K - 2$ we have $c_{i+1} = c_{i-1}$, then between any two runs of colors $\notin \{c_{i-1}, c_i\}$ there is a run of length $\ge K - 1$, so no window of length $K$ can ever touch $3$ distinct colors!
+
+##### 2. Building the Rational Generating Function
+
+Let us count valid colorings by the number of runs $m$:
+
+1. **Case $m = 1$ (Monochromatic colorings)**:
+   There are $C$ choices for $c_1$, and $L_1 \ge 1$ has OGF $\frac{x}{1 - x}$:
+
+   $$
+   F_{m=1}(x) = \frac{C x}{1 - x}.
+   $$
+
+2. **Case $m \ge 2$ (Multi-run colorings)**:
+   - The first run $L_1 \ge 1$ has $C$ choices for $c_1$ and length OGF $\frac{x}{1 - x}$.
+   - The second run chooses $c_2 \neq c_1$ in $C - 1$ ways.
+   - For each interior run $i \in \{2, \dots, m - 1\}$, its length $L_i \ge 1$ determines the number of choices for the *next* color $c_{i+1} \neq c_i$:
+     - If $1 \le L_i \le K - 2$, we must pick $c_{i+1} = c_{i-1}$ ($1$ way).
+     - If $L_i \ge K - 1$, we can pick any $c_{i+1} \neq c_i$ ($C - 1$ ways).
+     Thus the transfer OGF for a single interior run is:
+
+     $$
+     B(x) = \sum_{L=1}^{K-2} x^L + \sum_{L=K-1}^{\infty} (C - 1) x^L = \frac{x - x^{K-1}}{1 - x} + \frac{(C - 1) x^{K-1}}{1 - x} = \frac{x + (C - 2) x^{K-1}}{1 - x}.
+     $$
+
+   - The final run $L_m \ge 1$ has length OGF $\frac{x}{1 - x}$ (its color $c_m$ was already chosen by run $m - 1$).
+
+   Summing over all $m \ge 2$ (so there are $r = m - 2 \ge 0$ interior runs):
+
+   $$
+   F_{m \ge 2}(x) = C(C - 1) \left(\frac{x}{1 - x}\right)^2 \sum_{r=0}^{\infty} B(x)^r = \frac{C(C - 1) x^2}{(1 - x)^2 \big(1 - B(x)\big)}.
+   $$
+
+##### 3. Clearing Denominators to Expose the Sparse Linear Recurrence
+
+Let us simplify $1 - B(x)$:
+
+$$
+1 - B(x) = 1 - \frac{x + (C - 2) x^{K-1}}{1 - x} = \frac{1 - 2x - (C - 2) x^{K-1}}{1 - x}.
+$$
+
+Substituting this into $F(x) = F_{m=1}(x) + F_{m \ge 2}(x)$ cancels one factor of $(1 - x)$:
+
+$$
+F(x) = \frac{C x}{1 - x} + \frac{C(C - 1) x^2}{(1 - x)\big(1 - 2x - (C - 2) x^{K-1}\big)}.
+$$
+
+Define the auxiliary rational series
+
+$$
+G(x) = \frac{1}{1 - 2x - (C - 2) x^{K-1}} = \sum_{n=0}^{\infty} g_n x^n.
+$$
+
+By Theorem 5.1, the coefficients $g_n$ satisfy the **2-term recurrence**
+
+$$
+g_n = 2 g_{n-1} + (C - 2) g_{n-K+1} \qquad (n \ge 1, \text{ with } g_0 = 1 \text{ and } g_k = 0 \text{ for } k < 0),
+$$
+
+which can be computed for all $0 \le n \le N$ in **$2$ additions/multiplications per index**! Next, let $S(x) = \frac{G(x)}{1 - x} = \sum_{n=0}^{\infty} s_n x^n$, where $s_n = \sum_{j=0}^n g_j = s_{n-1} + g_n$ is the prefix sum of $g_n$. Then
+
+$$
+F(x) = \frac{C x}{1 - x} + C(C - 1) x^2 S(x) \implies [x^N]F(x) = C + C(C - 1) s_{N-2} \pmod{998244353}.
+$$
+
+##### 4. Hand-Checkable Trace & Algorithm Contract
+
+- **Preconditions & Postconditions**: Given $2 \le K \le N \le 10^6$ and $1 \le C < 998244353$, return $[x^N]F(x) \bmod 998244353$.
+- **Core Invariant**: For each $n \ge 0$, $g_n = [x^n](1 - 2x - (C-2)x^{K-1})^{-1}$ counts weighted interior run-sequences of total length $n$, and $s_{N-2} = \sum_{j=0}^{N-2} g_j$ sums over all possible combined lengths $L_1 + L_m - 2$ of the two boundary runs.
+- **Trace for $N = 3, K = 3, C = 3$**:
+  - $g_0 = 1$.
+  - $g_1 = 2g_0 + (3-2)g_{-1} = 2(1) + 0 = 2$.
+  - Prefix sums: $s_0 = 1, s_1 = 1 + 2 = 3$.
+  - $[x^3]F(x) = C + C(C-1) s_1 = 3 + 3(2)(3) = 21$.
+  - Combinatorial check: out of $3^3 = 27$ total colorings of $3$ cells with $3$ colors, only the $3! = 6$ rainbow colorings use $3$ colors in the window of length $3$, leaving $27 - 6 = 21$ valid colorings!
+- **Complexity**: $\mathcal{O}(N)$ time and $\mathcal{O}(N)$ space (or $\mathcal{O}(K)$ circular buffer space). *(Bonus: If a follow-up problem sets $N \le 10^{18}$ and $K \le 10^5$, Bostan–Mori extracts $[x^N]F(x)$ in $\mathcal{O}(K \log K \log N)$ time directly from the rational form above!)*
+
+</details>
+
+---
+
+### Tier 2: Intermediate
+
+---
+
+#### Intermediate 1 (`#187`) — [CEOI 2004] Sweet
+
+- **Source**: [CEOI 2004 / Luogu P6078 — Sweet](https://www.luogu.com.cn/problem/P6078)
+- **Prerequisites**: Rational OGF of bounded integer compositions (`§5.1`), Prefix-sum operator $(1-x)^{-1}$ (`§5.1`), Exact coefficient extraction modulo a composite modulus (`§5.1`).
+
+##### Problem Statement & Exact Constraints
+
+John has $n$ jars of candies. The $i$-th jar ($1 \le i \le n$) contains $m_i$ identical candies (candies from different jars have different flavors). John wants to choose at least $a$ and at most $b$ candies in total. Find the number of distinct ways John can choose the candies, modulo $2004$.
+
+- **Constraints**: $1 \le n \le 10$, $0 \le a \le b \le 10^7$, $0 \le m_i \le 10^6$, Modulus $M = 2004$ (**composite!** $2004 = 2^2 \times 3 \times 167$), Time Limit $1.0\text{ s}$.
+- **Required Complexity**: $\mathcal{O}(n \cdot 2^n)$ arithmetic operations and $\mathcal{O}(n)$ space.
+- **Sample Trace ($N \le 4$)**: For $n = 2$ jars with capacities $m_1 = 1, m_2 = 3$ and query $[a, b] = [1, 3]$: $P(x) = (1 - x^2)(1 - x^4) = 1 - x^2 - x^4 + x^6$, so $f(3) = \binom{3+2}{2} - \binom{3-2+2}{2} = 10 - 3 = 7$ and $f(0) = \binom{0+2}{2} = 1$, giving $f(3) - f(0) = 6$ valid configurations.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Notice three critical features of the constraints: $n \le 10$ is tiny, $b \le 10^7$ is large, and the modulus $M = 2004$ is **not prime**! First, reduce the range query $[a, b]$ to two prefix queries $f(b) - f(a - 1)$, where $f(B)$ counts the number of ways to choose at most $B$ candies in total. What is the rational generating function for choosing $c_i \in \{0, 1, \dots, m_i\}$ candies from jar $i$?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+For jar $i$, the generating function of $c_i \in [0, m_i]$ is the finite geometric series $\sum_{c=0}^{m_i} x^c = \frac{1 - x^{m_i + 1}}{1 - x}$. Multiplying across all $n$ jars and multiplying by the prefix-sum factor $\frac{1}{1 - x}$ (to sum over all total counts $\le B$) gives:
+
+$$
+f(B) = [x^B] \frac{1}{1 - x} \prod_{i=1}^{n} \frac{1 - x^{m_i + 1}}{1 - x} = [x^B] \frac{\prod_{i=1}^{n} (1 - x^{m_i + 1})}{(1 - x)^{n + 1}}.
+$$
+
+Since $n \le 10$, how many terms does the numerator polynomial $P(x) = \prod_{i=1}^n (1 - x^{m_i + 1})$ have when expanded?
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+The numerator $P(x) = \prod_{i=1}^n (1 - x^{m_i+1}) = \sum_{S \subseteq \{1,\dots,n\}} (-1)^{|S|} x^{\sum_{i \in S}(m_i+1)}$ has at most $2^n \le 1024$ terms! Expanding $(1 - x)^{-(n+1)} = \sum_{k \ge 0} \binom{k + n}{n} x^k$ turns $f(B)$ into an alternating sum of $2^n$ binomial coefficients $\binom{X}{n}$. How do you compute $\binom{X}{n} \bmod 2004$ when $\gcd(n!, 2004) > 1$ so $n!$ has no modular inverse mod $2004$? Use the identity $\frac{X(X-1)\cdots(X-n+1)}{n!} \bmod M = \frac{\big(X(X-1)\cdots(X-n+1) \bmod (M \cdot n!)\big)}{n!}$!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+##### 1. Rational Generating Function for Bounded Prefix Sums
+
+For a non-negative integer $B$ (with $f(-1) = 0$), let $f(B)$ be the number of tuples $(c_1, \dots, c_n)$ satisfying $0 \le c_i \le m_i$ and $c_1 + \cdots + c_n \le B$. Introducing a slack variable $c_0 = B - \sum_{i=1}^n c_i \ge 0$ converts the inequality into the exact equality $c_0 + c_1 + \cdots + c_n = B$:
+
+- The slack variable $c_0 \ge 0$ has OGF $\sum_{c_0=0}^\infty x^{c_0} = \frac{1}{1 - x}$.
+- Each jar $i \in \{1, \dots, n\}$ has OGF $\sum_{c_i=0}^{m_i} x^{c_i} = \frac{1 - x^{m_i + 1}}{1 - x}$.
+
+Multiplying these $n + 1$ generating functions gives the rational generating function
+
+$$
+F(x) = \frac{\prod_{i=1}^{n} (1 - x^{m_i + 1})}{(1 - x)^{n + 1}}, \qquad f(B) = [x^B] F(x).
+$$
+
+##### 2. Expanding the Numerator & Denominator Independently
+
+1. **Numerator expansion**: Because $n \le 10$, the numerator polynomial $P(x) = \prod_{i=1}^n (1 - x^{m_i + 1})$ is a sparse polynomial with $2^n \le 1024$ terms:
+
+   $$
+   P(x) = \sum_{S \subseteq \{1, \dots, n\}} (-1)^{|S|} x^{\Sigma(S)}, \qquad \text{where } \Sigma(S) = \sum_{i \in S} (m_i + 1).
+   $$
+
+2. **Denominator expansion**: By the negative binomial series,
+
+   $$
+   \frac{1}{(1 - x)^{n + 1}} = \sum_{k=0}^{\infty} \binom{k + n}{n} x^k.
+   $$
+
+3. **Convolution at $[x^B]$**: Extracting $[x^B]\big(P(x) (1 - x)^{-(n+1)}\big)$ pairs each subset $S$ having $\Sigma(S) \le B$ with $k = B - \Sigma(S) \ge 0$:
+
+   $$
+   f(B) = \sum_{\substack{S \subseteq \{1, \dots, n\} \\ \Sigma(S) \le B}} (-1)^{|S|} \binom{B - \Sigma(S) + n}{n}.
+   $$
+
+##### 3. Exact Binomial Evaluation Modulo a Composite Number ($M = 2004$)
+
+Why can we not compute $\binom{Y}{n} = \frac{Y(Y-1)\cdots(Y-n+1)}{n!} \bmod 2004$ by multiplying by $(n!)^{-1} \bmod 2004$? Because $2004 = 2^2 \times 3 \times 167$ shares prime factors $2$ and $3$ with $n!$ whenever $n \ge 2$, so $n!$ is a **zero-divisor** in $\mathbb{Z}/2004\mathbb{Z}$!
+
+There are two clean ways to compute $\binom{Y}{n} \bmod 2004$ for $Y \le 10^7 + 10$ and $n \le 10$:
+
+- **Method A (Modulus Inflation by $n!$)**:
+  For any integer $A$ that is an exact multiple of $D = n!$ (namely, $A = \prod_{j=0}^{n-1}(Y - j) = D \cdot \binom{Y}{n}$), we have the elementary number-theoretic identity:
+
+  $$
+  \left(\frac{A}{D}\right) \bmod M = \frac{A \bmod (M \cdot D)}{D}.
+  $$
+
+  *Proof*: Write $A = q (M D) + r$ with $0 \le r < M D$. Since $D \mid A$ and $D \mid M D$, $D$ divides $r$, and $\frac{A}{D} = q M + \frac{r}{D}$ with $0 \le \frac{r}{D} < M$. $\blacksquare$
+  For $n \le 10$ and $M = 2004$, the inflated modulus is $M \cdot n! \le 2004 \times 3628800 = 7\,272\,115\,200 < 2^{33}$, which fits comfortably inside a standard 64-bit signed integer (`long long`, or `__int128` during multiplication)! Thus we simply multiply $(Y - j) \bmod (2004 \cdot n!)$ for $j = 0, \dots, n - 1$ and divide the final remainder by $n!$ using integer division!
+- **Method B (Exact Cancellation Before Modulo)**:
+  Alternatively, copy the $n$ numerator factors $[Y, Y-1, \dots, Y-n+1]$ into a small array of length $n$, divide out each $d = 2, 3, \dots, n$ by taking $\gcd$ with the array elements until $d = 1$, and then multiply the reduced factors modulo $2004$.
+
+##### 4. Hand-Checkable Trace & Algorithm Contract
+
+- **Preconditions & Postconditions**: Input $1 \le n \le 10$, capacities $m_1, \dots, m_n \ge 0$, range $0 \le a \le b \le 10^7$, and composite modulus $M = 2004$. Output $(f(b) - f(a-1)) \bmod 2004$.
+- **Core Invariant**: For each subset $S \subseteq \{1, \dots, n\}$, $\Sigma(S) = \sum_{i \in S} (m_i + 1)$ is the exact threshold at which all jars in $S$ exceed their capacity, and $A \bmod (M \cdot n!)$ is an exact integer multiple of $n!$.
+- **Hand-Checkable Trace ($n = 2, m_1 = 1, m_2 = 3, [a, b] = [1, 3]$)**:
+  - Subset sums $\Sigma(S)$: $\Sigma(\emptyset) = 0$, $\Sigma(\{1\}) = 2$, $\Sigma(\{2\}) = 4$, $\Sigma(\{1, 2\}) = 6$.
+  - $f(3) = \binom{3 - 0 + 2}{2} - \binom{3 - 2 + 2}{2} = \binom{5}{2} - \binom{3}{2} = 10 - 3 = 7$.
+  - $f(0) = \binom{0 - 0 + 2}{2} = \binom{2}{2} = 1$.
+  - $\text{Ans} = f(3) - f(0) = 7 - 1 = 6$, matching the $6$ valid pairs $(0,1),(0,2),(0,3),(1,0),(1,1),(1,2)$.
+- **Time & Space Complexity**: $2^n$ subsets, each taking $\mathcal{O}(n)$ operations to evaluate $\binom{B - \Sigma(S) + n}{n} \bmod 2004$, for a total of $\mathcal{O}(n \cdot 2^n) \approx 10^4$ operations and $\mathcal{O}(n)$ space.
+
+</details>
+
+---
+
+#### Intermediate 2 (`#069`) — Placing Squares
+
+- **Source**: [AtCoder Grand Contest 013 — Task E](https://atcoder.jp/contests/agc013/tasks/agc013_e)
+- **Prerequisites**: Transfer-matrix method & resolvent $\det(I - xT)$ (`§5.1`), Combinatorial interpretation of $\prod s_i^2$ (`§5.1`), Bostan–Mori extension for $K$-th power moments (`§5.3`).
+
+##### Problem Statement & Exact Constraints
+
+You have a plank of length $N$, marked at integer coordinates $0, 1, \dots, N$. You are given $M$ **forbidden coordinates** $1 \le X_1 < X_2 < \cdots < X_M < N$. You may cut the plank at any subset of the remaining integer coordinates in $\{1, \dots, N-1\} \setminus \{X_1, \dots, X_M\}$, partitioning the plank into segments of lengths $s_1, s_2, \dots, s_m \ge 1$ ($s_1 + \cdots + s_m = N$). The **score** of a partition is the product of the squares of its segment lengths:
+
+$$
+\text{score}(s_1, \dots, s_m) = \prod_{i=1}^{m} s_i^2.
+$$
+
+Find the sum of scores over all $2^{N - 1 - M}$ valid partitions, modulo $10^9 + 7$.
+
+- **Constraints**: $1 \le N \le 10^9$, $0 \le M \le 10^5$, $1 \le X_1 < X_2 < \cdots < X_M \le N - 1$, Modulus $p = 10^9 + 7$, Time Limit $2.0\text{ s}$.
+- **Required Complexity**: $\mathcal{O}(3^3 (M + \log N))$ time via the $3 \times 3$ transfer matrix; and $\mathcal{O}(K \log K \log N)$ via Bostan–Mori for the unblocked $K$-th power variant $\prod s_i^K$.
+- **Sample Trace ($N \le 4$)**: For $N = 3, M = 1$ with forbidden cut $X_1 = 2$: the only allowed cut coordinate is $1$, giving $2$ partitions of length $3$: $(3)$ with score $3^2 = 9$ and $(1, 2)$ with score $1^2 \cdot 2^2 = 4$, for a total score of $9 + 4 = 13$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+When $M = 0$ (no forbidden cuts), each segment of length $s \ge 1$ has weight $s^2$, so the single-segment OGF is $E_2(x) = \sum_{s=1}^\infty s^2 x^s = \frac{x(1 + x)}{(1 - x)^3}$, and the total OGF is $\frac{E_2(x)}{1 - E_2(x)}$ (a degree-$3$ rational function!). When $M > 0$ forbidden cuts are present, why can we represent the state at each unit cell $1, 2, \dots, N$ as a $3$-state vector? What does $s_i^2$ count combinatorially inside a segment of length $s_i$?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+In a segment of $s_i$ unit cells, $s_i^2$ is the number of ways to place **one red ball** and **one blue ball** into the $s_i$ cells of that segment (the two balls may occupy the same cell!). As we scan the plank from coordinate $t - 1$ to $t$ (processing unit cell $t$), let $dp[t][j]$ ($j \in \{0, 1, 2\}$) be the sum of weights of prefixes ending at coordinate $t$ where the *current unfinished segment* currently contains $j$ balls ($j=0$: neither ball placed yet; $j=1$: one specified ball placed; $j=2$: both balls placed). How does $dp[t]$ transition from $dp[t-1]$ inside cell $t$, and what happens at coordinate $t$ if a cut is allowed vs. forbidden?
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+1. **Inside unit cell $t$**: Cell $t$ can receive $0$, $1$, or $2$ of the remaining balls of the current segment, which multiplies the state vector $(v_0, v_1, v_2)^\top$ by the lower-triangular binomial matrix $B = \begin{psmallmatrix} 1 & 0 & 0 \\ 1 & 1 & 0 \\ 1 & 2 & 1 \end{psmallmatrix}$.
+2. **At coordinate $t$ (after cell $t$)**: If we cut at $t$ (only legal when $t \notin \{X_1, \dots, X_M\}$), the current segment must have received both balls ($j = 2$), and a new segment begins with $0$ balls ($v_0 \leftarrow v_0 + v_2$), represented by $C = \begin{psmallmatrix} 1 & 0 & 1 \\ 0 & 1 & 0 \\ 0 & 0 & 1 \end{psmallmatrix}$.
+Thus a forbidden coordinate multiplies by $M_{\text{forbid}} = B$, and an allowed coordinate multiplies by $M_{\text{allow}} = C B = \begin{psmallmatrix} 2 & 2 & 1 \\ 1 & 1 & 0 \\ 1 & 2 & 1 \end{psmallmatrix}$! Precompute $M_{\text{allow}}^{2^b}$ for $0 \le b \le 30$ to advance across the $M + 1$ intervals in $\mathcal{O}(M \log N)$ matrix-vector products!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+##### 1. Combinatorial Model for $s_i^2$ & The $3 \times 3$ Transfer Matrix
+
+For a fixed partition into segments of lengths $s_1, \dots, s_m$, the weight $\prod_{i=1}^m s_i^2$ counts the number of ways to place **one red ball and one blue ball** into the unit cells of **each** segment $i \in \{1, \dots, m\}$.
+
+Let us scan the $N$ unit cells from left to right. At any point, the current segment has already received some subset of its $\{ \text{red}, \text{blue} \}$ balls:
+
+- **State $0$**: $0$ balls placed so far in the current segment.
+- **State $1$**: Exactly $1$ ball (say, the red ball; by symmetry we track the count for a fixed 1-ball state, so transitioning $0 \to 1$ has $1$ way and transitioning $1 \to 2$ has $2$ ways—or equivalently $v_1$ represents one chosen ball and the binomial row $(1, 2, 1)$ combines them).
+- **State $2$**: Both balls ($2$ balls) placed so far in the current segment.
+
+Let us verify the exact transition across **unit cell $t$** (from coordinate $t - 1$ to coordinate $t$):
+
+- If the current segment finishes cell $t$ with $0$ balls, it must have entered cell $t$ with $0$ balls and placed $0$ balls in cell $t$: $v'_0 = v_0$.
+- If it finishes cell $t$ with $1$ specified ball, it either entered with $0$ balls and placed that ball in cell $t$, or entered with $1$ ball and placed $0$ in cell $t$: $v'_1 = v_0 + v_1$.
+- If it finishes cell $t$ with both balls, it either entered with $0$ balls and placed both in cell $t$ ($1$ way), entered with $1$ ball and placed the other in cell $t$ ($2$ ways: red then blue, or blue then red), or entered with $2$ balls and placed $0$ in cell $t$ ($1$ way): $v'_2 = v_0 + 2v_1 + v_2$.
+
+In matrix form, passing through unit cell $t$ multiplies the state vector $\mathbf{v} = (v_0, v_1, v_2)^\top$ by
+
+$$
+B = \begin{pmatrix} 1 & 0 & 0 \\ 1 & 1 & 0 \\ 1 & 2 & 1 \end{pmatrix}.
+$$
+
+Now consider what happens **at coordinate $t$** right after cell $t$:
+
+1. **If $t \in \{X_1, \dots, X_M\}$ (Cut Forbidden)**: We cannot cut at $t$, so the current segment must continue. The full step from $t - 1$ to $t$ is simply
+
+   $$
+   M_{\text{forbid}} = B = \begin{pmatrix} 1 & 0 & 0 \\ 1 & 1 & 0 \\ 1 & 2 & 1 \end{pmatrix}.
+   $$
+
+2. **If $t \notin \{X_1, \dots, X_M\}$ (Cut Allowed)**: We may either **not cut** at $t$ (leaving $\mathbf{v}'$ as $(v'_0, v'_1, v'_2)^\top$) or **cut** at $t$ (which requires the segment ending at $t$ to have both balls placed, contributing $v'_2$ to State $0$ of the newly opened segment at $t$). Summing both choices adds $v'_2$ to $v'_0$:
+
+   $$
+   M_{\text{allow}} = \begin{pmatrix} 1 & 0 & 1 \\ 0 & 1 & 0 \\ 0 & 0 & 1 \end{pmatrix} \begin{pmatrix} 1 & 0 & 0 \\ 1 & 1 & 0 \\ 1 & 2 & 1 \end{pmatrix} = \begin{pmatrix} 2 & 2 & 1 \\ 1 & 1 & 0 \\ 1 & 2 & 1 \end{pmatrix}.
+   $$
+
+3. **Initial State and Final Extraction**:
+   At coordinate $0$, we start a new empty segment: $\mathbf{v}^{(0)} = (1, 0, 0)^\top$.
+   At coordinate $N$, we **must** end the final segment (so we do not apply the cut-or-continue branching at $N$; we apply $B$ for cell $N$ and extract State $2$, or equivalently apply $M_{\text{allow}}$ on the $M$ intervals and $B$ on the final step, reading entry $v_2$). Specifically, setting $X_0 = 0$:
+
+   $$
+   \mathbf{v}_{\text{final}} = M_{\text{allow}}^{N - 1 - X_M} \left(\prod_{i=M}^{1} M_{\text{forbid}} \, M_{\text{allow}}^{X_i - X_{i-1} - 1}\right) \begin{pmatrix} 1 \\ 0 \\ 0 \end{pmatrix},
+   $$
+
+   followed by one final multiplication by $B$ for the $N$-th cell, and the answer is the third component $\big(B \mathbf{v}_{\text{final}}\big)_2$!
+
+##### 2. Dual Perspective: Rational Generating Function & Resolvent $\det(I - x M_{\text{allow}})$
+
+Let us connect $M_{\text{allow}}$ directly to Section 5.1! When $M = 0$, the generating function of $a_N$ is
+
+$$
+F_2(x) = \sum_{m=1}^{\infty} E_2(x)^m = \frac{E_2(x)}{1 - E_2(x)}, \qquad \text{where } E_2(x) = \sum_{s=1}^{\infty} s^2 x^s = \frac{x(1 + x)}{(1 - x)^3}.
+$$
+
+Clearing the $(1 - x)^3$ denominator gives
+
+$$
+F_2(x) = \frac{x + x^2}{(1 - x)^3 - (x + x^2)} = \frac{x + x^2}{1 - 4x + 2x^2 - x^3}.
+$$
+
+Now compute the resolvent denominator $\det(I - x M_{\text{allow}})$ of our $3 \times 3$ transfer matrix:
+
+$$
+\det(I - x M_{\text{allow}}) = \det \begin{pmatrix} 1 - 2x & -2x & -x \\ -x & 1 - x & 0 \\ -x & -2x & 1 - x \end{pmatrix} = (1 - x)^3 - (x + x^2) = 1 - 4x + 2x^2 - x^3.
+$$
+
+The transfer-matrix resolvent and the symbolic composition $(1 - E_2(x))^{-1}$ produce the **exact same degree-$3$ denominator** $Q(x) = 1 - 4x + 2x^2 - x^3$!
+
+Furthermore, if a problem asks for the $K$-th power score $\prod_{i=1}^m s_i^K$ with $K \le 10^5$ and $M = 0$, the single-segment OGF is $E_K(x) = \sum_{s=1}^\infty s^K x^s = \frac{A_K(x)}{(1 - x)^{K+1}}$—where by Theorem 5.1, $(1 - x)^{K+1}$ annihilates the degree-$K$ polynomial sequence $s^K$ via $(K+1)$-st finite differences, so the numerator $A_K(x) = \big((1 - x)^{K+1}\sum_{s=1}^K s^K x^s\big) \bmod x^{K+1}$ has degree $\le K$ (studied systematically as the $K$-th Eulerian polynomial in Chapter 06, §6.4). Thus
+
+$$
+F_K(x) = \frac{A_K(x)}{(1 - x)^{K+1} - A_K(x)},
+$$
+
+which Bostan–Mori evaluates in $\mathcal{O}(K \log K \log N)$ time—compared to $\mathcal{O}(K^3 \log N)$ for matrix exponentiation!
+
+##### 3. Hand-Checkable Trace & Algorithm Contract
+
+- **Preconditions & Postconditions**: Input $1 \le N \le 10^9$ and sorted forbidden cut coordinates $1 \le X_1 < \dots < X_M \le N - 1$. Output $\big(B \mathbf{v}_{\text{final}}\big)_2 \bmod (10^9 + 7)$.
+- **Core Invariant**: After processing coordinate $t \in \{1, \dots, N-1\}$, component $v_j$ ($j \in \{0, 1, 2\}$) equals the sum of $\prod s_i^2$ over all valid cut prefixes on $[0, t]$ whose currently open segment after the last cut contains $j$ placed balls.
+- **Hand-Checkable Matrix Trace ($N = 3, M = 1, X_1 = 2$)**:
+  - Start at $t = 0$: $\mathbf{v}^{(0)} = (1, 0, 0)^\top$.
+  - Step $t = 1$ (allowed cut): $\mathbf{v}^{(1)} = M_{\text{allow}} (1, 0, 0)^\top = (2, 1, 1)^\top$.
+  - Step $t = 2$ (forbidden cut $X_1 = 2$): $\mathbf{v}^{(2)} = M_{\text{forbid}} (2, 1, 1)^\top = (2, 2+1, 2+2(1)+1)^\top = (2, 3, 5)^\top$.
+  - Final cell $t = 3$: $B \mathbf{v}^{(2)} = B (2, 3, 5)^\top = (2, 5, 2 + 2(3) + 5)^\top = (2, 5, 13)^\top \implies \text{Ans} = 13$.
+- **Precomputing Powers of $M_{\text{allow}}$ & Complexity**: Instead of computing $M_{\text{allow}}^{\Delta X_i}$ via matrix-matrix multiplication ($3^3 = 27$ ops per bit) for each of the $M + 1$ intervals, precompute $P_b = M_{\text{allow}}^{2^b}$ for $0 \le b \le 30$ once, and multiply the $3 \times 1$ state vector $\mathbf{v}$ by $P_b$ ($3^2 = 9$ ops per set bit). Total complexity: $\mathcal{O}(3^2 M \log N)$ time and $\mathcal{O}(M)$ space.
+
+</details>
+
+---
+
+### Tier 3: Advanced
+
+---
+
+#### Advanced 1 (`#040`) — Fibonacci: Revisited
+
+- **Source**: [AtCoder Beginner Contest 300 — Task Ex](https://atcoder.jp/contests/abc300/tasks/abc300_h)
+- **Prerequisites**: Rational OGF from $K$-step linear recurrences (`§5.1`), The Bostan–Mori algorithm & Half-Spectrum NTT (`§5.3`), Denominator sparsification via $(1 - x)Q(x)$ (`§5.1`, `§5.3`).
+
+##### Problem Statement & Exact Constraints
+
+Given integers $K$ and $N$, a 1-indexed sequence $(A_n)_{n \ge 1}$ is defined by:
+
+$$
+A_n = \begin{cases}
+1 & \text{if } 1 \le n \le K, \\[6pt]
+\displaystyle\sum_{i=1}^{K} A_{n-i} & \text{if } n > K.
+\end{cases}
+$$
+
+Find $A_N \bmod 998244353$. *(Equivalently, in 0-indexed notation $a_n = A_{n+1}$, we have $a_0 = \cdots = a_{K-1} = 1$, $a_n = \sum_{i=1}^K a_{n-i}$ for $n \ge K$, and we extract $A_N = a_{N-1} = [x^{N-1}]F(x)$.)*
+
+- **Constraints**: $2 \le K \le 2.5 \times 10^5$, $1 \le N \le 10^{18}$, Modulus $p = 998244353$, Time Limit $3.0\text{ s}$.
+- **Required Complexity**: $\mathcal{O}(K \log K \log N)$ time and $\mathcal{O}(K)$ space.
+- **Sample Trace ($N \le 4$)**: For $K = 3$: $A_1 = 1, A_2 = 1, A_3 = 1$, $A_4 = A_3 + A_2 + A_1 = 3$ (and $A_5 = A_4 + A_3 + A_2 = 5$).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Setting $a_n = A_{n+1}$ ($n \ge 0$), the sequence satisfies the $K$-th order constant-coefficient linear recurrence $a_n = a_{n-1} + a_{n-2} + \cdots + a_{n-K}$ for $n \ge K$, with $a_0 = a_1 = \cdots = a_{K-1} = 1$, and we want $A_N = a_{N-1}$. Using Theorem 5.1, what are the denominator polynomial $Q_0(x)$ of degree $K$ and the numerator polynomial $P_0(x) = (F_{<K}(x) Q_0(x)) \bmod x^K$?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+By Theorem 5.1, $Q_0(x) = 1 - x - x^2 - \cdots - x^K$. For $0 \le n < K$, the prefix $F_{<K}(x) = 1 + x + \cdots + x^{K-1}$ satisfies $[x^n](F_{<K}(x) Q_0(x)) = 1 - \sum_{i=1}^n 1 = 1 - n$, so
+
+$$
+P_0(x) = \sum_{n=0}^{K-1} (1 - n) x^n = 1 + 0x - x^2 - 2x^3 - \cdots - (K - 2) x^{K-1}.
+$$
+
+Now look at the dense geometric sum inside $Q_0(x) = 1 - (x + x^2 + \cdots + x^K)$: what happens if you multiply both numerator and denominator by $(1 - x)$?
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+1. **Direct Bostan–Mori**: Applying Bostan–Mori (`§5.3`) to $P_0(x) / Q_0(x)$ extracts $A_N = [x^{N-1}]\frac{P_0(x)}{Q_0(x)}$ in $\mathcal{O}(K \log K \log N)$ time.
+2. **Denominator Sparsification**: Multiplying $P_0(x)$ and $Q_0(x)$ by $(1 - x)$ turns the dense degree-$K$ denominator $Q_0(x)$ into the **3-sparse** denominator
+
+   $$
+   Q(x) = (1 - x) Q_0(x) = 1 - 2x + x^{K+1},
+   $$
+
+   with numerator $P(x) = (1 - x) P_0(x) = 1 - x - x^2 - \cdots - x^{K-1} + (K-2)x^K$ (or, if we define $a_0 = 0, a_1 = \cdots = a_K = 1$, simply $F(x) = \frac{x - x^{K+1}}{1 - 2x + x^{K+1}}$).
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+##### 1. Constructing $P_0(x)$ and $Q_0(x)$ from Theorem 5.1
+
+Let us derive the rational generating function for both indexing conventions so there is never an off-by-one discrepancy:
+
+- **Convention A (0-indexed: $a_0 = a_1 = \cdots = a_{K-1} = 1$, $a_n = \sum_{i=1}^K a_{n-i}$ for $n \ge K$)**:
+  The feedback polynomial is $Q_0(x) = 1 - \sum_{i=1}^K x^i$. By Theorem 5.1, for each $0 \le n < K$, the coefficient of $x^n$ in $P_0(x) = (F_{<K}(x) Q_0(x)) \bmod x^K$ is
+
+  $$
+  [x^n]P_0(x) = a_n - \sum_{i=1}^{n} a_{n-i} = 1 - n.
+  $$
+
+  Thus
+
+  $$
+  F(x) = \frac{P_0(x)}{Q_0(x)} = \frac{1 - x^2 - 2x^3 - \cdots - (K - 2)x^{K-1}}{1 - x - x^2 - \cdots - x^K}.
+  $$
+
+- **Convention B (1-indexed: $A_1 = A_2 = \cdots = A_K = 1$, $A_n = \sum_{i=1}^K A_{n-i}$ for $n > K$)**:
+  Since $A_n = a_{n-1}$ for all $n \ge 1$, the target value $A_N$ is simply $[x^{N-1}]\frac{P_0(x)}{Q_0(x)}$. (Equivalently, extrapolating one step backward via $A_K = A_{K-1} + \cdots + A_1 + A_0 \implies 1 = (K - 1) + A_0 \implies A_0 = 2 - K$ makes the recurrence $A_n = \sum_{i=1}^K A_{n-i}$ hold already at $n = K$.)
+
+##### 2. Dual Perspective: Multiplying by $(1 - x)$ to Sparsify the Recurrence
+
+Why is $Q_0(x) = 1 - x - x^2 - \cdots - x^K$ dense, and how can we turn it into a 3-term denominator?
+
+- **The Diagnostic Signal**: Whenever a recurrence sums a contiguous sliding window $a_n = a_{n-1} + \cdots + a_{n-K}$, subtracting $a_{n-1} = a_{n-2} + \cdots + a_{n-K-1}$ cancels the interior $K - 1$ terms:
+
+  $$
+  a_n - a_{n-1} = a_{n-1} - a_{n-K-1} \iff a_n = 2 a_{n-1} - a_{n-K-1} \qquad (n \ge K + 1).
+  $$
+
+- **Algebraic Translation**: In generating function language, taking the first difference $a_n - a_{n-1}$ corresponds to multiplying both numerator and denominator of $F(x) = \frac{P_0(x)}{Q_0(x)}$ by $(1 - x)$:
+
+  $$
+  Q(x) = (1 - x)\left(1 - \frac{x - x^{K+1}}{1 - x}\right) = 1 - 2x + x^{K+1},
+  $$
+
+  and expanding $(1 - x)P_0(x)$ by shifting indices in the second sum gives
+
+  $$
+  \begin{aligned}
+  (1 - x)P_0(x) &= \sum_{n=0}^{K-1}(1 - n)x^n - \sum_{n=0}^{K-1}(1 - n)x^{n+1}
+  && \text{(distribute } 1 - x \text{ across } P_0(x)\text{)} \\[4pt]
+  &= 1 + \sum_{n=1}^{K-1}\bigl((1 - n) - (2 - n)\bigr)x^n - (2 - K)x^K
+  && \text{(reindex } n+1 \to n \text{ and collect } x^n\text{)} \\[4pt]
+  &= 1 - x - x^2 - \cdots - x^{K-1} + (K - 2)x^K,
+  && \text{(since } (1 - n) - (2 - n) = -1\text{)}
+  \end{aligned}
+  $$
+
+  yielding the sparsified rational form
+
+  $$
+  F(x) = \frac{P(x)}{Q(x)} = \frac{1 - x - x^2 - \cdots - x^{K-1} + (K - 2) x^K}{1 - 2x + x^{K+1}}.
+  $$
+
+  *(Check for $K = 2$)*: $F(x) = \frac{1 - x}{1 - 2x + x^3} = \frac{1 - x}{(1 - x)(1 - x - x^2)} = \frac{1}{1 - x - x^2} = 1 + x + 2x^2 + 3x^3 + 5x^4 + \cdots$.
+
+##### 3. Concrete Hand-Checkable Trace ($K = 3, N = 4$ and $N = 5$)
+
+For $K = 3$, Theorem 5.1 gives $P_0(x) = 1 - x^2$ and $Q_0(x) = 1 - x - x^2 - x^3$, and multiplying top and bottom by $(1 - x)$ yields
+
+$$
+F(x) = \frac{P(x)}{Q(x)} = \frac{1 - x - x^2 + x^3}{1 - 2x + x^4}.
+$$
+
+Let us trace Bostan–Mori (`§5.3`) on $P(x)/Q(x)$ to extract $A_4 = a_3 = [x^3]F(x)$ and $A_5 = a_4 = [x^4]F(x)$:
+
+1. **Compute $Q(-x)$ and the even denominator $V(x^2) = Q(x)Q(-x)$**:
+   - $Q(-x) = 1 + 2x + x^4$.
+   - $V(x^2) = (1 + x^4)^2 - 4x^2 = 1 - 4x^2 + 2x^4 + x^8 \implies V(x) = 1 - 4x + 2x^2 + x^4$.
+2. **Multiply $P(x)Q(-x)$ and split into even and odd parts $U_0(x^2) + x U_1(x^2)$**:
+   $$
+   (1 - x - x^2 + x^3)(1 + 2x + x^4) = (1 - 3x^2 + 3x^4 - x^6) + x(1 - x^2 - x^4 + x^6),
+   $$
+   so $U_0(x) = 1 - 3x + 3x^2 - x^3$ and $U_1(x) = 1 - x - x^2 + x^3$.
+3. **Extract $A_4 = a_3$ ($n = 3$, odd) and $A_5 = a_4$ ($n = 4$, even)**:
+   - Since $\frac{1}{V(x)} \equiv 1 + (4x - 2x^2) + (4x - 2x^2)^2 \equiv 1 + 4x + 14x^2 \pmod{x^3}$:
+   - For $A_4 = a_3$ ($n = 3$ is odd, halving to $\lfloor 3/2 \rfloor = 1$):
+     $$
+     A_4 = [x^1]\frac{U_1(x)}{V(x)} = [x^1]\big((1 - x - x^2 + x^3)(1 + 4x + \cdots)\big) = 4 - 1 = 3.
+     $$
+   - For $A_5 = a_4$ ($n = 4$ is even, halving to $4/2 = 2$):
+     $$
+     A_5 = [x^2]\frac{U_0(x)}{V(x)} = [x^2]\big((1 - 3x + 3x^2 - x^3)(1 + 4x + 14x^2 + \cdots)\big) = 14 - 12 + 3 = 5.
+     $$
+   Both match $A_1 = 1, A_2 = 1, A_3 = 1, A_4 = 3, A_5 = 5$.
+
+##### 4. Algorithm & Complexity Contract
+
+- **Preconditions & Postconditions**: Input integers $2 \le K \le 2.5 \times 10^5$ and $1 \le N \le 10^{18}$; constructs $Q_0(x) = 1 - \sum_{i=1}^K x^i$ and $P_0(x) = \sum_{n=0}^{K-1}(1 - n)x^n$ (with $\deg P_0 < K = \deg Q_0$ and $Q_0(0) = 1 \in \mathbb{F}_p^\times$) and returns $A_N = [x^{N-1}]\frac{P_0(x)}{Q_0(x)} \bmod 998244353$.
+- **Core Invariant**: At each Bostan–Mori halving step on $n \leftarrow \lfloor n / 2 \rfloor$, $\deg P < \deg Q = K$ and $Q(0) = 1$ are preserved.
+- **Time & Space Complexity**: Using Half-Spectrum NTT Bostan–Mori on degree $K \le 2.5 \times 10^5$ for $\lfloor \log_2(N-1) \rfloor + 1 \le 60$ steps takes $\frac{2}{3}\mathcal{M}(K)\log_2 N \approx 40 \text{ NTTs}$ of size $2^{18}$ ($\mathcal{O}(K \log K \log N)$ time, $\approx 0.4\text{ s}$) and $\mathcal{O}(K)$ space.
+
+</details>
+
+---
+
+#### Advanced 2 (`#081`) — Two Snuke
+
+- **Source**: [AtCoder AISing Programming Contest 2020 — Task F](https://atcoder.jp/contests/aising2020/tasks/aising2020_f)
+- **Prerequisites**: Coordinate change & derivative kernel $(1 - z)^{-2}$ (`§5.1`), Rational parity extraction via $(1 - z)^{-1} = (1 + z)/(1 - z^2)$ (`§5.3`).
+
+##### Problem Statement & Exact Constraints
+
+A 10-tuple of **non-negative** integers $(s_1, s_2, n_1, n_2, u_1, u_2, k_1, k_2, e_1, e_2)$ is called **valid** if:
+
+1. $s_1 < s_2$, $n_1 < n_2$, $u_1 < u_2$, $k_1 < k_2$, and $e_1 < e_2$;
+2. $s_1 + s_2 + n_1 + n_2 + u_1 + u_2 + k_1 + k_2 + e_1 + e_2 \le N$.
+
+The **weight** of a valid 10-tuple is $(s_2 - s_1)(n_2 - n_1)(u_2 - u_1)(k_2 - k_1)(e_2 - e_1)$. Given $N$, find the sum of weights over all valid 10-tuples, modulo $10^9 + 7$. You must answer $T$ independent test cases per file.
+
+- **Constraints**: $1 \le T \le 100$, $0 \le N \le 10^9$, Modulus $p = 10^9 + 7$, Time Limit $2.0\text{ s}$.
+- **Required Complexity**: $\mathcal{O}(1)$ arithmetic operations per query ($6$ binomial evaluations of degree $15$).
+- **Sample Trace ($N \le 4$)**: Since each of the $5$ pairs satisfies $0 \le x_{i,1} < x_{i,2}$, each pair sum is at least $0 + 1 = 1$, so the minimum possible sum of all $10$ variables is $5$; thus for all $0 \le N \le 4$, $\text{Ans}(N) = 0$ (while $N = 5$ gives $\text{Ans}(5) = 1$ and $N = 6$ gives $\text{Ans}(6) = 11$).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+The 10 variables split into $5$ independent pairs $(x_{i, 1}, x_{i, 2})$ ($1 \le i \le 5$) subject to a global sum constraint $\sum_{i=1}^5 (x_{i, 1} + x_{i, 2}) \le N$, and the weight $\prod_{i=1}^5 (x_{i, 2} - x_{i, 1})$ factors across the $5$ pairs! For a single pair $0 \le x_1 < x_2$, make the change of variables $d = x_2 - x_1 \ge 1$. How is the pair sum $x_1 + x_2$ expressed in terms of $x_1 \ge 0$ and $d \ge 1$?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Since $x_2 = x_1 + d$, the pair sum is $x_1 + x_2 = 2x_1 + d$, where $x_1 \ge 0$ (contributing $z^{2x_1}$) and $d \ge 1$ has weight $d$ (contributing $d z^d$). Therefore, the single-pair weighted OGF is
+
+$$
+A(z) = \left(\sum_{x_1=0}^{\infty} z^{2x_1}\right) \left(\sum_{d=1}^{\infty} d z^d\right) = \frac{1}{1 - z^2} \cdot \frac{z}{(1 - z)^2}.
+$$
+
+Multiply $A(z)^5$ by the prefix-sum operator $\frac{1}{1 - z}$ (to account for $\sum \le N$). This gives $F(z) = \frac{z^5}{(1 - z^2)^5 (1 - z)^{11}}$. How can you apply the Bostan–Mori idea $\frac{1}{1 - z} = \frac{1 + z}{1 - z^2}$ to turn the **entire denominator** into a power of $(1 - z^2)$?
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Multiplying numerator and denominator of $F(z) = \frac{z^5}{(1 - z^2)^5 (1 - z)^{11}}$ by $(1 + z)^{11}$ replaces $(1 - z)^{11}(1 + z)^{11}$ with $(1 - z^2)^{11}$:
+
+$$
+F(z) = \frac{z^5 (1 + z)^{11}}{(1 - z^2)^{16}} \implies \text{Ans}(N) = [z^{N - 5}] \frac{(1 + z)^{11}}{(1 - z^2)^{16}}.
+$$
+
+Since $(1 + z)^{11} = \sum_{j=0}^{11} \binom{11}{j} z^j$ has only $12$ terms (and only $6$ of the same parity as $N - 5$!), expand $(1 - z^2)^{-16} = \sum_{m \ge 0} \binom{m + 15}{15} z^{2m}$ to evaluate each query in $6$ terms!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+##### 1. Decoupling a Single Pair via Coordinate Change (Algebraic & Combinatorial Views)
+
+Consider one of the $5$ pairs $(x_1, x_2)$ with $0 \le x_1 < x_2$ and multiplicative weight $x_2 - x_1$:
+
+- **Algebraic View**: Let $d = x_2 - x_1 \ge 1$. Then $x_1 \ge 0$ and $d \ge 1$ are completely independent variables, the pair sum is $x_1 + x_2 = 2x_1 + d$, and the pair weight is $d$. Hence the single-pair OGF is
+
+  $$
+  A(z) = \sum_{x_1=0}^{\infty} \sum_{d=1}^{\infty} d z^{2x_1 + d} = \left(\sum_{x_1=0}^{\infty} z^{2x_1}\right) \left(\sum_{d=1}^{\infty} d z^d\right) = \frac{1}{1 - z^2} \cdot \frac{z}{(1 - z)^2}.
+  $$
+
+- **Combinatorial Sub-Interval View (`tatyam`'s Trick)**: Choosing an integer weight $1 \le w \le x_2 - x_1$ is equivalent to writing $x_2 - x_1 = a + 1 + b$ with $a, b \ge 0$. Then $x_1 + x_2 = 2x_1 + a + b + 1$ with $x_1, a, b \ge 0$ free, which immediately gives $\frac{z}{(1 - z^2)(1 - z)^2}$!
+
+##### 2. Five-Pair Product & Single-Step Bostan–Mori Parity Rationalization
+
+Because the $5$ pairs are independent and we sum over all 10-tuples with total sum $S \le N$, introducing the slack variable $s_0 = N - S \ge 0$ (which contributes $\frac{1}{1 - z}$) yields the global rational generating function:
+
+$$
+F(z) = \frac{1}{1 - z} \big(A(z)\big)^5 = \frac{1}{1 - z} \cdot \frac{z^5}{(1 - z^2)^5 (1 - z)^{10}} = \frac{z^5}{(1 - z^2)^5 (1 - z)^{11}}.
+$$
+
+Notice that the denominator is a mixture of $(1 - z^2)^5$ and $(1 - z)^{11}$. Rather than running 30 steps of general Bostan–Mori on a degree-$21$ polynomial, observe that **one single step of Bostan–Mori** on the factor $(1 - z)^{11}$—multiplying top and bottom by $(1 + z)^{11}$—makes the entire denominator a function of $z^2$:
+
+$$
+F(z) = \frac{z^5 (1 + z)^{11}}{(1 - z^2)^5 (1 - z)^{11} (1 + z)^{11}} = \frac{z^5 (1 + z)^{11}}{(1 - z^2)^{16}}.
+$$
+
+##### 3. Exact 6-Term Closed-Form Extraction
+
+We need $\text{Ans}(N) = [z^N] F(z) = [z^{N-5}] \frac{(1 + z)^{11}}{(1 - z^2)^{16}}$.
+
+- If $N < 5$, then $N - 5 < 0$, so $\text{Ans}(N) = 0$ (since each of the $5$ pairs has $x_{i, 1} \ge 0$ and $x_{i, 2} \ge 1$, the minimum possible total sum is $5$).
+- If $N \ge 5$, set $K = N - 5$. Expand the numerator and denominator via the binomial and negative-binomial theorems:
+
+  $$
+  (1 + z)^{11} = \sum_{j=0}^{11} \binom{11}{j} z^j, \qquad \frac{1}{(1 - z^2)^{16}} = \sum_{m=0}^{\infty} \binom{m + 15}{15} z^{2m}.
+  $$
+
+  A product term $z^{j + 2m}$ matches $z^K$ if and only if $j \le K$, $j \equiv K \pmod 2$, and $m = \frac{K - j}{2}$. Thus:
+
+  $$
+  \text{Ans}(N) = \sum_{\substack{0 \le j \le 11 \\ j \le N - 5 \\ j \equiv N - 5 \pmod 2}} \binom{11}{j} \binom{\frac{N - 5 - j}{2} + 15}{15} \pmod{10^9 + 7}.
+  $$
+
+##### 4. Sample Verification & Algorithm Contract
+
+- **Hand-Check on $0 \le N \le 4$ and $N = 5, 6$**: For $0 \le N \le 4$, $N - 5 < 0 \implies \text{Ans}(N) = 0$. For $N = 5$, $K = 0 \implies j = 0, m = 0 \implies \binom{11}{0}\binom{15}{15} = 1$. For $N = 6$, $K = 6 - 5 = 1$. Only $j = 1$ satisfies $j \le 1$ and $j \equiv 1 \pmod 2$, giving $m = 0$ and $\binom{11}{1}\binom{15}{15} = 11$.
+- **Hand-Check on $N = 10$**: $K = 10 - 5 = 5$. The odd indices $j \in \{1, 3, 5\}$ give
+
+  $$
+  \binom{11}{1}\binom{17}{15} + \binom{11}{3}\binom{16}{15} + \binom{11}{5}\binom{15}{15} = 11(136) + 165(16) + 462(1) = 4598.
+  $$
+
+- **Algorithm Contract & Complexity**: Given $0 \le N \le 10^9$ and prime $p = 10^9 + 7 > 15$, precompute $15!^{-1} \bmod p$ and $\binom{11}{j}$. For each of the at most $6$ valid values of $j$, $\binom{m + 15}{15} = \frac{\prod_{t=1}^{15}(m + t)}{15!} \bmod p$ takes $15$ multiplications. Total time per query is $\mathcal{O}(1)$ ($\le 90$ operations) and $\mathcal{O}(1)$ space.
+
+</details>
+
+---
+
+### Tier 4: Mastery
+
+---
+
+#### Mastery 1 (`#177`) — [BJOI 2019] Exploring the Divine Machine (勘破神机)
+
+- **Source**: [BJOI 2019 / Luogu P5487 — 勘破神机](https://www.luogu.com.cn/problem/P5487)
+- **Prerequisites**: Berlekamp–Massey LFSR synthesis (`§5.4`), Bostan–Mori distant coefficient extraction (`§5.3`), Partial Fraction / Binet decomposition of 2nd-order recurrences over $\mathbb{F}_p[\sqrt{\Delta}]$ (`§5.4`).
+
+##### Problem Statement & Exact Constraints
+
+In the game *Damon*, a single placement on a $2 \times n$ or $3 \times n$ grid has $f_n$ valid configurations, where:
+
+- For subtask type $m = 2$: $f_0 = 1, f_1 = 3, f_2 = 11$, satisfying the second-order linear recurrence
+
+  $$
+  f_n = 4 f_{n-1} - f_{n-2} \qquad (n \ge 2).
+  $$
+
+- For subtask type $m = 3$: $f_{2r+1} = 0$ for all odd lengths, and for even lengths $n = 2r$, the sequence $g_r = f_{2r}$ has $g_0 = 1, g_1 = 3, g_2 = 11$ and satisfies the second-order linear recurrence
+
+  $$
+  g_r = 3 g_{r-1} + g_{r-2} \qquad (r \ge 2).
+  $$
+
+Given a query range $[L, R]$ and an integer $k$, compute the expected number of ways to choose $k$ distinct valid configurations when the grid length $n$ is chosen uniformly at random from $\{L, L+1, \dots, R\}$:
+
+$$
+\frac{1}{R - L + 1} \sum_{n=L}^{R} \binom{f_n}{k} \pmod{998244353}.
+$$
+
+- **Constraints**: $1 \le T \le 10$ queries, $m \in \{2, 3\}$, $1 \le L \le R \le 10^{18}$, $1 \le k \le 501$, Modulus $p = 998244353$, Time Limit $2.0\text{ s}$.
+- **Required Complexity**:
+  - **Dual Approach A (Black-Box Berlekamp–Massey + Bostan–Mori)**: $\mathcal{O}(D^2 + D \log D \log R)$ where $D \le 2k + 2$ is the recurrence order of prefix sums of $\binom{f_n}{k}$ (ideal when the recurrence of $f_n$ is given only as a black-box DP oracle).
+  - **Dual Approach B (Falling-Factorial Expansion + Quadratic Field $\mathbb{F}_p[\sqrt{\Delta}]$ Binet Sums)**: $\mathcal{O}(k^2 + T k^2 \log R)$ time and $\mathcal{O}(k^2)$ space (handles $k \le 501, R \le 10^{18}$ effortlessly).
+- **Sample Trace ($N \le 4$)**: For $m = 2, L = 1, R = 2, k = 2$: $f_1 = 3$ and $f_2 = 11$, so $\sum_{n=1}^2 \binom{f_n}{2} = \binom{3}{2} + \binom{11}{2} = 3 + 55 = 58$, and dividing by $R - L + 1 = 2$ gives expected value $58 / 2 = 29 \bmod 998244353$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+We need to sum a degree-$k$ polynomial in $f_n$, namely $\binom{f_n}{k} = \frac{1}{k!} f_n(f_n - 1)\cdots(f_n - k + 1) = \frac{1}{k!} \sum_{j=0}^k (-1)^{k-j} \left[\begin{smallmatrix} k \\ j \end{smallmatrix}\right] f_n^j$, over a huge interval $n \in [L, R]$ ($R \le 10^{18}$), where $f_n$ satisfies a second-order constant-coefficient linear recurrence! Why does any power $f_n^j$ of a second-order recurrent sequence also satisfy a constant-coefficient linear recurrence of order at most $j + 1$?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+By Partial Fraction / Binet decomposition (`§5.4`), any second-order recurrence $f_n = c_1 f_{n-1} + c_2 f_{n-2}$ with distinct characteristic roots $\alpha, \beta$ (lying either in $\mathbb{F}_p$ or in the quadratic extension field $\mathbb{F}_p[\sqrt{\Delta}]$ where $\Delta = c_1^2 + 4c_2$) has the closed form
+
+$$
+f_n = A \alpha^n + B \beta^n.
+$$
+
+Raising $f_n$ to the $j$-th power via the Binomial Theorem gives a linear combination of $j + 1$ geometric progressions:
+
+$$
+f_n^j = (A \alpha^n + B \beta^n)^j = \sum_{i=0}^{j} \binom{j}{i} A^i B^{j-i} \big(\alpha^i \beta^{j-i}\big)^n.
+$$
+
+How does this allow you to:
+1. Bound the linear recurrence order of $S(N) = \sum_{n=0}^N \binom{f_n}{k}$ and recover it via **Berlekamp–Massey + Bostan–Mori**?
+2. Compute $\sum_{n=L}^R f_n^j$ directly in $\mathcal{O}(k^2 \log R)$ time by summing geometric series with common ratio $r_{j, i} = \alpha^i \beta^{j-i} \in \mathbb{F}_p[\sqrt{\Delta}]$?
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+In Approach B, work over the quadratic extension ring $\mathbb{F}_p[\sqrt{\Delta}] = \{x + y\sqrt{\Delta} : x, y \in \mathbb{F}_p\}$ ($\Delta = 3$ for $f_n = 4f_{n-1} - f_{n-2}$, and $\Delta = 13$ for $g_r = 3g_{r-1} + g_{r-2}$). Since $p = 998244353$, every non-zero element $x + y\sqrt{\Delta}$ has a unique inverse $\frac{x - y\sqrt{\Delta}}{x^2 - \Delta y^2}$. For each pair $(j, i)$ with $0 \le i \le j \le k$, set $r = \alpha^i \beta^{j-i}$ and evaluate the finite geometric series
+
+$$
+\operatorname{ Geom }(r, L, R) = \sum_{n=L}^{R} r^n = \begin{cases}
+(R - L + 1) \bmod p & \text{if } r = 1, \\[6pt]
+\dfrac{r^{R+1} - r^L}{r - 1} & \text{if } r \neq 1,
+\end{cases}
+$$
+
+to obtain $P_j = \sum_{n=L}^R f_n^j$ for all $1 \le j \le k$, and combine them with the coefficients of $x^{\underline{k}}$!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+##### 1. Expanding $\binom{f_n}{k}$ into Power Sums via the Falling Factorial Polynomial
+
+To express $\binom{f_n}{k}$ as a linear combination of ordinary powers $f_n^j$, consider the **falling factorial polynomial** of degree $k$:
+
+$$
+x^{\underline{k}} := x(x - 1)(x - 2)\cdots(x - (k - 1)) = \sum_{j=0}^{k} (-1)^{k - j} \begin{bmatrix} k \\ j \end{bmatrix} x^j,
+$$
+
+where the unsigned coefficients $\left[\begin{smallmatrix} k \\ j \end{smallmatrix}\right]$ (studied systematically in **Chapter 06, `§6.4`** as the unsigned Stirling numbers of the first kind) are defined directly by multiplying out the $k$ linear factors $(x - 0)(x - 1)\cdots(x - (k - 1))$ one factor at a time: since $x^{\underline{i}} = (x - (i - 1)) x^{\underline{i-1}}$, comparing the coefficient of $(-1)^{i-j} x^j$ on both sides yields the self-contained $\mathcal{O}(k^2)$ recurrence
+
+$$
+\begin{bmatrix} 0 \\ 0 \end{bmatrix} = 1, \qquad \begin{bmatrix} i \\ j \end{bmatrix} = (i - 1)\begin{bmatrix} i - 1 \\ j \end{bmatrix} + \begin{bmatrix} i - 1 \\ j - 1 \end{bmatrix} \qquad (1 \le i \le k,\; 0 \le j \le i).
+$$
+
+Evaluating this polynomial identity at $x = f_n$ and dividing by $k!$ gives
+
+$$
+\binom{f_n}{k} = \frac{1}{k!} f_n^{\underline{k}} = \frac{1}{k!} \sum_{j=0}^{k} (-1)^{k - j} \begin{bmatrix} k \\ j \end{bmatrix} f_n^j.
+$$
+
+By linearity of summation, swapping the sums over $n$ and $j$ yields:
+
+$$
+\sum_{n=L}^{R} \binom{f_n}{k} = \frac{1}{k!} \sum_{j=0}^{k} (-1)^{k - j} \begin{bmatrix} k \\ j \end{bmatrix} \left(\sum_{n=L}^{R} f_n^j\right).
+$$
+
+Note that for $m = 3$, $f_n = 0$ whenever $n$ is odd, and since $\binom{0}{k} = 0$ for all $k \ge 1$, the odd indices contribute $0$; we simply restrict the sum over even $n = 2r \in [L, R]$, i.e., $r \in \big[\lceil L/2 \rceil, \lfloor R/2 \rfloor\big]$, using the sequence $g_r = f_{2r}$!
+
+##### 2. Dual Perspective A: The Black-Box Berlekamp–Massey + Bostan–Mori Pipeline
+
+Suppose we do not want to solve for the characteristic roots $\alpha, \beta$ by hand (or suppose $f_n$ is given only as a DP subroutine). Why does $S_N = \sum_{n=0}^N \binom{f_n}{k}$ satisfy a constant-coefficient linear recurrence, and how do we find it automatically?
+
+1. Since $f_n = A \alpha^n + B \beta^n$, its $j$-th power $f_n^j = \sum_{i=0}^j \binom{j}{i} A^i B^{j-i} (\alpha^i \beta^{j-i})^n$ is a linear combination of $j + 1$ geometric progressions with common ratios $\alpha^i \beta^{j-i}$ ($0 \le i \le j$).
+2. Therefore, the rational generating function of $(f_n^j)_{n \ge 0}$ has denominator $\prod_{i=0}^j (1 - \alpha^i \beta^{j-i} x)$ of degree $j + 1$.
+3. Summing over $j = 0, 1, \dots, k$ and multiplying by the prefix-sum factor $\frac{1}{1 - x}$ shows that the prefix sum $S_N = \sum_{n=0}^N \binom{f_n}{k}$ has a rational generating function $\frac{P(x)}{Q(x)}$ whose denominator $Q(x)$ divides
+
+   $$
+   (1 - x) \operatorname{lcm}_{0 \le j \le k} \prod_{i=0}^{j} (1 - \alpha^i \beta^{j-i} x),
+   $$
+
+   which has degree $D \le 1 + \sum_{j=0}^k (j + 1) = 1 + \frac{(k + 1)(k + 2)}{2}$ (and even smaller when $\alpha \beta = \pm 1$, because $(\alpha \beta)^t = (\pm 1)^t$ collapses ratios across $j$ of the same parity to degree $D \le 2k + 2$!).
+4. Specifically, when $\alpha \beta = 1$ (as in $f_n = 4f_{n-1} - f_{n-2}$, where $\alpha\beta = 1$) or $\alpha \beta = -1$ (as in $g_r = 3g_{r-1} + g_{r-2}$, where $\alpha\beta = -1$), every ratio $\alpha^i \beta^{j-i} = \pm \alpha^{2i - j}$ belongs to the set $\{\pm \alpha^m : -k \le m \le k\}$, which has size **at most $4k + 2$**!
+5. **The Consequence**: Because $\alpha \beta = \pm 1$, the sequence $S_N = \sum_{n=0}^N \binom{f_n}{k}$ actually satisfies a linear recurrence of order **$D \le 2k + 2 \le 1004$**!
+   - We compute the first $2D + 2 \le 2012$ values of $S_0, S_1, \dots, S_{2D+1}$ by elementary $\mathcal{O}(D)$ DP.
+   - We pass $S_0, \dots, S_{2D+1}$ into **Berlekamp–Massey** (`§5.4`) to recover the minimal denominator $Q(x)$ of degree $d \le 2k + 2$ in $\mathcal{O}(k^2)$ time (verifying the check buffer $\Delta_{2d} = \Delta_{2d+1} = 0$).
+   - We compute $P(x) = (S_{<d}(x) Q(x)) \bmod x^d$ and call **Bostan–Mori** (`§5.3`) to extract $S_R = [x^R]\frac{P(x)}{Q(x)}$ and $S_{L-1} = [x^{L-1}]\frac{P(x)}{Q(x)}$ in $\mathcal{O}(k \log k \log R)$ time!
+
+##### 3. Dual Perspective B: Exact Binet Decomposition in $\mathbb{F}_p[\sqrt{\Delta}]$
+
+We can also write out the exact Binet formula for both $m = 2$ and $m = 3$ by Partial Fraction Decomposition (`§5.4`):
+
+- **Case $m = 2$ ($f_0 = 1, f_1 = 3, f_n = 4f_{n-1} - f_{n-2}$)**:
+  The characteristic equation is $\lambda^2 - 4\lambda + 1 = 0$, with discriminant $\Delta = 12 = 4 \times 3$, so working in $\mathbb{F}_p[\sqrt{3}]$:
+
+  $$
+  \alpha = 2 + \sqrt{3}, \qquad \beta = 2 - \sqrt{3}, \qquad A = \frac{3 + \sqrt{3}}{6}, \qquad B = \frac{3 - \sqrt{3}}{6}.
+  $$
+
+  *(Check: at $n = 0$, $A + B = 1 = f_0$; at $n = 1$, $A\alpha + B\beta = \frac{(3+\sqrt{3})(2+\sqrt{3}) + (3-\sqrt{3})(2-\sqrt{3})}{6} = \frac{9 + 5\sqrt{3} + 9 - 5\sqrt{3}}{6} = 3 = f_1$; at $n = 2$, $A\alpha^2 + B\beta^2 = 11 = f_2$.)*
+- **Case $m = 3$ ($g_0 = 1, g_1 = 3, g_r = 3g_{r-1} + g_{r-2}$)**:
+  The characteristic equation is $\lambda^2 - 3\lambda - 1 = 0$, with discriminant $\Delta = 13$, so working in $\mathbb{F}_p[\sqrt{13}]$:
+
+  $$
+  \alpha = \frac{3 + \sqrt{13}}{2}, \qquad \beta = \frac{3 - \sqrt{13}}{2}, \qquad A = \frac{\sqrt{13} + 3}{2\sqrt{13}}, \qquad B = \frac{\sqrt{13} - 3}{2\sqrt{13}}.
+  $$
+
+For each $1 \le j \le k$, expanding $f_n^j = \sum_{i=0}^j \binom{j}{i} A^i B^{j-i} (\alpha^i \beta^{j-i})^n$ and summing over $n \in [L', R']$ gives:
+
+$$
+\sum_{n=L'}^{R'} f_n^j = \sum_{i=0}^{j} \binom{j}{i} A^i B^{j-i} \operatorname{Geom}\big(\alpha^i \beta^{j-i}, L', R'\big) \in \mathbb{F}_p,
+$$
+
+where the $\sqrt{\Delta}$ components cancel by Galois conjugation symmetry, and we divide the final sum by $(R - L + 1) \bmod 998244353$.
+
+##### 4. Hand-Checkable Trace & Algorithm Contract
+
+- **Hand-Check on $m = 2, L = 1, R = 2, k = 2$**:
+  Here $x^{\underline{2}} = x^2 - x$, so $\left[\begin{smallmatrix} 2 \\ 1 \end{smallmatrix}\right] = 1, \left[\begin{smallmatrix} 2 \\ 2 \end{smallmatrix}\right] = 1$. Using $f_1 = 3, f_2 = 11$:
+  - Power sum $j = 1$: $\sum_{n=1}^2 f_n^1 = 3 + 11 = 14$.
+  - Power sum $j = 2$: $\sum_{n=1}^2 f_n^2 = 3^2 + 11^2 = 9 + 121 = 130$.
+  - Combining via $\frac{1}{2!}\big(\left[\begin{smallmatrix} 2 \\ 2 \end{smallmatrix}\right] \cdot 130 - \left[\begin{smallmatrix} 2 \\ 1 \end{smallmatrix}\right] \cdot 14\big) = \frac{130 - 14}{2} = 58$, and dividing by $R - L + 1 = 2$ gives $58 / 2 = 29$.
+- **Approach A (BM + Bostan–Mori)**: Since $\alpha\beta = \pm 1$, the recurrence order of $S_N$ is $d \le 2k + 2 \le 1004$. Berlekamp–Massey takes $\mathcal{O}(k^2)$ time once, and each query takes $\mathcal{O}(k \log k \log R)$ time via Bostan–Mori.
+- **Approach B (Binet in $\mathbb{F}_p[\sqrt{\Delta}]$)**: Preconditions: $k < p = 998244353$ so $k!$ is invertible, and $\Delta \in \{3, 13\}$ is a quadratic non-residue modulo $p$ so $\mathbb{F}_p[\sqrt{\Delta}]$ is a field. Runs in $\mathcal{O}(k^2 \log R)$ field operations per query and $\mathcal{O}(k^2)$ space.
+
+</details>
+
+---
+
+#### Mastery 2 (`#073`) — ZigZag Break
+
+- **Source**: [AtCoder Grand Contest 054 — Task E](https://atcoder.jp/contests/agc054/tasks/agc054_e)
+- **Prerequisites**: Rational negative-binomial generating functions $(1 - x)^{-d}$ (`§5.1`, `§5.4`), Coefficient extraction & telescoping difference cancellation (`§5.1`).
+
+##### Problem Statement & Exact Constraints
+
+You are given a permutation $P = (P_1, P_2, \dots, P_N)$ of $(1, 2, \dots, N)$. You may repeatedly perform the following operation while $|P| \ge 3$:
+
+- Choose an interior index $2 \le i \le |P| - 1$ that is a **local extremum**—that is, either $\min(P_{i-1}, P_{i+1}) > P_i$ or $\max(P_{i-1}, P_{i+1}) < P_i$—and delete $P_i$ from $P$.
+
+A permutation $P$ is called **good** if it can be reduced to a sequence of length $2$, namely $(P_1, P_N)$, by some sequence of operations. Given $N$ and $A$, count the number of good permutations of $(1, \dots, N)$ satisfying $P_1 = A$, modulo $998244353$. You must answer $T$ queries per file.
+
+- **Constraints**: $1 \le T \le 5 \times 10^5$, $3 \le N \le 10^6$, $1 \le A \le N$, Modulus $p = 998244353$, Time Limit $2.5\text{ s}$.
+- **Required Complexity**: $\mathcal{O}(N)$ one-time factorial precomputation and $\mathcal{O}(1)$ time per query.
+- **Sample Trace ($N \le 4$)**: For $N = 4, A = 1$: out of $(4 - 1)! = 6$ permutations starting with $P_1 = 1$, only $(1, 2, 4, 3)$ is bad (since $P_4 = 3$ and neither interior element $2$ nor $4$ is a local extremum), so $6 - 1 = 5$ permutations are good.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+With $T = 5 \times 10^5$ queries, we must evaluate the answer for any $(N, A)$ in $\mathcal{O}(1)$ time! First, fix $P_1 = A$ and $P_N = B$. By vertical reflection $x \leftarrow N + 1 - x$, the case $A > B$ is symmetric to $A < B$, so assume $A < B$. What is the clean necessary and sufficient condition on the adjacent pairs $(P_i, P_{i+1})$ ($1 \le i \le N-1$) for $P$ to be reducible to $(A, B)$?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+A classic invariant (proved by induction on $N$) states that for $P_1 = A < B = P_N$, $P$ is **good** if and only if there exists at least one index $1 \le i \le N - 1$ such that **$P_i \le A$ and $P_{i+1} \ge B$**!
+Let us count **bad** permutations for a fixed $A$ and $B = A + k$ ($2 \le k \le N - A$; note that for $B = A + 1$, every permutation is good because $P_1 = A \le A$ and $P_N = A + 1 \ge B$ leaves no middle values between $A$ and $B$, so the sequence must step from $\le A$ to $\ge B$ somewhere!). Partition the $N$ values into three types:
+
+- **Small ($S$)**: $\{1, \dots, A\}$ ($s = A$ elements, with $P_1 = A \in S$ fixed at the start);
+- **Middle ($M$)**: $\{A+1, \dots, B-1\}$ ($m = k - 1$ elements);
+- **Large ($L$)**: $\{B, \dots, N\}$ ($l = N - B + 1$ elements, with $P_N = B \in L$ fixed at the end).
+
+No $S$ can be immediately followed by an $L$! What does this say about where the remaining $s - 1$ elements of $S$ and $l - 1$ elements of $L$ can be placed relative to the $m$ elements of $M$?
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+After deleting all $S$'s, the remaining word of $m$ copies of $M$ and $l$ copies of $L$ must start with $M$ (since $P_1 \in S$ cannot be followed by $L$) and end with $P_N = B \in L$, giving $\binom{m+l-2}{m-1}$ skeletons. Every maximal contiguous block of $S$'s must be immediately followed by an $M$, so the remaining $s - 1$ elements of $S$ are distributed among the $m$ slots immediately preceding the $m$ copies of $M$ in $\binom{s+m-2}{s-1}$ ways. Multiplying by the value permutations $(s-1)!(l-1)!m!$ gives the exact count of bad permutations for fixed $A < B$ ($B - A \ge 2$):
+
+$$
+\text{Bad}(A, B) = (B - A - 1) (N - A - 2)! (B - 3)! = (A - 1)! (N - A - 2)! (B - A - 1) \binom{B - 3}{A - 1}.
+$$
+
+Rewrite the sum over $B = A + 2, \dots, N$ as a coefficient extraction from a rational generating function in $(1 - x)^{-(A+1)}$ and $(1 - x)^{-(A+2)}$ to evaluate each query in $\mathcal{O}(1)$ time!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+##### 1. Combinatorial Characterization of Good Permutations
+
+Fix $P_1 = A$ and $P_N = B$ with $A < B$. Call an element **Small ($S$)** if $x \le A$, **Middle ($M$)** if $A < x < B$, and **Large ($L$)** if $x \ge B$.
+
+**Claim**: $P$ is good if and only if there exists some $1 \le i \le N - 1$ with $P_i \in S$ and $P_{i+1} \in L$ (an **$S \to L$ adjacency**).
+
+- **Necessity ($\implies$)**: Suppose $P$ has **no** $S \to L$ adjacency. Check that deleting any local extremum $P_i$ ($2 \le i \le |P|-1$) can **never create** an $S \to L$ adjacency! Indeed, a new adjacency $(P_{i-1}, P_{i+1})$ is of type $S \to L$ only if $P_{i-1} \le A < B \le P_{i+1}$. If $P_i$ were between $P_{i-1}$ and $P_{i+1}$ in value ($P_{i-1} < P_i < P_{i+1}$), $P_i$ is **not** a local extremum so it cannot be deleted; if $P_i < P_{i-1} \le A$, then $P_i \in S$ so $(P_i, P_{i+1})$ was *already* an $S \to L$ adjacency; and if $P_i > P_{i+1} \ge B$, then $P_i \in L$ so $(P_{i-1}, P_i)$ was *already* an $S \to L$ adjacency! Since the final length-2 array $(A, B)$ *is* an $S \to L$ adjacency, any permutation without an $S \to L$ adjacency can never reach $(A, B)$!
+- **Sufficiency ($\Longleftarrow$)**: Conversely, if an $S \to L$ adjacency $(P_i, P_{i+1})$ exists, induction on $N$ shows we can always reduce $P$ to $(A, B)$ by deleting the global maximum or minimum among elements outside that adjacency.
+
+##### 2. Counting Bad Permutations for Fixed $A < B$
+
+Let $s = A$, $l = N - B + 1$, and $m = B - A - 1$ be the sizes of $S, L, M$ ($s + l + m = N$). Notice that if $B = A + 1$, then $m = 0$, and since $P_1 \in S$ and $P_N \in L$, there must be an $S \to L$ step somewhere, so $\text{Bad}(A, A+1) = 0$. Assume $m = B - A - 1 \ge 1$.
+
+How do we construct a permutation with $P_1 = A \in S$, $P_N = B \in L$, and **no $S \to L$ adjacency**?
+
+1. **Arrange the specific values within $S \setminus \{A\}$, $L \setminus \{B\}$, and $M$**:
+   There are $(s - 1)!$ ways to order the values of $S \setminus \{A\}$, $(l - 1)!$ ways to order the values of $L \setminus \{B\}$, and $m!$ ways to order the values of $M$. Now we only need to count valid **type words** over $\{S, M, L\}$ of length $N$ starting with $S$, ending with $L$, and containing no substring `SL`.
+2. **Bijection for `SL`-free type words**:
+   Since the word starts with $S$ and has no `SL`, the very first $M$ in the word must appear **before** any $L$ appears! That is, the prefix up to the first $M$ consists of $1$ or more $S$'s followed by the first $M$.
+   More generally, read the word after deleting all $S$'s: it is a word of $m$ copies of $M$ and $l$ copies of $L$ that:
+   - starts with $M$ (because $P_1 = S$ cannot be followed by $L$, so the first non-$S$ letter must be $M$), and
+   - ends with $L$ (since $P_N = B \in L$).
+   There are $\binom{(m - 1) + (l - 1)}{m - 1}$ such $(M, L)$-skeletons!
+   Now, where can the remaining $s - 1$ copies of $S$ be inserted into this $(M, L)$-skeleton so that no $S$ ever immediately precedes an $L$? An $S$ is forbidden from being placed immediately before any of the $l$ copies of $L$ (or at the very end), so the $s - 1$ copies of $S$ can only be placed into the **$m$ slots immediately preceding the $m$ copies of $M$**! By stars-and-bars, there are $\binom{(s - 1) + m - 1}{s - 1}$ ways to distribute the $s - 1$ copies of $S$ into those $m$ slots.
+3. **Simplifying the Product of Skeletons, Slot Insertions, and Value Orders**:
+   Note that in the skeleton of $m$ copies of $M$ and $l$ copies of $L$, an $S$ *can* be placed after an $L$ and before an $M$ (since `LSM` contains no `SL`): every maximal contiguous block of $S$'s is immediately followed by an $M$ (never by $L$ or the end of the word), so every $S$ in the word belongs to the run of $S$'s immediately preceding one of the $m$ copies of $M$.
+   Multiplying the skeleton count and the $S$-insertion count gives:
+
+   $$
+   \text{\# of \texttt{SL}-free type words} = \binom{m + l - 2}{m - 1} \binom{s + m - 2}{s - 1}.
+   $$
+
+   Multiplying by the value permutations $(s - 1)! (l - 1)! m!$ simplifies beautifully:
+
+   $$
+   \begin{aligned}
+   \text{Bad}(A, B) &= (s - 1)! (l - 1)! m! \frac{(m + l - 2)!}{(m - 1)! (l - 1)!} \binom{s + m - 2}{s - 1} \\
+   &= m \cdot (s - 1)! (m + l - 2)! \binom{s + m - 2}{s - 1} = (N - A - 2)! (A - 1)! (B - A - 1) \binom{B - 3}{A - 1}.
+   \end{aligned}
+   $$
+
+   Let us double-check this remarkable formula on $N = 4, A = 1, B = 3$ ($s = 1, l = 2, m = 1$):
+   - Formula gives $1! \cdot 0! \cdot (3 - 1 - 1) \binom{3 - 3}{1 - 1} = 1 \cdot 1 \cdot 1 \cdot 1 = 1$.
+   - Actual permutations of $(1, 2, 3, 4)$ with $P_1 = 1, P_4 = 3$: only $(1, 2, 4, 3)$ and $(1, 4, 2, 3)$. In $(1, 4, 2, 3)$, $P_1 = 1 \in S$ and $P_2 = 4 \in L$ is an `SL` adjacency (good). In $(1, 2, 4, 3)$, the types are `S M L L`, which has no `SL` (bad: neither $2$ nor $4$ is a local extremum in $(1, 2, 4, 3)$!). Count of bad permutations $= 1$. Exact match!
+
+##### 3. Rational Generating Function Extraction & Telescoping Sum over $B > A$
+
+Now we sum $\text{Bad}(A, B) = (N - A - 2)! \cdot \frac{(B - A - 1)(B - 3)!}{(B - A - 2)!}$ over all $B \in \{A + 2, \dots, N\}$.
+Let $k = B - A - 2 \ge 0$, which ranges from $k = 0$ to $K = N - A - 2$ (so $B = k + A + 2$, $B - A - 1 = k + 1$, and $B - 3 = k + A - 1$). Multiplying and dividing by $(A - 1)!$ to form a binomial coefficient in $k$:
+
+$$
+\begin{aligned}
+\frac{(B - A - 1)(B - 3)!}{(B - A - 2)!}
+&= \frac{(k + 1)(k + A - 1)!}{k!}
+&& \text{(substitute } B = k + A + 2\text{)} \\[4pt]
+&= (A - 1)! (k + 1) \frac{(k + A - 1)!}{(A - 1)! \, k!}
+&& \text{(multiply and divide by } (A - 1)!\text{)} \\[4pt]
+&= (A - 1)! (k + 1) \binom{k + A - 1}{A - 1}.
+&& \text{(recognize } \binom{k + A - 1}{A - 1}\text{)}
+\end{aligned}
+$$
+
+Summing over $k = 0, 1, \dots, N - A - 2$ yields:
+
+$$
+\sum_{B=A+2}^{N} \text{Bad}(A, B) = (N - A - 2)! (A - 1)! \sum_{k=0}^{N - A - 2} (k + 1) \binom{k + A - 1}{A - 1}.
+$$
+
+Let us evaluate $S(K) = \sum_{k=0}^K (k + 1) \binom{k + A - 1}{A - 1}$ using **rational generating functions** (`§5.1`):
+
+1. **Generating Function of the Summand**:
+   Look at the factor $(k + 1) \binom{k + A - 1}{A - 1}$. Using $k + 1 = (k + A) - (A - 1)$ and $\frac{k + A}{A}\binom{k + A - 1}{A - 1} = \binom{k + A}{A}$, its ordinary generating function is:
+
+   $$
+   \begin{aligned}
+   G(x)
+   &= \sum_{k=0}^{\infty} (k + 1) \binom{k + A - 1}{A - 1} x^k \\[4pt]
+   &= A \sum_{k=0}^{\infty} \binom{k + A}{A} x^k - (A - 1) \sum_{k=0}^{\infty} \binom{k + A - 1}{A - 1} x^k
+   && \text{(split } (k + 1)\binom{k+A-1}{A-1} = A\binom{k+A}{A} - (A-1)\binom{k+A-1}{A-1}\text{)} \\[4pt]
+   &= \frac{A}{(1 - x)^{A+1}} - \frac{A - 1}{(1 - x)^A}
+   && \text{(apply } \sum_{k \ge 0} \binom{k+r}{r} x^k = (1 - x)^{-(r+1)}\text{)} \\[4pt]
+   &= \frac{A - (A - 1)(1 - x)}{(1 - x)^{A+1}} = \frac{1 + (A - 1)x}{(1 - x)^{A + 1}}.
+   && \text{(combine over common denominator } (1 - x)^{A+1}\text{)}
+   \end{aligned}
+   $$
+
+2. **Prefix-Sum Operator $(1 - x)^{-1}$**:
+   Multiplying $G(x)$ by $\frac{1}{1 - x}$ gives the rational generating function of the prefix sums $S(K)$:
+
+   $$
+   \frac{G(x)}{1 - x} = \frac{1 + (A - 1)x}{(1 - x)^{A + 2}} \implies S(K) = [x^K] \frac{1 + (A - 1)x}{(1 - x)^{A + 2}} = \binom{K + A + 1}{A + 1} + (A - 1) \binom{K + A}{A + 1}.
+   $$
+
+   Substituting $K = N - A - 2$ (so $K + A = N - 2$) gives the closed form for all bad permutations with $P_N > A$:
+
+   $$
+   \text{Bad}_{> A}(N, A) = (N - A - 2)! (A - 1)! \left[ \binom{N - 1}{A + 1} + (A - 1) \binom{N - 2}{A + 1} \right] \qquad (\text{for } A \le N - 2, \text{ and } 0 \text{ otherwise}).
+   $$
+
+3. **Vertical Symmetry for $P_N < A$**:
+   Reflecting all values $x \leftarrow N + 1 - x$ maps $A \leftarrow A' = N + 1 - A$, so $\text{Bad}_{< A}(N, A) = \text{Bad}_{> A'}(N, N + 1 - A)$.
+   Subtracting $\text{Bad}_{> A}(N, A) + \text{Bad}_{< A}(N, A)$ from the total number of permutations with $P_1 = A$, which is $(N - 1)!$, gives the exact count of good permutations in $\mathcal{O}(1)$ time!
+
+##### 4. Algorithm & Complexity Contract
+
+- **Precomputation**: Factorials and inverse factorials up to $N_{\max} = 10^6 < p = 998244353$ in $\mathcal{O}(N_{\max})$ time.
+- **Core Invariant**: For each query $(N, A)$, $\text{Bad}_{>A}(N, A) = 0$ whenever $A \ge N - 1$, and vertical reflection $A' = N + 1 - A$ bijectively maps bad permutations with $P_N < A$ to bad permutations starting with $A'$ and ending with $P_N' > A'$.
+- **Per-Query Time & Space**: $\mathcal{O}(1)$ time ($10$ field multiplications) and $\mathcal{O}(1)$ auxiliary space per query.
+
+</details>
+
+---
+
+## 5.6 Chapter Summary, Diagnostic Checklist & Quarantined Template Footnotes
+
+### Concept & Complexity Summary Table
+
+| Engine / Technique | Algebraic Identity / Recurrence | Exact Preconditions | Time Complexity |
+| :--- | :--- | :--- | :--- |
+| **Rational OGF of Recurrence** (`§5.1`) | $F(x) = \dfrac{(F_{<d}(x)Q(x)) \bmod x^d}{1 - \sum_{i=1}^d c_i x^i}$ | $[x^0]Q(x) = 1 \in K^\times$ (any commutative ring $K$) | $\mathcal{O}(d \log d)$ to form $P(x)$ |
+| **Transfer-Matrix Resolvent** (`§5.1`) | $\sum_{n \ge 0} \mathbf{u}^\top T^n \mathbf{v} x^n = \dfrac{\mathbf{u}^\top \operatorname{adj}(I - xT)\mathbf{v}}{\det(I - xT)}$ | $T \in K^{d \times d}$ | $\mathcal{O}(d^3 \log N)$ (matrix) or $\mathcal{O}(d \log d \log N)$ (BM) |
+| **Polynomial `divmod`** (`§5.2`) | $\operatorname{Rev}_{n-m}(Q) \equiv \operatorname{Rev}_n(A) \operatorname{Rev}_m(B)^{-1} \pmod{x^{n-m+1}}$ | $[x^m]B(x) \in K^\times$, $n = \deg A \ge m = \deg B$ | $\mathcal{O}(n \log n)$ |
+| **Bostan–Mori Algorithm** (`§5.3`) | $[x^N]\dfrac{P(x)}{Q(x)} = [x^{\lfloor N/2 \rfloor}]\dfrac{U_{N \bmod 2}(x)}{V(x)}$ | $[x^0]Q(x) \in K^\times$, $\deg Q = d$ | $\mathcal{O}(d \log d \log N)$ ($\frac{2}{3}\mathcal{M}(d)\log_2 N$ NTT) |
+| **Frobenius Bostan–Mori** (`§5.3`) | $[x^N]\dfrac{P(x)}{Q(x)} = [x^{\lfloor N/p \rfloor}]\dfrac{U_{N \bmod p}(x)}{Q(x)}$ | $K = \mathbb{F}_p$ (prime characteristic $p$) | $\mathcal{O}(p d \log(pd) \log_p N)$ |
+| **Heaviside Partial Fractions** (`§5.4`) | $\dfrac{P(x)}{Q(x)} = \sum_{i=1}^d \dfrac{-r_i P(r_i^{-1})}{Q'(r_i^{-1})(1 - r_i x)}$ | $Q(x) = \prod_{i=1}^d (1 - r_i x)$ with distinct $r_i \in K^\times$, $\deg P < d$ | $\mathcal{O}(d)$ per term evaluation |
+| **Berlekamp–Massey Synthesis** (`§5.4`) | $C_{\text{new}}(x) = C(x) - \dfrac{\Delta_n}{\Delta_m} x^{n-m} B(x)$ | $K$ is a **field**, $\ge 2d$ prefix terms $a_0, \dots, a_{2d-1}$ | $\mathcal{O}(d^2)$ field operations |
+
+### Diagnostic Checklist for Rational Generating Functions
+
+When confronting a sequence, recurrence, or DP problem in contest, run through these five diagnostic questions in order:
+
+1. **Is the transition invariant under index shift $n \to n + 1$?**
+   - If $a_n = \sum_{i=1}^d c_i a_{n-i}$ has constant coefficients $c_i$, immediately write $Q(x) = 1 - \sum_{i=1}^d c_i x^i$ and $P(x) = (F_{<d}(x)Q(x)) \bmod x^d$.
+2. **Does $Q(x)$ contain a dense geometric block $x + x^2 + \cdots + x^K$ or high power of $(1 - x)$?**
+   - Multiply both numerator and denominator by $(1 - x)$ to telescope dense blocks into $2$- or $3$-sparse polynomials (as in `ABC 279 G` and `ABC 300 Ex`), or multiply by $(1 + x)^m$ to rationalize $(1 - x)^m (1 + x)^m = (1 - x^2)^m$ into an even denominator (as in `AISing 2020 F`).
+3. **Is $N \le 10^{18}$ huge while the degree $d$ is moderate ($d \le 2.5 \times 10^5$)?**
+   - Reach for **Bostan–Mori** (`§5.3`). If $d \le 100$ and the modulus is not NTT-friendly, $\mathcal{O}(d^2 \log N)$ Bostan–Mori or sparse modular reduction still beats $\mathcal{O}(d^3 \log N)$ matrix exponentiation by a factor of $d$.
+4. **Is the recurrence hidden inside a sparse $d \times d$ transfer matrix or nonlinear power $\binom{f_n}{k}$?**
+   - Generate the first $2d + 2$ terms $a_0, \dots, a_{2d+1}$ via the DP/matrix transition, run **Berlekamp–Massey** (`§5.4`) in $\mathcal{O}(d^2)$ time to discover $Q(x)$, verify $\Delta_{2d} = \Delta_{2d+1} = 0$, and finish with **Bostan–Mori** in $\mathcal{O}(d \log d \log N)$ time.
+5. **Have you checked the algebraic failure modes?**
+   - Verify $[x^0]Q(x) \in K^\times$ before calling Bostan–Mori; verify exact reference degrees $(n, m, n - m)$ before and after `divmod` reversals; and check whether the modulus $M$ is composite before dividing by factorials or discrepancies $\Delta_m$ (as in `CEOI 2004 Sweet`).
+
+::: {.callout-note collapse="true"}
+## Quarantined Footnote: Standard Black-Box Library Primitives & Template Problems (`R-05`, `R-39`, `R-40`, `R-41`, `R-64`, `R-65`)
+
+In accordance with the textbook's zero-template-clutter policy, standard implementations of:
+
+- Radix-2 Number Theoretic Transform (`ntt`, `intt`) over $\mathbb{F}_{998244353}$,
+- Newton Formal Power Series Inversion (`poly_inv`), and
+- Dense $d \times d$ Matrix Multiplication (`mat_mul`, `mat_pow`)
+
+are assumed from your personal library and Chapter 02. In addition, the pure implementation-verification template problems from the research corpus—**`R-05`** ([Luogu P4512 — Polynomial Euclidean Division](https://www.luogu.com.cn/problem/P4512), covered by the `divmod` contract in `§5.2`), **`R-39`** ([Luogu P4723 — Constant-Coefficient Homogeneous Linear Recurrence](https://www.luogu.com.cn/problem/P4723), covered by `bostan_mori` in `§5.3`), **`R-40`** ([Luogu P5487 — Berlekamp–Massey Template](https://www.luogu.com.cn/problem/P5487), covered by `berlekamp_massey` in `§5.4`), **`R-41`** ([Luogu P7439 — Bostan–Mori Template](https://www.luogu.com.cn/problem/P7439), covered by `§5.3`), **`R-64`** (Yukicoder No. 2677 & SPOJ `FIBOSUM` — Simple Linear Recurrence & Matrix Exponentiation Templates, covered by `§5.1`), and **`R-65`** ([AtCoder ABC 130 E — Common Subsequence](https://atcoder.jp/contests/abc130/tasks/abc130_e), 2D prefix-sum DP template)—are quarantined here as direct unit tests of the **Algorithm Contracts** in `§5.1–5.4`.
+:::

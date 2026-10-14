@@ -1,0 +1,1435 @@
+---
+title: "Chapter 10 — Implicit Functional Equations, Multivariate Newton Systems, Unlabeled Trees & Otter's Dissimilarity Theorem"
+---
+
+::: {.callout-note}
+## Prerequisites & Continuity (`Ch 01`–`Ch 04`, `Ch 09`)
+
+Before starting this chapter, ensure you are fluent with:
+
+- **[Chapter 1 — The Ring of Formal Power Series $K[[x]]$, $x$-adic Valuation & Newton Polynomial Inversion](ch01-ring-convolutions-newton-inv.qmd)**: The $x$-adic valuation $\operatorname{val}(F)$, units $[x^0]F(x) \in K^\times$, and the 1D quadratic-doubling paradigm $G_{k+1} = G_k(2 - F G_k) \pmod{x^{2^{k+1}}}$.
+- **[Chapter 2 — Formal Calculus ($D, \int, \vartheta$), Transcendental Primitives & First-Order Linear ODEs](ch02-calculus-frobenius-sparse-ode-newton.qmd)**: Formal derivatives and integrals, `ln`, `exp`, `sqrt`, `pow`, and the integrating-factor solution to $F'(x) + P(x)F(x) = Q(x)$.
+- **[Chapter 3 — Multisets, Integer Partitions, the Euler Transform & Pólya's Cycle Index](ch03-mset-partitions-euler-polya.qmd)**: The Euler transform $\operatorname{MSET}(A)(x) = \exp\!\left(\sum_{k \ge 1} \frac{A(x^k)}{k}\right)$ and the symmetric group cycle index $Z(S_d; s_1, \dots, s_d)$.
+- **[Chapter 4 — Exponential Generating Functions, $\operatorname{SET}/\operatorname{CYC}$, Boxed Product & Prüfer Trees](ch04-egf-set-cyc-boxed-prufer.qmd)**: Labeled rooted trees $\widehat{T}(x) = x e^{\widehat{T}(x)}$, the pointing operator $\Theta = x D$, and unrooting labeled structures by dividing by $n$.
+- **[Chapter 9 — Divide-and-Conquer FFT (CDQ) & Online Relaxed Convolution](ch09-cdq-fft-online-relaxed-convolution.qmd)**: Solving implicit recurrences online in $O(N \log^2 N)$ time via CDQ divide-and-conquer and `RelaxedConvolution`.
+:::
+
+## Learning Objectives
+
+By the end of this chapter, you will be able to:
+
+1. **Solve General 1D Implicit Equations $A(x, F(x)) = 0$ in $O(N \log N)$ Time**: State and prove the Formal Implicit Function Theorem over $K[[x]]$, verify the non-singular Jacobian condition $\frac{\partial A}{\partial y}(0, f_0) \in K^\times$, and apply both standard Newton doubling and the **Logarithmic Newton Speedup** for exponential tree equations $F(x) = x \exp(G(x, F(x)))$.
+2. **Master Coupled $2 \times 2$ / $d \times d$ Multivariate Systems & Integrating-Factor Differential Newton**: Solve coupled systems $\mathbf{\Phi}(x, \mathbf{F}(x)) = \mathbf{0}$ via $2 \times 2$ Jacobian inversion, choose systematically between algebraic elimination, $2 \times 2$ Newton, and `Ch 09` `RelaxedConvolution`, and solve non-linear differential equations $A(x, F(x), F'(x)) = 0$ in $O(N \log N)$ via **Integrating-Factor Differential Newton** (`#206 UOJ 50` Revisited).
+3. **Execute the Pólya–Euler Higher-Power Trick for Unlabeled Rooted Trees**: Derive Cayley's equation $T(x) = x \exp\!\left(\sum_{k \ge 1} \frac{T(x^k)}{k}\right)$ and Pólya cycle-index equations $A(x) = 1 + x Z(S_d; A(x), \dots, A(x^d))$, proving via $x$-adic valuation why all Frobenius-like higher powers $T(x^k)$ ($k \ge 2$) behave as **known constants** with zero derivative during the $2^s \to 2^{s+1}$ Newton doubling step.
+4. **Unroot Unlabeled Trees via Otter's Dissimilarity Theorem**: Explain why dividing $[x^n]T(x)$ by $n$ fails for unlabeled trees, prove Otter's orbit identity $|V/\operatorname{Aut}(\tau)| - \big(|E/\operatorname{Aut}(\tau)| - |E_{\text{sym}}(\tau)|\big) = 1$, and derive the generating function formula $t(x) = T(x) - \frac{1}{2}\big(T(x)^2 - T(x^2)\big)$ and its bounded-degree generalizations for chemical isomers (alkanes and alkenes).
+
+---
+
+## The Central Question
+
+In Chapters 1 and 2, we built $O(N \log N)$ Newton engines for specific closed-form primitives: `inv` solved $F(x) G(x) - 1 = 0$, `sqrt` solved $G(x)^2 - F(x) = 0$, and `exp` solved $\ln G(x) - F(x) = 0$. In each case, the target series $G(x)$ could be isolated as an explicit operation on a *known* series $F(x)$.
+
+What happens when a combinatorial class is defined **recursively in terms of itself**, so that $F(x)$ cannot be isolated in closed form?
+
+- A rooted labeled tree is a root vertex attached to a $\operatorname{SET}$ of rooted labeled subtrees: $\widehat{T}(x) = x \exp(\widehat{T}(x))$.
+- A rooted unlabeled tree is a root vertex attached to an $\operatorname{MSET}$ of rooted unlabeled subtrees: $T(x) = x \exp\!\left(\sum_{k \ge 1} \frac{T(x^k)}{k}\right)$.
+- A two-player impartial game on rooted trees partitions trees into losing ($\mathcal{P}$) positions $L(x)$ and winning ($\mathcal{N}$) positions $W(x)$ satisfying a coupled exponential system $L(x) = x \exp(W(x))$ and $L(x) + W(x) = x \exp(L(x) + W(x))$.
+- A labeled chain-reaction tree (`UOJ 50`) satisfies a non-linear first-order differential equation $F'(x) = \frac{1}{2}A(x)F(x)^2 + 1$.
+
+In Chapter 9, we saw that CDQ divide-and-conquer FFT and online `RelaxedConvolution` can solve many self-referential recurrences in $O(N \log^2 N)$ time. In this chapter, we upgrade Newton's method into a **universal $O(N \log N)$ implicit equation solver**—capable of handling general bivariate functional equations $A(x, F(x)) = 0$, coupled multivariate systems $\mathbf{\Phi}(x, \mathbf{F}(x)) = \mathbf{0}$, non-linear differential equations $A(x, F(x), F'(x)) = 0$, and Pólya–Euler symmetries $T(x^k)$—and then pair it with **Otter's Dissimilarity Theorem** to pass from rooted unlabeled trees to unrooted unlabeled trees without ever dividing by $n$.
+
+---
+
+## 10.1 Upgrading from 1D Primitives to General Implicit Functional Equations $A(x, F(x)) = 0$
+
+### Concrete Combinatorial Motivation
+
+Suppose we want to compute the first $N$ coefficients $f_0, f_1, \dots, f_{N-1}$ of a generating function $F(x) \in K[[x]]$ that is specified implicitly by a functional equation
+$$A\big(x, F(x)\big) = 0.$$
+Concrete examples appear across all of enumerative combinatorics:
+
+1. **Weighted Binary Trees (`CF 438E — The Child and Binary Tree`)**: A binary tree is either empty ($1$) or a root vertex whose weight comes from a polynomial $C(x)$ (with $[x^0]C(x) = 0$) attached to an ordered pair of binary trees:
+   $$F(x) = 1 + C(x) F(x)^2 \quad \Longleftrightarrow \quad A\big(x, F(x)\big) = C(x) F(x)^2 - F(x) + 1 = 0.$$
+2. **Rooted Labeled Trees with Degree Constraints**: If every vertex in a rooted labeled tree has out-degree weighted by an EGF $\Phi(y) = \sum_{d \ge 0} \frac{\phi_d}{d!} y^d$, then removing the root decomposes $F(x)$ into $x \cdot \Phi(F(x))$:
+   $$F(x) = x \Phi\big(F(x)\big) \quad \Longleftrightarrow \quad A\big(x, F(x)\big) = F(x) - x \Phi\big(F(x)\big) = 0.$$
+3. **Rooted Labeled Cacti (`LOJ 6569 / Luogu P5434`)**: Removing the root vertex splits a cactus into a $\operatorname{SET}$ of edges (each carrying a rooted cactus $F(x)$) and simple cycles (each carrying a sequence of $\ge 2$ rooted cacti up to reflection, $\frac{F(x)^2}{2(1 - F(x))}$):
+   $$F(x) = x \exp\!\left(F(x) + \frac{F(x)^2}{2\big(1 - F(x)\big)}\right) = x \exp\!\left(\frac{2F(x) - F(x)^2}{2\big(1 - F(x)\big)}\right).$$
+
+### When is $A(x, F(x))$ Algebraically Well-Defined?
+
+Before differentiating or inverting anything, we must state what $A(x, y)$ is and why substituting $y = F(x)$ produces a well-defined formal power series in $K[[x]]$ without infinite coefficient sums.
+
+Write $A(x, y) = \sum_{j=0}^{\infty} a_j(x) (y - f_0)^j \in K[[x]][[y - f_0]]$, where $f_0 = [x^0]F(x) \in K$ is the constant term of $F(x)$ and each $a_j(x) \in K[[x]]$. When we substitute $y = F(x)$, the difference $\widetilde{F}(x) = F(x) - f_0$ has positive valuation $\operatorname{val}(\widetilde{F}) \ge 1$, so $\operatorname{val}\!\big((F(x) - f_0)^j\big) \ge j$. Consequently, for every target degree $n \ge 0$, only terms with $j \le n$ can contribute to $[x^n]A(x, F(x))$! The infinite sum over $j$ is therefore **locally finite** in the $x$-adic topology.
+
+For the partial derivative with respect to the second slot $y$, we define the formal partial derivative $\frac{\partial A}{\partial y}(x, y)$ (also denoted $A_y(x, y)$ or $\partial_y A(x, y)$) by differentiating term-by-term with respect to $y$ while holding $x$ fixed:
+$$\frac{\partial A}{\partial y}(x, y) := \sum_{j=1}^{\infty} j\, a_j(x) (y - f_0)^{j-1}.$$
+
+### Theorem 10.1 (Formal Implicit Function Theorem & 1D Newton Iteration over $K[[x]]$)
+
+Let $K$ be a commutative ring, let $f_0 \in K$, and let $A(x, y) = \sum_{j \ge 0} a_j(x)(y - f_0)^j \in K[[x]][[y - f_0]]$. Suppose that the following two local algebraic hypotheses hold at $x = 0$:
+
+1. **Consistent Base Case**: $[x^0]A(0, f_0) = a_0(0) = 0$.
+2. **Invertible Initial Jacobian (Separability)**: $\frac{\partial A}{\partial y}(0, f_0) = a_1(0) \in K^\times$ is a multiplicative unit in $K$.
+
+Then:
+
+- **Uniqueness & Existence**: There exists a **unique** formal power series $F(x) \in K[[x]]$ with $[x^0]F(x) = f_0$ such that $A(x, F(x)) = 0$ in $K[[x]]$.
+- **Quadratic Newton Doubling**: Starting from the degree-$1$ base approximation $F_0(x) = f_0 \pmod{x^1}$, the sequence of polynomials $F_k(x) \in K[x]$ ($\deg F_k < 2^k$) defined recursively by
+  $$F_{k+1}(x) \equiv F_k(x) - \frac{A\big(x, F_k(x)\big)}{\frac{\partial A}{\partial y}\big(x, F_k(x)\big)} \pmod{x^{2^{k+1}}}$$
+  is well-defined for all $k \ge 0$ and satisfies $F_k(x) \equiv F(x) \pmod{x^{2^k}}$.
+
+#### Single-Step Verbalized Proof
+
+We prove the theorem by induction on the precision exponent $k$, simultaneously establishing existence, uniqueness, and the quadratic convergence of $F_k(x)$.
+
+1. **Bivariate Formal Taylor Expansion around $y = F_k(x)$**:
+   For any two series $F(x), F_k(x) \in K[[x]]$ sharing the constant term $f_0$, expand each term $(y - f_0)^j = \big((F_k - f_0) + (F - F_k)\big)^j$ by the binomial theorem and collect powers of the error $\Delta_k(x) := F(x) - F_k(x)$:
+   $$A\big(x, F(x)\big) = A\big(x, F_k(x)\big) + \frac{\partial A}{\partial y}\big(x, F_k(x)\big)\big(F(x) - F_k(x)\big) + \sum_{r=2}^{\infty} A^{[r]}\big(x, F_k(x)\big)\big(F(x) - F_k(x)\big)^r,$$
+   where $A^{[r]}(x, y) = \sum_{j \ge r} \binom{j}{r} a_j(x) (y - f_0)^{j-r} \in K[[x]][[y - f_0]]$ is the $r$-th Hasse–Schmidt divided derivative of $A$ with respect to $y$ (note that $\binom{j}{r}$ is an integer, so this expansion requires **no division by $r!$** and holds in arbitrary characteristic!).
+2. **Vanishing of Higher-Order Terms Modulo $x^{2^{k+1}}$**:
+   By the induction hypothesis, $F(x) \equiv F_k(x) \pmod{x^{2^k}}$, which means $\operatorname{val}(F - F_k) \ge 2^k$. Therefore, for every $r \ge 2$,
+   $$\operatorname{val}\!\Big(\big(F(x) - F_k(x)\big)^r\Big) = r \cdot \operatorname{val}(F - F_k) \ge 2 \cdot 2^k = 2^{k+1}.$$
+   Reducing the Taylor expansion modulo $x^{2^{k+1}}$ annihilates the entire sum over $r \ge 2$, leaving the exact linear congruence:
+   $$A\big(x, F(x)\big) \equiv A\big(x, F_k(x)\big) + \frac{\partial A}{\partial y}\big(x, F_k(x)\big)\big(F(x) - F_k(x)\big) \pmod{x^{2^{k+1}}}.$$
+3. **Invertibility of the Denominator $\frac{\partial A}{\partial y}(x, F_k(x))$**:
+   What is the constant term $[x^0]\frac{\partial A}{\partial y}(x, F_k(x))$? Since $[x^0]F_k(x) = f_0$, evaluating at $x = 0$ gives
+   $$[x^0]\frac{\partial A}{\partial y}\big(x, F_k(x)\big) = \frac{\partial A}{\partial y}(0, f_0) = a_1(0) \in K^\times.$$
+   By Theorem 1.1 of Chapter 1, a formal power series is a unit in $K[[x]]$ (and hence in $K[[x]]/(x^{2^{k+1}})$) if and only if its constant term is a unit in $K$.
+4. **Solving for $F(x) \bmod x^{2^{k+1}}$**:
+   Setting $A(x, F(x)) = 0$ and multiplying both sides of the congruence by $\left(\frac{\partial A}{\partial y}(x, F_k(x))\right)^{-1} \bmod x^{2^{k+1}}$ uniquely forces
+   $$F(x) \equiv F_k(x) - \frac{A\big(x, F_k(x)\big)}{\frac{\partial A}{\partial y}\big(x, F_k(x)\big)} \equiv F_{k+1}(x) \pmod{x^{2^{k+1}}}. \qquad \blacksquare$$
+
+::: {.callout-tip}
+## The Diagnostic Signal & Reverse-Engineering Scratchpad: 1D Implicit Newton & The Logarithmic Speedup
+
+**Diagnostic Signal**: You have a recursive combinatorial specification for $F(x)$ where **all** coefficients $f_0, f_1, \dots, f_N$ are needed (or $F(x)$ is not of the simple Lagrange form $x\Phi(F)$), and evaluating $A(x, F_k)$ and $\partial_y A(x, F_k)$ takes $O(2^k \log(2^k))$ time using known FPS primitives (`mul`, `inv`, `ln`, `exp`).
+
+**Reverse-Engineering Scratchpad**:
+
+1. **Write the equation in zero-residual form $A(x, y) = 0$**: Treat $x$ as a constant parameter and $y = F(x)$ as the variable being solved for.
+2. **Check the Constant-Term Jacobian before differentiating**: Evaluate $f_0 = F(0)$. Check that $A(0, f_0) = 0$ and $\partial_y A(0, f_0) \in K^\times$.
+3. **The Logarithmic Newton Speedup for $F(x) = x \exp\!\big(G(x, F(x))\big)$**:
+   Many labeled tree and graph specifications have the exponential form $F(x) = x \exp\!\big(G(x, F(x))\big)$, where $F(0) = 0$ and $[x^1]F(x) = \exp(G(0, 0)) = 1$.
+   - *Naive Form*: $A(x, y) = y - x \exp(G(x, y)) = 0$. Every doubling step $2^k \to 2^{k+1}$ must compute $\exp(G(x, F_k)) \bmod x^{2^{k+1}}$, calling polynomial `exp` inside the Newton loop!
+   - *Logarithmic Form*: Write $F(x) = x \widetilde{F}(x)$ with $\widetilde{F}(0) = 1$, divide by $x$, and take formal logarithms:
+     $$\widetilde{A}(x, y) := \ln\!\left(\frac{y}{x}\right) - G(x, y) = 0.$$
+     Differentiating with respect to $y$ gives $\frac{\partial \widetilde{A}}{\partial y}(x, y) = \frac{1}{y} - \frac{\partial G}{\partial y}(x, y) = \frac{1 - y G_y(x, y)}{y}$. Substituting into Newton's formula $F_{k+1} = F_k - \widetilde{A} / \widetilde{A}_y$ multiplies the $1/F_k$ into the numerator:
+     $$F_{k+1}(x) \equiv F_k(x) \left( 1 - \frac{\ln\!\big(F_k(x)/x\big) - G\big(x, F_k(x)\big)}{1 - F_k(x)\,\frac{\partial G}{\partial y}\big(x, F_k(x)\big)} \right) \pmod{x^{2^{k+1}}}.$$
+     Notice what happened: **polynomial `exp` has completely vanished from the Newton loop**, replaced by a single call to `ln` on the unit series $F_k(x)/x$, cutting the constant factor in half!
+:::
+
+### Worked Example & Hand-Checkable Trace ($N = 4$): `CF 438E — The Child and Binary Tree` Revisited
+
+Let us trace Theorem 10.1 on the quadratic binary-tree equation
+$$A(x, y) = C(x) y^2 - y + 1 = 0,$$
+where $C(x) = \sum_{i \ge 1} c_i x^i$ with $[x^0]C(x) = 0$.
+
+1. **Base Case & Partial Derivative**:
+   At $x = 0$, $C(0) = 0$, so $A(0, f_0) = -f_0 + 1 = 0 \implies f_0 = 1$.
+   Differentiating $A(x, y) = C(x)y^2 - y + 1$ with respect to $y$ (holding $x$ and therefore $C(x)$ fixed) gives:
+   $$\frac{\partial A}{\partial y}(x, y) = 2 C(x) y - 1.$$
+   At $(0, f_0) = (0, 1)$, we have $\frac{\partial A}{\partial y}(0, 1) = 2(0)(1) - 1 = -1 \in K^\times$, which is invertible in every ring $K$ (even in characteristic $2$!).
+2. **Newton Update Formula**:
+   Substituting $A(x, F_k) = C F_k^2 - F_k + 1$ and $\partial_y A(x, F_k) = 2 C F_k - 1$ into Theorem 10.1 yields:
+   $$F_{k+1}(x) \equiv F_k(x) - \frac{C(x) F_k(x)^2 - F_k(x) + 1}{2 C(x) F_k(x) - 1} \equiv \frac{C(x) F_k(x)^2 - 1}{2 C(x) F_k(x) - 1} \pmod{x^{2^{k+1}}}.$$
+3. **Explicit Coefficient Trace for $C(x) = x$ (Catalan Numbers) up to $x^4$**:
+   - **Init ($2^0 = 1$)**: $F_0(x) = 1 \pmod{x^1}$.
+   - **Step $k = 0$ ($1 \to 2$, working $\bmod x^2$)**:
+     $$C(x)F_0(x)^2 - 1 = x(1)^2 - 1 = -1 + x, \qquad 2C(x)F_0(x) - 1 = 2x - 1 = -(1 - 2x).$$
+     Since $(1 - 2x)^{-1} \equiv 1 + 2x \pmod{x^2}$, we get:
+     $$F_1(x) \equiv \frac{1 - x}{1 - 2x} \equiv (1 - x)(1 + 2x) \equiv 1 + x \pmod{x^2}.$$
+   - **Step $k = 1$ ($2 \to 4$, working $\bmod x^4$)**:
+     With $F_1(x) = 1 + x$, we have $F_1(x)^2 = 1 + 2x + x^2$, so:
+     $$1 - C(x)F_1(x)^2 = 1 - x - 2x^2 - x^3, \qquad 1 - 2C(x)F_1(x) = 1 - 2x - 2x^2.$$
+     Inverting $1 - 2x(1 + x) \bmod x^4$ gives $1 + 2x(1+x) + 4x^2(1+x)^2 + 8x^3 \equiv 1 + 2x + 6x^2 + 16x^3 \pmod{x^4}$. Multiplying by $1 - x - 2x^2 - x^3 \bmod x^4$:
+     $$F_2(x) \equiv (1 - x - 2x^2 - x^3)(1 + 2x + 6x^2 + 16x^3) \equiv 1 + x + 2x^2 + 5x^3 \pmod{x^4}.$$
+     One more step gives $F_3(x) \equiv 1 + x + 2x^2 + 5x^3 + 14x^4 + \dots \pmod{x^8}$, matching the Catalan numbers $C_0 = 1, C_1 = 1, C_2 = 2, C_3 = 5, C_4 = 14$!
+
+::: {.callout-note}
+## Multi-Resolution Landmark (`Revisited #2`): Three Ways to Solve `CF 438E — The Child and Binary Tree`
+
+We have now solved $C(x)F(x)^2 - F(x) + 1 = 0 \bmod x^N$ in three distinct ways across the textbook. Comparing them reveals the exact trade-offs between closed-form primitives, online CDQ, and direct implicit Newton:
+
+| Resolution | Chapter & Technique | Core Formula / Recurrence | Asymptotic Time | NTT Calls per Doubling / Level | Key Advantage |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Method 1** | **[Ch 02](ch02-calculus-frobenius-sparse-ode-newton.qmd)**: Quadratic Formula + `sqrt` + `inv` | $F(x) = \frac{2}{1 + \sqrt{1 - 4C(x)}}$ | $O(N \log N)$ | `sqrt` loop + 1 outer `inv` | Zero new code if `sqrt` and `inv` are already in your library. |
+| **Method 2** | **[Ch 09](ch09-cdq-fft-online-relaxed-convolution.qmd)**: Online `RelaxedConvolution` | $f_n = [x^n] C(x) \cdot (F * F)(x)$ | $O(N \log^2 N)$ | $O(\log^2 N)$ short NTTs | Shortest code (~12 lines); never differentiates or inverts. |
+| **Method 3** | **Ch 10 (Here)**: Direct 1D Implicit Newton | $F_{2d} \equiv \frac{C F_d^2 - 1}{2C F_d - 1} \pmod{x^{2d}}$ | $O(N \log N)$ | 1 `inv` + 2 `mul` per step | **Avoids `sqrt` entirely** and works even in characteristic $p = 2$ (where $\frac{1}{2}$ in `sqrt` fails)! |
+:::
+
+::: {.callout-warning}
+## Failure Mode & Remedy: Singular Partial Derivative $\frac{\partial A}{\partial y}(0, f_0) = 0$ & Valuation Shifting
+
+**The Trap**: In 1D Implicit Newton Iteration $F_{k+1} = F_k - A(x, F_k) / \partial_y A(x, F_k) \bmod x^{2^{k+1}}$, polynomial inversion is called on the denominator $D_k(x) = \partial_y A(x, F_k(x))$. By Theorem 1.1, $D_k(x)$ is invertible in $K[[x]]/(x^{2^{k+1}})$ **if and only if** its constant term $[x^0] D_k(x) = \partial_y A(0, f_0)$ is a unit in $K$.
+This precondition fails in two common scenarios:
+
+1. **Unshifted Positive Valuation ($x$-Factor Trap)**: Suppose we want to solve the Catalan equation $F(x) = 1 + x F(x)^2$, and a contestant first multiplies by $x$ to write
+   $$A_{\text{bad}}(x, y) = x^2 y^2 - x y + x = 0 \quad \text{or} \quad B_{\text{bad}}(x, y) = y^2 - x^2 = 0.$$
+   In $A_{\text{bad}}(x, y) = x(x y^2 - y + 1)$, evaluating the partial derivative at $x = 0$ gives
+   $$\frac{\partial A_{\text{bad}}}{\partial y}(x, y) = 2x^2 y - x \implies \frac{\partial A_{\text{bad}}}{\partial y}(0, f_0) = 0.$$
+   Similarly, in $P(x, y) = y^2 - x^2 = 0$ with $f_0 = 0$, $\partial_y P(0, 0) = 2 f_0 = 0$ (where two branches $y = +x$ and $y = -x$ collide at $f_0 = 0$). Because $[x^0]\partial_y A_{\text{bad}}(x, F_k) = 0$, calling `inv` on the denominator crashes with division by zero.
+2. **Characteristic-$p$ Ramification**: If $A(x, y) = y^2 - (1 + x) = 0$ in characteristic $p = 2$, then $\partial_y A(x, y) = 2y \equiv 0 \pmod 2$.
+
+**The Remedy (Valuation Shifting before Newton)**:
+
+1. **Cancel Common Powers of $x$ from $A(x, y)$**: If every term of $A(x, y)$ is divisible by $x^v$, divide $A(x, y)$ by $x^v$ *before* starting Newton's method so that $\frac{\partial A}{\partial y}(0, f_0) \in K^\times$.
+2. **Factor Out Positive Valuation of $F(x)$**: When $\operatorname{val}(F) = v \ge 1$ and $\partial_y A(0, 0) = 0$, substitute $F(x) = x^v \widetilde{F}(x)$ with $\widetilde{F}(0) = c_v \neq 0$, divide the entire equation by $x^{m v}$ to clear the leading power of $x$, and select the desired non-zero root $c_v$ of the leading coefficient polynomial so that the deflated Jacobian $\partial_{\tilde{y}} \widetilde{A}(0, c_v) \neq 0$ is invertible.
+:::
+
+::: {.callout-important}
+## Algorithm Contract: 1D Implicit Newton Engine
+
+- **Input**: Target degree bound $N \ge 1$; an oracle evaluating the residual $R_d(x) = A(x, F_d(x)) \bmod x^{2d}$ and derivative $D_d(x) = \frac{\partial A}{\partial y}(x, F_d(x)) \bmod x^{2d}$ for any polynomial $F_d(x)$ of degree $< d$; initial constant term $f_0 \in K$.
+- **Preconditions**: $A(0, f_0) = 0$ and $\frac{\partial A}{\partial y}(0, f_0) \in K^\times$ (plus $p > N$ if $A$ invokes `ln` or `exp`).
+- **Output**: $F(x) \bmod x^N = \sum_{n=0}^{N-1} f_n x^n$.
+- **Complexity**: $T(N) = T(N/2) + T_{\text{eval}}(N) + T_{\text{inv}}(N) = O(N \log N)$ operations in $K$, $O(N)$ auxiliary space.
+- **Loop Invariant**: At the start of iteration $d = 2^k$, $\deg F_d < d$ and $A(x, F_d(x)) \equiv 0 \pmod{x^d}$. Therefore, the lower $d$ coefficients $[x^0 \dots x^{d-1}]A(x, F_d(x))$ are identically zero, and subtracting $A(x, F_d) \cdot (\partial_y A(x, F_d))^{-1} \bmod x^{2d}$ leaves the lower $d$ coefficients of $F_d(x)$ untouched while annihilating the residual across $[x^d \dots x^{2d-1}]$.
+:::
+
+---
+
+## 10.2 Coupled $2 \times 2$ / $d \times d$ Multivariate Newton Systems & Integrating-Factor Differential Newton
+
+### Concrete Combinatorial Motivation
+
+In many advanced enumeration problems, a single generating function is not enough:
+
+1. **Multi-Colored / Multi-Type Trees (`yukicoder 3029`, `fps_24_f`)**: A rooted tree has two vertex colors (say Red $F(x)$ and Blue $G(x)$) whose branching rules depend on each other, producing a coupled system
+   $$\Phi_1\big(x, F(x), G(x)\big) = 0, \qquad \Phi_2\big(x, F(x), G(x)\big) = 0.$$
+2. **Differential-Algebraic Specifications (`#206 UOJ 50 — [UR #3] 链式反应`)**: A recursive specification involves **pointing or ordered-label insertion**, which translates combinatorially into the derivative $F'(x)$ paired with nonlinear powers $F(x)^2$:
+   $$F'(x) = \frac{1}{2} A(x) F(x)^2 + 1, \qquad F(0) = f_0$$
+   (with $f_0 = 0$ in `UOJ 50` where trees have size $\ge 1$, or $f_0 = 1$ when an empty structure of weight $1$ is included).
+
+How do we lift our $O(N \log N)$ Newton engine to coupled multivariate systems and nonlinear differential equations?
+
+### Theorem 10.2 (Coupled Multivariate Newton Iteration & Explicit $2 \times 2$ Jacobian Inversion)
+
+Let $\mathbf{F}(x) = (F_1(x), \dots, F_d(x))^T \in K[[x]]^d$ be a vector of $d$ formal power series with initial constant vector $\mathbf{f}_0 = \mathbf{F}(0) \in K^d$, and let $\mathbf{\Phi}(x, \mathbf{y}) = (\Phi_1(x, \mathbf{y}), \dots, \Phi_d(x, \mathbf{y}))^T \in K[[x]][[\mathbf{y} - \mathbf{f}_0]]^d$. Define the $d \times d$ **Jacobian matrix**
+$$J_{\mathbf{\Phi}}(x, \mathbf{y}) := \begin{pmatrix} \frac{\partial \Phi_1}{\partial y_1} & \cdots & \frac{\partial \Phi_1}{\partial y_d} \\ \vdots & \ddots & \vdots \\ \frac{\partial \Phi_d}{\partial y_1} & \cdots & \frac{\partial \Phi_d}{\partial y_d} \end{pmatrix} \in M_d\big(K[[x]][[\mathbf{y} - \mathbf{f}_0]]\big).$$
+If $\mathbf{\Phi}(0, \mathbf{f}_0) = \mathbf{0}$ and the scalar determinant at $x = 0$ is a unit in $K$:
+$$\det J_{\mathbf{\Phi}}(0, \mathbf{f}_0) \in K^\times,$$
+then there exists a unique solution $\mathbf{F}(x) \in K[[x]]^d$ with $\mathbf{F}(0) = \mathbf{f}_0$ satisfying $\mathbf{\Phi}(x, \mathbf{F}(x)) = \mathbf{0}$. Moreover, starting from $\mathbf{F}_0(x) = \mathbf{f}_0 \bmod x^1$, the iteration
+$$\mathbf{F}_{k+1}(x) \equiv \mathbf{F}_k(x) - J_{\mathbf{\Phi}}\big(x, \mathbf{F}_k(x)\big)^{-1} \mathbf{\Phi}\big(x, \mathbf{F}_k(x)\big) \pmod{x^{2^{k+1}}}$$
+doubles the number of correct coefficients at every step.
+
+#### Explicit $2 \times 2$ Cramér / Adjugate Update Formula
+
+For a coupled $2 \times 2$ system $\Phi_1(x, F, G) = 0$ and $\Phi_2(x, F, G) = 0$, let $J_{11} = \partial_F \Phi_1$, $J_{12} = \partial_G \Phi_1$, $J_{21} = \partial_F \Phi_2$, and $J_{22} = \partial_G \Phi_2$ evaluated at $(x, F_k(x), G_k(x)) \bmod x^{2^{k+1}}$. By the adjugate formula for a $2 \times 2$ matrix, we need **only one scalar polynomial inversion** of the determinant $\Delta_{\det}(x) := (J_{11} J_{22} - J_{12} J_{21}) \bmod x^{2^{k+1}}$:
+$$\begin{pmatrix} F_{k+1}(x) \\ G_{k+1}(x) \end{pmatrix} \equiv \begin{pmatrix} F_k(x) \\ G_k(x) \end{pmatrix} - \Delta_{\det}(x)^{-1} \begin{pmatrix} J_{22}(x) \Phi_1(x) - J_{12}(x) \Phi_2(x) \\ -J_{21}(x) \Phi_1(x) + J_{11}(x) \Phi_2(x) \end{pmatrix} \pmod{x^{2^{k+1}}}.$$
+
+::: {.callout-tip}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: Elimination vs. $2 \times 2$ Jacobian Newton vs. `Ch 09` `RelaxedConvolution`
+
+When faced with a coupled system of equations for $(F_1(x), \dots, F_d(x))$, do not blindly write a $d \times d$ matrix inverter! Run this 3-step diagnostic filter first:
+
+1. **Can one variable be eliminated algebraically? (Always check first!)**:
+   In many two-colored tree problems (such as `yukicoder 3029` or `fps_24_s`), one equation has the form $G(x) = \psi(x, F(x))$ (e.g., $G(x) = x \exp(F(x))$ or $W(x) = L(x)(e^{L(x)} - 1)$). Substituting $G(x)$ directly into $\Phi_1(x, F(x), G(x)) = 0$ collapses the system into a **1D implicit equation** $A(x, F(x)) = 0$, saving half the polynomial multiplications!
+2. **When to use $2 \times 2$ Coupled Jacobian Newton ($O(N \log N)$)**:
+   Use the explicit $2 \times 2$ adjugate update when $F$ and $G$ are symmetrically entangled (e.g., $F = x \exp(F + G^2)$ and $G = x \exp(F^2 + G)$) so neither can be isolated without introducing nested inverses, and $N \ge 2 \times 10^5$ requires $O(N \log N)$ speed.
+3. **When to fall back to `Ch 09` `RelaxedConvolution` ($O(N \log^2 N)$, `Revisited #7`)**:
+   If you have a $3 \times 3$ or $4 \times 4$ coupled system with $N \le 10^5$ and algebraic operations (`mul`, `inv`, `exp`), writing out $16$ partial derivatives and inverting a $4 \times 4$ polynomial matrix is error-prone and has a huge constant factor. Instead, chain $d$ instances of `Ch 09` `RelaxedConvolution` to extract coefficients $n = 0, 1, \dots, N$ online in $O(d N \log^2 N)$ time with zero derivatives!
+:::
+
+::: {.callout-note icon=false}
+## Algorithm Contract: Coupled $2 \times 2$ Jacobian Newton Iteration
+
+- **Preconditions**: Coupled system $\Phi_1(x, F, G) = 0, \Phi_2(x, F, G) = 0$ with known constant terms $(f_0, g_0)$ such that $\Phi_1(0, f_0, g_0) = \Phi_2(0, f_0, g_0) = 0$ and the scalar Jacobian determinant $\det J(0, f_0, g_0) \not\equiv 0 \pmod p$.
+- **Postconditions**: Returns the unique formal power series pair $(F(x), G(x)) \bmod x^N$.
+- **Index & Truncation Boundaries**: At step $d = 2^k$, all four partial derivatives $J_{ij}(x)$ and residuals $\Phi_1, \Phi_2$ are evaluated modulo $x^{2d}$, and $\Delta_{\det}(x)^{-1}$ is inverted modulo $x^{2d}$.
+- **Complexity**: $O(N \log N)$ time and $O(N)$ space (using $1$ polynomial inversion and $O(1)$ multiplications per doubling step via Cramér's adjugate formula).
+- **1-Sentence Loop Invariant**: At the end of step $d = 2^k$, $(F_k(x), G_k(x))$ satisfies $\Phi_1(x, F_k, G_k) \equiv 0 \pmod{x^d}$ and $\Phi_2(x, F_k, G_k) \equiv 0 \pmod{x^d}$.
+:::
+
+### Integrating-Factor Differential Newton (`#206 UOJ 50` Archetype)
+
+Now consider a functional equation that couples $F(x)$ with its **formal derivative** $F'(x)$:
+$$F'(x) = \Phi\big(x, F(x)\big), \qquad [x^0]F(x) = f_0.$$
+For example, in `#206 UOJ 50 — [UR #3] 链式反应`, we are given a degree-constraint polynomial $A(x)$ and must solve the non-linear Riccati-type differential equation
+$$F'(x) = \frac{1}{2} A(x) F(x)^2 + 1, \qquad F(0) = f_0$$
+modulo $998244353$ for $N \le 2 \times 10^5$ (where $f_0 = 0$ in `UOJ 50` itself, or any given initial value $f_0 \in K$ in general initial-value problems).
+
+#### Why Naive Algebraic Newton Fails on $F'(x) - \Phi(x, F(x)) = 0$
+
+Suppose we know $F_k(x) \equiv F(x) \pmod{x^{2^k}}$ and write $F(x) = F_k(x) + \Delta(x)$ where $\operatorname{val}(\Delta) \ge 2^k$. Notice that
+$$\operatorname{val}\big(\Delta'(x)\big) \ge 2^k - 1, \qquad \operatorname{val}\big(\Delta(x)\big) \ge 2^k, \qquad \operatorname{val}\big(\Delta(x)^2\big) \ge 2^{k+1}.$$
+Both $\Delta'(x)$ and $\Delta(x)$ are **first-order** terms (having valuation $< 2^{k+1}$)! If you ignore $\Delta'(x)$ or treat $F'(x)$ as an algebraic constant during the Newton step, you fail to cancel terms of degree $2^k \dots 2^{k+1}-1$. Instead, we must keep **both** linear terms $\Delta'(x)$ and $\frac{\partial \Phi}{\partial y}(x, F_k)\Delta(x)$!
+
+#### Reverse-Engineering Scratchpad: Linearizing a Non-Linear ODE into a 1st-Order Linear ODE
+
+Let us substitute $F(x) = F_k(x) + \Delta(x)$ into $F'(x) - \Phi(x, F(x)) = 0$ and expand in powers of $\Delta(x)$:
+
+1. **Taylor Expand the Right-Hand Side Modulo $x^{2^{k+1}}$**:
+   Since $\operatorname{val}(\Delta) \ge 2^k$, we have $\Delta(x)^2 \equiv 0 \pmod{x^{2^{k+1}}}$. Thus:
+   $$\Phi\big(x, F_k(x) + \Delta(x)\big) \equiv \Phi\big(x, F_k(x)\big) + \frac{\partial \Phi}{\partial y}\big(x, F_k(x)\big) \Delta(x) \pmod{x^{2^{k+1}}}.$$
+2. **Collect First-Order Terms in $\Delta'(x)$ and $\Delta(x)$**:
+   Substituting $F'(x) = F_k'(x) + \Delta'(x)$ gives:
+   $$F_k'(x) + \Delta'(x) \equiv \Phi\big(x, F_k(x)\big) + \frac{\partial \Phi}{\partial y}\big(x, F_k(x)\big) \Delta(x) \pmod{x^{2^{k+1}}}.$$
+   Rearranging all terms involving the unknown correction $\Delta(x)$ to the left-hand side produces a **first-order linear ODE** for $\Delta(x)$ modulo $x^{2^{k+1}}$:
+   $$\Delta'(x) + P_k(x) \Delta(x) \equiv Q_k(x) \pmod{x^{2^{k+1}}}, \qquad \Delta(0) = 0,$$
+   where the known coefficient series are:
+   $$P_k(x) := -\frac{\partial \Phi}{\partial y}\big(x, F_k(x)\big) \bmod x^{2^{k+1}}, \qquad Q_k(x) := \Big(\Phi\big(x, F_k(x)\big) - F_k'(x)\Big) \bmod x^{2^{k+1}}.$$
+3. **Solve via the `Ch 02` Integrating Factor $\mu_k(x)$**:
+   By Section 2.4 of Chapter 2, define the integrating factor
+   $$\mu_k(x) := \exp\!\left(\int_0^x P_k(t)\,dt\right) \bmod x^{2^{k+1}}.$$
+   Since $\mu_k'(x) = P_k(x) \mu_k(x)$, multiplying the linearized ODE by $\mu_k(x)$ collapses the left-hand side by the product rule into an exact derivative:
+   $$\big(\mu_k(x) \Delta(x)\big)' \equiv \mu_k(x) Q_k(x) \pmod{x^{2^{k+1}}-1}.$$
+   Integrating term-by-term with $\Delta(0) = 0$ and multiplying by $\mu_k(x)^{-1}$ yields the **Integrating-Factor Differential Newton Update**:
+   $$F_{k+1}(x) \equiv F_k(x) + \mu_k(x)^{-1} \int_0^x \mu_k(t)\Big(\Phi\big(t, F_k(t)\big) - F_k'(t)\Big)\,dt \pmod{x^{2^{k+1}}}.$$
+   Alternatively, substituting $\Delta(x) = F_{k+1}(x) - F_k(x)$ before integrating writes $\big(\mu_k F_{k+1}\big)' \equiv \mu_k \big(\Phi(x, F_k) + P_k F_k\big)$, so:
+   $$F_{k+1}(x) \equiv \mu_k(x)^{-1} \left( f_0 + \int_0^x \mu_k(t)\Big(\Phi\big(t, F_k(t)\big) - \frac{\partial \Phi}{\partial y}\big(t, F_k(t)\big) F_k(t)\Big)\,dt \right) \pmod{x^{2^{k+1}}}.$$
+
+### Worked Example & Hand-Checkable Trace ($N = 4$): `#206 UOJ 50 — [UR #3] 链式反应` Revisited
+
+In the Riccati ODE $\Phi(x, y) = \frac{1}{2}A(x)y^2 + 1$ with initial value $F(0) = f_0$ (for `UOJ 50` itself, set $f_0 = 0$; below we trace the non-zero initial value $f_0 = 1$ so that $\mu_1(x)$ is already non-trivial by $k = 1$), we have:
+$$\frac{\partial \Phi}{\partial y}(x, y) = A(x) y \implies P_k(x) = -A(x) F_k(x), \qquad \Phi(x, F_k) - \frac{\partial \Phi}{\partial y}(x, F_k) F_k = 1 - \frac{1}{2} A(x) F_k(x)^2.$$
+Thus each doubling step $2^k \to 2^{k+1}$ computes $\mu_k(x) = \exp\!\left(-\int_0^x A(t) F_k(t)\,dt\right) \bmod x^{2^{k+1}}$ and updates:
+$$F_{k+1}(x) \equiv \mu_k(x)^{-1} \left( f_0 + \int_0^x \mu_k(t)\left(1 - \frac{1}{2} A(t) F_k(t)^2\right) dt \right) \pmod{x^{2^{k+1}}}.$$
+
+Let us trace this by hand for $A(x) = 2x$ and $f_0 = 1$ (so $F'(x) = x F(x)^2 + 1, F(0) = 1$) up to $x^4$:
+
+- **True Solution Check**: Expanding $F(x) = 1 + f_1 x + f_2 x^2 + f_3 x^3 + \dots$ directly from $F'(x) = x F(x)^2 + 1$:
+  - $[x^0]F' = 1 \implies f_1 = 1$.
+  - $[x^1]F' = 2f_2 = [x^0]F^2 = 1 \implies f_2 = \frac{1}{2}$.
+  - $[x^2]F' = 3f_3 = [x^1]F^2 = 2f_1 = 2 \implies f_3 = \frac{2}{3}$.
+  So $F(x) \equiv 1 + x + \frac{1}{2}x^2 + \frac{2}{3}x^3 \pmod{x^4}$.
+- **Differential Newton Trace**:
+  - **Init ($2^0 = 1$)**: $F_0(x) = 1 \pmod{x^1}$.
+  - **Step $k = 0$ ($1 \to 2$, working $\bmod x^2$)**:
+    $P_0(x) = -2x(1) = -2x$, so $\int_0^x P_0(t)\,dt = -x^2 \equiv 0 \pmod{x^2}$, giving $\mu_0(x) \equiv 1 \pmod{x^2}$.
+    The integrand is $\mu_0(t)(1 - t F_0(t)^2) \equiv 1 \pmod{x^1}$, whose integral $\bmod x^2$ is $x$. Thus $F_1(x) \equiv 1 + x \pmod{x^2}$.
+  - **Step $k = 1$ ($2 \to 4$, working $\bmod x^4$)**:
+    With $F_1(x) = 1 + x$, we compute $P_1(t) \bmod t^3$ (since integrating shifts degree up by $1$):
+    $$P_1(t) = -2t(1 + t) = -2t - 2t^2 \implies \int_0^x P_1(t)\,dt = -x^2 - \frac{2}{3}x^3 \pmod{x^4}.$$
+    Exponentiating modulo $x^4$:
+    $$\mu_1(x) = \exp\!\left(-x^2 - \frac{2}{3}x^3\right) \equiv 1 - x^2 - \frac{2}{3}x^3 \pmod{x^4}, \qquad \mu_1(x)^{-1} \equiv 1 + x^2 + \frac{2}{3}x^3 \pmod{x^4}.$$
+    Next, evaluate the integrand $\mu_1(t)\big(1 - t F_1(t)^2\big) \bmod t^3$:
+    $$1 - t(1+t)^2 = 1 - t - 2t^2 - t^3 \equiv 1 - t - 2t^2 \pmod{t^3},$$
+    $$\mu_1(t)\big(1 - t(1+t)^2\big) \equiv (1 - t^2)(1 - t - 2t^2) \equiv 1 - t - 3t^2 \pmod{t^3}.$$
+    Integrating term-by-term and adding $f_0 = 1$ gives:
+    $$1 + \int_0^x (1 - t - 3t^2)\,dt = 1 + x - \frac{1}{2}x^2 - x^3 \pmod{x^4}.$$
+    Finally, multiplying by $\mu_1(x)^{-1} \equiv 1 + x^2 + \frac{2}{3}x^3 \pmod{x^4}$:
+    $$F_2(x) \equiv \left(1 + x^2 + \frac{2}{3}x^3\right)\left(1 + x - \frac{1}{2}x^2 - x^3\right) \equiv 1 + x + \frac{1}{2}x^2 + \frac{2}{3}x^3 \pmod{x^4},$$
+    matching every coefficient of the true expansion!
+
+::: {.callout-note}
+## Multi-Resolution Landmark: `UOJ 50 — [UR #3] 链式反应` (`Ch 09` CDQ vs. `Ch 10` Differential Newton)
+
+In **[Chapter 9, Mastery 1 (`#206`)](ch09-cdq-fft-online-relaxed-convolution.qmd)**, we solved $F'(x) = \frac{1}{2}A(x)F(x)^2 + 1$ ($F(0) = 0$) by extracting the coefficient recurrence $(n+1)\tilde{f}_{n+1} = [n=0] + \frac{1}{2}\sum_{i+j+k=n} \tilde{a}_i \tilde{f}_j \tilde{f}_k$ and running chained `RelaxedConvolution` / CDQ divide-and-conquer FFT in $O(N \log^2 N)$ time. Here in **Chapter 10**, Integrating-Factor Differential Newton solves the exact same equation in **$O(N \log N)$ time**—removing a full $\log N$ factor by linearizing the differential operator $D - A(x)F_k(x)$ at each doubling scale!
+:::
+
+::: {.callout-warning}
+## Failure Mode & Remedy: Characteristic-$p$ Integration Barrier in Differential Newton
+
+**The Trap**: Unlike algebraic Newton ($A(x, F(x)) = 0$), which only divides by $[x^0]\partial_y A(0, f_0)$ and therefore works even when $p \le N$ (as long as $A$ is a polynomial), Integrating-Factor Differential Newton applies the formal integral $\int_0^x (\cdot)\,dt$ twice per doubling step (once for $\mu_k(x)$ and once for the inhomogeneous integral). Since $\int x^{m-1}\,dx = \frac{x^m}{m}$, this divides by every integer $m \in \{1, 2, \dots, N-1\}$.
+
+**The Remedy**: Before running Integrating-Factor Differential Newton in $\mathbb{F}_p[[x]]$, verify that the prime modulus satisfies **$p > N$** (such as $p = 998244353$ with $N \le 2 \times 10^5$). If $p \le N$, formal integration is obstructed at $[x^{p-1}] \mapsto \frac{x^p}{p}$ and cannot be used.
+:::
+
+::: {.callout-important}
+## Algorithm Contract: Integrating-Factor Differential Newton (`F' = \Phi(x, F)`)
+
+- **Input**: Target degree bound $N \ge 1$; initial value $f_0 = F(0) \in K$; oracle for $\Phi(x, F_d)$ and $\partial_y \Phi(x, F_d) \bmod x^{2d-1}$.
+- **Preconditions**: Characteristic $p = 0$ or $p > N$ (all $1, 2, \dots, N-1 \in K^\times$).
+- **Output**: $F(x) \bmod x^N$ satisfying $F'(x) \equiv \Phi(x, F(x)) \pmod{x^{N-1}}$ and $F(0) = f_0$.
+- **Complexity**: $T(N) = T(N/2) + O(N \log N) = O(N \log N)$ time, $O(N)$ space (1 `exp`, 1 `inv`, and $O(1)$ `mul` calls per doubling step).
+- **Loop Invariant**: At step $d = 2^k$, $\deg F_d < d$ and $F_d'(x) \equiv \Phi(x, F_d(x)) \pmod{x^{d-1}}$. Note that because integration increases valuation by $+1$, $P_k(x)$ and $Q_k(x)$ only need to be evaluated modulo $x^{2d-1}$ to determine $F_{2d}(x) \bmod x^{2d}$!
+:::
+
+---
+
+## 10.3 Pólya–Euler Unlabeled Rooted Trees & The Higher-Power Trick
+
+### Concrete Combinatorial Motivation
+
+Let $T_n$ be the number of non-isomorphic **unlabeled rooted trees** on $n$ vertices ($T_1 = 1, T_2 = 1, T_3 = 2, T_4 = 4, T_5 = 9$), and let
+$$T(x) = \sum_{n=1}^{\infty} T_n x^n \in \mathbb{Q}[[x]]$$
+be its Ordinary Generating Function (OGF). Notice that $\operatorname{val}(T) = 1$ because a rooted tree must have at least its root vertex ($T_0 = 0, T_1 = 1$).
+
+How is an unlabeled rooted tree constructed? When we delete the root vertex, the remaining $n - 1$ vertices split into an **unordered multiset** of unlabeled rooted subtrees! Because the vertices are unlabeled, two subtrees are indistinguishable if and only if they are isomorphic as rooted trees, and the order of the children does not matter. Therefore, by the Symbolic Method of Chapter 3 (Theorem 3.1, the Euler Transform $\operatorname{MSET}$), $\mathcal{T} = \mathcal{Z} \times \operatorname{MSET}(\mathcal{T})$ translates directly into **Cayley's Unlabeled Rooted Tree Equation**:
+$$T(x) = x \cdot \operatorname{MSET}(T)(x) = x \exp\!\left( \sum_{k=1}^{\infty} \frac{T(x^k)}{k} \right).$$
+
+Similarly, if every vertex is restricted to have **at most $d$ children** (for instance, $d = 3$ in **ternary unlabeled rooted trees / carbon alkyl radicals** $A(x) = \sum_{n \ge 0} a_n x^n$ where $a_0 = 1$ represents an empty hydrogen branch), then by Pólya's Enumeration Theorem (Chapter 3, Section 3.4), an unordered multiset of $d$ branches chosen from $A(x)$ is governed by the cycle index of the symmetric group $S_d$:
+$$A(x) = 1 + x Z\big(S_d; A(x), A(x^2), \dots, A(x^d)\big).$$
+For $d = 3$ ($Z(S_3; s_1, s_2, s_3) = \frac{1}{6}(s_1^3 + 3s_1 s_2 + 2s_3)$), this gives the famous **Alkyl Radical Functional Equation** (`#226 LOJ 6538`):
+$$A(x) = 1 + \frac{x}{6}\Big( A(x)^3 + 3 A(x) A(x^2) + 2 A(x^3) \Big).$$
+
+### Theorem 10.3 (The Higher-Power Trick: Why $T(x^k)$ for $k \ge 2$ Has Zero Newton Derivative)
+
+Look closely at the two equations above:
+$$T(x) - x \exp\!\left(T(x) + \sum_{k=2}^{\infty} \frac{T(x^k)}{k}\right) = 0 \quad \text{and} \quad A(x) - 1 - \frac{x}{6}\Big(A(x)^3 + 3A(x)A(x^2) + 2A(x^3)\Big) = 0.$$
+Unlike the equations in Section 10.1, these equations contain **substituted higher powers** $T(x^2), T(x^3), \dots, T(x^k)$! When we apply Newton's method to lift our known approximation from $x^{2^s}$ to $x^{2^{s+1}}$, how do we differentiate $T(x^k)$ with respect to $T(x)$?
+
+**Theorem 10.3 (Frobenius-Shift Decoupling in Newton Doubling)**:
+Suppose we are at step $s \ge 0$ of Newton's method ($d = 2^s \ge 1$), so we already know $F_d(x) \in K[x]$ ($\deg F_d < d$) such that
+$$F(x) \equiv F_d(x) \pmod{x^d}.$$
+Then for **every integer $k \ge 2$**:
+$$F(x^k) \equiv F_d(x^k) \pmod{x^{2d}}.$$
+Consequently, during the doubling step from $\bmod x^d$ to $\bmod x^{2d}$, **every substituted series $F(x^k)$ for $k \ge 2$ is already completely known modulo $x^{2d}$**, and its variation with respect to the unknown upper half $\Delta(x) = F(x) - F_d(x)$ is **identically zero modulo $x^{2d}$**!
+
+#### Single-Step Verbalized Proof (Two Equivalent Perspectives)
+
+1. **Valuation Perspective**:
+   Write $F(x) = F_d(x) + \Delta(x)$, where $\operatorname{val}(\Delta) \ge d \ge 1$ by the induction hypothesis. Substituting $x \gets x^k$ multiplies every exponent of $x$ in $\Delta(x)$ by $k$:
+   $$F(x^k) = F_d(x^k) + \Delta(x^k), \qquad \operatorname{val}\!\big(\Delta(x^k)\big) = k \cdot \operatorname{val}(\Delta) \ge k d.$$
+   Since $k \ge 2$, we have $k d \ge 2d$. Therefore $\Delta(x^k) \equiv 0 \pmod{x^{2d}}$, which proves $F(x^k) \equiv F_d(x^k) \pmod{x^{2d}}$!
+2. **Coefficient-Index Perspective**:
+   Which coefficients of $F(x)$ are needed to form $F(x^k) \bmod x^{2d}$? For any exponent $m < 2d$,
+   $$[x^m] F(x^k) = \begin{cases} [x^{m/k}] F(x) & \text{if } k \mid m, \\ 0 & \text{if } k \nmid m. \end{cases}$$
+   Whenever $k \ge 2$ and $m \le 2d - 1$, the queried index $j = m/k$ satisfies
+   $$j = \frac{m}{k} \le \left\lfloor \frac{2d - 1}{2} \right\rfloor = d - 1 < d.$$
+   Every single coefficient $[x^j]F(x)$ for $0 \le j \le d - 1$ is **already finalized** in $F_d(x)$! Notice that this holds even when $[x^0]F(x) \neq 0$ (as in $A(x) = 1 + x Z(S_3; A)$) as long as $d \ge 1$ ($[x^0]A(x)$ is already known)! When $x \cdot A(x^k)$ is multiplied by an extra factor of $x$ in front, $j = (m-1)/k$ is even smaller! $\blacksquare$
+
+::: {.callout-tip}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: Deriving the Newton Step for Unlabeled Rooted Trees & Ternary Trees
+
+- **Diagnostic Signal**: You face a Pólya cycle-index or Euler-product implicit equation involving higher-power substitutions $F(x^2), F(x^3), \dots, F(x^k)$ (such as unlabeled rooted trees $T(x) = x \exp\!\left(\sum_{k \ge 1} \frac{T(x^k)}{k}\right)$ or unlabeled $m$-ary / alkyl trees) and need $F(x) \bmod x^N$ in $O(N \log N)$ time.
+- **Reverse-Engineering Scratchpad**: Because Theorem 10.3 guarantees that $F(x^k) \equiv F_d(x^k) \pmod{x^{2d}}$ for all $k \ge 2$ whenever $\operatorname{val}(F - F_d) \ge d \ge 1$, every higher-power term $F(x^k)$ ($k \ge 2$) is **already completely determined** modulo $x^{2d}$ at the start of the Newton doubling step $d \to 2d$! Thus our recipe for any Pólya–Euler equation is to freeze $P_k(x) := F_d(x^k) \bmod x^{2d}$ as known constants for all $k \ge 2$ and differentiate $\Phi$ *only* with respect to the $k = 1$ variable $y = F(x)$:
+
+**Case 1: Unlabeled Rooted Trees $T(x) = x \exp\!\left(T(x) + \sum_{k \ge 2} \frac{T(x^k)}{k}\right)$**
+
+1. At step $d = 2^s \ge 1$ (lifting $\bmod x^d \to \bmod x^{2d}$, starting from $T_1(x) = x \bmod x^2$):
+   First build the known higher-power harmonic sum $S_{\ge 2}(x) \bmod x^{2d}$ from the already-known coefficients of $T_d(x)$:
+   $$S_{\ge 2}(x) := \sum_{k=2}^{2d - 1} \frac{T_d(x^k)}{k} \bmod x^{2d} = \sum_{j=1}^{d - 1} [x^j]T_d(x) \sum_{\substack{k \ge 2 \\ j k < 2d}} \frac{x^{jk}}{k}.$$
+   Notice that the inner loop runs over $(j, k)$ with $j k < 2d$, taking $\sum_{j=1}^{2d} \frac{2d}{j} = O(d \log d)$ scalar additions!
+2. Now $S_{\ge 2}(x)$ is a fixed polynomial in $x$. In the equation $\Phi(x, y) = y - x \exp\big(y + S_{\ge 2}(x)\big) = 0$, only the $k = 1$ term $y = T(x)$ varies! Differentiating with respect to $y$ gives:
+   $$\frac{\partial \Phi}{\partial y}(x, y) = 1 - x \exp\big(y + S_{\ge 2}(x)\big).$$
+   Letting $E_d(x) := x \exp\big(T_d(x) + S_{\ge 2}(x)\big) \bmod x^{2d}$, Newton's update is:
+   $$T_{2d}(x) \equiv T_d(x) - \frac{T_d(x) - E_d(x)}{1 - E_d(x)} \equiv \frac{E_d(x)\big(1 - T_d(x)\big)}{1 - E_d(x)} \pmod{x^{2d}}.$$
+   *(Or, using the **Logarithmic Newton Speedup** on $\ln(T/x) - T - S_{\ge 2}(x) = 0$)*:
+   $$T_{2d}(x) \equiv T_d(x)\left(1 - \frac{\ln(T_d(x)/x) - T_d(x) - S_{\ge 2}(x)}{1 - T_d(x)}\right) \pmod{x^{2d}}.$$
+
+**Case 2: Pólya $S_3$ Ternary Trees / Alkyl Radicals $A(x) = 1 + \frac{x}{6}\big(A(x)^3 + 3A(x)A(x^2) + 2A(x^3)\big)$**
+
+1. At step $d = 2^s \ge 1$ (starting from $A_1(x) = 1 \bmod x^1$), form the two known higher-power polynomials modulo $x^{2d}$:
+   $$P_2(x) := A_d(x^2) \bmod x^{2d}, \qquad P_3(x) := A_d(x^3) \bmod x^{2d}$$
+   in $O(d)$ time simply by placing $[x^j]A_d(x)$ at index $2j$ and $3j$!
+2. Treat $P_2(x)$ and $P_3(x)$ as constants in $\Phi(x, y) = y - 1 - \frac{x}{6}\big(y^3 + 3 P_2(x) y + 2 P_3(x)\big) = 0$. Differentiating with respect to $y$ gives:
+   $$\frac{\partial \Phi}{\partial y}(x, y) = 1 - \frac{x}{2}\big(y^2 + P_2(x)\big),$$
+   and Newton's step updates:
+   $$
+   \begin{aligned}
+   A_{2d}(x)
+   &\equiv A_d(x) - \frac{A_d(x) - 1 - \frac{x}{6}\bigl(A_d(x)^3 + 3 A_d(x) P_2(x) + 2 P_3(x)\bigr)}{1 - \frac{x}{2}\bigl(A_d(x)^2 + P_2(x)\bigr)} \\[4pt]
+   &\equiv \frac{A_d(x)\bigl(1 - \frac{x}{2}A_d(x)^2 - \frac{x}{2}P_2(x)\bigr) - A_d(x) + 1 + \frac{x}{6}A_d(x)^3 + \frac{x}{2}A_d(x)P_2(x) + \frac{x}{3}P_3(x)}{1 - \frac{x}{2}\bigl(A_d(x)^2 + P_2(x)\bigr)} \\[4pt]
+   &\equiv \frac{1 - \frac{x}{3}\bigl(A_d(x)^3 - P_3(x)\bigr)}{1 - \frac{x}{2}\bigl(A_d(x)^2 + P_2(x)\bigr)} \pmod{x^{2d}}.
+   \end{aligned}
+   $$
+   Look how clean that final fraction is: $A_d(x) \cdot \left(-\frac{x}{2}P_2(x)\right)$ in $A_d \cdot \partial_y \Phi$ cancels $-\frac{x}{2} A_d(x) P_2(x)$ in $\Phi(x, A_d)$ completely!
+:::
+
+```cpp
+// Core doubling loop for Unlabeled Rooted Trees T(x) = x * exp(sum_{k>=1} T(x^k)/k) mod x^N
+Poly T = {0, 1}; // Base case: T(x) = x mod x^2 (since [x^0]T = 0, [x^1]T = 1)
+for (int d = 2; d < N; d <<= 1) {
+    int len = min(N, d << 1);
+    Poly S_ge2(len, 0);
+    for (int j = 1; j < (int)T.size(); ++j)
+        for (int k = 2; j * k < len; ++k)
+            S_ge2[j * k] = (S_ge2[j * k] + 1LL * T[j] * inv_int[k]) % MOD;
+    Poly U = T; U.resize(len, 0);
+    for (int i = 0; i < len; ++i) U[i] = (U[i] + S_ge2[i]) % MOD;
+    Poly E = poly_exp(U, len - 1); // x * exp(U) mod x^len
+    E.insert(E.begin(), 0); E.resize(len);
+    // Update T <- E * (1 - T) * inv(1 - E) mod x^len
+    T = poly_Newton_update(T, E, len);
+}
+```
+
+::: {.callout-note icon=false}
+## Algorithm Contract: Pólya–Euler Rooted Tree Newton Solver
+
+- **Preconditions**: Target size $N \ge 2$ and prime modulus $p > N$.
+- **Postconditions**: Returns $T(x) = \sum_{n=1}^{N-1} T_n x^n \bmod x^N$ satisfying $T(x) = x \exp\!\left(\sum_{k \ge 1} \frac{T(x^k)}{k}\right)$.
+- **Index & Truncation Boundaries**: Base case $T_2(x) = x \bmod x^2$. At step $d \to \text{len} = \min(N, 2d)$, the higher-power sieve accumulates $T[j] / k$ into `S_ge2[j * k]` for $1 \le j < d$ and $k \ge 2$ with $j k < \text{len}$; `poly_exp` is called at length $\text{len} - 1$ before shifting by $x$.
+- **Complexity**: $O(N \log N)$ time and $O(N)$ space (since $\sum_{d} d \log d = O(N \log N)$).
+- **1-Sentence Loop Invariant**: At the start of step $d$, $T(x)$ is exact modulo $x^d$, which by Theorem 10.3 guarantees that $S_{\ge 2}(x) = \sum_{k \ge 2} \frac{T(x^k)}{k}$ is already exact modulo $x^{2d}$ with zero derivative with respect to $[x^d \dots x^{2d-1}] T(x)$.
+:::
+
+::: {.callout-note}
+## Multi-Resolution Landmark (`Revisited #6`): Unlabeled Rooted Trees (`#023 AtCoder ABC 230 Ex`) — `Ch 09` Online Euler vs. `Ch 10` Pólya–Euler Newton
+
+In **[Chapter 9, Intermediate 2 (`#023 AtCoder ABC 230 Ex`)](ch09-cdq-fft-online-relaxed-convolution.qmd)**, we solved $T(x) = x \exp\!\left(\sum_{k \ge 1} \frac{T(x^k)}{k}\right)$ online in $O(N \log^2 N)$ time by combining logarithmic differentiation $x T'(x) = T(x) \sum_{d \mid n} d T_d$ with a harmonic divisor sieve and a single `RelaxedConvolution` instance. Here in **Chapter 10**, Theorem 10.3 freezes $S_{\ge 2}(x) = \sum_{k \ge 2} \frac{T_d(x^k)}{k} \bmod x^{2d}$ at each Newton doubling step to compute $T(x) \bmod x^N$ in **$O(N \log N)$ time**.
+:::
+
+### Hand-Checkable Trace ($N = 4$): Unlabeled Rooted Trees $T(x)$
+
+Let us trace the calculation of $T(x) \bmod x^5$ ($T_1 = 1, T_2 = 1, T_3 = 2, T_4 = 4$):
+
+1. **Base Case ($d = 2$)**: Since $T(x) = x \exp(T(x) + \dots) = x(1 + T(x) + \dots)$, we have $T_2(x) = x \pmod{x^2}$ (or $x + x^2 \pmod{x^3}$). Let us lift from $d = 2$ ($T_2(x) = x \pmod{x^2}$) to $2d = 4$ ($\bmod x^4$):
+   - From $T_2(x) = x$, the known higher-power sum modulo $x^4$ is:
+     $$S_{\ge 2}(x) = \frac{1}{2} T_2(x^2) + \frac{1}{3} T_2(x^3) \equiv \frac{1}{2} x^2 + \frac{1}{3} x^3 \pmod{x^4}.$$
+   - Adding $T_2(x) = x$ gives $U(x) = x + \frac{1}{2}x^2 + \frac{1}{3}x^3 \bmod x^4$.
+   - Computing $E_2(x) = x \exp(U(x)) \bmod x^4$ (we only need $\exp(U(x)) \bmod x^3$!):
+     $$\exp\!\left(x + \frac{1}{2}x^2\right) \equiv 1 + \left(x + \frac{1}{2}x^2\right) + \frac{1}{2}x^2 = 1 + x + x^2 \pmod{x^3} \implies E_2(x) \equiv x + x^2 + x^3 \pmod{x^4}.$$
+   - Applying the Newton update $T_4(x) \equiv \frac{E_2(x)(1 - T_2(x))}{1 - E_2(x)} \pmod{x^4}$:
+     $$E_2(x)(1 - T_2(x)) = (x + x^2 + x^3)(1 - x) \equiv x + 0x^2 + 0x^3 \pmod{x^4},$$
+     $$(1 - E_2(x))^{-1} = \big(1 - (x + x^2 + x^3)\big)^{-1} \equiv 1 + (x + x^2 + x^3) + (x + x^2)^2 + x^3 \equiv 1 + x + 2x^2 + 4x^3 \pmod{x^4}.$$
+     Multiplying $x(1 + x + 2x^2 + 4x^3) \bmod x^4$ gives:
+     $$T_4(x) \equiv x + x^2 + 2x^3 \pmod{x^4}.$$
+2. **Extracting $[x^4]T(x)$**:
+   Now with $T_4(x) = x + x^2 + 2x^3$, the exponent inside $\exp$ up to $x^3$ is:
+   $$T(x) + \frac{1}{2}T(x^2) + \frac{1}{3}T(x^3) \equiv (x + x^2 + 2x^3) + \frac{1}{2}x^2 + \frac{1}{3}x^3 = x + \frac{3}{2}x^2 + \frac{7}{3}x^3 \pmod{x^4}.$$
+   Taking $[x^3]\exp\!\left(x + \frac{3}{2}x^2 + \frac{7}{3}x^3\right) = \frac{7}{3} + 1 \cdot \frac{3}{2} + \frac{1}{6} = \frac{14 + 9 + 1}{6} = 4$, so $[x^4]T(x) = 4$!
+   Indeed, the $T_4 = 4$ unlabeled rooted trees on $4$ vertices are:
+   - the path of length $4$ rooted at an endpoint ($1 \to 2 \to 3 \to 4$),
+   - the path of length $4$ rooted at an internal vertex ($2 \to \{1, 3 \to 4\}$),
+   - the claw $K_{1,3}$ rooted at its center ($1 \to \{2, 3, 4\}$),
+   - the claw $K_{1,3}$ rooted at a leaf ($1 \to 2 \to \{3, 4\}$).
+
+::: {.callout-warning}
+## Pólya Higher-Power Pitfall: Corrupting the Jacobian by Differentiating $F(x^k)$ ($k \ge 2$)
+
+**The Trap**: When writing the Newton denominator $\frac{\partial \Phi}{\partial y}$ for $\Phi(x, A) = A(x) - 1 - \frac{x}{6}\big(A(x)^3 + 3A(x)A(x^2) + 2A(x^3)\big) = 0$, a very common mistake is to treat $A(x^2)$ as if it were $A(x)^2$ (or to apply the $x$-derivative chain rule) and write $\frac{\partial}{\partial A}\big(3 A(x) A(x^2)\big) = 3 A(x^2) + 6 x A(x) A'(x^2)$, or $\frac{\partial}{\partial A}\big(T(x^k)\big) = k x^{k-1} T'(x^k)$.
+
+**Why It Fails**: Newton's method in Theorem 10.1 linearizes with respect to the **unknown perturbation $\Delta(x) = A(x) - A_d(x)$** modulo $x^{2d}$, NOT with respect to $x$! Because $\operatorname{val}(\Delta) \ge d \ge 1$, the perturbation in $A(x^k)$ is $\Delta(x^k)$, which has valuation $\ge k d \ge 2d$ for all $k \ge 2$. Thus $A(x^k)$ does **not change at all** modulo $x^{2d}$ when $\Delta(x)$ varies! Adding spurious derivative terms for $A(x^2)$ or $A(x^3)$ corrupts the linear coefficient of $\Delta(x)$ and destroys quadratic convergence.
+
+**The Remedy**: Before differentiating $\Phi$ with respect to $y = F(x)$, **freeze every higher-power term $F(x^k)$ ($k \ge 2$) as an independent constant symbol $P_k(x) := F_d(x^k)$**. Differentiate *only* with respect to the $k = 1$ variable $y = F(x)$!
+:::
+
+---
+
+## 10.4 Otter's Dissimilarity Theorem for Unrooted Unlabeled Trees
+
+### Concrete Combinatorial Motivation (Unlabeled Tree Pitfall A: Why $t_n \neq T_n / n$)
+
+Suppose we have computed the OGF $T(x) = \sum_{n \ge 1} T_n x^n$ of **rooted** unlabeled trees in $O(N \log N)$ time using Section 10.3. Now we want the OGF
+$$t(x) = \sum_{n=1}^{\infty} t_n x^n$$
+of **unrooted** unlabeled trees (`#186 Luogu P5900`).
+
+In Chapter 4 (Section 4.3), passing from rooted **labeled** trees to unrooted **labeled** trees was trivial: an unrooted labeled tree on $n$ distinct vertices $\{1, 2, \dots, n\}$ has $n$ distinguishable vertices, so there are always exactly $n$ ways to pick a root, and $t_n^{\text{labeled}} = \frac{1}{n} T_n^{\text{labeled}} = \frac{1}{n} n^{n-1} = n^{n-2}$.
+
+**Why does dividing by $n$ fail completely for unlabeled trees?**
+Let us check $n = 4$. As we just found, there are $T_4 = 4$ rooted unlabeled trees on $4$ vertices. If we divided by $n = 4$, we would guess $t_4 = 4 / 4 = 1$. Yet there are clearly **$t_4 = 2$** non-isomorphic unrooted unlabeled trees on $4$ vertices: the path graph $P_4$ and the star graph $K_{1,3}$!
+
+Why did $P_4$ and $K_{1,3}$ produce only $4$ rooted trees in total instead of $2 \times 4 = 8$? Because **automorphisms identify symmetric vertices**:
+
+- In the path $P_4$ ($v_1 - v_2 - v_3 - v_4$), the reflection automorphism swaps $v_1 \leftrightarrow v_4$ and $v_2 \leftrightarrow v_3$. Rooting $P_4$ at $v_1$ or $v_4$ yields the *same* unlabeled rooted tree, and rooting at $v_2$ or $v_3$ yields the *same* unlabeled rooted tree. Thus $P_4$ contributes only **$2$** rooted trees (the number of **vertex orbits** under $\operatorname{Aut}(P_4)$), not $4$!
+- In the star $K_{1,3}$ (center $c$ connected to leaves $l_1, l_2, l_3$), any permutation in $S_3$ of the three leaves is an automorphism. Rooting at $l_1, l_2,$ or $l_3$ produces the *same* unlabeled rooted tree, so $K_{1,3}$ also contributes only **$2$** rooted trees (root at center vs. root at a leaf), not $4$!
+
+How can we count each unrooted tree $\tau$ with weight **exactly $1$** when we only know how to count rooted configurations (which weight $\tau$ by its number of orbits)?
+
+For any tree $\tau$, Euler's vertex-edge identity says $|V(\tau)| - |E(\tau)| = 1$. In 1948, Richard Otter discovered a breathtaking generalization: **Euler's identity $|V| - |E| = 1$ continues to hold at the level of automorphism orbits**, after a tiny correction for edges whose two endpoints are swapped by a reflection symmetry!
+
+### Theorem 10.4 (Otter's Dissimilarity / Dissymmetry Theorem, 1948)
+
+Let $\tau = (V, E)$ be any finite unrooted tree, and let $\Gamma = \operatorname{Aut}(\tau)$ be its automorphism group. Define three orbit counts on $\tau$:
+
+1. **$V^*(\tau) := |V / \Gamma|$** (the number of **dissimilar vertices**, or vertex orbits under $\Gamma$): the number of non-isomorphic ways to root $\tau$ at a vertex.
+2. **$E^*(\tau) := |E / \Gamma|$** (the number of **dissimilar undirected edges**, or edge orbits under $\Gamma$): the number of non-isomorphic ways to distinguish an unordered edge of $\tau$.
+3. **$E_{\text{sym}}(\tau)$** (the number of **symmetric edge orbits**): the number of edge orbits containing an edge $e = \{u, v\} \in E$ for which there exists an automorphism $\gamma \in \Gamma$ with $\gamma(u) = v$ and $\gamma(v) = u$ (equivalently, deleting $e$ splits $\tau$ into two **isomorphic** rooted subtrees $(T_u, u) \cong (T_v, v)$).
+
+Then for every finite tree $\tau$,
+$$V^*(\tau) - \Big( E^*(\tau) - E_{\text{sym}}(\tau) \Big) = 1.$$
+Consequently, the ordinary generating function $t(x)$ of unrooted unlabeled trees is given in terms of the OGF $T(x)$ of rooted unlabeled trees by:
+$$t(x) = T(x) - \frac{1}{2}\Big( T(x)^2 - T(x^2) \Big).$$
+
+#### Single-Step Verbalized Proof (Combinatorial Bijection on Tree Orbits + GF Translation)
+
+**Part 1: Proving the Orbit Identity $V^*(\tau) - E^*(\tau) + E_{\text{sym}}(\tau) = 1$ for Every Tree $\tau$**
+
+Recall Jordan's classical theorem on the **center** of a finite tree $\tau$: if we simultaneously delete all leaves (vertices of degree $1$) of $\tau$ and repeat until at most $2$ vertices remain, we terminate at either a **single central vertex $c_0$** (if $\operatorname{diam}(\tau)$ is even) or a **single central edge $e_0 = \{c_1, c_2\}$** (if $\operatorname{diam}(\tau)$ is odd). Because leaf-stripping is purely structural, every automorphism $\gamma \in \Gamma = \operatorname{Aut}(\tau)$ maps the center of $\tau$ to itself!
+
+First, notice that a tree can have **at most one** symmetric edge ($E_{\text{sym}}(\tau) \in \{0, 1\}$): if an automorphism $\gamma$ swaps the endpoints of an edge $e = \{u, v\}$, then the two subtrees $T_u$ and $T_v$ formed by deleting $e$ must have the exact same height and size, forcing $e$ to be the unique central edge $e_0$ of $\tau$!
+
+This splits all finite trees $\tau$ into two mutually exclusive cases:
+
+- **Case A: $E_{\text{sym}}(\tau) = 1$ (Bicentered Tree with a Symmetric Central Edge $e_0 = \{c_1, c_2\}$)**:
+  Since some automorphism swaps $c_1 \leftrightarrow c_2$, the two central vertices $c_1$ and $c_2$ belong to the **same** vertex orbit $c^* = \{c_1, c_2\} \in V^*(\tau)$.
+  For every vertex $v \notin \{c_1, c_2\}$, there is a unique first edge $e(v)$ on the unique simple path from $v$ toward the central edge $e_0$. Because $\Gamma$ preserves $e_0$ and preserves graph distance to $e_0$, the map $v \mapsto e(v)$ induces a **bijection** between the non-central vertex orbits $V^*(\tau) \setminus \{c^*\}$ and the non-central edge orbits $E^*(\tau) \setminus \{[e_0]\}$:
+  $$V^*(\tau) - 1 = E^*(\tau) - 1 \implies V^*(\tau) - E^*(\tau) = 0.$$
+  Since $E_{\text{sym}}(\tau) = 1$, adding $E_{\text{sym}}(\tau)$ gives $V^*(\tau) - E^*(\tau) + E_{\text{sym}}(\tau) = 0 + 1 = 1$.
+- **Case B: $E_{\text{sym}}(\tau) = 0$ (Unicentered Tree, or Bicentered Tree with an Asymmetric Central Edge)**:
+  If $\tau$ has a single center vertex $c_0$, then $\Gamma$ fixes $c_0$. If $\tau$ has a central edge $e_0 = \{c_1, c_2\}$, then because $E_{\text{sym}}(\tau) = 0$, no automorphism swaps $c_1$ and $c_2$ (the rooted subtrees $(T_{c_1}, c_1)$ and $(T_{c_2}, c_2)$ are non-isomorphic), so $\Gamma$ fixes $c_1$ and fixes $c_2$ individually; we designate $c_0 := c_1$ as the canonical root.
+  In either subcase, $c^* = \{c_0\} \in V^*(\tau)$ is a singleton vertex orbit fixed by all of $\Gamma$. For every vertex $v \neq c_0$, let $e(v)$ be the unique first edge on the path from $v$ to $c_0$. Because $\Gamma$ fixes $c_0$, the map $v \mapsto e(v)$ induces a **bijection** between $V^*(\tau) \setminus \{c^*\}$ and **all** edge orbits $E^*(\tau)$:
+  $$V^*(\tau) - 1 = E^*(\tau) \implies V^*(\tau) - E^*(\tau) = 1.$$
+  Since $E_{\text{sym}}(\tau) = 0$, we again have $V^*(\tau) - E^*(\tau) + E_{\text{sym}}(\tau) = 1 + 0 = 1$!
+
+**Part 2: Translating the Orbit Identity into Generating Functions**
+
+Sum the identity $1 = V^*(\tau) - E^*(\tau) + E_{\text{sym}}(\tau)$ over all unrooted unlabeled trees $\tau$, weighted by $x^{|\tau|}$:
+$$t(x) = \sum_{\tau} 1 \cdot x^{|\tau|} = \sum_{\tau} V^*(\tau) x^{|\tau|} - \sum_{\tau} E^*(\tau) x^{|\tau|} + \sum_{\tau} E_{\text{sym}}(\tau) x^{|\tau|}.$$
+Let us evaluate each of the three sums on the right-hand side:
+
+1. **Vertex-Rooted Trees $\sum_{\tau} V^*(\tau) x^{|\tau|}$**:
+   Choosing an unrooted tree $\tau$ and one of its $V^*(\tau)$ vertex orbits is bijectively equivalent to choosing an unlabeled vertex-rooted tree. Thus:
+   $$\sum_{\tau} V^*(\tau) x^{|\tau|} = T(x).$$
+2. **Unordered Edge-Rooted Trees $\sum_{\tau} E^*(\tau) x^{|\tau|}$**:
+   Choosing an unrooted tree $\tau$ and one of its $E^*(\tau)$ undirected edge orbits $e = \{u, v\}$, and then deleting $e$, decomposes the tree into an **unordered pair (multiset of size $2$)** of nonempty vertex-rooted subtrees $\{(T_u, u), (T_v, v)\}$. By the $S_2$ Pólya cycle index $Z(S_2; s_1, s_2) = \frac{1}{2}(s_1^2 + s_2)$ from Chapter 3:
+   $$\sum_{\tau} E^*(\tau) x^{|\tau|} = Z\big(S_2; T(x), T(x^2)\big) = \frac{1}{2}\Big( T(x)^2 + T(x^2) \Big).$$
+3. **Symmetric Edge-Rooted Trees $\sum_{\tau} E_{\text{sym}}(\tau) x^{|\tau|}$**:
+   Deleting a symmetric edge $e = \{u, v\}$ splits $\tau$ into two **isomorphic** copies of the same nonempty vertex-rooted subtree $(T_u, u) \cong (T_v, v)$. Choosing one rooted tree of size $k$ and duplicating it creates a symmetric edge-rooted tree of size $2k$. Thus:
+   $$\sum_{\tau} E_{\text{sym}}(\tau) x^{|\tau|} = \sum_{k=1}^{\infty} T_k x^{2k} = T(x^2).$$
+
+Combining the three sums:
+$$t(x) = T(x) - \frac{1}{2}\Big(T(x)^2 + T(x^2)\Big) + T(x^2) = T(x) - \frac{1}{2}\Big(T(x)^2 - T(x^2)\Big). \qquad \blacksquare$$
+
+::: {.callout-note}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: Otter's Dissimilarity Theorem
+
+- **Diagnostic Signal**: You have already computed the OGF $T(x)$ of **vertex-rooted** unlabeled trees (or a restricted tree family such as unrooted ternary / bounded-degree trees) and need to pass to **unrooted** unlabeled trees $t(x)$ where dividing by $n$ fails due to non-trivial tree automorphisms.
+- **Reverse-Engineering Scratchpad (Why $\frac{1}{2}\big(T(x)^2 - T(x^2)\big)$ Counts Asymmetric Edge Orbits Directly)**:
+  Notice that $E^*(\tau) - E_{\text{sym}}(\tau)$ is simply the number of **asymmetric edge orbits** of $\tau$: edges $e = \{u, v\}$ whose two sides $(T_u, u) \not\cong (T_v, v)$ are **non-isomorphic** rooted trees! Every non-central vertex orbit pairs uniquely with the edge orbit leading toward Jordan's center, leaving a surplus of $+1$ at the center unless the center is a symmetric edge (which is neither in $E^* - E_{\text{sym}}$ nor fixes a unique vertex orbit, so $V^* - (E^* - E_{\text{sym}}) = 1$ still holds!).
+  How do we count unordered pairs $\{(T_1, r_1), (T_2, r_2)\}$ of *distinct* (non-isomorphic) rooted trees?
+  - An **ordered** pair of rooted trees has OGF $T(x)^2$.
+  - Subtracting the diagonal where the two rooted trees are identical ($T(x^2)$) leaves ordered pairs of *distinct* rooted trees: $T(x)^2 - T(x^2)$.
+  - Dividing by $2$ forgets the order of the two distinct subtrees: $\frac{1}{2}\big(T(x)^2 - T(x^2)\big)$!
+
+  Subtracting this directly from $T(x)$ gives $t(x) = T(x) - \frac{1}{2}\big(T(x)^2 - T(x^2)\big)$ in a single step!
+:::
+
+### Hand-Checkable Trace ($N = 1 \dots 5$): From Rooted $T(x)$ to Unrooted $t(x)$
+
+Let us trace Otter's formula on the first five coefficients of $T(x) = x + x^2 + 2x^3 + 4x^4 + 9x^5 + \dots$:
+
+| Degree $n$ | $T_n = [x^n]T(x)$ (Vertex-Rooted) | $[x^n]T(x)^2$ (Ordered Edge) | $[x^n]T(x^2)$ (Symmetric Edge) | $\frac{1}{2}[x^n]\big(T(x)^2 - T(x^2)\big)$ (Asymmetric Edge) | $t_n = [x^n]t(x)$ (Unrooted Trees) | Concrete Unrooted Trees on $n$ Vertices |
+| :-: | :-: | :-: | :-: | :-: | :-: | :--- |
+| **$1$** | $1$ | $0$ | $0$ | $0$ | $1 - 0 = \mathbf{1}$ | Single vertex $K_1$ |
+| **$2$** | $1$ | $1$ | $1$ | $\frac{1 - 1}{2} = 0$ | $1 - 0 = \mathbf{1}$ | Single edge $P_2$ ($e_0$ is symmetric!) |
+| **$3$** | $2$ | $2$ | $0$ | $\frac{2 - 0}{2} = 1$ | $2 - 1 = \mathbf{1}$ | Path $P_3$ |
+| **$4$** | $4$ | $5$ | $1$ | $\frac{5 - 1}{2} = 2$ | $4 - 2 = \mathbf{2}$ | Path $P_4$ and Star $K_{1,3}$ |
+| **$5$** | $9$ | $12$ | $0$ | $\frac{12 - 0}{2} = 6$ | $9 - 6 = \mathbf{3}$ | Path $P_5$, Star $K_{1,4}$, and Fork ($Y$-tree) |
+
+Look specifically at row $n = 4$:
+
+- For the path **$P_4$** ($1 - 2 - 3 - 4$): it has $V^*(P_4) = 2$ vertex orbits ($\{1, 4\}$ and $\{2, 3\}$), $E^*(P_4) = 2$ edge orbits ($\{\{1, 2\}, \{3, 4\}\}$ and $\{\{2, 3\}\}$), and $E_{\text{sym}}(P_4) = 1$ symmetric edge ($\{2, 3\}$). Otter's count is $2 - (2 - 1) = 1$.
+- For the star **$K_{1,3}$**: it has $V^*(K_{1,3}) = 2$ vertex orbits (center and leaves), $E^*(K_{1,3}) = 1$ edge orbit (all $3$ edges are equivalent), and $E_{\text{sym}}(K_{1,3}) = 0$ symmetric edges. Otter's count is $2 - (1 - 0) = 1$.
+- Summing over both unrooted trees on $4$ vertices: $V^* = 2 + 2 = 4 = T_4$, $E^* - E_{\text{sym}} = 1 + 1 = 2 = \frac{1}{2}(5 - 1)$, and $t_4 = 4 - 2 = 2$!
+
+::: {.callout-note icon=false}
+## Algorithm Contract: Otter's Dissimilarity Engine for Unrooted Unlabeled Trees
+
+- **Preconditions**: Rooted unlabeled tree OGF $T(x) = \sum_{n=1}^N T_n x^n \bmod x^{N+1}$ (with $[x^0]T(x) = 0$) and odd prime modulus $p > 2$ (so $2^{-1} \bmod p$ exists).
+- **Postconditions**: Returns the unrooted unlabeled tree OGF $t(x) = T(x) - \frac{1}{2}\big(T(x)^2 - T(x^2)\big) \bmod x^{N+1}$.
+- **Index & Truncation Boundaries**: $[x^0] T(x) = 0$ is mandatory so that $T(x)^2$ counts unordered pairs of *non-empty* endpoint subtrees across an edge; the aerating substitution $T(x^2)$ places $T_k$ at degree $2k$ for $1 \le k \le \lfloor N / 2 \rfloor$.
+- **Complexity**: $O(N \log N)$ time for all $n \le N$ via one NTT squaring $T(x)^2 \bmod x^{N+1}$ (or $O(N)$ time to extract a single coefficient $[x^N] t(x)$ once $T(x)$ is known), and $O(N)$ space.
+- **1-Sentence Loop Invariant**: For each degree $n \in [1, N]$, $[x^n] t(x) = \sum_{|\tau| = n} \big(V^*(\tau) - (E^*(\tau) - E_{\text{sym}}(\tau))\big) = \sum_{|\tau| = n} 1 = t_n$.
+:::
+
+::: {.callout-warning}
+## Unlabeled Tree Pitfall B (Degree-Cap Variant): Branch-Rooted $A(x)$ vs. Vertex-Rooted $P(x)$ in Bounded-Degree Trees
+
+**The Trap**: In bounded-degree tree problems—such as **Mas-1 (`#191 Luogu P6598 — 烷烃计数`)**, where we count unrooted unlabeled trees with maximum degree $\le 4$—we first solve for the OGF $A(x) = 1 + x Z(S_3; A(x), A(x^2), A(x^3))$ of **planted ternary branches** (where the root has out-degree $\le 3$ so that a parent edge can still be attached without exceeding degree $4$, and $[x^0]A(x) = 1$ represents an empty branch). A classic mistake is to plug $A(x)$ directly into $A(x) - \frac{1}{2}(A(x)^2 - A(x^2))$!
+
+**Why It Fails**:
+
+1. At a **vertex** of an unrooted degree-$\le 4$ tree, there are up to **$4$** incident branches (governed by $S_4$), not $3$! Thus the OGF of vertex-rooted degree-$\le 4$ trees is $P(x) = x Z\big(S_4; A(x), A(x^2), A(x^3), A(x^4)\big)$, NOT $A(x)$!
+2. At an **edge** $e = \{u, v\}$ of an unrooted degree-$\le 4$ tree, deleting $e$ leaves two **nonempty** planted branches $A_u, A_v$ of out-degree $\le 3$. Because $A(x)$ includes the empty tree $1$ ($[x^0]A(x) = 1$), the OGF of a nonempty planted branch at an endpoint of $e$ is **$A(x) - 1$**, NOT $A(x)$!
+
+**The Remedy**: For any unrooted tree class with maximum degree $\le d$:
+
+- Compute the planted branch series $A(x) = 1 + x Z(S_{d-1}; A(x), \dots, A(x^{d-1}))$ (out-degree $\le d - 1$, with $A(0) = 1$).
+- Compute vertex-rooted trees via $S_d$: $P(x) = x Z\big(S_d; A(x), \dots, A(x^d)\big)$.
+- Compute asymmetric edge-rooted trees using the **nonempty branch series $\widetilde{A}(x) := A(x) - 1$**:
+  $$Q(x) - S(x) = \frac{1}{2}\Big( \big(A(x) - 1\big)^2 - \big(A(x^2) - 1\big) \Big).$$
+- Subtract: $U_{\le d}(x) = P(x) - \frac{1}{2}\Big(\big(A(x) - 1\big)^2 - \big(A(x^2) - 1\big)\Big)$.
+:::
+
+---
+
+## 10.5 8-Problem 4-Tier Practice Ladder
+
+### Stepping Stone 1 (`#186`) — Counting Unlabeled Unrooted Trees (Luogu P5900 — 无标号无根树计数)
+
+- **Source**: [Luogu P5900 — 无标号无根树计数](https://www.luogu.com.cn/problem/P5900)
+- **Prerequisite Tags**: `[Pólya-Euler-Rooted-Trees]`, `[Higher-Power-Newton]`, `[Otter-Dissimilarity-Theorem]`
+
+#### Problem Statement & Exact Constraints
+
+Given a positive integer $N$, compute the number of non-isomorphic **unlabeled, unrooted** trees on $N$ vertices modulo $998244353$.
+
+- **Constraints**: $1 \le N \le 2 \times 10^5$, modulus $p = 998244353$.
+- **Required Complexity**: $O(N \log N)$ time and $O(N)$ space.
+- **Sample Trace ($N \le 4$):** For $N = 1, 2, 3, 4$, the rooted unlabeled tree counts are $T_1 = 1, T_2 = 1, T_3 = 2, T_4 = 4$. Applying Otter's formula $t_N = T_N - \frac{1}{2}\big([x^N]T(x)^2 - [2 \mid N]T_{N/2}\big)$ yields the unrooted unlabeled tree counts $t_1 = 1, t_2 = 1, t_3 = 1$, and $t_4 = 4 - \frac{1}{2}(5 - 1) = 2$ (the path $P_4$ and the star $K_{1,3}$).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+An unrooted unlabeled tree cannot be unpointed by dividing by $N$ because non-trivial automorphisms $\operatorname{Aut}(\tau)$ reduce the number of distinct rootings of $\tau$ from $N$ to the vertex-orbit count $V^*(\tau)$. First count **rooted** unlabeled trees $T(x)$ via the Euler transform, and then unpoint $T(x)$ using Otter's Dissimilarity Theorem!
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+1. Removing the root of an unlabeled rooted tree leaves an unordered multiset of unlabeled rooted trees, so $T(x) = x \exp\!\left(\sum_{k=1}^{\infty} \frac{T(x^k)}{k}\right)$.
+2. By Theorem 10.3, when lifting $T_d(x) \bmod x^d$ to $T_{2d}(x) \bmod x^{2d}$, the higher-power sum $S_{\ge 2}(x) = \sum_{k=2}^{2d-1} \frac{T_d(x^k)}{k} \bmod x^{2d}$ depends only on already-known coefficients of $T_d(x)$ and has zero derivative with respect to $T(x)$.
+3. Once $T(x) \bmod x^{N+1}$ is computed, apply Theorem 10.4: $t(x) = T(x) - \frac{1}{2}\big(T(x)^2 - T(x^2)\big)$.
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+To extract the single coefficient $[x^N]t(x)$ after computing $T(x) \bmod x^{N+1}$, you do not even need a full NTT for $T(x)^2$: simply compute $[x^N]T(x)^2 = \sum_{i=1}^{N-1} T_i T_{N-i}$ in $O(N)$ time, subtract $T_{N/2}$ if $N$ is even, multiply by $\frac{p+1}{2} \bmod p$, and subtract from $T_N$!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Step 1: Computing Rooted Unlabeled Trees $T(x) \bmod x^{N+1}$
+
+Let $T(x) = \sum_{n=1}^{\infty} T_n x^n$ be the OGF of unlabeled rooted trees. By the Euler transform (Theorem 3.1),
+$$T(x) = x \exp\!\left( T(x) + \sum_{k=2}^{\infty} \frac{T(x^k)}{k} \right).$$
+We apply Newton doubling starting from $T_1(x) = x \bmod x^2$. Suppose at step $d = 2^s \ge 2$ we have $T_d(x) \equiv T(x) \pmod{x^d}$ and wish to compute $T_{2d}(x) \equiv T(x) \pmod{x^{2d}}$ (capped at $N + 1$):
+
+1. By Theorem 10.3, since $\operatorname{val}(T - T_d) \ge d$, we have $T(x^k) \equiv T_d(x^k) \pmod{x^{2d}}$ for all $k \ge 2$. We construct the known polynomial
+   $$S_{\ge 2}(x) = \sum_{j=1}^{d-1} T_j \sum_{\substack{k \ge 2 \\ j k < 2d}} \frac{x^{jk}}{k} \pmod{x^{2d}}$$
+   in $O(d \log d)$ harmonic time.
+2. Define $\Phi(x, y) = y - x \exp\big(y + S_{\ge 2}(x)\big) = 0$. Setting $E_d(x) := x \exp\big(T_d(x) + S_{\ge 2}(x)\big) \bmod x^{2d}$ (computed by calling `exp` on $T_d(x) + S_{\ge 2}(x) \bmod x^{2d-1}$ and shifting by $x$), we have
+   $$\Phi(x, T_d) \equiv T_d(x) - E_d(x) \pmod{x^{2d}}, \qquad \frac{\partial \Phi}{\partial y}(x, T_d) \equiv 1 - E_d(x) \pmod{x^{2d}}.$$
+3. Since $[x^0](1 - E_d(x)) = 1 \in \mathbb{F}_p^\times$, we invert $1 - E_d(x) \bmod x^{2d}$ and update:
+   $$T_{2d}(x) \equiv T_d(x) - \frac{T_d(x) - E_d(x)}{1 - E_d(x)} \equiv \frac{E_d(x)\big(1 - T_d(x)\big)}{1 - E_d(x)} \pmod{x^{2d}}.$$
+
+By the Master Theorem, $T(N) = T(N/2) + O(N \log N) = O(N \log N)$.
+
+#### Step 2: Applying Otter's Dissimilarity Theorem
+
+By Theorem 10.4, the OGF $t(x) = \sum_{n=1}^{\infty} t_n x^n$ of unrooted unlabeled trees satisfies
+$$t(x) = T(x) - \frac{1}{2}\Big( T(x)^2 - T(x^2) \Big).$$
+Extracting $[x^N]$ on both sides yields the exact formula:
+$$t_N = T_N - \frac{1}{2}\left( \sum_{i=1}^{N-1} T_i T_{N-i} - [2 \mid N]\, T_{N/2} \right) \pmod{998244353}.$$
+
+#### Step 3: Boundary & Small-$N$ Verification
+
+- For $N = 1$: $T_1 = 1$, sum is empty ($0$), $[2 \mid 1] = 0 \implies t_1 = 1$.
+- For $N = 2$: $T_2 = 1$, $\sum_{i=1}^1 T_i T_{2-i} = T_1^2 = 1$, $[2 \mid 2] T_1 = 1 \implies t_2 = 1 - \frac{1}{2}(1 - 1) = 1$.
+- For $N = 4$: $T_4 = 4$, $\sum_{i=1}^3 T_i T_{4-i} = 2 T_1 T_3 + T_2^2 = 2(1)(2) + 1^2 = 5$, $[2 \mid 4] T_2 = 1 \implies t_4 = 4 - \frac{1}{2}(5 - 1) = 2$.
+
+::: {.callout-important}
+## Algorithm Contract (`#186 Luogu P5900`)
+
+- **Input**: Integer $N$ ($1 \le N \le 2 \times 10^5$).
+- **Preconditions**: Prime modulus $p = 998244353 > N$.
+- **Index & Truncation Boundaries**: Base case $T_1(x) = x \pmod{x^2}$; at doubling step $d \to 2d$, populate $S_{\ge 2}[j \cdot k] \mathrel{+}= T_d[j] \cdot k^{-1}$ for $1 \le j < d$ and $k \ge 2$ with $j k < 2d$, evaluate `exp` modulo $x^{2d-1}$ before shifting by $x$, and extract $[x^N]t(x)$ in $O(N)$ via $\sum_{i=1}^{N-1} T_i T_{N-i}$.
+- **1-Sentence Loop Invariant**: After doubling step $d$, $T_d(x) \equiv x \exp\!\left(\sum_{k \ge 1} \frac{T_d(x^k)}{k}\right) \pmod{x^d}$ holds with exact rooted unlabeled tree counts $T_1, \dots, T_{d-1}$.
+- **Output**: $t_N = [x^N]t(x) \bmod 998244353$.
+- **Complexity**: $O(N \log N)$ time, $O(N)$ space.
+:::
+
+</details>
+
+---
+
+### Stepping Stone 2 (`#226`) — Counting Alkyl Radicals (`LOJ 6538 — 烷基计数 加强版 加强版`)
+
+- **Source**: [LibreOJ 6538 — 烷基计数 加强版 加强版](https://loj.ac/p/6538) (Strengthened version of `Luogu P6599`)
+- **Prerequisite Tags**: `[Pólya-Cycle-Index-S3]`, `[Higher-Power-Newton]`, `[Ch09-Relaxed-Convolution-Comparison]`
+
+#### Problem Statement & Exact Constraints
+
+In organic chemistry, an **alkyl radical** ($-C_n H_{2n+1}$) is modeled as a **rooted unlabeled tree** on $n$ carbon vertices in which the root vertex has degree (number of children) **at most $3$**, and every non-root vertex also has out-degree (number of children away from the root) **at most $3$** (so total degree $\le 4$). Two alkyl radicals are identical if they are isomorphic as unlabeled rooted trees. Given $N$, compute the number of alkyl radicals with $N$ carbon atoms modulo $998244353$ (or for all $1 \le n \le N$).
+
+- **Constraints**: $1 \le N \le 10^5$ (up to $2 \times 10^5$), modulus $p = 998244353$.
+- **Required Complexity**: $O(N \log N)$ via Pólya $S_3$ Newton Iteration (or $O(N \log^2 N)$ via `Ch 09` Chained `RelaxedConvolution`).
+- **Sample Trace ($N \le 4$):** For $N = 1, 2, 3, 4$, the numbers of alkyl radicals $-C_N H_{2N+1}$ (rooted unlabeled trees with root degree $\le 3$ and child out-degree $\le 3$) are $a_1 = 1$ (methyl), $a_2 = 1$ (ethyl), $a_3 = 2$ ($n$-propyl, isopropyl), and $a_4 = 4$ ($n$-butyl, sec-butyl, isobutyl, tert-butyl).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Let $A(x) = \sum_{n=0}^{\infty} a_n x^n$ with $a_0 = 1$ (representing a hydrogen atom / empty branch). A carbon atom $x$ is attached to an **unordered multiset of size $3$** chosen from $A(x)$ (since choosing $k \le 3$ nonempty carbon subtrees is equivalent to choosing $3$ subtrees from $A(x)$ when $a_0 = 1$ pads the remaining $3 - k$ slots with empty branches!). Apply Pólya's cycle index $Z(S_3)$!
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+By the cycle index $Z(S_3; s_1, s_2, s_3) = \frac{1}{6}(s_1^3 + 3s_1 s_2 + 2s_3)$, the OGF $A(x)$ satisfies
+$$\Phi\big(x, A(x)\big) = A(x) - 1 - \frac{x}{6}\Big( A(x)^3 + 3 A(x) A(x^2) + 2 A(x^3) \Big) = 0.$$
+By Theorem 10.3, during the Newton step from $\bmod x^d$ to $\bmod x^{2d}$, both $P_2(x) = A_d(x^2)$ and $P_3(x) = A_d(x^3)$ are already determined modulo $x^{2d}$ (especially since they are multiplied by $x$!) and have zero derivative with respect to $A(x)$.
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Differentiating $\Phi(x, y)$ with respect to $y = A(x)$ while freezing $P_2(x) = A_d(x^2)$ and $P_3(x) = A_d(x^3)$ gives $\partial_y \Phi = 1 - \frac{x}{2}(A_d(x)^2 + P_2(x))$, yielding the simplified update
+$$A_{2d}(x) \equiv \frac{1 - \frac{x}{3}\big(A_d(x)^3 - A_d(x^3)\big)}{1 - \frac{x}{2}\big(A_d(x)^2 + A_d(x^2)\big)} \pmod{x^{2d}}.$$
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Step 1: Combinatorial Specification via $Z(S_3)$
+
+Include the empty tree ($a_0 = 1$) in $A(x) = \sum_{n=0}^{\infty} a_n x^n$. Every nonempty rooted ternary tree consists of a root vertex ($x$) together with an unordered triple of branches from $A(x)$ under the action of $S_3$. The cycle types of the $6$ permutations in $S_3$ are:
+
+- $1$ identity permutation $(1)(2)(3)$ contributing $A(x)^3$,
+- $3$ transpositions $(12)(3), (13)(2), (23)(1)$ each contributing $A(x) A(x^2)$,
+- $2$ $3$-cycles $(123), (132)$ each contributing $A(x^3)$.
+
+Averaging over $|S_3| = 6$ and adding the empty tree $1$ gives:
+$$A(x) = 1 + \frac{x}{6}\Big( A(x)^3 + 3 A(x) A(x^2) + 2 A(x^3) \Big).$$
+
+#### Step 2: $O(N \log N)$ Newton Doubling
+
+Let $\Phi(x, y) = y - 1 - \frac{x}{6}\big(y^3 + 3 y P_2(x) + 2 P_3(x)\big) = 0$, where $P_2(x) = A_d(x^2) \bmod x^{2d}$ and $P_3(x) = A_d(x^3) \bmod x^{2d}$.
+Note that because $\Phi$ multiplies $P_2(x)$ and $P_3(x)$ by $x$, we only need $A(x^2)$ and $A(x^3)$ modulo $x^{2d-1}$, which only queries $[x^j]A(x)$ for $j \le \lfloor (2d-1)/2 \rfloor = d - 1 < d$. Thus $P_2(x)$ and $P_3(x)$ are exact modulo $x^{2d}$!
+
+Differentiating $\Phi(x, y)$ with respect to $y$ gives:
+$$\frac{\partial \Phi}{\partial y}(x, A_d) = 1 - \frac{x}{2}\Big( A_d(x)^2 + P_2(x) \Big).$$
+At $x = 0$, $\frac{\partial \Phi}{\partial y}(0, 1) = 1 \in \mathbb{F}_p^\times$. Applying Newton's update $A_{2d} = \frac{A_d \cdot \partial_y \Phi - \Phi}{\partial_y \Phi}$, the numerator simplifies to:
+$$A_d(x) \frac{\partial \Phi}{\partial y}(x, A_d) - \Phi(x, A_d) = \left(A_d - \frac{x}{2}A_d^3 - \frac{x}{2}A_d P_2\right) - \left(A_d - 1 - \frac{x}{6}A_d^3 - \frac{x}{2}A_d P_2 - \frac{x}{3}P_3\right) = 1 - \frac{x}{3}\Big(A_d(x)^3 - P_3(x)\Big).$$
+Therefore, the exact simplified Newton step is:
+$$A_{2d}(x) \equiv \frac{1 - \frac{x}{3}\big(A_d(x)^3 - A_d(x^3)\big)}{1 - \frac{x}{2}\big(A_d(x)^2 + A_d(x^2)\big)} \pmod{x^{2d}}.$$
+
+#### Step 3: Hand-Checkable Trace ($N = 4$)
+
+- **Init ($d = 1$)**: $A_1(x) = 1 \pmod{x^1}$.
+- **Step $1 \to 2$ ($\bmod x^2$)**: $A_1(x)^3 = 1$, $A_1(x^3) = 1$, so numerator is $1 - \frac{x}{3}(1 - 1) = 1$. Denominator is $1 - \frac{x}{2}(1 + 1) = 1 - x$, whose inverse $\bmod x^2$ is $1 + x$. Thus $A_2(x) = 1 + x \pmod{x^2}$.
+- **Step $2 \to 4$ ($\bmod x^4$)**: With $A_2(x) = 1 + x$:
+  - $A_2(x)^2 = 1 + 2x + x^2$, $A_2(x^2) = 1 + x^2 \implies A_2(x)^2 + A_2(x^2) = 2 + 2x + 2x^2$, so the denominator is $1 - x(1 + x + x^2) = 1 - x - x^2 - x^3$, whose inverse $\bmod x^4$ is $1 + x + 2x^2 + 4x^3$.
+  - $A_2(x)^3 - A_2(x^3) = (1 + 3x + 3x^2 + x^3) - (1 + x^3) = 3x + 3x^2$, so the numerator is $1 - \frac{x}{3}(3x + 3x^2) = 1 - x^2 - x^3$.
+  - Multiplying $(1 - x^2 - x^3)(1 + x + 2x^2 + 4x^3) \bmod x^4$ gives:
+    $$A_4(x) \equiv 1 + x + x^2 + 2x^3 \pmod{x^4},$$
+    and $[x^4]A(x) = 4$ ($a_0 = 1, a_1 = 1, a_2 = 1, a_3 = 2, a_4 = 4$).
+
+::: {.callout-note}
+## Multi-Resolution Landmark: `Ch 10` $S_3$ Newton ($O(N \log N)$) vs. `Ch 09` Chained `RelaxedConvolution` ($O(N \log^2 N)$)
+
+In **[Chapter 9](ch09-cdq-fft-online-relaxed-convolution.qmd)**, we saw that $A(x) = 1 + \frac{x}{6}(A(x)^3 + 3A(x)A(x^2) + 2A(x^3))$ can also be solved online in $O(N \log^2 N)$ time without any polynomial inversion by chaining three `RelaxedConvolution` instances (`RC_A2` for $A(x)^2$, `RC_A3` for $A(x) \cdot A(x)^2$, and `RC_AA2` for $A(x) \cdot A(x^2)$).
+
+- **When to use `Ch 09` Chained `RelaxedConvolution`**: During a time-pressured contest when $N \le 10^5$ and you have `RelaxedConvolution` but have not pre-coded polynomial `inv`.
+- **When to use `Ch 10` $S_3$ Newton**: When $N \ge 2 \times 10^5$, or when you need $A(x)$ as a fast building block for **Mas-1 (`Luogu P6598` Alkanes)** and **Mas-2 (`Luogu P6597` Alkenes)** ($3\times$ faster runtime!).
+:::
+
+::: {.callout-important}
+## Algorithm Contract (`#226 LOJ 6538`)
+
+- **Input**: Integer $N$ ($1 \le N \le 10^5$).
+- **Preconditions**: Modulus $p = 998244353$ ($\gcd(6, p) = 1$).
+- **Index & Truncation Boundaries**: Initialize $A_1(x) = 1 \pmod{x^1}$; at doubling step $d \to 2d$, populate $P_2(x) = A_d(x^2) \bmod x^{2d-1}$ at even indices $2j < 2d - 1$ and $P_3(x) = A_d(x^3) \bmod x^{2d-1}$ at multiples $3j < 2d - 1$, then evaluate numerator and denominator modulo $x^{2d}$.
+- **1-Sentence Loop Invariant**: After doubling step $d$, $A_d(x) \equiv 1 + \frac{x}{6}\big(A_d(x)^3 + 3A_d(x)A_d(x^2) + 2A_d(x^3)\big) \pmod{x^d}$ holds with exact alkyl radical counts $a_0, \dots, a_{d-1}$.
+- **Output**: $a_N = [x^N]A(x) \bmod 998244353$.
+- **Complexity**: $O(N \log N)$ time, $O(N)$ space.
+:::
+
+</details>
+
+---
+
+### Intermediate 1 (`#244`) — yukicoder 3029: Colored Tree
+
+- **Source**: [yukicoder No. 3029 — Colored Tree](https://yukicoder.me/problems/no/3029)
+- **Prerequisite Tags**: `[Coupled-2x2-Implicit-System]`, `[Substitution-Elimination]`, `[2x2-Jacobian-Newton]`, `[Logarithmic-Newton-Speedup]`
+
+#### Problem Statement & Exact Constraints
+
+Consider rooted labeled trees on $n$ vertices $\{1, 2, \dots, n\}$ in which every vertex is colored either **Red** or **Blue** subject to the following two-layer branching rules:
+
+1. The root of the tree is colored **Red**.
+2. Every **Red** vertex has an arbitrary number of children, all of which must be colored **Blue**.
+3. Every **Blue** vertex has **at most $K$** children ($0 \le \text{children} \le K$), all of which must be colored **Red**.
+
+Given $N$ and the degree cap $K$, compute for every $n = 1, 2, \dots, N$ the number of valid 2-colored rooted labeled trees on $n$ vertices modulo $998244353$.
+
+- **Constraints**: $1 \le K \le N \le 2.5 \times 10^5$, modulus $p = 998244353$.
+- **Required Complexity**: $O(N \log N)$ time and $O(N)$ space.
+- **Sample Trace ($N = 3, K = 1$)**:
+  - $n = 1$: Only the Red root ($1$ tree: $r_1 = 1$).
+  - $n = 2$: The Red root has $1$ Blue child, which is a leaf ($2! \cdot [x^2] R(x) = 2$ labeled trees: $1_R \to 2_B$ or $2_R \to 1_B$).
+  - $n = 3$: Either the Red root has $2$ Blue leaf children ($3$ ways to choose the Red root $\times 1$ unordered pair of Blue leaves $= 3$ trees), or the Red root has $1$ Blue child which in turn has $1$ Red child ($3! = 6$ labeled paths $u_R \to v_B \to w_R$), giving $r_3 = 3 + 6 = 9$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Let $R(x) = \sum_{n=1}^\infty \frac{r_n}{n!} x^n$ be the EGF of valid trees rooted at a **Red** vertex, and let $B(x) = \sum_{n=1}^\infty \frac{b_n}{n!} x^n$ be the EGF of valid subtrees rooted at a **Blue** vertex.
+- Removing a Red root leaves an arbitrary unordered $\operatorname{SET}$ of Blue-rooted subtrees: $R(x) = x \exp(B(x))$.
+- Removing a Blue root leaves an unordered $\operatorname{SET}_{\le K}$ of at most $K$ Red-rooted subtrees: $B(x) = x P_K(R(x))$, where $P_K(y) = \sum_{j=0}^K \frac{y^j}{j!}$.
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+1. Notice that $B(x) = x P_K(R(x))$ is already explicit in $R(x)$! By the Substitution Principle of Section 10.2, substitute $B(x)$ directly into $R(x) = x \exp(B(x))$ to obtain the single univariate implicit equation:
+   $$R(x) = x \exp\!\big(x P_K(R(x))\big), \qquad P_K(y) = \sum_{j=0}^{K} \frac{y^j}{j!}.$$
+2. Apply the **Logarithmic Newton Speedup** from Section 10.1 to $\Psi(R) = \ln(R(x)/x) - x P_K(R(x)) = 0$ so that you never call `exp` inside the Newton loop!
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Since $P_K'(y) = P_{K-1}(y) = \sum_{j=0}^{K-1} \frac{y^j}{j!}$ (with $P_{-1}(y) = 0$), the Logarithmic Newton derivative is $\Psi'(R) = \frac{1}{R} - x P_{K-1}(R)$. Multiplying through by $R_d(x)$ yields the doubling update:
+$$R_{2d}(x) \equiv R_d(x) \left( 1 - \frac{\ln(R_d(x)/x) - x P_K(R_d(x))}{1 - x R_d(x) P_{K-1}(R_d(x))} \right) \pmod{x^{2d}},$$
+requiring only polynomial evaluation of $P_K(R_d)$ (or `exp` when $K \ge N$), 1 `ln`, and 1 `inv` per doubling step!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Step 1: Coupled $2 \times 2$ Species System & Substitution Elimination
+
+1. **Setting Up the Coupled System**:
+   By the Labeled `SET` construction (Chapter 4), a Red root (EGF $x$) attached to an arbitrary set of Blue subtrees and a Blue root (EGF $x$) attached to at most $K$ Red subtrees satisfy the $2 \times 2$ implicit system:
+   $$\Phi_1(x, R, B) = R(x) - x \exp\!\big(B(x)\big) = 0, \qquad \Phi_2(x, R, B) = B(x) - x P_K\big(R(x)\big) = 0,$$
+   where $P_K(y) = \sum_{j=0}^{K} \frac{y^j}{j!}$.
+2. **Equivalence of Substitution Elimination and $2 \times 2$ Jacobian Inversion (§10.2)**:
+   - **Via Substitution**: Substituting $B(x) = x P_K(R(x))$ into $\Phi_1 = 0$ gives $R(x) = x \exp\!\big(x P_K(R(x))\big)$, or equivalently $\Psi(R) := \ln(R(x)/x) - x P_K(R(x)) = 0$.
+   - **Via $2 \times 2$ Jacobian Matrix**: Even if we kept $(R, B)$ un-eliminated, the $2 \times 2$ Jacobian of $(\Phi_1, \Phi_2)$ is
+     $$J_{\mathbf{\Phi}}(R, B) = \begin{pmatrix} 1 & -x e^{B} \\ -x P_{K-1}(R) & 1 \end{pmatrix}, \qquad \det J_{\mathbf{\Phi}} = 1 - x^2 e^{B} P_{K-1}(R) = 1 - x R P_{K-1}(R),$$
+     producing the exact same Newton denominator $1 - x R_d(x) P_{K-1}(R_d(x))$!
+
+#### Step 2: Logarithmic Newton Iteration & Hand-Check Verification ($N = 3, K = 1$)
+
+For $K = 1$, $P_1(y) = 1 + y$ and $P_0(y) = 1$, so $\ln(R(x)/x) = x(1 + R(x))$. Expanding up to $x^3$:
+$$\frac{R(x)}{x} = \exp\!\big(x + x R(x)\big) = 1 + (x + x R(x)) + \frac{1}{2}(x + x R(x))^2 + \dots$$
+- $[x^1] R(x) = 1 \implies r_1 = 1! \cdot 1 = 1$.
+- $[x^2] R(x) = [x^1]\big(x + x R(x)\big) = 1 \implies r_2 = 2! \cdot 1 = 2$.
+- $[x^3] R(x) = [x^2]\left(x R(x) + \frac{1}{2} x^2\right) = [x^1]R(x) + \frac{1}{2} = \frac{3}{2} \implies r_3 = 3! \cdot \frac{3}{2} = 9$, matching our hand trace!
+
+*(Note on Plane/Ordered Variant)*: When the problem instead specifies **ordered (plane)** 2-colored trees with $a$ Red vertices and $b$ Blue vertices where $R(x, y) = x \frac{1 - B^{K+1}}{1 - B}$ and $B(x, y) = \frac{y}{1 - R}$, the exact same substitution $B = \frac{y}{1 - R}$ eliminates $B$ in one line!
+
+::: {.callout-important}
+## Algorithm Contract (`#244 yukicoder 3029`)
+
+- **Input**: Integers $N, K$ ($1 \le K \le N \le 2.5 \times 10^5$).
+- **Preconditions**: Prime modulus $p = 998244353 > N$.
+- **Index & Truncation Boundaries**: Base case $R_1(x) = x \pmod{x^2}$; at doubling step $d \to 2d$, shift $U_d(x) = R_d(x)/x \bmod x^{2d-1}$ with $U_d(0) = 1$ before calling `ln(U_d, 2d-1)`, evaluate $x P_K(R_d(x)) \bmod x^{2d-1}$ and $x R_d(x) P_{K-1}(R_d(x)) \bmod x^{2d-1}$, and multiply the fractional correction by $R_d(x) \bmod x^{2d}$.
+- **1-Sentence Loop Invariant**: After doubling step $d$, $R_d(x) \equiv x \exp\!\big(x P_K(R_d(x))\big) \pmod{x^d}$ holds with exact 2-colored tree EGF coefficients $[x^1 \dots x^{d-1}]R(x)$.
+- **Output**: Sequence $r_n = n! [x^n] R(x) \bmod 998244353$ for $1 \le n \le N$.
+- **Complexity**: $O(N \log N)$ time, $O(N)$ space.
+:::
+
+</details>
+
+---
+
+### Intermediate 2 (`#013`) — Impartial Normal-Play Game on Labeled Trees (AtCoder `fps_24_s` — Game)
+
+- **Source**: [AtCoder `fps_24_s` — Game](https://atcoder.jp/contests/fps-24/tasks/fps_24_s)
+- **Prerequisite Tags**: `[Impartial-Game-P-N-Positions]`, `[Coupled-Exponential-System]`, `[Logarithmic-Newton-Speedup]`, `[Otter-Labeled-Dissimilarity]`
+
+#### Problem Statement & Exact Constraints
+
+Consider a normal-play two-player impartial game on a rooted tree $T$ with $N$ labeled vertices $\{1, 2, \dots, N\}$ (rooted at vertex $1$, or at a chosen root vertex). A token starts at the root. On each turn, the current player moves the token from its current vertex to one of its children; the player unable to move loses. Given $N$, compute the number of labeled trees on $N$ vertices for which the **first player has a winning strategy**, modulo $998244353$.
+
+- **Constraints**: $1 \le N \le 2.5 \times 10^5$, modulus $p = 998244353$.
+- **Required Complexity**: $O(N \log N)$ time and $O(N)$ space.
+- **Sample Trace ($N \le 4$):** For $N = 1$, the single-vertex tree has no moves, so the first player loses ($\mathcal{P}$-position, $0$ winning trees). For $N = 2$, the unique tree has $1$ edge from the root to its child, moving to a leaf with no moves, so the first player wins ($2^{2-1} = 2$ rooted winning trees, or $1$ with root fixed at $1$). For $N = 3$ with root fixed at $1$, the star $1 - \{2, 3\}$ and the two paths $1 - 2 - 3, 1 - 3 - 2$ give $1$ winning tree (the star, where moving to either leaf wins) and $2$ losing trees (the paths, where moving to the middle vertex lets the second player move to the leaf and win).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+In any finite normal-play impartial game without cycles, every rooted tree is either a **$\mathcal{P}$-position** (second player wins; EGF $L(x)$) or an **$\mathcal{N}$-position** (first player wins; EGF $W(x)$). A rooted tree is a $\mathcal{P}$-position ($L(x)$) if and only if **every** child subtree of the root is an $\mathcal{N}$-position ($W(x)$)!
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+1. Since a $\mathcal{P}$-tree has only $\mathcal{N}$-children, $L(x) = x \exp(W(x))$. Meanwhile, the sum $T(x) = L(x) + W(x)$ is the EGF of *all* rooted labeled trees, so $L(x) + W(x) = x \exp(L(x) + W(x)) = x \exp(W(x)) \exp(L(x)) = L(x) e^{L(x)}$!
+2. Subtracting $L(x)$ eliminates $W(x)$ completely:
+   $$W(x) = L(x)\big(e^{L(x)} - 1\big) \implies L(x) = x \exp\!\Big( L(x)\big(e^{L(x)} - 1\big) \Big).$$
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Apply the **Logarithmic Newton Speedup** from Section 10.1 to solve $\ln(L(x)/x) - L(x)(e^{L(x)} - 1) = 0$ for all $1 \le n \le N$ in $O(N \log N)$ time:
+$$L_{2d}(x) \equiv L_d(x)\left(1 - \frac{\ln(L_d(x)/x) - L_d(x)\big(e^{L_d(x)} - 1\big)}{1 - L_d(x)\big(e^{L_d(x)} - 1 + L_d(x) e^{L_d(x)}\big)}\right) \pmod{x^{2d}}.$$
+Then subtract the losing trees from the total number of trees ($N^{N-1}$ for arbitrarily rooted trees, or $N^{N-2}$ when the root label is fixed at vertex $1$). *(Forward Pointer: In **Chapter 11**, we will also extract $[x^N]L(x) = \frac{1}{N}[u^{N-1}]\exp\big(Nu(e^u - 1)\big)$ for a single $N$ via Lagrange Inversion!)*
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Part 1: Rooted Tree Game via Coupled System Elimination & Logarithmic Newton
+
+1. **Deriving the Coupled Exponential System**:
+   Let $L(x)$ be the EGF of $\mathcal{P}$-position (second-player-winning) rooted labeled trees, and let $W(x)$ be the EGF of $\mathcal{N}$-position (first-player-winning) rooted labeled trees:
+   - By the rule of normal-play games, a root is losing ($\mathcal{P}$) iff it has **zero** losing children, meaning its children form an arbitrary $\operatorname{SET}$ of winning ($\mathcal{N}$) subtrees:
+     $$L(x) = x \exp\big(W(x)\big).$$
+   - A root is winning ($\mathcal{N}$) iff it has **at least one** losing ($\mathcal{P}$) child, plus an arbitrary $\operatorname{SET}$ of winning ($\mathcal{N}$) children:
+     $$W(x) = x \exp\big(W(x)\big) \big(\exp(L(x)) - 1\big).$$
+2. **Eliminating $W(x)$**:
+   Substituting $x \exp(W(x)) = L(x)$ into the second equation immediately gives:
+   $$W(x) = L(x)\big(e^{L(x)} - 1\big).$$
+   Plugging this back into $L(x) = x \exp(W(x))$ yields the single implicit equation:
+   $$L(x) = x \exp\!\Big( L(x)\big(e^{L(x)} - 1\big) \Big).$$
+   *(Note: If the game rule instead specifies 2-layer coupled winning branches $W(x) = L(x)^2 e^{L(x)}$, then $L(x) = x \exp\big(L(x)^2 e^{L(x)}\big)$.)*
+3. **Solving via Logarithmic Newton in $O(N \log N)$**:
+   Set $G(y) = y(e^y - 1)$. Differentiating with respect to $y$ gives $G'(y) = e^y - 1 + y e^y$.
+   Starting from $L_1(x) = x \pmod{x^2}$, at each doubling step $d \to 2d$ we compute $E_d(x) = \exp(L_d(x)) \bmod x^{2d}$ and $\ln(L_d(x)/x) \bmod x^{2d}$, then evaluate:
+   $$G(L_d) = L_d(E_d - 1), \qquad G'(L_d) = E_d - 1 + L_d E_d,$$
+   and update:
+   $$L_{2d}(x) \equiv L_d(x) \left( 1 - \frac{\ln(L_d(x)/x) - L_d(x)(E_d(x) - 1)}{1 - L_d(x)\big(E_d(x) - 1 + L_d(x) E_d(x)\big)} \right) \pmod{x^{2d}}.$$
+4. **Extracting Winning Counts**:
+   - If the root can be any of the $N$ vertices, the total number of rooted labeled trees is $N^{N-1}$, and the number of first-player winning rooted trees is $N^{N-1} - N! [x^N]L(x) \pmod{998244353}$.
+   - If the root label is fixed at vertex $1$, dividing both counts by $N$ gives $N^{N-2} - (N - 1)! [x^N]L(x) \pmod{998244353}$.
+
+#### Part 2: Bonus Extension — Unrooted Vertex-Choice Game via Otter's Dissimilarity
+
+1. **Characterizing Trees Where Alice Loses Every Starting Vertex**:
+   Suppose instead that on an unrooted labeled tree $T$, Alice picks any starting vertex $v_0 \in V(T)$ and thereafter players alternate moving along an incident edge to an unvisited neighbor. Then Alice wins if and only if there exists at least one vertex $v_0$ such that $(T, v_0)$ is a $\mathcal{P}$-position of the rooted game. Conversely, Bob wins (second player wins) if and only if $(T, v_0)$ is an $\mathcal{N}$-position for **every** $v_0 \in V(T)$.
+   Direct every edge $\{u, v\}$ as $u \to v$ whenever the subtree at $v$ (away from $u$) is a $\mathcal{P}$-branch ($L$). For $(T, v_0)$ to be in $\mathcal{N}$, $v_0$ must have at least one outgoing edge toward a $\mathcal{P}$-branch, while the complementary branch at $u$ is also a $\mathcal{P}$-branch only when $u$ has no *other* $\mathcal{P}$-children. This forces the $\mathcal{P}$-branches $L(x)$ and $\mathcal{N}$-branches $W(x)$ to satisfy $W(x) = L(x)^2$ (an $\mathcal{N}$-branch is a vertex matched to a unique $\mathcal{P}$-leaf/branch $L(x)$), so:
+   $$L(x) = x \exp\big(W(x)\big) = x \exp\!\big(L(x)^2\big).$$
+2. **Closed-Form Coefficient Extraction Without LIF**:
+   Notice how special $L(x) = x \exp(L(x)^2)$ is! Squaring both sides gives:
+   $$L(x)^2 = x^2 \exp\!\big(2 L(x)^2\big) \implies 2 L(x)^2 = 2x^2 \exp\!\big(2 L(x)^2\big).$$
+   Compare this with the standard Cayley rooted-tree EGF $\widehat{T}(z) = z \exp(\widehat{T}(z)) = \sum_{m=1}^{\infty} \frac{m^{m-1}}{m!} z^m$ from **Chapter 4**! Setting $z = 2x^2$, we have $2 L(x)^2 = \widehat{T}(2x^2)$, and by Otter's dissimilarity subtraction over the alternating $(\mathcal{P}, \mathcal{P})$-matching edges, the unrooted losing EGF is $\frac{1}{2} L(x)^2 = \frac{1}{4} \widehat{T}(2x^2)$!
+   Therefore, for $N = 2m$ even, $[x^{2m}] \frac{1}{2} L(x)^2 = \frac{1}{4} [z^m] \widehat{T}(z) \cdot 2^m = \frac{2^{m-2} m^{m-1}}{m!}$, and for $N$ odd, Bob never wins ($0$ losing trees), computable in $O(1)$ per $N$!
+
+::: {.callout-important}
+## Algorithm Contract (`#013 fps_24_s`)
+
+- **Input**: Integer $N \le 2.5 \times 10^5$.
+- **Preconditions**: Modulus $p = 998244353 > N$.
+- **Index & Truncation Boundaries**: Initialize $L_1(x) = x \pmod{x^2}$; at doubling step $d \to 2d$, compute $E_d(x) = \exp(L_d(x)) \bmod x^{2d-1}$ and $\ln(L_d(x)/x) \bmod x^{2d-1}$ (shifting $L_d(x)/x$ to degree $2d-2$), then update $L_{2d}(x) \bmod x^{2d}$.
+- **1-Sentence Loop Invariant**: After doubling step $d$, $L_d(x) \equiv x \exp\!\big(L_d(x)(e^{L_d(x)} - 1)\big) \pmod{x^d}$ holds with exact $\mathcal{P}$-position EGF coefficients $[x^1 \dots x^{d-1}]L(x)$.
+- **Output**: Number of first-player-winning labeled trees on $N$ vertices modulo $998244353$.
+- **Complexity**: $O(N \log N)$ time and $O(N)$ space.
+:::
+
+</details>
+
+
+---
+
+### Advanced 1 (`#179`) — Tree Automaton Minimization & Unrooted Cloned $k$-ary Trees (`Luogu P5597 — 【XR-4】复读`)
+
+- **Source**: [Luogu P5597 — 【XR-4】复读](https://www.luogu.com.cn/problem/P5597) (with companion Implicit Cloned $k$-ary Tree Dissimilarity extension)
+- **Prerequisite Tags**: `[Tree-Automaton-Minimization]`, `[Implicit-Tree-Cloning]`, `[Otter-Dissimilarity-Functional-ODE]`, `[Implicit-Newton]`
+
+#### Problem Statement & Exact Constraints
+
+An infinite full ternary rooted tree (with child directions `0`, `1`, `2`) has a token initially at the root. You are given a finite command string $S$ over `{0, 1, 2, U}` (where `0, 1, 2` move to the corresponding child and `U` moves to the parent) that stays within a finite explored subtree $T_0$ of $|V(T_0)| \le 2000$ vertices and ends at a displacement root $r \in V(T_0)$. Repeating $S$ infinitely many times (`S + S + S + ...`) traces an infinite periodic tree $T_\infty = T_0 \cup (r + T_0) \cup (2r + T_0) \cup \dots$ in which every node of $T_\infty$ has a subtree isomorphic to one of finitely many states. Find the minimum number of steps required to visit all vertices of the finite minimized tree (equivalence classes of subtree isomorphism), and analyze the companion generating-function problem of computing the rooted series $F(z) = z \Phi(F(z))$ and unrooted dissimilarity series $U(z) = H(F(z)) \bmod z^{N+1}$ for cloned $k$-ary tree grammars.
+
+- **Constraints**: $|S| \le 2000$ ($|V(T_0)| \le 2001$); for the enumerative dissimilarity extension, $N \le 2 \times 10^5$, modulus $p = 998244353$.
+- **Required Complexity**: $O(|V(T_0)|^2)$ for automaton minimization; $O(N \log N)$ via Implicit Newton + Dissimilarity ODE for the enumerative extension.
+- **Sample Trace ($N \le 4$):** Suppose $S = \text{`0U1`}$ ($m = 3$ vertices: root $o$, leaf `0`, and displacement root $r = \text{`1`}$). Repeating $S$ infinitely attaches a copy of leaf `0` and child `1` at every depth along the `1`-spine; since every spine node has the exact same infinite subtree structure, all spine nodes collapse into $1$ state and all `0`-leaves collapse into $1$ state, giving $2$ minimized automaton states.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+- **Tree Automaton Minimization**: Executing $S$ once explores a finite tree $T_0$ of size $m \le 2000$ and shifts the current position from the root $o$ to a node $r \in V(T_0)$. Repeating $S$ infinitely means we identify $r$ with a fresh copy of $o$, turning $T_0$ into a **recursive tree automaton (DFA)** where transitions out of $T_0$ wrap around along the path $o \leadsto r$!
+- **Dissimilarity Generating Function**: When a rooted tree grammar satisfies $F(z) = z \Phi(F(z))$, how does Otter's $|V| - |E| = 1$ identity express the unrooted series $U(z) = H(F(z))$ purely as an algebraic/integral function of $F(z)$?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+1. **Subset Construction along the Spine $o \leadsto r$**: Every vertex $u$ in the infinite repeated tree $T_\infty$ is determined by its projection onto the finite base tree $T_0$: specifically, a state in $T_\infty$ is the union of the subtrees rooted at a sequence of nodes $(u_0, u_1, \dots)$ in $T_0$ formed by lifting $u$ back by multiples of the shift vector $o \leadsto r$. Because the depth of $T_0$ is $\le m$, at most $O(m)$ shifts can reach inside $T_0$! Thus every reachable node in $T_\infty$ corresponds to a canonical tuple of vertices in $T_0$, which we can minimize bottom-up (or via Hopcroft/DFA state hashing).
+2. **Dissimilarity ODE**: By pointing ($\Theta U(z) = z U'(z) = F(z)$), the unrooted series $U(z) = H(F(z))$ satisfies $z H'(F(z)) F'(z) = F(z)$. Differentiating $F(z) = z \Phi(F(z))$ gives $F'(z) = \frac{\Phi(F)}{z(1 - z\Phi'(F))} = \frac{\Phi(F)^2}{F(\Phi(F) - F\Phi'(F))}$, which forces
+   $$H'(u) = 1 - u \frac{\Phi'(u)}{\Phi(u)}.$$
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+1. **Automaton Minimization**: Build $T_0$ from $S$ ($m \le 2000$ nodes). If $r = o$, $T_\infty = T_0$ and the minimum walk to visit all $m$ nodes and return (or finish at the deepest node) is $2(m - 1) - \max_{v \in T_0} \operatorname{dist}(o, v)$. If $r \neq o$, represent each state in the periodic tree by the active subset of nodes in $T_0$ along the shift chain of $r$, memoize states by their transition triple `(ch[0], ch[1], ch[2])`, and compute the size of the minimized tree!
+2. **Implicit Newton + Dissimilarity Integration**: Solve $F(z) - z \Phi(F(z)) = 0 \bmod z^{N+1}$ via 1D Implicit Newton in $O(N \log N)$ time, then recover $U(z) \bmod z^{N+1}$ either by integrating $\frac{F(z)}{z}$ term-by-term ($[z^n]U(z) = \frac{1}{n}[z^n]F(z)$) or by evaluating $H(F(z))$ where $H'(u) = 1 - u\frac{\Phi'(u)}{\Phi(u)}$!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Part 1: Tree Automaton Minimization on the Cloned Ternary Tree (`Luogu P5597`)
+
+1. **Parsing $S$ into the Base Explored Subtree $T_0$**:
+   Simulate the walk $S$ starting at the root $o = 1$ of a ternary tree: whenever a move `c` $\in \{0, 1, 2\}$ goes to a child that does not yet exist, allocate a new vertex; when `U` is read, move to the parent. After processing all characters of $S$, we obtain a finite ternary tree $T_0$ with $m \le |S| + 1 \le 2001$ vertices, and the walk ends at a vertex $r \in V(T_0)$ at depth $d = \operatorname{depth}(r)$.
+2. **Structure of the Infinite Cloned Tree $T_\infty$**:
+   Repeating $S$ infinitely overlays copies of $T_0$ shifted by $r, 2r, 3r, \dots$ along the spine $o \leadsto r \leadsto 2r \leadsto \dots$.
+   **Why the Minimized Automaton Is Finite**: In `Luogu P5597`, we collapse $T_\infty$ by **subtree isomorphism** (minimizing the tree automaton): two vertices $x, y \in T_\infty$ are equivalent if the infinite ternary trees rooted at $x$ and $y$ have identical valid directions (`0, 1, 2`).
+   For any vertex $x \in T_\infty$, which copies of $T_0$ contain $x$? Since each copy of $T_0$ has maximum depth $H \le m$, at most $\lfloor H / d \rfloor + 1$ shifted copies of $T_0$ can reach the depth of $x$. Even better, if $x$ is represented by the set of nodes $S_x \subseteq V(T_0)$ from the copies of $T_0$ that overlay onto $x$, notice that for any node $u \in S_x$ that is an ancestor of $r$, its shifted predecessor in the next copy of $T_0$ is already determined by jumping from $r$ to $o$!
+   Specifically, whenever $r \in S_x$, we must also include $o \in S_x$ (closure under $r \mapsto o$). Under this closure, moving from $S_x$ to child $c \in \{0, 1, 2\}$ transitions to:
+   $$\operatorname{next}(S_x, c) = \operatorname{closure}\!\Big(\big\{ \operatorname{ch}(u, c) \mid u \in S_x \text{ and } \operatorname{ch}(u, c) \in V(T_0) \big\}\Big),$$
+   where $\operatorname{closure}(A) = A \cup \{o\}$ if $r \in A$, else $A$.
+3. **Why the Number of Reachable Subset States is $O(m^2)$**:
+   Every reachable state $S_x$ consists of at most one vertex off the spine $o \leadsto r$ together with a suffix of vertices along the spine $o \leadsto r$ at a fixed offset modulo $d = \operatorname{depth}(r)$. Therefore, there are at most $O(m^2)$ reachable states in the subset construction!
+   Running a BFS/DFS from $\operatorname{closure}(\{o\})$ builds the deterministic tree automaton of $K \le m^2$ states, and bottom-up Hopcroft / hashing of state triples $(\text{id}(\text{ch}_0), \text{id}(\text{ch}_1), \text{id}(\text{ch}_2))$ minimizes the automaton in $O(m^2)$ time!
+
+#### Part 2: Unrooted & Perturbed $k$-ary Tree Enumeration via Dissimilarity & Implicit Newton
+
+1. **Deriving the Dissimilarity Function $U(z) = H(F(z))$**:
+   Suppose rooted trees satisfy $F(z) = z \Phi(F(z))$ with $\Phi(0) \in K^\times$. By pointing ($\Theta U(z) = z U'(z) = F(z)$), if we express $U(z) = H(F(z))$ as a power series in $u = F(z)$, the chain rule gives:
+   $$z H'\big(F(z)\big) F'(z) = F(z).$$
+   Differentiating $z = \frac{F(z)}{\Phi(F(z))}$ with respect to $z$ gives:
+   $$1 = \frac{\Phi(F) - F \Phi'(F)}{\Phi(F)^2} F'(z) = \frac{z}{F(z)}\left(1 - \frac{F(z) \Phi'(F(z))}{\Phi(F(z))}\right) F'(z) \implies \frac{F(z)}{z F'(z)} = 1 - \frac{F(z)\Phi'(F(z))}{\Phi(F(z))}.$$
+   Comparing with $H'(F(z)) = \frac{F(z)}{z F'(z)}$ proves that $U(z) = H(F(z))$ where:
+   $$H'(u) = 1 - u \frac{\Phi'(u)}{\Phi(u)}, \qquad H(0) = 0.$$
+   For instance, for full $k$-ary trees where $\Phi(u) = (1 + u)^k$, we have $\frac{\Phi'(u)}{\Phi(u)} = \frac{k}{1 + u}$, so
+   $$H'(u) = 1 - \frac{k u}{1 + u} \implies H(u) = \int_0^u \left(1 - \frac{k t}{1 + t}\right) dt,$$
+   and around the simple root $F = z(1 + F)^k$, solving $A(z, F) = F - z\Phi(F) = 0$ via 1D Implicit Newton:
+   $$F_{2d}(z) \equiv F_d(z) - \frac{F_d(z) - z \Phi(F_d(z))}{1 - z \Phi'(F_d(z))} \pmod{z^{2d}}$$
+   computes $F(z) \bmod z^{N+1}$ and $U(z) = \int_0^z \frac{F(t)}{t}\,dt \bmod z^{N+1}$ in $O(N \log N)$ time!
+   *(Forward Pointer: In **Chapter 11**, we will apply Composite Lagrange Inversion to $H'(u) = 1 - u \frac{\Phi'(u)}{\Phi(u)}$ to prove in two lines that $[z^n]U(z) = \frac{1}{n^2}[u^{n-1}]\Phi(u)^n$!)*
+
+::: {.callout-important}
+## Algorithm Contract (`#179 Luogu P5597`)
+
+- **Input**: Walk string $S$ of length $\le 2000$ (or branching series $\Phi(u)$ and target degree $N \le 2 \times 10^5$).
+- **Preconditions**: Walk $S$ never moves above the initial root $o$; for the enumerative extension, $\Phi(0) \in \mathbb{F}_p^\times$ and $p = 998244353 > N$.
+- **Index & Truncation Boundaries**: Base tree $T_0$ has $m \le |S| + 1$ vertices ($1$-indexed root $o = 1$, displacement root $r$ at depth $d \ge 0$); for Newton doubling $d \to 2d$, evaluate $\Phi(F_d(z)) \bmod z^{2d-1}$ before shifting by $z$.
+- **1-Sentence Loop Invariant**: Each subset state $S_x \subseteq V(T_0)$ closed under $r \mapsto o$ uniquely represents the equivalence class of overlayed copies of $T_0$ at node $x \in T_\infty$ (and in the Newton step, $F_d(z) \equiv z\Phi(F_d(z)) \pmod{z^d}$).
+- **Output**: Minimized tree automaton state count / traversal length (and unrooted generating function $U(z) \bmod z^{N+1}$).
+- **Complexity**: $O(|S|^2)$ time and space for automaton minimization; $O(N \log N)$ time and $O(N)$ space for Newton dissimilarity enumeration.
+:::
+
+</details>
+
+---
+
+### Advanced 2 (`#126`) — Koishi's Unconscious Permutation (`Codeforces 1687F`)
+
+- **Source**: [Codeforces 1687F — Koishi's Unconscious Permutation](https://codeforces.com/problemset/problem/1687/F)
+- **Prerequisite Tags**: `[Implicit-Bivariate-Substitution]`, `[Eulerian-Ascent-GF]`, `[Newton-Compositional-Inverse]`, `[Double-Pole-Singularity-Subtraction]`
+
+#### Problem Statement & Exact Constraints
+
+For a permutation $p = (p_1, p_2, \dots, p_n)$ of $\{1, 2, \dots, n\}$, decompose $p$ into the maximum number $s$ of non-empty contiguous segments $I_1, I_2, \dots, I_s$ such that each segment $I_r$ maps $\{ \min I_r, \dots, \max I_r \}$ to itself (i.e., $s$ minimal contiguous interval blocks), and let $k = \sum_{i=1}^{n-1} [p_i < p_{i+1}]$ be the number of ascents of $p$. Given $n$ and $s$, compute for **every** $k = 0, 1, \dots, n - 1$ the number of permutations of $\{1, \dots, n\}$ with $s$ minimal interval blocks and $k$ ascents, modulo $998244353$.
+
+- **Constraints**: $1 \le s \le n \le 2.5 \times 10^5$, modulus $p = 998244353$, Time Limit $5.0\text{ s}$.
+- **Required Complexity**: $O(n \log n)$ (or $O(n \log^2 n)$) time and $O(n)$ space.
+- **Sample Trace ($N \le 4$):** For $n = 3, s = 3$ (permutations of $\{1, 2, 3\}$ with $s = n$ blocks), the Eulerian counts for $k = 0, 1, 2$ ascents are $A_{3,0} = 1$ (`3 2 1`), $A_{3,1} = 4$ (`1 3 2, 2 1 3, 2 3 1, 3 1 2`), and $A_{3,2} = 1$ (`1 2 3`).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+By the Eulerian generating function for permutation runs and Foata's fundamental bijection between cycle-minima records and linear runs, the bivariate generating function over length $z$ and ascent parameter $t$ factors through a rational/implicit block substitution of the form
+$$w = \frac{z}{(1 - z)^2} \quad \text{or} \quad G(z, t) = \frac{1 - t}{\exp\big(z(t - 1)\big) - t},$$
+where the inner series satisfies a quadratic or exponential implicit equation in $z$!
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+1. Recall the bivariate Eulerian EGF of permutations by length $z$ and ascents $t$:
+   $$E(z, t) = \sum_{n=0}^{\infty} A_n(t) \frac{z^n}{n!} = \frac{t - 1}{t - \exp\big(z(t - 1)\big)}, \qquad \text{or for non-empty blocks: } B(z, t) = \ln E(z, t) \text{ / } \frac{E(z, t) - 1}{E(z, t)}.$$
+2. Setting $u = z(t - 1)$ decouples $z$ and $t - 1$: notice that $[z^n] f(z(t-1), t) = (t-1)^n [u^n] f(u, t)$!
+3. However, in $\frac{1}{1 - t^{-1} e^u}$ or $\ln\frac{t - 1}{t - e^u}$, the variable $t$ still appears alongside $e^u$. How do we extract $[u^n]$ for all powers of $t$ simultaneously in $O(n \log n)$ time without doing a 2D convolution?
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Write the implicit relation between $u$ and $w$ as $w = \frac{e^u - 1 - u}{u}$ (or $z = w(1 - z)^2$ for interval blocks), which is an implicit equation $u = g(w)$! Crucially, $e^u - 1$ has valuation $1$, and at $u = 0$ the denominator $t - e^u$ has a pole when $t = 1$. Subtract the principal part of the pole at $u = 0$ so the remainder is a regular power series in $w = \psi(u)$, solve the 1D implicit equation for $u = g(w) \bmod w^{n+1}$ via Section 10.1 Newton Iteration in $O(n \log n)$ time, and finish with a single polynomial `pow` + Taylor shift (`Ch 06`) from $(t - 1)$ to $t$!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Step 1: Bivariate Eulerian Decomposition & The $u = z(t - 1)$ Scaling Trick
+
+Let $A_{n, k}$ be the Eulerian number (permutations of $\{1, \dots, n\}$ with $k$ ascents), with row polynomial $A_n(t) = \sum_{k=0}^{n-1} A_{n, k} t^k$. By the Inclusion-Exclusion decomposition of permutations into maximal ascending runs from **Chapter 8**, a run of length $m \ge 1$ carries weight $\frac{z^m}{m!} t(t - 1)^{m-1}$ (for $m - 1$ forced ascents relaxed via $(t - 1)$), so summing over all sequences of runs gives the geometric series:
+$$\sum_{n=0}^{\infty} A_n(t) \frac{z^n}{n!} = \frac{1}{1 - \sum_{m=1}^{\infty} t(t - 1)^{m-1} \frac{z^m}{m!}} = \frac{1}{1 - \frac{t}{t - 1}\big(e^{z(t - 1)} - 1\big)} = \frac{1 - t}{e^{z(t - 1)} - t}.$$
+Perform the substitution $u := z(t - 1)$. Then extracting $[z^n]$ is equivalent to extracting $(t - 1)^n [u^n]$! Under $u = z(t - 1)$, the basic non-empty Eulerian block generating function is:
+$$F(u, t) = \frac{e^u - 1}{t - e^u} = \frac{\frac{e^u - 1}{u}}{\frac{t - 1}{u} - \frac{e^u - 1}{u}}.$$
+
+#### Step 2: Implicit Change of Variables & 1D Newton Iteration
+
+Notice that $t$ and $u$ interact only through the ratio
+$$y := \frac{t - 1}{u} \quad \Longleftrightarrow \quad t - 1 = y u.$$
+In terms of $y$ and $u$, let $\phi(u) := \frac{e^u - 1}{u} = 1 + \frac{u}{2!} + \frac{u^2}{3!} + \dots$ (a unit series with $\phi(0) = 1$), so that
+$$F(u, t) = \frac{\phi(u)}{y - \phi(u)} = \frac{1 + \psi(u)}{(y - 1) - \psi(u)}, \qquad \text{where } \psi(u) := \phi(u) - 1 = \frac{e^u - 1 - u}{u} = \frac{u}{2} + \frac{u^2}{6} + \dots$$
+Because $\operatorname{val}(\psi) = 1$ and $[u^1]\psi(u) = \frac{1}{2} \in \mathbb{F}_p^\times$, the relation $\psi(u) = w$ defines a **1D implicit functional equation** for the compositional inverse $u = g(w) \in \mathbb{F}_p[[w]]$:
+$$A\big(w, g(w)\big) := \frac{\exp(g(w)) - 1 - g(w)}{g(w)} - w = 0.$$
+We apply **Theorem 10.1 (1D Implicit Newton)** to compute $g(w) \bmod w^{n+1}$ in $O(n \log n)$ time:
+
+1. Write $g(w) = w \widetilde{g}(w)$ with $\widetilde{g}(0) = 2$ (so $g_1(w) = 2w \pmod{w^2}$).
+2. Differentiating $\psi(u) = \frac{e^u - 1 - u}{u}$ with respect to $u$ gives:
+   $$\psi'(u) = \frac{u(e^u - 1) - (e^u - 1 - u)}{u^2} = \frac{(u - 1)e^u + 1}{u^2}, \qquad \psi'(0) = \frac{1}{2} \in \mathbb{F}_p^\times.$$
+3. At each doubling step $d \to 2d$, evaluate $\psi(g_d(w)) \bmod w^{2d}$ and $\psi'(g_d(w)) \bmod w^{2d}$ and update:
+   $$g_{2d}(w) \equiv g_d(w) - \frac{\psi\big(g_d(w)\big) - w}{\psi'\big(g_d(w)\big)} \pmod{w^{2d}}$$
+   in $O(n \log n)$ total time.
+
+#### Step 3: Simultaneous Coefficient Extraction via Pole Removal & Taylor Shift
+
+Let us now show explicitly how knowing $u = g(w) \bmod w^{n+1}$ extracts the entire degree-$n$ polynomial in $(t - 1)$ in $O(n \log n)$ time:
+
+1. **Expanding in Powers of $\psi(u) = w$**:
+   For $s$ blocks (or the $s$-th power / cycle-component logarithm of $F(u, t)$), write $v := y - 1 = \frac{t - 1 - u}{u}$. In terms of $v$ and $w = \psi(u)$,
+   $$F(u, t) = \frac{1 + w}{v - w} = \frac{1 + v}{v - w} - 1 = (1 + v) \sum_{j=0}^{\infty} \frac{w^j}{v^{j+1}} - 1.$$
+   More generally, raising $F(u, t)$ to the $s$-th power (or taking $\frac{1}{s!} (\ln(1 + F(u, t)))^s$) and expanding in powers of $w = \psi(u)$ expresses the target series as a linear combination of powers $w^j$:
+   $$H_s(u, v) = \sum_{j=0}^{n} C_{s, j}(v)\, w^j,$$
+   where each $C_{s, j}(v)$ is a rational function of $v = \frac{t - 1}{u} - 1$ whose denominator is a power of $v$ (a pole at $y = 1$, i.e., $t - 1 = u$).
+2. **Singularity Subtraction & Change of Variables $u = g(w)$**:
+   After subtracting the principal part of the pole at $v = 0$ ($y = 1$) so that only non-negative powers $y^m = \left(\frac{t - 1}{u}\right)^m$ remain, the coefficient of $(t - 1)^m z^n / n!$ is reduced to extracting $\sum_{j=0}^k c_j [u^k] \psi(u)^j$ for $k = n - m$.
+   By the Cauchy Residue Change of Variables $u = g(w)$ (which we formalize systematically in **Chapter 11**; equivalently via the bivariate compositional inverse of $u = w(1 + G(w))$):
+   $$
+   \begin{aligned}
+   \sum_{j=0}^{k} c_j [u^k] \psi(u)^j
+   &= \sum_{j=0}^{k} c_j [w^{k-j}] \left(\frac{g(w)}{w}\right)^{-k-1} g'(w)
+   && \text{(change variables } u = g(w) \iff w = \psi(u)\text{)} \\[4pt]
+   &= [w^k] \left( \left(\sum_{j=0}^{k} c_j w^j\right) \left(\frac{g(w)}{w}\right)^{-k-1} g'(w) \right).
+   && \text{(absorb } [w^{k-j}] = [w^k] w^j \text{ into a polynomial product)}
+   \end{aligned}
+   $$
+   Notice that when we sum over $j$ with weight $(t - 1)^{n - k}$, the power $k - j$ depends only on the shift index! Even better, for a fixed $n$, we only need a single call to `Ch 02` `pow` to compute $P(w) := \left(\frac{g(w)}{w}\right)^{-n} g'(w) \bmod w^{n+1}$, followed by one convolution with the block-weight vector to obtain the full polynomial $\sum_{m=0}^{n-1} c_m (t - 1)^m$.
+3. **Final `Ch 06` Taylor Shift ($t - 1 \mapsto t$)**:
+   Finally, we convert $\sum_{m=0}^{n-1} c_m (t - 1)^m$ into the standard monomial basis $\sum_{k=0}^{n-1} \text{ans}_k t^k$ by applying the `Ch 06` **Taylor Shift** by $+1$ ($c_m \to \sum_{m \ge k} c_m \binom{m}{k} (-1)^{m-k}$) via a single reversed binomial NTT in $O(n \log n)$ time!
+
+::: {.callout-important}
+## Algorithm Contract (`#126 CF 1687F`)
+
+- **Input**: Integers $n, s$ ($1 \le s \le n \le 2.5 \times 10^5$).
+- **Preconditions**: Prime modulus $p = 998244353 > n$.
+- **Index & Truncation Boundaries**: Solve $\psi(g(w)) = w \bmod w^{n+1}$ with $g_1(w) = 2w \pmod{w^2}$; compute unit series $\widetilde{g}(w) = g(w)/w \bmod w^n$ with $\widetilde{g}(0) = 2$ before evaluating $\widetilde{g}(w)^{-n} g'(w) \bmod w^n$, and run the final Taylor shift on degree $< n$.
+- **1-Sentence Loop Invariant**: After doubling step $d$, $g_d(w)$ satisfies $\frac{\exp(g_d(w)) - 1 - g_d(w)}{g_d(w)} \equiv w \pmod{w^d}$, Invertibly mapping the Eulerian block series $\psi(u)$ to the monomial variable $w$.
+- **Output**: Sequence of counts for all $0 \le k < n$ modulo $998244353$.
+- **Complexity**: $O(n \log n)$ time, $O(n)$ space.
+:::
+
+</details>
+
+---
+
+### Mastery 1 (`#191`) — Counting Alkanes (`Luogu P6598 — 烷烃计数`)
+
+- **Source**: [Luogu P6598 — 烷烃计数](https://www.luogu.com.cn/problem/P6598)
+- **Prerequisite Tags**: `[Pólya-Cycle-Index-S3-S4]`, `[Higher-Power-Newton]`, `[Otter-Dissimilarity-Bounded-Degree]`
+
+#### Problem Statement & Exact Constraints
+
+In organic chemistry, an **alkane** ($C_n H_{2n+2}$) has a carbon skeleton that forms an **unlabeled, unrooted tree** on $n$ carbon vertices in which **every vertex has degree at most $4$** (since carbon has valence $4$ and the remaining bonds are filled with hydrogen atoms). Given $N$, compute for each $n = 1, \dots, N$ (or for $N$) the number of non-isomorphic alkanes with $n$ carbon atoms modulo $998244353$.
+
+- **Constraints**: $1 \le N \le 10^5$, modulus $p = 998244353$.
+- **Required Complexity**: $O(N \log N)$ time and $O(N)$ space.
+- **Sample Trace ($N \le 4$):** For $N = 1, 2, 3, 4$, the numbers of alkane constitutional isomers $C_n H_{2n+2}$ are $1$ (methane), $1$ (ethane), $1$ (propane), and $2$ ($n$-butane and isobutane); at $n = 5$, there are $3$ ($n$-pentane, isopentane, neopentane).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+An alkane is an unrooted unlabeled tree with maximum degree $\le 4$. Look back at **Unlabeled Tree Pitfall B (Degree-Cap Variant)** in Section 10.4: why can't we just use the $S_3$ alkyl radical series $A(x)$ from **Stepping Stone 2 (`LOJ 6538`)** inside $A(x) - \frac{1}{2}(A(x)^2 - A(x^2))$?
+Because at a **root vertex** of an alkane, there are up to **$4$** attached alkyl radicals (governed by $Z(S_4)$), whereas at each endpoint of a **root edge**, there is a **nonempty** alkyl radical $A(x) - 1$ (since $3$ remaining bonds are available at each endpoint)!
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Let $A(x) = \sum_{n=0}^{\infty} a_n x^n$ ($a_0 = 1$) be the OGF of alkyl radicals (planted trees where the root has $\le 3$ children and every other vertex has degree $\le 4$), already computed in $O(N \log N)$ time in **Stepping Stone 2 (`LOJ 6538`)**.
+Now express the three orbit generating functions of Otter's Dissimilarity Theorem (Theorem 10.4) in terms of $A(x)$:
+
+1. **Vertex-rooted alkanes $P(x) = \sum_{\tau} V^*(\tau) x^{|\tau|}$**: A root carbon atom $x$ attached to an unordered multiset of $4$ branches from $A(x)$:
+   $$P(x) = x Z\big(S_4; A(x), A(x^2), A(x^3), A(x^4)\big).$$
+2. **Unordered edge-rooted alkanes $Q(x) = \sum_{\tau} E^*(\tau) x^{|\tau|}$**: Deleting the root edge leaves an unordered pair of **nonempty** alkyl radicals $\widetilde{A}(x) = A(x) - 1$:
+   $$Q(x) = Z\big(S_2; A(x) - 1, A(x^2) - 1\big) = \frac{1}{2}\Big( \big(A(x) - 1\big)^2 + \big(A(x^2) - 1\big) \Big).$$
+3. **Symmetric edge-rooted alkanes $S(x) = \sum_{\tau} E_{\text{sym}}(\tau) x^{|\tau|}$**: Deleting a symmetric edge leaves two identical nonempty alkyl radicals:
+   $$S(x) = A(x^2) - 1.$$
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Write out the cycle index of $S_4$ ($|S_4| = 24$) by classifying all $24$ permutations of $4$ elements by cycle type:
+$$Z(S_4; s_1, s_2, s_3, s_4) = \frac{1}{24}\Big( s_1^4 + 6 s_1^2 s_2 + 3 s_2^2 + 8 s_1 s_3 + 6 s_4 \Big).$$
+Then by Otter's Dissimilarity Theorem, the alkane OGF is simply:
+$$\operatorname{Alkanes}(x) = P(x) - Q(x) + S(x) = P(x) - \frac{1}{2}\Big( \big(A(x) - 1\big)^2 - \big(A(x^2) - 1\big) \Big).$$
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Step 1: Computing the Alkyl Radical OGF $A(x) \bmod x^{N+1}$ via $S_3$ Newton
+
+First, run the $O(N \log N)$ Newton iteration from **Stepping Stone 2 (`#226 LOJ 6538`)** to obtain $A(x) \bmod x^{N+1}$ satisfying
+$$A(x) = 1 + \frac{x}{6}\Big( A(x)^3 + 3 A(x) A(x^2) + 2 A(x^3) \Big),$$
+where $A(x) = 1 + x + x^2 + 2x^3 + 4x^4 + 8x^5 + 17x^6 + \dots$.
+Recall that $a_n = [x^n]A(x)$ for $n \ge 1$ counts planted carbon trees on $n$ vertices where the root carbon has at most $3$ carbon children (leaving $1$ free bond to attach to a parent carbon or edge) and all other carbons have degree $\le 4$, while $a_0 = 1$ represents an empty hydrogen branch ($-H$).
+
+#### Step 2: Deriving the Cycle Index $Z(S_4)$ for Vertex-Rooted Alkanes $P(x)$
+
+When we root an alkane at one of its carbon atoms, that root carbon has up to $4$ attached branches from $A(x)$ (padded with $-H$ when fewer than $4$ carbons are attached), permuted by the symmetric group $S_4$ of order $4! = 24$. Let us count the permutations in $S_4$ for each of the $p(4) = 5$ integer partitions of $4$:
+
+1. **Partition $1 + 1 + 1 + 1$ (Identity)**: $1$ permutation $\implies A(x)^4$.
+2. **Partition $2 + 1 + 1$ (Single transposition)**: $\binom{4}{2} = 6$ permutations $\implies 6 A(x)^2 A(x^2)$.
+3. **Partition $2 + 2$ (Double transposition)**: $\frac{1}{2}\binom{4}{2} = 3$ permutations $\implies 3 A(x^2)^2$.
+4. **Partition $3 + 1$ ($3$-cycle)**: $\binom{4}{3} \cdot 2! = 8$ permutations $\implies 8 A(x) A(x^3)$.
+5. **Partition $4$ ($4$-cycle)**: $3! = 6$ permutations $\implies 6 A(x^4)$.
+
+Dividing by $24$ and multiplying by $x$ (for the root carbon atom itself) gives the OGF of vertex-rooted alkanes:
+$$P(x) = \sum_{\tau} V^*(\tau) x^{|\tau|} = \frac{x}{24}\Big( A(x)^4 + 6 A(x)^2 A(x^2) + 3 A(x^2)^2 + 8 A(x) A(x^3) + 6 A(x^4) \Big).$$
+
+#### Step 3: Applying Otter's Dissimilarity Theorem for Unrooted Alkanes
+
+When we root an alkane at an **edge** $e = \{u, v\}$ and delete $e$, the two endpoints $u$ and $v$ must each carry a **nonempty** carbon tree (since $e$ is a carbon–carbon bond, neither endpoint can be an empty hydrogen atom!). The OGF of a nonempty planted alkyl branch is
+$$\widetilde{A}(x) := A(x) - 1 = x + x^2 + 2x^3 + 4x^4 + 8x^5 + \dots.$$
+Therefore:
+
+- The OGF of unordered edge-rooted alkanes is $Q(x) = \sum_{\tau} E^*(\tau) x^{|\tau|} = \frac{1}{2}\big(\widetilde{A}(x)^2 + \widetilde{A}(x^2)\big)$.
+- The OGF of symmetric edge-rooted alkanes is $S(x) = \sum_{\tau} E_{\text{sym}}(\tau) x^{|\tau|} = \widetilde{A}(x^2) = A(x^2) - 1$.
+
+By Theorem 10.4 ($V^*(\tau) - E^*(\tau) + E_{\text{sym}}(\tau) = 1$), the OGF of unrooted alkanes is:
+$$\operatorname{Alkanes}(x) = P(x) - Q(x) + S(x) = P(x) - \frac{1}{2}\Big( \big(A(x) - 1\big)^2 - \big(A(x^2) - 1\big) \Big).$$
+
+#### Step 4: Hand-Checkable Trace ($N = 1 \dots 6$, Chemical Isomers!)
+
+Let us verify the first six coefficients against classic organic chemistry, paying special attention to $n = 5$ where $A_5 = 8$ differs from $P_5 = 9$:
+
+1. **Planted Alkyl Radicals $A(x)$ (root has $\le 3$ children)**:
+   $$A(x) = 1 + x + x^2 + 2x^3 + 4x^4 + 8x^5 + 17x^6 + \dots$$
+   Why is $a_5 = 8$ whereas $T_5 = 9$? On $5$ vertices, the only rooted tree in which the root has $> 3$ children is the star $K_{1,4}$ **rooted at its degree-$4$ center** (which has $4$ children, violating the alkyl root limit of $3$).
+2. **Vertex-Rooted Alkanes $P(x)$ (root has $\le 4$ children)**:
+   Let us compute $[x^5]P(x) = [x^4] Z\big(S_4; A(x), A(x^2), A(x^3), A(x^4)\big)$ from $A(x) \equiv 1 + x + x^2 + 2x^3 + 4x^4 \pmod{x^5}$ and $A(x)^2 \equiv 1 + 2x + 3x^2 + 6x^3 + 13x^4 \pmod{x^5}$:
+   - $[x^4] A(x)^4 = [x^4]\big(A(x)^2\big)^2 = 2(13) + 2(2)(6) + 3^2 = 59$,
+   - $6 [x^4] A(x)^2 A(x^2) = 6\big([x^4]A^2 + [x^2]A^2 + [x^0]A^2\big) = 6(13 + 3 + 1) = 102$,
+   - $3 [x^4] A(x^2)^2 = 3(3) = 9$,
+   - $8 [x^4] A(x) A(x^3) = 8\big([x^4]A + [x^1]A \cdot [x^1]A\big) = 8(4 + 1) = 40$,
+   - $6 [x^4] A(x^4) = 6(1) = 6$.
+   Summing and dividing by $|S_4| = 24$ gives:
+   $$[x^5]P(x) = \frac{59 + 102 + 9 + 40 + 6}{24} = \frac{216}{24} = 9,$$
+   because when $K_{1,4}$ is rooted at its center, the $S_4$ root allows $4$ children (neopentane rooted at its central quaternary carbon)! Thus $P(x) = x + x^2 + 2x^3 + 4x^4 + 9x^5 + 20x^6 + \dots$.
+3. **Asymmetric Edge-Rooted Alkanes $Q(x) - S(x)$**:
+   At $n = 5$, $[x^5]\frac{1}{2}\big((A(x) - 1)^2 - (A(x^2) - 1)\big) = \frac{1}{2}\big(2 a_1 a_4 + 2 a_2 a_3 - 0\big) = 1(4) + 1(2) = 6$.
+   Subtracting from $P_5 = 9$ gives $\operatorname{Alkanes}_5 = 9 - 6 = 3$!
+
+This yields the exact sequence of alkane constitutional isomers:
+$$\operatorname{Alkanes}(x) = x + x^2 + x^3 + 2x^4 + 3x^5 + 5x^6 + 9x^7 + 18x^8 + \dots$$
+
+- $n = 1$: $1$ (methane, $CH_4$)
+- $n = 2$: $1$ (ethane, $C_2 H_6$)
+- $n = 3$: $1$ (propane, $C_3 H_8$)
+- $n = 4$: $2$ ($n$-butane and isobutane, $C_4 H_{10}$)
+- $n = 5$: $3$ ($n$-pentane, isopentane, and neopentane, $C_5 H_{12}$)
+- $n = 6$: $5$ (the $5$ hexane isomers, $C_6 H_{14}$).
+
+::: {.callout-important}
+## Algorithm Contract (`#191 Luogu P6598`)
+
+- **Input**: Integer $N$ ($1 \le N \le 10^5$).
+- **Preconditions**: Modulus $p = 998244353$ ($\gcd(24, p) = 1$).
+- **Index & Truncation Boundaries**: Compute $A(x) \bmod x^{N+1}$ with $A(0) = 1$ via $S_3$ Newton; evaluate $Z(S_4; A(x), A(x^2), A(x^3), A(x^4)) \bmod x^N$ before multiplying by $x$ to form $P(x) \bmod x^{N+1}$, and use $\widetilde{A}(x) = A(x) - 1$ (with $\widetilde{A}(0) = 0$) for the edge-orbit subtraction $\frac{1}{2}\big(\widetilde{A}(x)^2 - \widetilde{A}(x^2)\big) \bmod x^{N+1}$.
+- **1-Sentence Loop Invariant**: Each $S_3$ Newton step maintains $A_d(x) \equiv 1 + x Z(S_3; A_d(x), A_d(x^2), A_d(x^3)) \pmod{x^d}$, after which a single post-processing pass applies Otter's $V^*(\tau) - (E^*(\tau) - E_{\text{sym}}(\tau)) = 1$ identity over $Z(S_4)$ and $Z(S_2)$.
+- **Output**: Sequence of alkane counts $[x^1 \dots x^N]\operatorname{Alkanes}(x) \bmod 998244353$.
+- **Complexity**: $O(N \log N)$ time, $O(N)$ space.
+:::
+
+</details>
+
+---
+
+### Mastery 2 (`#192`) — Counting Alkenes (`Luogu P6597 — 烯烃计数`)
+
+- **Source**: [Luogu P6597 — 烯烃计数](https://www.luogu.com.cn/problem/P6597)
+- **Prerequisite Tags**: `[Pólya-Cycle-Index-D2-S2]`, `[Double-Bond-Canonical-Center]`, `[Alkyl-Radical-Newton]`
+
+#### Problem Statement & Exact Constraints
+
+In organic chemistry, an **alkene** ($C_n H_{2n}$, $n \ge 2$) is an acyclic hydrocarbon containing **exactly one carbon–carbon double bond ($C=C$)** and single bonds everywhere else, such that every carbon atom has total bond valence $\le 4$ (with remaining valences filled by hydrogen atoms). Thus the carbon skeleton is an **unlabeled, unrooted tree** on $n$ carbon vertices with **one distinguished edge** (the $C=C$ double bond), where the two endpoints of the double bond each have at most **$2$** additional single-bond carbon neighbors (since the double bond already uses $2$ of their $4$ valences), and all other carbon atoms have degree at most $4$. Given $N$, compute the number of non-isomorphic alkenes with $n$ carbon atoms for $2 \le n \le N$ modulo $998244353$. *(Note: Structural / constitutional isomers are counted without cis-trans stereoisomerism, so each endpoint of the $C=C$ bond holds an unordered pair of alkyl/hydrogen groups, and the two endpoints of the $C=C$ bond can themselves be swapped.)*
+
+- **Constraints**: $2 \le N \le 10^5$, modulus $p = 998244353$.
+- **Required Complexity**: $O(N \log N)$ time and $O(N)$ space.
+- **Sample Trace ($N \le 4$):** For $N = 2, 3, 4$, the numbers of alkene constitutional isomers $C_n H_{2n}$ are $1$ (ethene, $n = 2$), $1$ (propene, $n = 3$), and $3$ (1-butene, 2-butene, isobutylene, $n = 4$).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Why is counting alkenes ($C_n H_{2n}$, with a unique $C=C$ double bond) actually **simpler** than unrooting alkanes?
+Because the **unique $C=C$ double bond acts as a canonical center**! Every automorphism of an alkene must map the unique $C=C$ double bond to itself—so we **do not need Otter's Dissimilarity Theorem at all**; we only need Pólya's Cycle Index for the symmetries of the $C=C$ bond and its two endpoints!
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Decompose an alkene around its unique $C=C$ double bond in two nested Pólya steps using the alkyl radical series $A(x)$ from **Stepping Stone 2 (`LOJ 6538`)**:
+
+1. **One Endpoint of the Double Bond ($B(x)$)**: A single carbon endpoint of the $C=C$ bond uses $2$ valences for the double bond, leaving **$2$** valences to attach an **unordered pair ($S_2$)** of alkyl/hydrogen branches from $A(x)$:
+   $$B(x) = x Z\big(S_2; A(x), A(x^2)\big) = \frac{x}{2}\Big( A(x)^2 + A(x^2) \Big).$$
+2. **The Whole Alkene ($C=C$ Bond Join)**: An alkene consists of an **unordered pair ($S_2$)** of double-bond endpoints chosen from $B(x)$!
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Applying $Z(S_2)$ to $B(x)$ yields the entire alkene generating function in one line:
+$$\operatorname{Alkenes}(x) = Z\big(S_2; B(x), B(x^2)\big) = \frac{1}{2}\Big( B(x)^2 + B(x^2) \Big).$$
+*(Equivalently, this is the cycle index of the wreath product $S_2[S_2] \cong D_4$ of order $8$ acting on the $4$ branches attached to $C=C$: $\frac{x^2}{8}\big(A(x)^4 + 2A(x)^2 A(x^2) + 3A(x^2)^2 + 2A(x^4)\big)$!)*
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### Step 1: Canonical Decomposition at the Unique $C=C$ Double Bond
+
+In an alkene $C_n H_{2n}$, there is **exactly one** double bond $e_{=} = \{u, v\}$. Because any graph isomorphism preserving bond multiplicities must map $e_{=}$ to $e_{=}$, the alkene is already canonically edge-rooted at $e_{=}$!
+
+Let $A(x) = \sum_{n=0}^{\infty} a_n x^n$ ($a_0 = 1$) be the OGF of alkyl radicals (computed in $O(N \log N)$ time in **Stepping Stone 2**).
+
+1. **Step 1A — Half-Alkene Endpoint Series $B(x)$**:
+   Consider one carbon endpoint $u$ of the $C=C$ double bond. The double bond consumes $2$ of $u$'s $4$ valences. The remaining $2$ valences of $u$ are occupied by an unordered pair of branches chosen from $A(x)$ (where $a_0 = 1$ represents $-H$). By the cycle index $Z(S_2; s_1, s_2) = \frac{1}{2}(s_1^2 + s_2)$:
+   $$B(x) = x Z\big(S_2; A(x), A(x^2)\big) = \frac{x}{2}\Big( A(x)^2 + A(x^2) \Big).$$
+2. **Step 1B — Joining the Two Endpoints Across $C=C$**:
+   The entire alkene is formed by joining two endpoints $\{u, v\}$ via the $C=C$ double bond. Since the double bond is undirected, swapping the two endpoints $u \leftrightarrow v$ gives an isomorphic alkene. Thus the alkene is an **unordered pair** of half-alkenes from $B(x)$:
+   $$\operatorname{Alkenes}(x) = Z\big(S_2; B(x), B(x^2)\big) = \frac{1}{2}\Big( B(x)^2 + B(x^2) \Big).$$
+   Expanding $B(x)^2 = \frac{x^2}{4}\big(A(x)^4 + 2 A(x)^2 A(x^2) + A(x^2)^2\big)$ and $B(x^2) = \frac{x^2}{2}\big(A(x^2)^2 + A(x^4)\big)$ also gives the direct $8$-element dihedral / wreath-product $S_2[S_2]$ cycle index:
+   $$\operatorname{Alkenes}(x) = \frac{x^2}{8}\Big( A(x)^4 + 2 A(x)^2 A(x^2) + 3 A(x^2)^2 + 2 A(x^4) \Big).$$
+
+#### Step 2: Hand-Checkable Trace ($N = 2 \dots 5$, Constitutional Alkene Isomers!)
+
+From $A(x) = 1 + x + x^2 + 2x^3 + 4x^4 + \dots$, we compute $B(x) = \frac{x}{2}\big(A(x)^2 + A(x^2)\big)$:
+
+- $A(x)^2 = 1 + 2x + 3x^2 + 6x^3 + 13x^4 + \dots$
+- $A(x^2) = 1 + x^2 + x^4 + \dots$
+- $\frac{1}{2}\big(A(x)^2 + A(x^2)\big) = 1 + x + 2x^2 + 3x^3 + 7x^4 + \dots$
+- Multiplying by $x$:
+  $$B(x) = x + x^2 + 2x^3 + 3x^4 + 7x^5 + \dots$$
+
+Now we compute $\operatorname{Alkenes}(x) = \frac{1}{2}\big(B(x)^2 + B(x^2)\big)$:
+
+- $B(x)^2 = x^2 + 2x^3 + 5x^4 + 10x^5 + 22x^6 + \dots$
+- $B(x^2) = x^2 + x^4 + 2x^6 + \dots$
+- Averaging the two:
+  $$\operatorname{Alkenes}(x) = x^2 + x^3 + 3x^4 + 5x^5 + 12x^6 + \dots$$
+
+Let us verify these counts against chemistry:
+
+- $n = 2$ ($C_2 H_4$, ethene): **$1$** isomer ($CH_2 = CH_2$).
+- $n = 3$ ($C_3 H_6$, propene): **$1$** isomer ($CH_3 - CH = CH_2$).
+- $n = 4$ ($C_4 H_8$, butenes): **$3$** constitutional isomers: 1-butene ($CH_2=CH-CH_2-CH_3$), 2-butene ($CH_3-CH=CH-CH_3$), and isobutylene / 2-methylpropene ($(CH_3)_2 C = CH_2$).
+- $n = 5$ ($C_5 H_{10}$, pentenes): **$5$** constitutional isomers (1-pentene, 2-pentene, 2-methyl-1-butene, 3-methyl-1-butene, 2-methyl-2-butene).
+
+::: {.callout-important}
+## Algorithm Contract (`#192 Luogu P6597`)
+
+- **Input**: Integer $N$ ($2 \le N \le 10^5$).
+- **Preconditions**: Modulus $p = 998244353$ ($\gcd(6, p) = 1$).
+- **Index & Truncation Boundaries**: Compute $A(x) \bmod x^N$ with $A(0) = 1$ via $S_3$ Newton; form $B(x) = \frac{x}{2}(A(x)^2 + A(x^2)) \bmod x^N$ (valuation $1$), and evaluate $\operatorname{Alkenes}(x) = \frac{1}{2}(B(x)^2 + B(x^2)) \bmod x^{N+1}$ (valuation $2$).
+- **1-Sentence Loop Invariant**: After the $S_3$ Newton loop produces $A(x) \bmod x^N$, two successive $Z(S_2)$ cycle-index evaluations compute the half-alkene series $B(x)$ and the full double-bond-centered alkene series $\operatorname{Alkenes}(x) \bmod x^{N+1}$.
+- **Output**: Sequence of alkene counts $[x^2 \dots x^N]\operatorname{Alkenes}(x) \bmod 998244353$.
+- **Complexity**: $O(N \log N)$ time ($1$ Newton run for $A(x)$ + $2$ squarings for $B(x)$ and $\operatorname{Alkenes}(x)$), $O(N)$ space.
+:::
+
+</details>
+
+---
+
+## 10.6 Chapter Summary, Diagnostic Checklist & Quarantined Library Verification Footnotes (`R-36`)
+
+### Fast-Reference Diagnostic Checklist
+
+| Structural Signal in the Problem | Canonical Algebraic Equation | Chapter 10 Engine & Complexity | Key Pitfall to Watch |
+| :--- | :--- | :--- | :--- |
+| Recursive 1D grammar $A(x, F(x)) = 0$, need all $f_0 \dots f_N$ | $F_{2d} \equiv F_d - \frac{A(x, F_d)}{\partial_y A(x, F_d)} \pmod{x^{2d}}$ | **1D Implicit Newton** ($O(N \log N)$) | Factor out $x^v$ first so $\partial_y A(0, f_0) \in K^\times$! |
+| Labeled tree/cactus $F(x) = x \exp\big(G(x, F(x))\big)$ | $F_{2d} \equiv F_d\left(1 - \frac{\ln(F_d/x) - G(x, F_d)}{1 - F_d \partial_y G(x, F_d)}\right)$ | **Logarithmic Newton Speedup** ($O(N \log N)$) | Eliminates `exp` inside the loop; requires $p > N$. |
+| Coupled $2 \times 2$ system $\Phi_1(x, F, G) = \Phi_2(x, F, G) = 0$ | Substitute $G = \psi(x, F)$ if explicit; else invert $2 \times 2$ Jacobian $\det J$ | **Elimination / $2 \times 2$ Jacobian Newton** ($O(N \log N)$) | If $d \ge 3$ and $N \le 10^5$, use `Ch 09` `RelaxedConvolution`! |
+| Non-linear 1st-order ODE $F'(x) = \Phi(x, F(x))$ (`UOJ 50`) | $\Delta' - \partial_y \Phi(x, F_d) \Delta \equiv \Phi(x, F_d) - F_d' \pmod{x^{2d}}$ | **Integrating-Factor Differential Newton** ($O(N \log N)$) | Keep $\Delta'(x)$! Integrate with $\mu_d = \exp(-\int \partial_y \Phi\,dx)$. |
+| Unlabeled rooted trees / Pólya $S_d$ with $F(x^2), F(x^3), \dots$ | Freeze $F(x^k) \equiv F_d(x^k) \pmod{x^{2d}}$ for all $k \ge 2$ | **Higher-Power Pólya–Euler Newton** ($O(N \log N)$) | **Pólya Higher-Power Pitfall**: $\frac{\partial}{\partial F} F(x^k) \equiv 0 \pmod{x^{2d}}$ for $k \ge 2$! |
+| Unrooted unlabeled trees (unrestricted or degree $\le d$) | $t(x) = T(x) - \frac{1}{2}\big(T(x)^2 - T(x^2)\big)$ | **Otter's Dissimilarity Theorem** ($O(N \log N)$) | **Unlabeled Tree Pitfalls A & B**: Never divide by $n$! For degree $\le d$, use $A(x) - 1$ on edges! |
+| Single coefficient $[x^N]H(F(x))$ where $F(x) = x\Phi(F(x))$ | Extract $[x^N]$ without Newton doubling | **Forward Pointer to Chapter 11 (Lagrange Inversion)** | Use Form 2 (Derivative-Free LIF) when $p \mid N$! |
+
+::: {.callout-note}
+## Quarantined Mechanical Verification Benchmarks (`R-36`)
+
+To unit-test the low-level polynomial primitives (`inv`, `ln`, `exp`, `sqrt`) used inside your Chapter 10 Newton engines before submitting to the combinatorial problems above, use the following mechanical Library Checker benchmarks:
+
+1. **Polynomial Inverse (`inv`)**: [Library Checker — Inv of Formal Power Series (`inv_of_formal_power_series`)](https://judge.yosupo.jp/problem/inv_of_formal_power_series)
+2. **Polynomial Logarithm (`ln`)**: [Library Checker — Log of Formal Power Series (`log_of_formal_power_series`)](https://judge.yosupo.jp/problem/log_of_formal_power_series)
+3. **Polynomial Exponential (`exp`)**: [Library Checker — Exp of Formal Power Series (`exp_of_formal_power_series`)](https://judge.yosupo.jp/problem/exp_of_formal_power_series)
+:::

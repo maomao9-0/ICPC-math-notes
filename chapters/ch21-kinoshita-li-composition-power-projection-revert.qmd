@@ -1,0 +1,1114 @@
+---
+title: "21 — Power Projection, Kinoshita–Li FPS Composition (compose) & Compositional Inverse (revert)"
+subtitle: "Part V · D-Finite Series, Differential Operators & The Transposition Principle"
+---
+
+::: {.callout-note}
+## Prerequisites & Learning Objectives
+
+**Prerequisites**:
+
+- **[Chapter 11: Formal Laurent Series, Residue Calculus, Raney's Lemma & Lagrange Inversion](ch11-laurent-residues-raney-lagrange-inversion.qmd)** — Formal residue change-of-variables $\operatorname{Res}_x A(x)\,dx = \operatorname{Res}_u A(G(u))G'(u)\,du$, Classical and Derivative-Free Lagrange Inversion (`LIF`).
+- **[Chapter 16: The Bivariate Hierarchy, 2D Bostan–Mori & Furstenberg's Diagonal Theorem](ch16-bivariate-hierarchy-2d-bostan-mori-furstenberg.qmd)** — Bivariate rational parity splitting, 2D Kronecker-packed FFTs, and Regime 3 ($x$-halving / $y$-doubling).
+- **[Chapter 20: Tellegen's Transposition Principle, Middle Product, Multipoint Evaluation & Sampling Shift](ch20-tellegen-transposition-multipoint-sampling-shift.qmd)** — Reversing linear dataflow graphs (`DAG`s) via Tellegen's theorem and the 1D/2D Middle Product (`mulT`).
+
+**Learning Objectives**:
+
+1. **Compute Power Projection in $O(N \log^2 N)$**: Evaluate $\text{proj}_k = \sum_{i=0}^{N-1} w_i [x^i] F(x)^k$ for all $0 \le k < N$ simultaneously via **Kinoshita–Li (FOCS 2024) 2D Bostan–Mori** on $\frac{P_0(x, y)}{1 - y F(x)}$ with **Nachia's frequency half-swap optimization**.
+2. **Compute Fast FPS Composition (`compose`) via Tellegen Transposition**: Transpose the linear Power Projection circuit bottom-up to evaluate $H(x) = G(F(x)) \bmod x^N$ in $O(N \log^2 N)$ time—completely free of divisions by $1, 2, \dots, N-1$ so it works over every field of characteristic $p \ne 2$.
+3. **Linearize Coupled Binomial Sums Simultaneously (`炫酷反演魔术`)**: Apply **Elegia's all-$n$ formal residue linearization** to evaluate $S_n = \sum_{k=0}^n f_k \binom{\alpha n + \beta k + \gamma}{n - k}$ for all $0 \le n \le N$ in $O(N \log^2 N)$ via a single call to `compose`.
+4. **Master the Dual-Route Compositional Inverse (`revert`) & Characteristic-$p$ Pitfalls**: Choose between **Route A** (`noshi91` LIF + Power Projection, when $p > N$) and **Route B** (Newton iteration + Kinoshita–Li `compose`, mandatory when $p \le N$), and resolve functional square roots $G(G(x)) = F(x) \bmod x^N$ up to and beyond the **degree $p + 2$ Artin–Schreier obstruction**.
+:::
+
+For forty-six years after R. P. Brent and H. T. Kung introduced their $O((N \log N)^{3/2})$ baby-step giant-step algorithm in 1978, fast composition $H(x) = G(F(x)) \bmod x^N$ and compositional inversion $G(x) = F^{\langle -1 \rangle}(x) \bmod x^N$ remained the last major bottlenecks in the formal power series library. While algebraic operations (`inv`, `sqrt`) and differential operations (`ln`, `exp`, `pow`) ran in $O(N \log N)$ time via Newton iteration, composition and inversion of general dense series at $N = 2 \times 10^5$ required hundreds of milliseconds of cache-unfriendly block multiplications.
+
+In 2024, Yasunori Kinoshita and Baitian Li shattered this barrier with a remarkably simple insight: **Power Projection**—the exact matrix transpose of FPS Composition—is nothing more than extracting $[x^{N-1}]$ from a bivariate rational function $\frac{P_0(x, y)}{1 - y F(x)} \bmod y^N$. Applying the 2D Bostan–Mori parity-splitting loop from [Chapter 16](ch16-bivariate-hierarchy-2d-bostan-mori-furstenberg.qmd) halves the $x$-degree while doubling the $y$-degree at each of $\log_2 N$ levels, keeping the total bivariate coefficient volume invariant at $\Theta(N)$ and solving Power Projection in $O(N \log^2 N)$ time. Reversing the linear dataflow graph via Tellegen's Transposition Principle from [Chapter 20](ch20-tellegen-transposition-multipoint-sampling-shift.qmd) immediately yields $O(N \log^2 N)$ **FPS Composition** (`compose`), which in turn unlocks $O(N \log^2 N)$ **Compositional Inverse** (`revert`) across all characteristics.
+
+---
+
+## 21.1 Power Projection ($\text{proj}_k = \sum_{i=0}^{N-1} w_i [x^i] F(x)^k$) via Kinoshita–Li 2D Bostan–Mori {#sec-power-projection}
+
+### Concrete Combinatorial & Algebraic Motivation
+
+Suppose we are given a formal power series $F(x) = \sum_{i=0}^{N-1} f_i x^i \in K[[x]] / (x^N)$ (for instance, the step generator of a random walk or the branching kernel of a tree) and a weight vector $\mathbf{w} = (w_0, w_1, \dots, w_{N-1})^\top \in K^N$. We want to compute a single linear functional of the $k$-th power $F(x)^k$ for **every** $k = 0, 1, \dots, N-1$ simultaneously:
+$$\text{proj}_k = \sum_{i=0}^{N-1} w_i [x^i] F(x)^k \qquad (0 \le k < N).$$
+
+Notice what this asks in linear algebra terms. Define the $N \times N$ **composition matrix** $M_F$ whose $(i, k)$ entry is the $i$-th coefficient of the $k$-th power of $F(x)$:
+$$(M_F)_{i, k} := [x^i] F(x)^k \qquad (0 \le i, k < N).$$
+
+- Multiplying $M_F$ on the right by a column vector $\mathbf{g} = (g_0, \dots, g_{N-1})^\top$ computes the coefficients of the **composite series** $H(x) = G(F(x)) \bmod x^N$:
+  $$h_i = [x^i] \sum_{k=0}^{N-1} g_k F(x)^k = \sum_{k=0}^{N-1} (M_F)_{i, k} g_k \iff \mathbf{h} = M_F \mathbf{g}.$$
+- Multiplying the **transpose** $M_F^\top$ by a weight vector $\mathbf{w} = (w_0, \dots, w_{N-1})^\top$ computes the **power projection** vector $\mathbf{p} = (\text{proj}_0, \dots, \text{proj}_{N-1})^\top$:
+  $$\text{proj}_k = \sum_{i=0}^{N-1} w_i [x^i] F(x)^k = \sum_{i=0}^{N-1} (M_F^\top)_{k, i} w_i \iff \mathbf{p} = M_F^\top \mathbf{w}.$$
+
+In particular, when $\mathbf{w} = (0, \dots, 0, 1)^\top$ is the standard basis vector $e_{N-1}$, Power Projection extracts the single coefficient $[x^{N-1}] F(x)^k$ for all $k = 0, 1, \dots, N-1$ at once—which is the exact input required by Lagrange Inversion (`Ch 11`) to recover the compositional inverse $F^{\langle -1 \rangle}(x) \bmod x^N$.
+
+### Bivariate Rational Conversion & The $x$-Halving / $y$-Doubling Loop
+
+#### 1. The Diagnostic Signal
+
+Whenever you need a linear combination $\sum_{i=0}^{N-1} w_i [x^i] F(x)^k$ for all exponents $k = 0, \dots, N-1$, never compute the powers $F(x)^2, F(x)^3, \dots, F(x)^{N-1}$ individually ($O(N^2 \log N)$). Instead, introduce a second formal indeterminate $y$ to sum over all $k \ge 0$ into a geometric series $\frac{1}{1 - y F(x)}$.
+
+#### 2. The Reverse-Engineering Scratchpad
+
+How do we turn the inner product $\sum_{i=0}^{N-1} w_i [x^i] F(x)^k$ into a single coefficient extraction in $x$?
+Recall from [Chapter 20](ch20-tellegen-transposition-multipoint-sampling-shift.qmd) that if we define the reversed weight polynomial
+$$P_0(x) := \sum_{i=0}^{N-1} w_i x^{N-1-i},$$
+then multiplying $P_0(x)$ by $F(x)^k$ and extracting $[x^{N-1}]$ pairs $x^{N-1-i}$ from $P_0(x)$ with $x^i$ from $F(x)^k$:
+$$[x^{N-1}] \Big( P_0(x) F(x)^k \Big) = \sum_{i=0}^{N-1} w_i [x^i] F(x)^k = \text{proj}_k.$$
+Now multiply both sides by $y^k$ and sum over $0 \le k < N$. In the bivariate quotient ring $K[[x]][y] / (y^N)$, the geometric series $\sum_{k=0}^{N-1} y^k F(x)^k$ is the exact inverse of $Q_0(x, y) := 1 - y F(x)$ (which is a unit in $K[[x, y]]$ because its constant term in $y$ is $[y^0] Q_0(x, y) = 1 \in K^\times$):
+$$\sum_{k=0}^{N-1} \text{proj}_k y^k = [x^{N-1}] \left( \frac{\sum_{i=0}^{N-1} w_i x^{N-1-i}}{1 - y F(x)} \right) \bmod y^N = [x^{N-1}] \frac{P_0(x, y)}{Q_0(x, y)} \bmod y^N.$$
+
+#### 3. Single-Step Verbalized Derivation of Regime 3 2D Bostan–Mori
+
+Pad $N$ up to the next power of two, $N = 2^m$ (appending zeros to $\mathbf{w}$ and $F(x)$). This simple padding confers a remarkable structural gift: the target $x$-exponent is $n_0 = N - 1 = 2^m - 1 = (11\dots1)_2$ in binary, so at every halving step $t = 0, 1, \dots, m-1$, the remaining $x$-index $n_t = 2^{m-t} - 1$ is **always odd** ($b_t = n_t \bmod 2 = 1$).
+
+At recursion level $t \in \{0, 1, \dots, m\}$, we maintain bivariate polynomials $P_t(x, y)$ and $Q_t(x, y)$ satisfying three strict invariants:
+
+1. **$x$-Degree Bound**: $\deg_x P_t < 2^{m-t}$ and $\deg_x Q_t < 2^{m-t}$.
+2. **$y$-Degree Bound**: $\deg_y P_t < 2^t$ and $\deg_y Q_t \le 2^t$ (truncated modulo $y^N$).
+3. **Unit-Constant Normalization**: $Q_t(0, y) = 1$ as a polynomial in $y$.
+
+Let us verify why these three invariants are preserved when transitioning from $t$ to $t + 1$:
+
+- **Step 1 (Conjugate Multiplication)**: Multiply numerator and denominator of $\frac{P_t(x, y)}{Q_t(x, y)}$ by $Q_t(-x, y) \bmod x^{2^{m-t}}$:
+  $$\frac{P_t(x, y)}{Q_t(x, y)} = \frac{P_t(x, y) Q_t(-x, y)}{Q_t(x, y) Q_t(-x, y)}.$$
+- **Step 2 (Denominator Deflation)**: Since $Q_t(x, y) Q_t(-x, y)$ is invariant under $x \mapsto -x$, all of its odd $x$-powers vanish. Truncating to $\deg_x < 2^{m-t}$ before substituting $x^2 \gets x$ defines
+  $$Q_{t+1}(x, y) := \mathcal{S}_0\big(Q_t(x, y) Q_t(-x, y) \bmod x^{2^{m-t}}\big) \bmod y^N,$$
+  where $\mathcal{S}_b\big(\sum_{i} A_i(y) x^i\big) := \sum_{i} A_{2i+b}(y) x^i$. Because $\deg_y Q_t \le 2^t$, we have $\deg_y Q_{t+1} \le 2^{t+1}$. Furthermore, at $x = 0$, $Q_0(0, y) = 1 - y f_0$ when $f_0 = 0$ (or after stripping $x^0 F$), so $Q_0(0, y) = 1$; by induction, $Q_{t+1}(0, y) = Q_t(0, y) Q_t(0, y) = 1 \cdot 1 = 1$.
+- **Step 3 (Numerator Parity Selection)**: Since $n_t = 2^{m-t} - 1$ is odd ($b_t = 1$), only the odd $x$-powers of $P_t(x, y) Q_t(-x, y) \bmod x^{2^{m-t}}$ contribute to $[x^{n_t}]$:
+  $$P_{t+1}(x, y) := \mathcal{S}_1\big(P_t(x, y) Q_t(-x, y) \bmod x^{2^{m-t}}\big) \bmod y^N.$$
+  Since $\deg_y P_t < 2^t$ and $\deg_y Q_t \le 2^t$, their product has $y$-degree $< 2^t + 2^t = 2^{t+1}$, so $\deg_y P_{t+1} < 2^{t+1}$ without even losing information up to $y^{2^{t+1}-1}$.
+- **Step 4 (Terminal Extraction at $t = m$)**: After $m = \log_2 N$ steps, $n_m = 0$, $\deg_x P_m = 0$, and $Q_m(0, y) = 1$. Thus **zero final polynomial inversion is needed**:
+  $$\sum_{k=0}^{N-1} \text{proj}_k y^k = \frac{P_m(0, y)}{Q_m(0, y)} \bmod y^N = P_m(0, y).$$
+
+::: {.callout-tip}
+## Nachia's 2D-FFT Frequency Half-Swap Optimization
+
+At level $t$, a naive implementation performs four 2D NTTs of size $2 L_x \times 2 L_y$ (where $L_x = 2^{m-t}, L_y = 2^t$, so $2 L_x \cdot 2 L_y = 4N$): forward NTTs of $P_t(x,y)$, $Q_t(x,y)$, and $Q_t(-x,y)$, plus two inverse NTTs.
+
+As observed by **Nachia (2024)**, we **never** need to compute a separate forward NTT for $Q_t(-x, y)$:
+
+1. In a radix-2 NTT of length $2 L_x$ along the $x$-dimension, the evaluation points are $\omega_{2L_x}^r$. Because $\omega_{2L_x}^{L_x} = -1$, negating $x \mapsto -x$ simply shifts the $x$-frequency index $r$ by $L_x \pmod{2L_x}$:
+   $$\widehat{Q_t(-x, y)}[r_x, r_y] = \widehat{Q_t(x, y)}[r_x \oplus L_x, r_y].$$
+2. Even better, in the frequency domain, the even-index decimation $\mathcal{S}_0$ and odd-index decimation $\mathcal{S}_1$ along $x$ can be extracted before the inverse NTT by combining frequency pairs $(r_x, r_x \oplus L_x)$:
+   $$\widehat{Q_{t+1}}[r_x, r_y] = \widehat{Q_t}[r_x, r_y] \cdot \widehat{Q_t}[r_x \oplus L_x, r_y],$$
+   halving the $x$-length of the inverse NTT from $2 L_x$ to $L_x$ and cutting the total runtime by nearly $50\%$.
+:::
+
+### Hand-Checkable Toy Trace ($N = 4$)
+
+Let $N = 4 = 2^2$ ($m = 2$), $F(x) = x + 2x^2$ ($f_0 = 0, f_1 = 1, f_2 = 2, f_3 = 0$), and $\mathbf{w} = (1, 1, 1, 1)^\top$, so $\text{proj}_k = \sum_{i=0}^3 [x^i] F(x)^k$.
+
+- **Direct check**:
+  - $k = 0$: $F(x)^0 = 1 \implies \text{proj}_0 = 1$.
+  - $k = 1$: $F(x)^1 = x + 2x^2 \implies \text{proj}_1 = 1 + 2 = 3$.
+  - $k = 2$: $F(x)^2 = x^2 + 4x^3 + 4x^4 \equiv x^2 + 4x^3 \pmod{x^4} \implies \text{proj}_2 = 1 + 4 = 5$.
+  - $k = 3$: $F(x)^3 = x^3 + 6x^4 + \dots \equiv x^3 \pmod{x^4} \implies \text{proj}_3 = 1$.
+- **Kinoshita–Li 2D Bostan–Mori trace**:
+  - **Level $t = 0$ ($n_0 = 3$, $\deg_x < 4, \deg_y \le 1$)**:
+    $$P_0(x, y) = 1 + x + x^2 + x^3, \qquad Q_0(x, y) = 1 - y(x + 2x^2) = 1 - y x - 2 y x^2.$$
+    Here $Q_0(-x, y) = 1 + y x - 2 y x^2$. Multiply modulo $x^4$:
+    $$P_0(x, y) Q_0(-x, y) \equiv 1 + (1 + y)x + (1 - y)x^2 + (1 - y)x^3 \pmod{x^4},$$
+    $$Q_0(x, y) Q_0(-x, y) \equiv (1 - 2y x^2)^2 - y^2 x^2 \equiv 1 - (4y + y^2) x^2 \pmod{x^4}.$$
+    Extracting odd $x$-powers ($\mathcal{S}_1$) for $P_1$ and even $x$-powers ($\mathcal{S}_0$) for $Q_1$:
+    $$P_1(x, y) = (1 + y) + (1 - y) x, \qquad Q_1(x, y) = 1 - (4y + y^2) x.$$
+  - **Level $t = 1$ ($n_1 = 1$, $\deg_x < 2, \deg_y \le 2$)**:
+    Here $Q_1(-x, y) = 1 + (4y + y^2) x$. Multiply modulo $x^2$:
+    $$P_1(x, y) Q_1(-x, y) \equiv (1 + y) + \Big((1 - y) + (1 + y)(4y + y^2)\Big) x = (1 + y) + (1 + 3y + 5y^2 + y^3) x \pmod{x^2},$$
+    $$Q_1(x, y) Q_1(-x, y) \equiv 1 - (4y + y^2)^2 x^2 \equiv 1 \pmod{x^2}.$$
+    Extracting odd $x$-powers ($\mathcal{S}_1$) for $P_2$ and even $x$-powers ($\mathcal{S}_0$) for $Q_2$:
+    $$P_2(0, y) = 1 + 3y + 5y^2 + y^3, \qquad Q_2(0, y) = 1.$$
+  - **Level $t = 2$ ($n_2 = 0$)**: Reading the coefficients of $P_2(0, y)$ yields $\mathbf{p} = (1, 3, 5, 1)^\top$, matching the direct expansion.
+
+::: {.callout-important}
+## Algorithm Contract: Kinoshita–Li Power Projection (`power_projection`)
+
+1. **Inputs**: $F(x) = \sum_{i=0}^{N-1} f_i x^i \in K[[x]]/(x^N)$ and weight vector $\mathbf{w} = (w_0, \dots, w_{N-1})^\top \in K^N$.
+2. **Output**: Vector $\mathbf{p} = (\text{proj}_0, \dots, \text{proj}_{N-1})^\top$ where $\text{proj}_k = \sum_{i=0}^{N-1} w_i [x^i] F(x)^k$.
+3. **Algebraic Preconditions**: If $c = f_0 \ne 0$, first compute the projection for $\tilde{F}(x) = F(x) - c$ (so $[x^0]\tilde{F} = 0$) and apply the binomial shift $\text{proj}_k = \sum_{j=0}^k \binom{k}{j} c^{k-j} \widetilde{\text{proj}}_j$ via a single EGF convolution (`Ch 06`). Requires a ring/field supporting FFT/NTT of length $4N$ (or 3-prime NTT + CRT).
+4. **Complexity**: $O(N \log^2 N)$ time and $O(N)$ auxiliary space.
+5. **Core Invariant**: At level $t \in [0, \log_2 N]$, $[x^{2^{m-t}-1}] \frac{P_t(x, y)}{Q_t(x, y)} \equiv \sum_{k=0}^{N-1} \text{proj}_k y^k \pmod{y^{2^t}}$ with $\deg_x P_t, \deg_x Q_t < 2^{m-t}$, $\deg_y P_t < 2^t$, $\deg_y Q_t \le 2^t$, and $Q_t(0, y) = 1$.
+:::
+
+```cpp
+// Core loop of Kinoshita-Li Power Projection (N = 2^m, f[0] == 0)
+Poly power_projection(Poly F, Poly w, int N) {
+    // Pack (x, y) into 1D array of stride 2*Ly: index(i, j) = i * (2*Ly) + j
+    vector<Mint> P(2 * N, 0), Q(2 * N, 0);
+    for (int i = 0; i < N; ++i) P[2 * (N - 1 - i)] = w[i];
+    for (int i = 1; i < N; ++i) Q[2 * i + 1] = -F[i];
+    for (int Lx = N, Ly = 1; Lx > 1; Lx >>= 1, Ly <<= 1) {
+        // Multiply P(x, y)*Q(-x, y) and Q(x, y)*Q(-x, y) via 2D NTT of size (2*Lx) x (2*Ly)
+        // Extract odd x-powers S_1 into P_next and even x-powers S_0 into Q_next
+        bostan_mori_2d_step(P, Q, Lx, Ly);
+    }
+    return Poly(P.begin(), P.begin() + N); // P_m(0, y) since Q_m(0, y) == 1
+}
+```
+
+::: {.callout-warning}
+## Failure Mode & Remedy: Non-Zero Constant Term $f_0 \ne 0$ in `power_projection`
+
+- **The Failure Mode**: Running the $Q_t(0, y) = 1$ zero-division loop directly when $f_0 = [x^0] F(x) \ne 0$. When $f_0 \ne 0$, $Q_0(0, y) = 1 - f_0 y \ne 1$, so at $t = m$ the denominator is $Q_m(0, y) = (1 - f_0 y)^{2^m} \ne 1$, and reading $P_m(0, y)$ without dividing by $Q_m(0, y)$ produces garbage for all $k \ge 1$.
+- **The Remedy**: Either strip $c = f_0$ upfront by setting $\tilde{F}(x) = F(x) - c$ (so $\tilde{F}(0) = 0$) and convolving $\widetilde{\text{proj}}_j / j!$ with $c^r / r!$ at the end, **or** divide $P_m(0, y)$ by $Q_m(0, y) \bmod y^N$ via a single 1D polynomial inversion at $t = m$. Stripping $f_0 = 0$ upfront is cleaner because it also guarantees $\deg_y P_t < 2^t$ without carry-over from $x^0$.
+:::
+
+---
+
+## 21.2 Kinoshita–Li FPS Composition ($H(x) = G(F(x)) \bmod x^N$) via Tellegen Transposition {#sec-kinoshita-li-compose}
+
+### Transposing the Power Projection Circuit
+
+Given $F(x) = \sum_{i=0}^{N-1} f_i x^i$ and $G(y) = \sum_{k=0}^{N-1} g_k y^k$, we want to compute the composite series
+$$H(x) = G(F(x)) \bmod x^N = \sum_{i=0}^{N-1} h_i x^i, \qquad h_i = \sum_{k=0}^{N-1} g_k [x^i] F(x)^k.$$
+
+#### 1. The Diagnostic Signal
+
+For a **fixed** inner series $F(x)$, both Power Projection $\mathbf{w} \mapsto \mathbf{p} = M_F^\top \mathbf{w}$ and FPS Composition $\mathbf{g} \mapsto \mathbf{h} = M_F \mathbf{g}$ are **linear maps** in $\mathbf{w}$ and $\mathbf{g}$ respectively, and their matrices are exact transposes of one another. Notice that in `power_projection`, the denominator sequence $Q_0(x, y), Q_1(x, y), \dots, Q_m(x, y)$ depends **only on $F(x)$** and is completely independent of $\mathbf{w}$.
+
+#### 2. The Reverse-Engineering Scratchpad
+
+Let us trace the linear operations applied to the vector $\mathbf{w}$ in `power_projection` (`§21.1`) and invert their order and direction using the rules of Tellegen's Transposition Principle from [Chapter 20](ch20-tellegen-transposition-multipoint-sampling-shift.qmd):
+
+1. **Forward Map on $\mathbf{w}$**:
+   $$\mathbf{w} \xrightarrow{\mathcal{R}_x} P_0(x, y) \xrightarrow{\mathcal{L}_0} P_1(x, y) \xrightarrow{\mathcal{L}_1} \cdots \xrightarrow{\mathcal{L}_{m-1}} P_m(0, y) = \mathbf{p},$$
+   where $\mathcal{R}_x$ places $w_i$ at $[x^{N-1-i} y^0] P_0(x, y)$, and each linear layer $\mathcal{L}_t : P_t \mapsto P_{t+1}$ performs two elementary linear maps in sequence:
+   - **Multiplication by $Q_t(-x, y)$**: $U_t(x, y) = P_t(x, y) \cdot Q_t(-x, y) \bmod (x^{2^{m-t}}, y^{2^{t+1}})$.
+   - **Odd-Index Decimation $\mathcal{S}_1$ in $x$**: $P_{t+1}(x, y) = \mathcal{S}_1(U_t(x, y))$, which selects $[x^{2i+1}] U_t(x, y)$ as $[x^i] P_{t+1}(x, y)$.
+
+2. **Transposed Map on $\mathbf{g}$ (`fps_compose`)**:
+   $$\mathbf{g} = \hat{P}_m(0, y) \xrightarrow{\mathcal{L}_{m-1}^\top} \hat{P}_{m-1}(x, y) \xrightarrow{\mathcal{L}_{m-2}^\top} \cdots \xrightarrow{\mathcal{L}_0^\top} \hat{P}_0(x, y) \xrightarrow{\mathcal{R}_x^\top} \mathbf{h}.$$
+   What is the transpose $\mathcal{L}_t^\top = (\mathcal{S}_1 \circ \operatorname{mul}_{Q_t(-x, y)})^\top = \operatorname{mul}_{Q_t(-x, y)}^\top \circ \mathcal{S}_1^\top$?
+   - **Transpose of Odd-Index Decimation $\mathcal{S}_1^\top$**: Decimation $\mathcal{S}_1$ maps index $2i + 1 \mapsto i$ and discards even indices $2i$. Its transpose $\mathcal{S}_1^\top$ **interleaves zeros at even $x$-indices** and places $[x^i] \hat{P}_{t+1}(x, y)$ at $[x^{2i+1}] \hat{U}_t(x, y)$:
+     $$\hat{U}_t(x, y) := \mathcal{S}_1^\top\big(\hat{P}_{t+1}(x, y)\big) = x \hat{P}_{t+1}(x^2, y).$$
+   - **Transpose of Multiplication by $Q_t(-x, y)$**: By the Middle Product Theorem (`Ch 20, Theorem 20.1`), the transpose of multiplying $P_t(x, y)$ by the fixed bivariate polynomial $Q_t(-x, y)$ is the **2D Middle Product (cross-correlation)** $\operatorname{mulT}_{x, y}$:
+     $$[x^i y^j] \hat{P}_t(x, y) = \sum_{a, b} \big([x^{i+a} y^{j+b}] \hat{U}_t(x, y)\big) \cdot \big([x^a y^b] Q_t(-x, y)\big),$$
+     or in polynomial notation:
+     $$\hat{P}_t(x, y) = \operatorname{mulT}_{x, y}\!\Big(\hat{U}_t(x, y),\, Q_t(-x, y)\Big) \bmod \big(x^{2^{m-t}}, y^{2^t}\big).$$
+
+```{mermaid}
+flowchart LR
+    subgraph Forward["1. Forward Pass (Power Projection / Denominator Tree)"]
+        direction LR
+        Q0["Q_0(x, y) = 1 - y F(x)<br/>deg_x < N, deg_y <= 1"] -->|"Q_0(x,y) Q_0(-x,y)"| Q1["Q_1(x, y)<br/>deg_x < N/2, deg_y <= 2"]
+        Q1 -->|"..."| Qm["Q_m(0, y) = 1<br/>deg_x = 0, deg_y <= N"]
+    end
+    subgraph Backward["2. Backward Pass (Transposed Composition G(F(x)))"]
+        direction RL
+        Pm["P_hat_m(0, y) = G(y)<br/>deg_x = 0, deg_y < N"] -->|"Interleave x * P_hat(x^2, y)<br/>+ mulT(Q_{m-1}(-x, y))"| P1["P_hat_1(x, y)<br/>deg_x < N/2, deg_y < 2"]
+        P1 -->|"Interleave + mulT(Q_0(-x, y))"| P0["P_hat_0(x, 0)<br/>h_i = [x^{N-1-i}] P_hat_0"]
+    end
+    Forward -.->|"Store Q_t(-x, y) at each level t"| Backward
+```
+
+::: {.callout-note}
+## Algebraic Universality: Why Kinoshita–Li `compose` Works in Every Characteristic $p \ne 2$
+
+Look closely at every arithmetic operation inside the forward and backward passes of Kinoshita–Li `compose` when $F(0) = 0$:
+
+1. **Forward Pass**: Computes $Q_{t+1}(x, y)$ by polynomial multiplication $Q_t(x, y) Q_t(-x, y)$ and parity extraction $\mathcal{S}_0$.
+2. **Backward Pass**: Computes $\hat{P}_t(x, y)$ by zero-interleaving $\mathcal{S}_1^\top$ and 2D Middle Product $\operatorname{mulT}_{x, y}(\hat{U}_t, Q_t(-x, y))$.
+3. **Boundary at $t = m$**: Because $F(0) = 0$, $Q_t(0, y) = 1$ at all levels $t$, so no polynomial inversion is needed at $t = m$.
+
+Unlike differential or ODE-based composition methods, Kinoshita–Li `compose` **never differentiates or integrates** and **never divides by $1, 2, \dots, N-1$**. The only divisions in the entire algorithm are the factors of $2^{-1}$ inside the radix-2 inverse FFT/NTT! Consequently, using a 3-prime NTT + Garner CRT (or Schönhage–Strassen / Cantor FFT), Kinoshita–Li `compose` runs in $O(N \log^2 N)$ over **every field of characteristic $p \ne 2$**, even when $p \le N$ (e.g., $\mathbb{F}_3, \mathbb{F}_5, \mathbb{F}_{101}$).
+:::
+
+### Hand-Checkable Toy Trace ($N = 4$)
+
+Let $N = 4$ ($m = 2$), $F(x) = x + 2x^2$, and $G(y) = 1 + 3y + y^2 + 2y^3$.
+
+- **Direct check**:
+  $$G(F(x)) = 1 + 3(x + 2x^2) + (x + 2x^2)^2 + 2(x + 2x^2)^3 \equiv 1 + 3x + 7x^2 + 6x^3 \pmod{x^4}.$$
+- **Kinoshita–Li `compose` Backward Trace**:
+  From the forward pass of `§21.1`, we stored:
+  $$Q_0(-x, y) = 1 + y x - 2 y x^2, \qquad Q_1(-x, y) = 1 + (4y + y^2) x.$$
+  - **Initialize at $t = 2$**: $\hat{P}_2(0, y) = G(y) = 1 + 3y + y^2 + 2y^3$.
+  - **Step $t = 1$ ($2 \to 1$, target $\deg_x < 2, \deg_y < 2$)**:
+    1. Zero-interleave along $x$: $\hat{U}_1(x, y) = x \hat{P}_2(x^2, y) = (1 + 3y + y^2 + 2y^3) x$.
+    2. Apply $\operatorname{mulT}_{x, y}\big(\hat{U}_1(x, y),\, 1 + (4y + y^2) x\big)$ for $i \in \{0, 1\}, j \in \{0, 1\}$:
+       - Multiply by $1$ ($a=0, b=0$): shifts $(i, j)$ by $(0, 0)$, giving $(1 + 3y) x$.
+       - Multiply by $(4y + y^2) x$ ($a=1$): shifts $x^1 \to x^0$, and in $y$ applies $\operatorname{mulT}_y(1 + 3y + y^2 + 2y^3,\, 4y + y^2)$ truncated to $\deg_y < 2$:
+         - $[y^0] = 4 [y^1] \hat{P}_2 + 1 [y^2] \hat{P}_2 = 4(3) + 1(1) = 13$.
+         - $[y^1] = 4 [y^2] \hat{P}_2 + 1 [y^3] \hat{P}_2 = 4(1) + 1(2) = 6$.
+       Thus $\hat{P}_1(x, y) = (13 + 6y) + (1 + 3y) x$.
+  - **Step $t = 0$ ($1 \to 0$, target $\deg_x < 4, \deg_y < 1$)**:
+    1. Zero-interleave along $x$: $\hat{U}_0(x, y) = x \hat{P}_1(x^2, y) = (13 + 6y) x + (1 + 3y) x^3$.
+    2. Apply $\operatorname{mulT}_{x, y}\big(\hat{U}_0(x, y),\, 1 + y x - 2 y x^2\big)$ at $j = 0$ ($\deg_y < 1$):
+       - From $1$ ($a=0, b=0$): takes $[y^0]\hat{U}_0$, contributing $13 x + 1 x^3$.
+       - From $+y x$ ($a=1, b=1$): shifts $x^{i+1} \to x^i$ and takes $[y^1]\hat{U}_0$, contributing $6 x^0 + 3 x^2$.
+       - From $-2 y x^2$ ($a=2, b=1$): shifts $x^{i+2} \to x^i$ and takes $-2 [y^1]\hat{U}_0$, contributing $-2(3) x^1 = -6 x$.
+       Summing all three contributions yields:
+       $$\hat{P}_0(x, 0) = 6 + (13 - 6) x + 3 x^2 + 1 x^3 = 6 + 7x + 3x^2 + x^3.$$
+  - **Reverse $x$-indices**: $h_i = [x^{3-i}] \hat{P}_0(x, 0)$ gives $(h_0, h_1, h_2, h_3) = (1, 3, 7, 6)$, matching $1 + 3x + 7x^2 + 6x^3$.
+
+::: {.callout-important}
+## Algorithm Contract: Kinoshita–Li Fast FPS Composition (`fps_compose`)
+
+1. **Inputs**: $F(x) = \sum_{i=0}^{N-1} f_i x^i$ and $G(y) = \sum_{k=0}^{N-1} g_k y^k$ in $K[[x]]/(x^N)$.
+2. **Output**: $H(x) = G(F(x)) \bmod x^N = \sum_{i=0}^{N-1} h_i x^i$.
+3. **Algebraic Preconditions**: If $c = [x^0] F(x) \ne 0$, first apply a 1D Polynomial Taylor Shift $G(y) \gets G(y + c)$ (`Ch 06` / `Ch 20`) in $O(N \log N)$ time (valid when $\operatorname{char}(K) = 0$ or $p > N$) and replace $F(x) \gets F(x) - c$ so $[x^0] F = 0$. When $[x^0] F = 0$, requires **zero** divisions by $1, 2, \dots, N-1$ (works for all $p \ne 2$).
+4. **Complexity**: $O(N \log^2 N)$ time and $O(N \log N)$ space (to store the forward denominators $Q_t$ across the $\log_2 N$ levels).
+5. **Core Invariant**: At every level $t$ of the backward pass, the inner product $\langle \hat{P}_t(x, y), P_t(x, y) \rangle = \sum_{i, j} ([x^i y^j] \hat{P}_t) ([x^i y^j] P_t)$ is invariant and equals $\langle \mathbf{g}, \mathbf{p} \rangle = \langle \mathbf{h}, \mathbf{w} \rangle$.
+:::
+
+```cpp
+// Core structure of Kinoshita-Li FPS Composition H(x) = G(F(x)) mod x^N (F[0] == 0)
+Poly fps_compose(Poly F, Poly G, int N) { // N = 2^m
+    vector<vector<Mint>> Q_hist; vector<Mint> Q(2 * N, 0);
+    for (int i = 1; i < N; ++i) Q[2 * i + 1] = -F[i];
+    for (int Lx = N, Ly = 1; Lx > 1; Lx >>= 1, Ly <<= 1) {
+        Q_hist.push_back(Q); Q = bostan_mori_2d_denom_step(Q, Lx, Ly);
+    }
+    vector<Mint> P_hat(G.begin(), G.end()); // P_hat_m(0, y) = G(y)
+    for (int step = (int)Q_hist.size() - 1, Lx = 2, Ly = N >> 1; step >= 0; --step, Lx <<= 1, Ly >>= 1)
+        P_hat = bostan_mori_2d_transpose_step(P_hat, Q_hist[step], Lx, Ly);
+    Poly H(N);
+    for (int i = 0; i < N; ++i) H[i] = P_hat[N - 1 - i];
+    return H;
+}
+```
+
+---
+
+## 21.3 `Elegia`'s All-$n$ Coupled Binomial Sum Linearization (`炫酷反演魔术`, Form 6 Case B) {#sec-elegia-coupled-binomial}
+
+In [Chapter 11](ch11-laurent-residues-raney-lagrange-inversion.qmd), we saw how the formal residue change-of-variables theorem extracts a single coefficient of an implicit series. Now that we possess $O(N \log^2 N)$ fast composition (`compose`) and compositional inversion (`revert`), we can evaluate an entire family of **coupled binomial sums** across **all** $n = 0, 1, \dots, N$ simultaneously.
+
+### 1. The Diagnostic Signal
+
+You are asked to compute, for **all** $n = 0, 1, \dots, N$ (or for a single $n$ when $f_k$ is an arbitrary array), the sum
+$$S_n = \sum_{k=0}^{n} f_k \binom{\alpha n + \beta k + \gamma}{n - k},$$
+where the upper index $\alpha n + \beta k + \gamma$ depends linearly on **both** the outer index $n$ and the summation index $k$, preventing a direct 1D convolution.
+
+### 2. The Reverse-Engineering Scratchpad
+
+How do we decouple $n$ and $k$ inside $\binom{\alpha n + \beta k + \gamma}{n - k}$?
+Write the binomial coefficient as a formal Laurent residue in a dummy variable $u$:
+$$\binom{\alpha n + \beta k + \gamma}{n - k} = [u^{n-k}] (1 + u)^{\alpha n + \beta k + \gamma} = \operatorname{Res}_u \frac{(1 + u)^{\alpha n + \beta k + \gamma}}{u^{n - k + 1}}\,du.$$
+Group all factors according to whether their exponent is $n$, $k$, or constant:
+$$\frac{(1 + u)^{\alpha n + \beta k + \gamma}}{u^{n - k + 1}}\,du = (1 + u)^\gamma \cdot \Big(u (1 + u)^\beta\Big)^k \cdot \left(\frac{u}{(1 + u)^\alpha}\right)^{-n - 1} \frac{du}{(1 + u)^\alpha}.$$
+Look at the base raised to the power $-n - 1$: it is
+$$z = G(u) := \frac{u}{(1 + u)^\alpha} = u (1 + u)^{-\alpha} \in \mathcal{G}_1(K).$$
+Let $u = A(z) := G^{\langle -1 \rangle}(z)$ be its unique compositional inverse satisfying $A(z) = z (1 + A(z))^\alpha$.
+What is the differential conversion factor between $\frac{du}{(1+u)^\alpha}$ and $dz$? Differentiate $z = u(1+u)^{-\alpha}$ logarithmically:
+$$\frac{dz}{z} = \left(\frac{1}{u} - \frac{\alpha}{1 + u}\right) du = \frac{1 - (\alpha - 1)u}{u(1 + u)}\,du \implies dz = \frac{1 - (\alpha - 1)u}{(1 + u)^{\alpha + 1}}\,du \implies \frac{du}{(1 + u)^\alpha} = \frac{1 + u}{1 - (\alpha - 1)u}\,dz.$$
+Substituting $u = A(z)$ via the Formal Residue Change-of-Variables Theorem (`Ch 11, Theorem 11.1`) turns $\operatorname{Res}_u (\dots) G(u)^{-n-1} G'(u)\,du$ directly into $[z^n]$!
+
+### 3. Single-Step Verbalized Derivation of the Master Identity
+
+Let $F(w) := \sum_{k=0}^N f_k w^k$ be the ordinary generating function of the sequence $(f_k)$. Summing over $k = 0 \dots n$ (since terms with $k > n$ have $\operatorname{val}_u\big(u^{k-n-1}(1+u)^{\dots}\big) \ge 0$ and zero residue at $u^{-1}$):
+
+1. **Express $S_n$ as a single $u$-residue**:
+   $$S_n = \operatorname{Res}_u \left( F\big(u(1 + u)^\beta\big) \cdot (1 + u)^\gamma \cdot \left(\frac{u}{(1 + u)^\alpha}\right)^{-n-1} \frac{du}{(1 + u)^\alpha} \right).$$
+2. **Substitute $\frac{du}{(1+u)^\alpha} = \frac{1+u}{1 - (\alpha-1)u}\,dz$ where $z = u(1+u)^{-\alpha}$**:
+   $$S_n = \operatorname{Res}_u \left( F\big(u(1 + u)^\beta\big) \cdot \frac{(1 + u)^{\gamma + 1}}{1 - (\alpha - 1) u} \cdot z(u)^{-n-1}\,dz(u) \right).$$
+3. **Apply the Change-of-Variables Theorem $u = A(z)$ (`Ch 11`)**:
+   $$S_n = \operatorname{Res}_z \left( F\!\Big(A(z)\big(1 + A(z)\big)^\beta\Big) \cdot \frac{\big(1 + A(z)\big)^{\gamma + 1}}{1 - (\alpha - 1) A(z)} \cdot z^{-n-1}\,dz \right).$$
+4. **Read off the coefficient $[z^n]$ for all $0 \le n \le N$ simultaneously**:
+   $$\sum_{n=0}^{N} S_n z^n \equiv F\!\Big(A(z)\big(1 + A(z)\big)^\beta\Big) \cdot \frac{\big(1 + A(z)\big)^{\gamma + 1}}{1 - (\alpha - 1) A(z)} \pmod{z^{N+1}}.$$
+
+::: {.callout-note}
+## Theorem 21.1 (`Elegia`'s Coupled Binomial Sum Linearization / `炫酷反演魔术`)
+
+Let $F(w) = \sum_{k=0}^N f_k w^k \in K[[w]]$ and $\alpha, \beta, \gamma \in K$.
+
+1. **Simultaneous All-$n$ $z$-Plane Form**: Let $A(z) \in z K[[z]]$ be the unique root of $A(z) = z(1 + A(z))^\alpha$ (computable up to $z^{N+1}$ via closed-form Raney series `[z^m] A(z) = \frac{1}{m}\binom{\alpha m}{m-1}` or compositional inversion of $u(1+u)^{-\alpha}$). Defining the inner series $W(z) := A(z)(1 + A(z))^\beta \bmod z^{N+1}$ (which has $[z^0]W(z) = 0$), a **single call to Kinoshita–Li `compose`** $F(W(z)) \bmod z^{N+1}$ evaluates $S_0, S_1, \dots, S_N$ in **$O(N \log^2 N)$** time:
+   $$S_n = [z^n] \left( F\!\Big(A(z)\big(1 + A(z)\big)^\beta\Big) \cdot \frac{\big(1 + A(z)\big)^{\gamma + 1}}{1 - (\alpha - 1) A(z)} \right).$$
+2. **Single-$n$ $w$-Plane Convolution Form**: If only a **single** $S_n$ is needed for a fixed $n$, instead change variables via $w = u(1+u)^\beta \iff u = g(w) = w(1 + g(w))^{-\beta}$, so $\frac{w}{g(w)} = (1 + g(w))^{\beta}$ and $\frac{dw}{du} = (1+u)^{\beta-1}(1 + (\beta+1)u) \implies g'(w) = \frac{(1+g(w))^{1-\beta}}{1+(\beta+1)g(w)}$. Substituting $u = g(w)$ into the $u$-residue $\operatorname{Res}_u F(u(1+u)^\beta)(1+u)^{\alpha n + \gamma} u^{-n-1}\,du$ gives:
+   $$
+   \begin{aligned}
+   S_n
+   &= [w^n] \left[ F(w) \big(1 + g(w)\big)^{\alpha n + \gamma} \left(\frac{w}{g(w)}\right)^{n+1} g'(w) \right] \\[4pt]
+   &= [w^n] \left[ F(w) \big(1 + g(w)\big)^{\alpha n + \gamma} \big(1 + g(w)\big)^{\beta(n+1)} \frac{\big(1 + g(w)\big)^{1 - \beta}}{1 + (\beta + 1) g(w)} \right] \\[4pt]
+   &= [w^n] \left[ F(w) \cdot \frac{\big(1 + g(w)\big)^{(\alpha + \beta)n + \gamma + 1}}{1 + (\beta + 1) g(w)} \right].
+   \end{aligned}
+   $$
+:::
+
+### Hand-Checkable Toy Trace ($N = 3$)
+
+Let $\alpha = 2, \beta = -1, \gamma = 0$, and $F(w) = 1 + w$ ($f_0 = 1, f_1 = 1, f_{\ge 2} = 0$), so $S_n = \binom{2n}{n} + \binom{2n - 1}{n - 1}$.
+
+- **Direct check**:
+  - $n = 0$: $\binom{0}{0} + 0 = 1$.
+  - $n = 1$: $\binom{2}{1} + \binom{1}{0} = 2 + 1 = 3$.
+  - $n = 2$: $\binom{4}{2} + \binom{3}{1} = 6 + 3 = 9$.
+  - $n = 3$: $\binom{6}{3} + \binom{5}{2} = 20 + 10 = 30$.
+- **Trace via Theorem 21.1**:
+  Here $A(z) = z(1 + A(z))^2 = C(z) - 1 = z + 2z^2 + 5z^3 + \dots$, so $W(z) = A(z)(1 + A(z))^{-1} = \frac{A(z)}{1 + A(z)} = z(1 + A(z)) = z + z^2 + 2z^3 + \dots$, and $\frac{1 + A(z)}{1 - A(z)} = \frac{1}{\sqrt{1 - 4z}} = 1 + 2z + 6z^2 + 20z^3 + \dots$.
+  Multiplying $F(W(z)) = 1 + W(z) = 1 + z + z^2 + 2z^3 + \dots$ by $1 + 2z + 6z^2 + 20z^3 + \dots$ modulo $z^4$ gives:
+  $$(1 + z + z^2 + 2z^3)(1 + 2z + 6z^2 + 20z^3) \equiv 1 + 3z + 9z^2 + 30z^3 \pmod{z^4},$$
+  matching $(S_0, S_1, S_2, S_3) = (1, 3, 9, 30)$.
+
+::: {.callout-important}
+## Algorithm Contract: `Elegia`'s All-$n$ Coupled Binomial Sum Linearization
+
+1. **Inputs**: Coefficient sequence $f_0, f_1, \dots, f_N \in K$, linear parameters $\alpha, \beta, \gamma \in K$, and degree bound $N \ge 1$.
+2. **Outputs**: Sequence $S_0, S_1, \dots, S_N$ where $S_n = \sum_{k=0}^n f_k \binom{\alpha n + \beta k + \gamma}{n - k}$ for all $0 \le n \le N$.
+3. **Algebraic Preconditions**: The inverse series $A(z) = z(1 + A(z))^\alpha \bmod z^{N+1}$ and fractional power $(1 + A(z))^\beta \bmod z^{N+1}$ require $1, 2, \dots, N \in K^\times$ ($\operatorname{char}(K) = 0$ or $p > N$) when computed via `fps_ln` / `fps_exp` or Raney coefficients (or $2 \in K^\times$ via Route B `revert` when $\alpha, \beta \in \mathbb{Z}$).
+4. **Complexity**: $O(N \log^2 N)$ time (dominated by one call to `fps_compose(W, F, N + 1)`) and $O(N \log N)$ space.
+5. **Core Invariant**: Under the change of variables $z = u(1 + u)^{-\alpha} \iff u = A(z)$ with differential Jacobian $\frac{du}{(1+u)^\alpha} = \frac{1+u}{1 - (\alpha-1)u}\,dz$, the $u$-residue $\operatorname{Res}_u F(u(1+u)^\beta)(1+u)^{\alpha n + \gamma} u^{-n-1}\,du$ maps bijectively to $[z^n]\Big(F(W(z)) \frac{(1+A(z))^{\gamma+1}}{1-(\alpha-1)A(z)}\Big)$ for every $n \ge 0$.
+:::
+
+---
+
+## 21.4 Dual-Route Compositional Inverse (`revert`), Failure Mode #6 & Functional Square Roots $G(G(x)) = F(x)$ {#sec-dual-route-revert}
+
+Given $F(x) = \sum_{i=1}^{N-1} f_i x^i \in x K[[x]] / (x^N)$ with unit linear coefficient $f_1 = [x^1] F(x) \in K^\times$, we want to compute its unique **compositional inverse** $G(y) = F^{\langle -1 \rangle}(y) = \sum_{k=1}^{N-1} g_k y^k \bmod y^N$ satisfying $F(G(y)) \equiv y \pmod{y^N}$ and $G(F(x)) \equiv x \pmod{x^N}$.
+
+Depending on whether the field characteristic $p = \operatorname{char}(K)$ satisfies $p > N$ (or $p = 0$) versus $p \le N$, there are **two distinct $O(N \log^2 N)$ algorithms** for `revert`. Knowing both routes—and why Route A suffers a catastrophic division-by-zero crash when $p \le N$—is mandatory for mastery-tier competitive programming.
+
+### Route A (`noshi91` LIF + Power Projection — When $\operatorname{char}(K) = 0$ or $p > N$)
+
+#### 1. The Diagnostic Signal & Reverse-Engineering Scratchpad
+
+In `§21.1`, we saw that running `power_projection` with the single weight $w_n = 1$ (where $n = N - 1$ and $w_i = 0$ for $i \ne n$) computes the sequence of coefficients $[x^n] F(x)^k$ for all $k = 1, 2, \dots, n$ simultaneously in $O(N \log^2 N)$ time.
+How are the coefficients $[x^n] F(x)^k$ related to the compositional inverse $G(y) = F^{\langle -1 \rangle}(y)$?
+By Classical Lagrange Inversion (`Ch 11, Theorem 11.2`, Variant C) applied with the roles of $F$ and $G$ swapped ($G(F(x)) = x$, so $F(x) = \frac{x}{G(F(x))/F(x)}$):
+$$[x^n] F(x)^k = \frac{k}{n} [y^{n-k}] \left(\frac{y}{G(y)}\right)^n = \frac{k}{n} [y^{n-k}] \left(\frac{G(y)}{y}\right)^{-n} \qquad (1 \le k \le n).$$
+
+#### 2. Single-Step Verbalized Algorithm (`noshi91`, 2024)
+
+Let $n = N - 1$ and define the unit-constant series $H(y) := \left(\frac{G(y)}{y}\right)^{-n} \in K[[y]] / (y^n)$.
+
+1. **Power Projection**: Call `power_projection(F, e_n, N)` with $\mathbf{w} = e_n = (0, \dots, 0, 1)^\top$ to obtain $p_k = [x^n] F(x)^k$ for $1 \le k \le n$ in $O(N \log^2 N)$ time.
+2. **Lagrange Scaling & Index Reversal**: For each $k = 1, \dots, n$, set
+   $$[y^{n-k}] H(y) = \frac{n}{k} p_k = \frac{n}{k} [x^n] F(x)^k.$$
+   This determines all coefficients of $H(y) \bmod y^n$.
+3. **Power Extraction (`pow(-1/n)`)**: Since $\frac{G(y)}{y} = H(y)^{-1/n}$ and $[y^0] H(y) = f_1^n \in K^\times$, compute
+   $$\frac{G(y)}{y} \equiv f_1^{-1} \exp\!\left(-\frac{1}{n} \ln\!\big(f_1^{-n} H(y)\big)\right) \pmod{y^n}$$
+   in $O(N \log N)$ time, and multiply by $y$ to obtain $G(y) \bmod y^N$.
+
+### Route B (Newton Iteration + Kinoshita–Li `compose` — Mandatory When $p \le N$)
+
+What happens to Route A if we work modulo a small prime $p \le N$ (or over an arbitrary characteristic-$p$ field)? Both Step 2 ($\frac{n}{k}$) and Step 3 ($\exp(-\frac{1}{n}\ln(\dots))$) divide by every integer $k \in \{1, 2, \dots, N-1\}$ and by $n = N - 1$, crashing at $k = p, 2p, \dots$.
+
+#### 1. The Reverse-Engineering Scratchpad
+
+To avoid dividing by $1, 2, \dots, N-1$, view $G(y)$ as the root of the functional equation
+$$\Phi(G)(y) := F(G(y)) - y = 0.$$
+Suppose we know $G_s(y) \equiv G(y) \pmod{y^{2^s}}$ (starting from $G_0(y) = f_1^{-1} y \bmod y^2$). Write $G_{s+1}(y) = G_s(y) + \Delta(y)$ where $\operatorname{val}_y(\Delta) \ge 2^s$, so $\Delta(y)^2 \equiv 0 \pmod{y^{2^{s+1}}}$.
+By the Hasse–Taylor expansion of $F$ around $G_s(y)$ (which requires **zero factorials**, since $\binom{j}{1} = j \in \mathbb{Z}$):
+$$0 \equiv F(G_s(y) + \Delta(y)) - y \equiv F(G_s(y)) - y + F'(G_s(y)) \Delta(y) \pmod{y^{2^{s+1}}}.$$
+Solving for $\Delta(y)$ yields the quadratic Newton step:
+$$G_{s+1}(y) \equiv G_s(y) - \frac{F(G_s(y)) - y}{F'(G_s(y))} \pmod{y^{2^{s+1}}}.$$
+
+#### 2. Why Route B Never Divides by $1, 2, \dots, N-1$
+
+At precision $L = 2^{s+1}$:
+
+1. We evaluate $F(G_s(y)) \bmod y^L$ and $F'(G_s(y)) \bmod y^{L/2}$ using **Kinoshita–Li `compose`** (`§21.2`), which is $100\%$ free of divisions by $1, \dots, L-1$ since $[y^0] G_s(y) = 0$.
+2. We invert $F'(G_s(y)) \bmod y^{L/2}$ via multiplicative Newton inversion (`fps_inv`). What is the constant term of $F'(G_s(y))$? Since $G_s(0) = 0$, $[y^0] F'(G_s(y)) = F'(0) = f_1 \in K^\times$, which is invertible by hypothesis!
+3. Total time across $s = 0, 1, \dots, \log_2 N - 1$ satisfies the geometric sum
+   $$T(N) = \sum_{s=1}^{\log_2 N} O(2^s \log^2(2^s)) = O(N \log^2 N).$$
+
+::: {.callout-warning}
+## Canonical Failure Mode #6: Calling LIF + Power Projection (`Route A`) When $p \le N$
+
+- **The Bug**: Using Route A (`[y^{n-k}](G(y)/y)^{-n} = (n/k)[x^n]F(x)^k` followed by `pow(-1/n)`) when the prime modulus $p$ satisfies $p \le N$ (or when $p \mid (N - 1)$).
+- **Why It Crashes**: Even though the true compositional inverse $G(y) = F^{\langle -1 \rangle}(y)$ has coefficients in $\mathbb{Z}[f_1^{-1}, f_2, f_3, \dots]$—meaning $G(y) \bmod y^N$ is **well-defined over every ring where $f_1 \in R^\times$**, with zero division by $2, 3, \dots, N-1$—Route A routes the computation through the intermediate transcendental operation `ln` / `exp` and the Lagrange factor $\frac{n}{k}$, both of which divide by $p$ whenever $k = p$ or $p \mid n$.
+- **The Remedy**:
+  - When $p > N$ (e.g., $p = 998244353, N \le 5 \times 10^5$): **Route A** is roughly $2\times$ faster in practice because it calls `power_projection` only once at size $N$ (no backward pass, no Newton outer loop).
+  - When $p \le N$ (small prime modulus): **Route B** (Newton Iteration + Kinoshita–Li `compose` + `fps_inv`) is **mandatory** and computes $G(y) \bmod y^N$ in $O(N \log^2 N)$ time for every prime $p \ne 2$ with $f_1 \not\equiv 0 \pmod p$.
+:::
+
+::: {.callout-important}
+## Algorithm Contract: Dual-Route Compositional Inverse (`fps_revert`)
+
+1. **Input**: $F(x) = \sum_{i=1}^{N-1} f_i x^i \in x K[[x]]/(x^N)$ with $[x^0] F(x) = 0$ and $[x^1] F(x) = f_1 \in K^\times$.
+2. **Output**: $G(y) = F^{\langle -1 \rangle}(y) \bmod y^N$ satisfying $F(G(y)) \equiv y \pmod{y^N}$.
+3. **Algebraic Preconditions**:
+   - **Route A (`revert_lif_proj`)**: Requires $f_1 \in K^\times$ and $1, 2, \dots, N-1 \in K^\times$ ($\operatorname{char}(K) = 0$ or $p > N$).
+   - **Route B (`revert_newton_compose`)**: Requires only $f_1 \in K^\times$ and $2 \in K^\times$ (for radix-2 FFT/NTT).
+4. **Complexity**: $O(N \log^2 N)$ time and $O(N)$ (Route A) or $O(N \log N)$ (Route B) space.
+5. **Core Invariant**: In Route A, $H(y) = \sum_{k=1}^{n} \frac{n}{k} ([x^n]F(x)^k) y^{n-k} \equiv (G(y)/y)^{-n} \pmod{y^n}$; in Route B, $F(G_s(y)) \equiv y \pmod{y^{2^s}}$ doubles precision at every step $s$.
+:::
+
+```cpp
+// Route A (p > N): 1 Power Projection + pow(-1/n); Route B (all p != 2): Newton + compose
+Poly fps_revert_routeA(const Poly& F, int N) { // Precondition: F[0] == 0, F[1] != 0, p > N
+    int n = N - 1; Poly w(N, 0), H(n); w[n] = 1; Poly proj = power_projection(F, w, N);
+    for (int k = 1; k <= n; ++k) H[n - k] = proj[k] * Mint(n) * Mint(k).inv();
+    Poly G = fps_pow(H, -Mint(n).inv(), n); G.insert(G.begin(), 0); return G;
+}
+Poly fps_revert_routeB(const Poly& F, int N) { // Precondition: F[0] == 0, F[1] != 0 (p <= N!)
+    Poly G = {0, F[1].inv()}, dF = fps_deriv(F);
+    for (int L = 2; L < N; L <<= 1) {
+        Poly FG = fps_compose(G, trunc(F, 2 * L), 2 * L); FG[1] -= 1; // F(G_s(y)) - y
+        G = fps_sub(G, fps_mul_trunc(FG, fps_inv(fps_compose(G, trunc(dF, L), L), L), 2 * L));
+    }
+    G.resize(N); return G;
+}
+```
+
+::: {.callout-tip}
+## Revisited #8 (`#200` Luogu P7438 — [AGM 2021] 恐龙) & Revisited #12 (`#201` Luogu P7439 — [KrOI2021] 蕾切尔 / `#036` ABC 281 Ex): Single-$N$ LIF vs. Simultaneous All-$n$ `revert` & `compose`
+
+In **[Chapter 11 (`SS-2`, `#200` Luogu P7438 & `Int-2`, `#201` Luogu P7439)](ch11-laurent-residues-raney-lagrange-inversion.qmd)**, we were given an implicit tree generating function $F(x) = x \phi(F(x))$ ($\phi(0) \ne 0$) or a composite generating function $H(F(x))$ (such as $G(e^x - 1)$ in `#036 ABC 281 Ex — Alchemy` and `#201 Luogu P7439 — [KrOI2021] 蕾切尔`) and asked to extract a **single** coefficient $[x^N] F(x)^k$ or $[x^N] H(F(x)) \pmod{998244353}$ for $N \le 2 \times 10^5$.
+
+- **Chapter 11 Perspective (Single-$N$ Lagrange Inversion & Residue Change of Variables)**: Rewriting $F(x) = x \phi(F(x))$ as $\frac{F(x)}{\phi(F(x))} = x$ (or substituting $u = F(x) \iff x = A(u)$) extracts the single target coefficient in **$O(N \log N)$** time via one polynomial `pow`:
+  $$[x^N] F(x)^k = \frac{k}{N} [u^{N-k}] \phi(u)^N, \qquad [x^N] H(F(x)) = [u^N] \left( H(u) A'(u) \left(\frac{u}{A(u)}\right)^{N+1} \right).$$
+- **Chapter 21 Perspective (Simultaneous All-$n$ Extraction via `revert` & `compose`)**: What if a problem requires $[x^n] F(x)$ or $[x^n] H(F(x))$ for **every** $n = 1, 2, \dots, N$ simultaneously, and $\phi(u), H(u)$ are arbitrary dense series that have no simple differential equation? Since $A(u) = \frac{u}{\phi(u)}$ is the compositional inverse of $F(x)$, a single call to `fps_revert` on $u \phi(u)^{-1} \bmod u^{N+1}$ recovers the **entire series** $F(x) \bmod x^{N+1}$—and a follow-up call to `fps_compose(F, H, N + 1)` computes $H(F(x)) \bmod x^{N+1}$ for all $n \le N$ at once—in **$O(N \log^2 N)$** time.
+:::
+
+::: {.callout-tip}
+## Revisited #9 (`#183` Luogu P5827 — 点双连通图计数): Single-$N$ Block-Cut LIF vs. All-$n$ `revert` + `compose`
+
+In **[Chapter 12 (`Mas-1`, `#183` Luogu P5827)](ch12-cacti-deserts-block-cut-biconnected-graphs.qmd)**, we enumerated labeled 2-vertex-connected (biconnected) graphs on $N \le 10^5$ vertices using Tutte's fundamental block-cut tree equation:
+$$R(x) = x \exp\!\Big(B'\big(R(x)\big)\Big) \iff \ln\!\left(\frac{R(x)}{x}\right) = B'\big(R(x)\big),$$
+where $G(x) = \sum_{n \ge 0} 2^{\binom{n}{2}} \frac{x^n}{n!}$ is all labeled graphs, $C(x) = \ln G(x)$ is connected labeled graphs, $R(x) = x C'(x)$ is vertex-rooted connected graphs, and $B(y) = \sum_{n \ge 2} b_n \frac{y^n}{n!}$ is biconnected labeled graphs.
+
+- **Chapter 12 Perspective (Single-$N$ Lagrange Inversion)**: To find $b_N$ for a **single** $N \ge 3$, let $H(x) := \ln(R(x)/x) = \ln C'(x)$. Since $B'(y) = H(R^{\langle -1 \rangle}(y))$, Classical LIF extracts $[y^{N-1}] B'(y)$ in **$O(N \log N)$** time:
+  $$b_N = (N-1)! [y^{N-1}] B'(y) = (N-2)! [x^{N-1}] \left( H'(x) \left(\frac{x}{R(x)}\right)^{N-1} \right) = -(N-2)! [x^{N-1}] \Big(C'(x)^{-(N-1)}\Big).$$
+- **Chapter 21 Perspective (All-$n$ Biconnected Graph Table $b_2, b_3, \dots, b_N$)**: To compute $b_n$ for **all** $2 \le n \le N$ simultaneously (`AtCoder fps_24_w` / multi-query biconnected enumeration), we cannot afford $N$ separate polynomial powers $C'(x)^{-(n-1)}$. Instead:
+  1. Compute $C(x) = \ln G(x) \bmod x^{N+1}$, $R(x) = x C'(x) \bmod x^{N+1}$, and $H(x) = \ln(R(x)/x) \bmod x^N$ in $O(N \log N)$.
+  2. Compute the compositional inverse $R^{\langle -1 \rangle}(y) \bmod y^N$ via `fps_revert` in $O(N \log^2 N)$.
+  3. Compose $B'(y) = H\big(R^{\langle -1 \rangle}(y)\big) \bmod y^N$ via `fps_compose` in $O(N \log^2 N)$, reading off $b_n = (n-1)! [y^{n-1}] B'(y)$ for all $2 \le n \le N$ simultaneously!
+:::
+
+### Functional Square Roots $G(G(x)) = F(x) \bmod x^N$ & The Degree $p + 2$ Artin–Schreier Obstruction
+
+A closely related compositional problem is the **Functional Square Root** (`AtCoder fps_24_x`): given $F(x) = \sum_{k=1}^{N-1} f_k x^k \in x \mathbb{F}_p[[x]] / (x^N)$ over an odd prime field $\mathbb{F}_p$, find $G(x) = \sum_{k=1}^{N-1} g_k x^k$ such that
+$$G(G(x)) \equiv F(x) \pmod{x^N}.$$
+
+#### 1. Degree-by-Degree Indeterminate Analysis
+
+Comparing $[x^1]$ on both sides gives $g_1^2 \equiv f_1 \pmod p$. Once we fix a square root $g_1 \in \mathbb{F}_p$, what equation governs the $k$-th coefficient $g_k$ ($k \ge 2$) in terms of $g_1, \dots, g_{k-1}$?
+In $G(G(x)) = \sum_{m=1}^{N-1} g_m G(x)^m$, the unknown $g_k$ appears in only two places at degree $x^k$:
+
+- Inside the $m = 1$ term $g_1 G(x)$, which contributes $g_1 g_k x^k$.
+- Inside the $m = k$ term $g_k G(x)^k = g_k (g_1 x + \dots)^k$, which contributes $g_k g_1^k x^k$.
+
+All terms with $2 \le m \le k - 1$ depend solely on $g_1, \dots, g_{k-1}$. Therefore:
+$$g_1 \big(1 + g_1^{k-1}\big) g_k = f_k - [x^k] \sum_{m=2}^{k-1} g_m G_{<k}(x)^m.$$
+
+Look at the multiplier $g_1(1 + g_1^{k-1})$:
+
+- **Tangent-to-Identity Case ($f_1 = 1$, choosing $g_1 = 1$)**: For every $k \ge 2$, the multiplier is $1 \cdot (1 + 1^{k-1}) = 2 \in \mathbb{F}_p^\times$ (since $p$ is an odd prime)! Thus a **unique** tangent-to-identity functional square root $G(x) = x + g_2 x^2 + \dots$ exists for **every** $N$ and **every** odd prime $p$, with **zero** division by $k$!
+- **Non-Unit-Multiplier Obstructions**: If $g_1 = 0$ ($f_1 = 0$), $\operatorname{val}(G) \ge 2 \implies \operatorname{val}(G \circ G) \ge 4$. If $g_1 \not\equiv 0, 1 \pmod p$ has even multiplicative order $2d$ so $g_1^{k-1} \equiv -1 \pmod p$ for $k = d + 1$, then $1 + g_1^{k-1} \equiv 0 \pmod p$, creating a resonance obstruction unless the right-hand side vanishes.
+
+#### 2. `maspy`'s Period-$p$ Shortcut vs. The Degree $p + 2$ Artin–Schreier Obstruction
+
+When $g_1 = 1$ ($F(x) = x + f_2 x^2 + \dots$) and $N \le p + 1$, **maspy's Jordan Block Theorem** shows that the linear composition operator $T_G : A(x) \mapsto A(G(x))$ on the $p$-dimensional vector space $V = x\mathbb{F}_p[x]/(x^{p+1})$ is upper unitriangular ($T_G(x^k) = x^k + k g_2 x^{k+1} + \dots$), so $(T_G - I)^p = T_{G^{\circ p}} - I = 0$ on $V$. Consequently, **every** tangent-to-identity series satisfies $G^{\circ p}(x) \equiv x \pmod{x^{p+1}}$, and the unique functional square root modulo $x^{p+1}$ is simply the $\frac{p+1}{2}$-th compositional iterate of $F(x)$:
+$$G(x) \equiv F^{\circ \left(\frac{p+1}{2}\right)}(x) \pmod{x^{p+1}}.$$
+
+::: {.callout-warning}
+## The Degree $p + 2$ Artin–Schreier Obstruction to `maspy`'s Period-$p$ Shortcut
+
+Why does the cyclic-group shortcut $G^{\circ p}(x) \equiv x$ fail at degree $N = p + 2$?
+
+- Consider the **Artin–Schreier generator** $G(x) = x + x^2 = \frac{x}{1 - x} \bmod x^4$ over $\mathbb{F}_p$. Since $\frac{x}{1 - c x}$ composes additively in $c$, the $p$-fold iterate of $\frac{x}{1 - x}$ is $\frac{x}{1 - p x} \equiv x \pmod p$.
+- However, if we perturb $G(x)$ at degree $3$, say $G(x) = x + x^2 + c x^3$, the $p$-fold composition $G^{\circ p}(x)$ still equals $x$ modulo $x^{p+1}$, **and even modulo $x^{p+2}$ only when $c = 1$**! Specifically, expanding $G^{\circ p}(x) \bmod x^{p+2}$ for a general $G(x) = x + g_2 x^2 + g_3 x^3 + \dots$ reveals the **Artin–Schreier residue obstruction** at degree $x^{p+2}$ (and already at $p = 2$, $G(x) = x + x^2 \implies G(G(x)) = (x+x^2) + (x+x^2)^2 \equiv x + x^4 \pmod 2$, which is non-zero at degree $p + 2 = 4$).
+- **Remedy**: For general $N > p + 1$ (or whenever binary exponentiation of `compose` in $O(N \log^2 N \log p)$ is slower than Newton iteration), solve $G(G(x)) - F(x) = 0 \bmod x^N$ via **Newton Iteration** (`Mas-2` below) or incremental degree-by-degree extraction.
+:::
+
+---
+
+## 21.5 Practice Ladder (8 Curated Problems across 4 Pedagogical Tiers) {#sec-ch21-ladder}
+
+### Stepping Stone 1 (`#036`): AtCoder ABC 281 Ex — Alchemy {#sec-prob-ss1}
+
+- **Source**: [AtCoder Beginner Contest 281, Problem Ex](https://atcoder.jp/contests/abc281/tasks/abc281_h) | **Canonical ID**: `#036` (`SS-1`)
+- **Prerequisites**: Falling-Factorial / Binomial EGF (`Ch 06`), Lagrange Inversion (`Ch 11`), Compositional Inverse `revert` (`§21.4`) / Fast Composition `compose` (`§21.2`).
+
+#### Problem Statement & Constraints
+
+There are $N + 1$ types of metals, numbered $0, 1, \dots, N$. Initially, you have $A$ distinct raw materials of metal $0$ (labeled $1, 2, \dots, A$). For each $k = 1, 2, \dots, N$, you can synthesize a unit of metal $k$ by combining a non-empty subset of already-synthesized distinct units of metals from $\{0, 1, \dots, k-1\}$; two units of metal $k$ are considered distinct if and only if they are synthesized from different subsets of ingredients. Tracking the number of active equivalence classes of needed ingredients from metal $N$ down to metal $0$ via Stirling numbers of the second kind $\left\{\begin{matrix} n \\ k \end{matrix}\right\}$, the exponential generating function $\widehat{F}(x) = \sum_{n=0}^N f_n \frac{x^n}{n!}$ of valid synthesis plans is given by the composition:
+$$
+\widehat{F}(x) = G(e^x - 1), \qquad \text{where } G(u) = \prod_{k=0}^{N-1} \Big(1 + (A - k) u\Big).
+$$
+Compute $f_N = [x^N] G(e^x - 1)$ (and simultaneously all $f_1, \dots, f_N$) modulo $998244353$.
+
+- **Constraints**: $1 \le N \le 2 \times 10^5$, $1 \le A \le 10^{18}$ (reduce $A \bmod 998244353$ first), Time Limit $3.0\text{ s}$, Modulo $998244353$.
+- **Sample Trace ($N = 2, A = 2$)**:
+  - Falling-factorial polynomial: $G(u) = \prod_{k=0}^{1} (1 + (2 - k)u) = (1 + 2u)(1 + u) = 1 + 3u + 2u^2$.
+  - Substituting $u = e^x - 1 = x + \frac{1}{2}x^2 + \dots$:
+    $$G(e^x - 1) = 1 + 3\left(x + \frac{1}{2}x^2 + \dots\right) + 2\left(x^2 + \dots\right) = 1 + 3x + \frac{7}{2}x^2 + O(x^3).$$
+  - Thus $[x^1] G(e^x - 1) = 3$, $[x^2] G(e^x - 1) = \frac{7}{2} \equiv 499122180 \pmod{998244353}$, and $2! [x^2] G(e^x - 1) = 7$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model (Spoiler-Free)</strong></summary>
+
+Model the synthesis process top-down from metal $N$ down to metal $0$. At step $k \in \{0, 1, \dots, N-1\}$, each new equivalence class of ingredients can be assigned one of $(A - k)$ available base choices, while partitioning $n$ requests into $k$ non-empty equivalence classes is governed by the Stirling subset EGF $\frac{(e^x - 1)^k}{k!}$. How does this express the EGF $\widehat{F}(x)$ as a composition $G(e^x - 1)$?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Let $G(u) = \prod_{k=0}^{N-1} (1 + (A - k)u) = \sum_{k=0}^N g_k u^k$, which can be expanded in $O(N \log^2 N)$ time via a binary D&C NTT product tree (`Ch 01` / `Ch 20`). Since $u(x) = e^x - 1 \in \mathcal{G}_1(\mathbb{F}_p)$ has constant term $0$ and its compositional inverse is $u^{\langle -1 \rangle}(y) = \ln(1 + y)$, we can extract $[x^n] G(e^x - 1)$ in two ways (`Revisited #12`):
+1. **Single-$N$ via Residue Change of Variables (`Ch 11`)**: Substitute $u = e^x - 1 \iff x = \ln(1 + u)$ with $dx = \frac{du}{1 + u}$.
+2. **All-$n$ ($1 \le n \le N$) via Fast Composition (`§21.2`)**: Call `fps_compose(e^x - 1, G, N + 1)` directly!
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+- **Single-$N$ Extraction ($O(N \log^2 N)$ tree + $O(N \log N)$ LIF)**:
+  $$[x^N] G(e^x - 1) = \operatorname{Res}_x \frac{G(e^x - 1)}{x^{N+1}}\,dx = \operatorname{Res}_u \frac{G(u)}{(\ln(1 + u))^{N+1} (1 + u)}\,du = [u^N] \left( G(u) \left(\frac{u}{\ln(1 + u)}\right)^{N+1} \frac{1}{1 + u} \right).$$
+- **Simultaneous All-$n$ Extraction ($O(N \log^2 N)$ via `fps_compose`)**:
+  After computing $G(u) \bmod u^{N+1}$, pass $F_{\text{inner}}(x) = e^x - 1 \bmod x^{N+1}$ and $G(u)$ to Kinoshita–Li `fps_compose(F_inner, G, N + 1)`!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **Falling-Factorial Product Tree for $G(u)$**:
+   Reduce $A \gets A \bmod 998244353$. Build the degree-$N$ polynomial
+   $$G(u) = \prod_{k=0}^{N-1} \Big(1 + (A - k) u\Big) = \sum_{k=0}^{N} g_k u^k$$
+   using a binary divide-and-conquer NTT product tree in $O(N \log^2 N)$ time (or in $O(N \log N)$ time by factoring out $A - k$ and applying a 1D Taylor shift to the falling factorial $x^{\underline{N}}$).
+2. **Route A — Single-$N$ Extraction via Lagrange Change of Variables (`Ch 11`)**:
+   Since $u = e^x - 1 \in \mathcal{G}_1(\mathbb{F}_p)$ has compositional inverse $x = \ln(1 + u) = u \tilde{H}(u)$ with $\tilde{H}(0) = 1$ and $dx = \frac{du}{1 + u}$, the Change-of-Variables Theorem (`Ch 11`) gives:
+   $$[x^N] G(e^x - 1) = \operatorname{Res}_x G(e^x - 1) x^{-N-1}\,dx = \operatorname{Res}_u G(u) (\ln(1 + u))^{-N-1} (1 + u)^{-1}\,du = [u^N] \left( \frac{G(u)}{1 + u} \left(\frac{u}{\ln(1 + u)}\right)^{N+1} \right).$$
+   Computing $\left(\frac{u}{\ln(1 + u)}\right)^{N+1} \bmod u^{N+1}$ via one `fps_ln` and `fps_exp` extracts $[x^N] G(e^x - 1)$ in $O(N \log N)$ additional time.
+3. **Route B — Simultaneous All-$n$ Extraction via Kinoshita–Li `fps_compose` (`§21.2`, `Revisited #12`)**:
+   Because $F_{\text{inner}}(x) = e^x - 1 = \sum_{m=1}^N \frac{x^m}{m!} \bmod x^{N+1}$ satisfies $[x^0] F_{\text{inner}}(x) = 0$, a single call to Kinoshita–Li `fps_compose(F_inner, G, N + 1)` (`§21.2`) evaluates $\widehat{F}(x) = G(e^x - 1) \bmod x^{N+1}$ for **all** $0 \le n \le N$ simultaneously in $O(N \log^2 N)$ time!
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Integers $N \le 2 \times 10^5$ and $A \le 10^{18}$; prime modulus $p = 998244353 > N + 1$.
+- **Postconditions (Output)**: $[x^N] G(e^x - 1) \bmod 998244353$ (and all $[x^n] G(e^x - 1)$ for $1 \le n \le N$).
+- **Time & Space Complexity**: $O(N \log^2 N)$ time and $O(N)$ space.
+- **Loop / Algebraic Invariant**: Under $u = e^x - 1$, $[x^n] u^k = \frac{k!}{n!} \left\{\begin{matrix} n \\ k \end{matrix}\right\}$, so $[x^n] G(e^x - 1) = \frac{1}{n!} \sum_{k=0}^n g_k k! \left\{\begin{matrix} n \\ k \end{matrix}\right\}$ evaluates the exact Stirling-weighted falling-factorial sum for every $n \le N$.
+- **Failure Modes & Edge Cases**: Reduce $A \gets A \bmod 998244353$ before forming $(1 + (A - k)u)$ to prevent 64-bit integer overflow; requires $N + 1 < p$ so that $m!$ in $e^x - 1$ and $\ln(1 + u) \bmod u^{N+2}$ have invertible denominators.
+
+</details>
+
+---
+
+### Stepping Stone 2 (`#045`): AtCoder ABC 345 G — Sugoroku 5 {#sec-prob-ss2}
+
+- **Source**: [AtCoder Beginner Contest 345, Problem G](https://atcoder.jp/contests/abc345/tasks/abc345_g) | **Canonical ID**: `#045` (`SS-2`)
+- **Prerequisites**: Formal Laurent Residues (`Ch 11`), Compositional Inverse `revert` (`§21.4`) & Fast Composition `compose` (`§21.2`).
+
+#### Problem Statement & Constraints
+
+You are at square $0$ of a board with squares $0, 1, \dots, N$. In each step, you roll a fair $K$-sided die that advances you by $j \in \{1, 2, \dots, K\}$ squares with probability $\frac{1}{K}$ each. Any move that lands on or beyond square $N$ finishes at square $N$. For **every** $n = 1, 2, \dots, N$, compute the probability that you reach square $N$ in **at most $n$ steps**, modulo $998244353$.
+
+- **Constraints**: $1 \le K \le N \le 2.5 \times 10^5$, Time Limit $2.0\text{ s}$, Modulo $p = 998244353$.
+- **Sample Trace ($N = 3, K = 2$)**:
+  - Die step PGF: $F(x) = \frac{1}{2}(x + x^2)$. We want $1 - S_n$ where $S_n = \sum_{i=0}^2 [x^i] F(x)^n$ is the probability of staying at $< 3$ after $n$ steps.
+  - $n = 1$: $F(x)^1 = \frac{1}{2}x + \frac{1}{2}x^2 \implies S_1 = \frac{1}{2} + \frac{1}{2} = 1 \implies \text{Ans}_1 = 1 - 1 = 0$.
+  - $n = 2$: $F(x)^2 = \frac{1}{4}x^2 + \frac{1}{2}x^3 + \frac{1}{4}x^4 \implies S_2 = \frac{1}{4} \implies \text{Ans}_2 = 1 - \frac{1}{4} = \frac{3}{4}$.
+  - $n = 3$: $F(x)^3 = \frac{1}{8}x^3 + \dots \implies S_3 = 0 \implies \text{Ans}_3 = 1 - 0 = 1$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model (Spoiler-Free)</strong></summary>
+
+Instead of summing the probabilities of first hitting $\ge N$ at step $1, 2, \dots, n$, compute the complementary probability $S_n$ that after $n$ rolls of the die, your total displacement is still strictly less than $N$. Express $S_n$ in terms of the $n$-th power of the single-step probability generating function $F(x) = \frac{1}{K} \sum_{j=1}^K x^j$.
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+For each $n = 1, \dots, N$, $S_n = \sum_{i=0}^{N-1} [x^i] F(x)^n = [x^{N-1}] \frac{F(x)^n}{1 - x}$. We have TWO clean $O(N \log^2 N)$ ways to compute this for all $n$ simultaneously:
+1. **Direct Power Projection (`§21.1`)**: Notice $S_n = \sum_{i=0}^{N-1} w_i [x^i] F(x)^n$ with weight vector $w_i = 1$ for all $0 \le i < N$!
+2. **`Nyaan`'s Laurent Residue Trick via `revert` (`§21.4`)**: Write $S_n = \operatorname{Res}_x \frac{F(x)^n}{x^N(1 - x)}\,dx$ and substitute $x = G(y) := F^{\langle -1 \rangle}(y)$ so $F(G(y))^n = y^n$!
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Under **Method 1**, one call to `power_projection(F, ones, N)` returns $S_0, \dots, S_{N-1}$ directly in $O(N \log^2 N)$. Under **Method 2**, since $F(x) = \frac{x(1 - x^K)}{K(1 - x)}$, its compositional inverse $G(y) = F^{\langle -1 \rangle}(y) = y \tilde{G}(y)$ satisfies the sparse equation $G - G^{K+1} - Ky(1 - G) = 0$ (solvable by 1D Newton iteration in $O(N \log N)$ or `fps_revert` in $O(N \log^2 N)$), and $S_n = [y^{N-1-n}] \left(\frac{G'(y)}{1 - G(y)} \tilde{G}(y)^{-N}\right)$.
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **Complementary Prefix Sum Formulation**:
+   Let $F(x) = \frac{1}{K} \sum_{j=1}^K x^j = \frac{x(1 - x^K)}{K(1 - x)} \in \mathcal{G}_1(\mathbb{F}_p)$ be the PGF of a single die roll. Since every roll advances by at least $1$ square, after $N$ rolls we are guaranteed to be at $\ge N$ ($S_N = 0$). For $1 \le n \le N - 1$, the probability of remaining at $< N$ after $n$ steps is
+   $$S_n = \sum_{i=0}^{N-1} [x^i] F(x)^n, \qquad \text{Ans}_n = 1 - S_n \pmod{998244353}.$$
+2. **Route 1 (Direct Kinoshita–Li `power_projection` in $O(N \log^2 N)$)**:
+   Comparing $S_n = \sum_{i=0}^{N-1} 1 \cdot [x^i] F(x)^n$ with the definition of Power Projection (`§21.1`), we simply set $\mathbf{w} = (1, 1, \dots, 1)^\top \in \mathbb{F}_p^N$ and call `power_projection(F, w, N)`! Since $[x^0] F(x) = 0$, no constant-term shift is needed, and the output array gives $S_0, S_1, \dots, S_{N-1}$ immediately.
+3. **Route 2 (`Nyaan`'s Laurent Geometric Series Trick via `revert` in $O(N \log N)$ / $O(N \log^2 N)$)**:
+   Write $S_n$ as a formal Laurent residue:
+   $$S_n = [x^{N-1}] \frac{F(x)^n}{1 - x} = \operatorname{Res}_x \frac{F(x)^n}{x^N (1 - x)}\,dx.$$
+   Let $G(y) = F^{\langle -1 \rangle}(y) = y \tilde{G}(y) \in \mathcal{G}_1(\mathbb{F}_p)$ be the compositional inverse of $F(x)$ ($\tilde{G}(0) = K \ne 0$). Substituting $x = G(y)$ via the Change-of-Variables Theorem (`Ch 11`) replaces $F(G(y))^n$ with the pure monomial $y^n$:
+   $$S_n = \operatorname{Res}_y \frac{y^n}{G(y)^N (1 - G(y))} G'(y)\,dy = \operatorname{Res}_y y^{n - N} \frac{G'(y)}{1 - G(y)} \tilde{G}(y)^{-N}\,dy = [y^{N - 1 - n}] \left( \frac{G'(y)}{1 - G(y)} \tilde{G}(y)^{-N} \right).$$
+   Because $F(G) = \frac{G(1 - G^K)}{K(1 - G)} = y \iff G - G^{K+1} - Ky(1 - G) = 0$, we can compute $G(y) \bmod y^{N+1}$ either by calling `fps_revert(F, N + 1)` in $O(N \log^2 N)$ or via 1D Newton iteration $G \gets G - \frac{G - G^{K+1} - Ky(1 - G)}{1 - (K+1)G^K + Ky}$ in $O(N \log N)$, followed by one polynomial power $\tilde{G}(y)^{-N} \bmod y^N$.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Integers $1 \le K \le N \le 2.5 \times 10^5$; $[x^0]F(x) = 0$ and $[x^1]F(x) = K^{-1} \not\equiv 0 \pmod{998244353}$.
+- **Postconditions (Output)**: Probabilities $\text{Ans}_1, \dots, \text{Ans}_N \bmod 998244353$.
+- **Time & Space Complexity**: $O(N \log^2 N)$ time via `power_projection` / `fps_revert`, or $O(N \log N)$ time via sparse algebraic Newton + `fps_pow`, $O(N)$ space.
+- **Loop / Algebraic Invariant**: For all $1 \le n < N$, $S_n = [y^{N-1-n}]\big(\frac{G'(y)}{1-G(y)}\tilde{G}(y)^{-N}\big) = \sum_{i=0}^{N-1} [x^i] F(x)^n$, and $S_N = 0$.
+- **Failure Modes & Edge Cases**: Because $F(x) = \frac{x(1 - x^K)}{K(1 - x)}$ has $F(0) = 0$, the inverse $G(y)$ has valuation $1$ and $G(y)^{-N}$ has a pole of order $N$ at $y = 0$; always factor out $G(y) = y \tilde{G}(y)$ with $\tilde{G}(0) = K$ before raising $\tilde{G}(y)$ to the power $-N$.
+
+</details>
+
+---
+
+### Intermediate 1 (`#047`): AtCoder ABC 387 G — Prime Circuit {#sec-prob-int1}
+
+- **Source**: [AtCoder Beginner Contest 387, Problem G](https://atcoder.jp/contests/abc387/tasks/abc387_g) | **Canonical ID**: `#047` (`Int-1`)
+- **Prerequisites**: Block-Cut Tree & Cactus EGF (`Ch 12`), Lagrange Inversion (`Ch 11`), Compositional Inverse `revert` (`§21.4`).
+
+#### Problem Statement & Constraints
+
+Count the number of connected simple labeled undirected graphs on $N$ vertices $\{1, 2, \dots, N\}$ such that the length of **every simple cycle** in the graph is a **prime number** $p \ge 3$, modulo $998244353$.
+
+- **Constraints**: $1 \le N \le 2.5 \times 10^5$, Time Limit $2.0\text{ s}$, Modulo $998244353$.
+- **Sample Trace ($N = 1, 2, 3, 4$)**:
+  - $N = 1$: $1$ graph (single vertex, no cycles).
+  - $N = 2$: $1$ graph ($K_2$, no cycles).
+  - $N = 3$: $3$ trees + $1$ triangle $C_3$ (length $3$ is prime) $= 4$ valid graphs.
+  - $N = 4$: $16$ trees + $\binom{4}{3} \cdot 1 \cdot 3 = 12$ graphs consisting of a $C_3$ plus $1$ pendant edge $= 28$ valid graphs (note $C_4$ has composite length $4$, and two $C_3$'s sharing an edge create a $C_4$!).
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model (Spoiler-Free)</strong></summary>
+
+Can two simple cycles in a valid graph ever share an edge? Suppose two cycles share an edge, forming a theta-graph with three internally disjoint paths of lengths $a, b, c \ge 1$ between two branch vertices. What are the lengths of the three simple cycles $a+b, b+c, c+a$, and can all three be odd primes?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Since $(a+b) + (b+c) + (c+a) = 2(a+b+c)$ is even, at least one of $a+b, b+c, c+a$ must be an even integer $> 2$, which is composite! Therefore, no two cycles can share an edge: every valid graph is a **cactus graph** in which every cycle has odd prime length $p \ge 3$. By the Block-Cut Tree Theorem (`Ch 12`), what is the fixed-point equation for the vertex-rooted EGF $T(x)$?
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+A block incident to the root is either a bridge edge ($T(x)$) or a prime cycle $C_p$ of length $p \ge 3$ ($\frac{T(x)^{p-1}}{2}$, since the cycle can be traversed in $2$ directions repealed by symmetry). Thus $T(x) = x \exp\!\left(T(x) + \sum_{3 \le p \le N \text{ prime}} \frac{T(x)^{p-1}}{2}\right)$. Extract $[x^N] T(x)$ for a single $N$ via 1D Lagrange Inversion in $O(N \log N)$, or for all $1 \le n \le N$ via `fps_revert` in $O(N \log^2 N)$!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **Structural Characterization (Prime-Cycle Cactus Graphs)**:
+   Any 2-connected component (block) with at least two cycles contains a subdivision of $K_{2,3}$ (three internally disjoint paths of lengths $a, b, c \ge 1$ connecting two vertices $u, v$). The three cycles have lengths $a+b, b+c, c+a \ge 3$. Since their sum $2(a+b+c)$ is even, at least one of the three cycle lengths is even; since $a, b, c \ge 1$ and the graph is simple, any shared-edge cycle of even length has length $\ge 4$, which is composite!
+   Hence every block of a valid graph is either:
+   - A single bridge edge $K_2$ (1 non-root vertex $\implies$ EGF $u$), or
+   - A simple cycle $C_p$ of odd prime length $p \ge 3$ ($p - 1$ non-root vertices arranged in a cycle up to reversal $\implies$ EGF $\frac{(p-1)!}{2} \frac{u^{p-1}}{(p-1)!} = \frac{u^{p-1}}{2}$).
+2. **Block-Cut EGF Fixed-Point Equation**:
+   Let $B'(u) := u + \frac{1}{2} \sum_{3 \le p \le N \text{ prime}} u^{p-1}$. By the Fundamental Block-Cut Equation (`Ch 12`), the vertex-rooted connected EGF $T(x) = \sum_{n=1}^\infty n c_n \frac{x^n}{n!}$ satisfies
+   $$T(x) = x \exp\!\Big(B'\big(T(x)\big)\Big).$$
+3. **Single-$N$ Extraction ($O(N \log N)$ via LIF) & All-$n$ Extraction ($O(N \log^2 N)$ via `revert`)**:
+   - **For a single $N$**: By Classical LIF (`Ch 11`) with $\Phi(u) = \exp(B'(u))$,
+     $$c_N = \frac{N!}{N} [x^N] T(x) = \frac{(N-1)!}{N} [u^{N-1}] \Phi(u)^N = \frac{(N-1)!}{N} [u^{N-1}] \exp\!\Big(N \cdot B'(u)\Big) \pmod{998244353}.$$
+   - **For all $1 \le n \le N$ simultaneously**: Compute $F(u) := u \exp(-B'(u)) \bmod u^{N+1}$ via one `fps_exp`, then call `fps_revert(F, N + 1)` in $O(N \log^2 N)$ time (or Logarithmic Newton in $O(N \log N)$) to obtain $T(x) = F^{\langle -1 \rangle}(x) \bmod x^{N+1}$, and read $c_n = (n-1)! [x^n] T(x)$ for every $n = 1, \dots, N$.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Integer $N \le 2.5 \times 10^5$; linear sieve primes up to $N$; for $N = 1$, output $1$ directly.
+- **Postconditions (Output)**: Number of connected prime-cycle graphs $c_N \bmod 998244353$.
+- **Time & Space Complexity**: $O(N \log N)$ time (single $N$ via 1 `fps_exp`) or $O(N \log^2 N)$ time (all $n \le N$ via `fps_revert`), $O(N)$ space.
+- **Loop / Algebraic Invariant**: $[u^{k-1}] B'(u)$ equals $1$ for $k = 2$, $\frac{1}{2}$ for odd prime $k \ge 3$, and $0$ otherwise, counting unlabeled cyclic arrangements of $k-1$ child subtrees inside a single block.
+- **Failure Modes & Edge Cases**: Including $p = 2$ as a cycle length in $B'(u)$ double-counts bridges (which are $K_2$ blocks of size $2$, not cycles, and have symmetry factor $1$ rather than $\frac{1}{2}$); also handle $N = 1$ separately before dividing by $N$ in $[u^{N-1}] \exp(N B'(u))$.
+
+</details>
+
+---
+
+### Intermediate 2 (`#059`): AtCoder ARC 137 F — Overlaps {#sec-prob-int2}
+
+- **Source**: [AtCoder Regular Contest 137, Problem F](https://atcoder.jp/contests/arc137/tasks/arc137_f) | **Canonical ID**: `#059` (`Int-2`)
+- **Prerequisites**: Implicit Form 4 Monomial Bundling (`Ch 11`), Riccati ODE (`Ch 10`), Compositional Inverse `revert` (`§21.4`) & Fast Composition `compose` (`§21.2`).
+
+#### Problem Statement & Constraints
+
+In a random chord-diagram overlap process of size $N$, each irreducible chord block of order $m \ge 0$ has weight $g_m$ (where $G(w) = \sum_{m=0}^N g_m w^m$ with $g_0 = 1$ satisfies the first-order Riccati differential equation $G'(w) = (1 + w) G(w)^2$ of irreducible interval blocks) and creates $2m$ attachment slots for sub-diagrams. Consequently, the ordinary generating function $F(z) = \sum_{n=0}^\infty f_n z^n$ of total overlap configurations is governed by the **Form 4 monomial-bundled implicit functional equation**:
+$$
+F(z) = G\!\big(z F(z)^2\big).
+$$
+Given the block series $G(w) \bmod w^{N+1}$ (with $g_0 = 1$) and target degree $N$, compute all coefficients $f_0, f_1, \dots, f_N$ of $F(z) \bmod z^{N+1}$ modulo $998244353$.
+
+- **Constraints**: $1 \le N \le 2.5 \times 10^5$, $g_0 = 1$, Time Limit $4.0\text{ s}$, Modulo $998244353$.
+- **Sample Trace ($N = 2$ with $G(w) = 1 + w + 2w^2 \bmod w^3$)**:
+  - Set $W(z) = z F(z)^2 \implies W(z) = z G(W(z))^2 = z(1 + 2W + 5W^2 + \dots)$.
+  - Expanding up to $z^3$: $W(z) = z + 2z^2 + 9z^3 + O(z^4)$.
+  - Recovering $F(z) = G(W(z)) = 1 + W(z) + 2 W(z)^2 \equiv 1 + z + 4z^2 \pmod{z^3}$, so $(f_0, f_1, f_2) = (1, 1, 4)$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model (Spoiler-Free)</strong></summary>
+
+Look at the argument inside $G(\cdot)$ on the right-hand side of $F(z) = G(z F(z)^2)$: it is the bundled product $z F(z)^2$, not $F(z)$ alone. Why can't you apply standard univariate Lagrange Inversion directly to $F(z)$, and what auxiliary series $W(z)$ turns this into a standard Form 1 equation?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Define the bundled series $W(z) := z F(z)^2 \in z K[[z]]$. Squaring both sides of $F(z) = G(W(z))$ and multiplying by $z$ gives
+$$W(z) = z G\big(W(z)\big)^2 \iff \frac{W(z)}{G(W(z))^2} = z.$$
+This is a standard compositional inverse equation! Once $W(z)$ is found, $F(z) = G(W(z))$.
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+- **For all coefficients $0 \le n \le N$**: Compute $H(w) := \frac{w}{G(w)^2} \bmod w^{N+1}$ in $O(N \log N)$, invert it via `W = fps_revert(H, N + 1)` in $O(N \log^2 N)$, and recover $F(z) = G(W(z)) \bmod z^{N+1}$ via `fps_compose(W, G, N + 1)` (or $\sqrt{W(z)/z}$)!
+- **For a single coefficient $[z^n] F(z)^r$**: Apply Form 4 Derivative-Free LIF:
+  $$[z^n] F(z)^r = [z^n] G(W(z))^r = [w^n] \left( G(w)^{2n + r} \left(1 - \frac{2 w G'(w)}{G(w)}\right) \right) = \frac{r}{2n + r} [w^n] G(w)^{2n + r}.$$
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **Monomial Bundling Reduction (`Form 4` $\to$ `Form 1`)**:
+   In interval overlap and chord diagram problems (authored by Elegia in `ARC 137 F`), each primitive block of $m$ chords creates $2m$ attachment slots for sub-diagrams, yielding $F(z) = G(z F(z)^2)$ with $G(0) = 1$.
+   Define $W(z) := z F(z)^2$. Since $F(z) = G(W(z))$, squaring and multiplying by $z$ gives
+   $$W(z) = z G(W(z))^2 \iff H(W(z)) = z, \qquad H(w) := \frac{w}{G(w)^2}.$$
+   Since $G(0) = 1$, we have $[w^0] H(w) = 0$ and $[w^1] H(w) = 1 \in \mathbb{F}_p^\times$.
+2. **All-Coefficients Pipeline via `revert` + `sqrt` / `compose` ($O(N \log^2 N)$)**:
+   - Step 1: Compute the chord-block series $G(w) \bmod w^{N+1}$ from its Riccati ODE / EGF recurrence in $O(N \log N)$ time.
+   - Step 2: Form $H(w) = w G(w)^{-2} \bmod w^{N+2}$ via one polynomial squaring and inversion (`fps_inv`).
+   - Step 3: Call `W = fps_revert(H, N + 2)` (`§21.4`) to obtain $W(z) = H^{\langle -1 \rangle}(z) \bmod z^{N+2}$ in $O(N \log^2 N)$ time.
+   - Step 4: Recover $F(z) \bmod z^{N+1}$ either by calling `fps_compose(W, G, N + 1)` in $O(N \log^2 N)$ time, or even faster in $O(N \log N)$ time by noting $W(z) / z = F(z)^2$ with $F(0) = 1$ and taking one polynomial square root $F(z) = \sqrt{W(z) / z} \bmod z^{N+1}$!
+3. **Single-Coefficient Pipeline via Form 4 LIF ($O(N \log N)$)**:
+   Applying Derivative-Free LIF (`Ch 11`) to $[z^n] \Psi(W(z))$ with $\Phi(w) = G(w)^2$ and $\Psi(w) = G(w)^r$:
+   $$[z^n] F(z)^r = [w^n] \left( G(w)^r \cdot G(w)^{2n} \left(1 - \frac{2 w G'(w)}{G(w)}\right) \right) = \frac{r}{2n + r} [w^n] G(w)^{2n + r},$$
+   evaluated in $O(N \log N)$ via a single polynomial `pow`.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Series $G(w) \bmod w^{N+1}$ with $G(0) = 1 \not\equiv 0 \pmod p$, target degree $N \le 2.5 \times 10^5$. Note that the division-free identity $[z^n]F(z)^r = [w^n]G(w)^{2n+r} - 2[w^{n-1}]\big(w G'(w) G(w)^{2n+r-1}\big)$ combined with Route B `revert` works even when $p \le 2n + r$.
+- **Postconditions (Output)**: $F(z) \bmod z^{N+1}$ satisfying $F(z) = G(z F(z)^2)$.
+- **Time & Space Complexity**: $O(N \log^2 N)$ time for all $0 \le n \le N$ (or $O(N \log N)$ for a single $n$), $O(N)$ space.
+- **Loop / Algebraic Invariant**: $W(z) = z F(z)^2$ satisfies $W(z) G(W(z))^{-2} = z$, decoupling the quadratic inner argument into a degree-1 compositional inverse.
+- **Failure Modes & Edge Cases**: Because $F(z) = \sqrt{W(z)/z} \bmod z^{N+1}$ shifts $W(z)$ down by one degree, $W(z) = H^{\langle -1 \rangle}(z)$ must be computed modulo $z^{N+2}$ (length $N + 2$) rather than $z^{N+1}$ if recovering $F(z)$ via `fps_sqrt(W / z)`; alternatively, recover $F(z) = G(W(z)) \bmod z^{N+1}$ via `fps_compose`.
+
+</details>
+
+---
+
+### Advanced 1 (`#065`): AtCoder ARC 154 F — Dice Game {#sec-prob-adv1}
+
+- **Source**: [AtCoder Regular Contest 154, Problem F](https://atcoder.jp/contests/arc154/tasks/arc154_f) | **Canonical ID**: `#065` (`Adv-1`)
+- **Prerequisites**: Probability Generating Functions (`Ch 13`), Rational Sum of Simple Fractions / Transposed Multipoint Evaluation (`Ch 20`), Exponential Composition $P(e^z)$ (`§21.2`).
+
+#### Problem Statement & Constraints
+
+You roll a fair $N$-sided die repeatedly until **all $N$ faces** have appeared at least once. Let $T$ be the total number of rolls required. For **every** integer $k = 1, 2, \dots, M$, compute the $k$-th raw moment $\mathbb{E}[T^k] \bmod 998244353$.
+
+- **Constraints**: $1 \le N, M \le 2 \times 10^5$, Time Limit $4.0\text{ s}$, Modulo $998244353$.
+- **Sample Trace ($N = 2, M = 2$)**:
+  - Waiting time $T = 1 + G_{1/2}$ where $G_{1/2}$ is geometric with success probability $\frac{1}{2}$: $P(x) = \sum_{t \ge 2} \mathbb{P}(T=t) x^t = x \cdot \frac{\frac{1}{2}x}{1 - \frac{1}{2}x} = \frac{x^2}{2 - x}$.
+  - $k = 1$: $\mathbb{E}[T] = 1 + 2 = 3$.
+  - $k = 2$: $\mathbb{E}[T^2] = \sum_{t \ge 2} t^2 2^{-(t-1)} = 4(\frac{1}{2}) + 9(\frac{1}{4}) + 16(\frac{1}{8}) + \dots = 11$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model (Spoiler-Free)</strong></summary>
+
+By the standard coupon collector decomposition, when $i$ distinct faces have already been seen ($0 \le i \le N-1$), the number of additional rolls $T_i$ to see the $(i+1)$-th new face is a geometric random variable with success probability $\frac{N - i}{N}$, independent of previous phases. What is the Probability Generating Function $P(x) = \mathbb{E}[x^T] = \prod_{i=0}^{N-1} \mathbb{E}[x^{T_i}]$?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+We have
+$$P(x) = \prod_{i=0}^{N-1} \frac{\frac{N - i}{N} x}{1 - \frac{i}{N} x} = \frac{\frac{N!}{N^N} x^N}{\prod_{i=1}^{N-1} \left(1 - \frac{i}{N} x\right)} = \frac{A(x)}{B(x)}.$$
+How do we extract $\mathbb{E}[T^k]$ for all $1 \le k \le M$ from $P(x)$? Recall that $(x \frac{d}{dx})^k P(x) \big|_{x=1} = \mathbb{E}[T^k]$. Under the exponential change of variables $x = e^z$, the differential operator $x \frac{d}{dx}$ becomes $\frac{d}{dz}$, so the Moment Generating Function is the **composition**
+$$P(e^z) = \sum_{t=0}^{\infty} \mathbb{P}(T = t) e^{tz} = \sum_{k=0}^{\infty} \mathbb{E}[T^k] \frac{z^k}{k!} = \frac{A(e^z)}{B(e^z)} \pmod{z^{M+1}}.$$
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+First expand $B(x) = \prod_{i=1}^{N-1} (1 - \frac{i}{N} x) = \sum_{j=0}^{N-1} b_j x^j$ via a binary D&C NTT product tree in $O(N \log^2 N)$ time. Next, instead of calling general $O(M \log^2 M)$ `fps_compose` to evaluate $B(e^z)$, exploit the exponential structure of $e^z$:
+$$B(e^z) = \sum_{j=0}^{N-1} b_j e^{j z} = \sum_{k=0}^{M} \left( \sum_{j=0}^{N-1} b_j j^k \right) \frac{z^k}{k!},$$
+where the power sums $s_k = \sum_{j=0}^{N-1} b_j j^k = [z^k] \sum_{j=0}^{N-1} \frac{b_j}{1 - j z}$ are computed in $O((N + M) \log^2(N + M))$ via a single Rational Sum of Simple Fractions (`Ch 20`)! Finally, compute $A(e^z) B(e^z)^{-1} \bmod z^{M+1}$.
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **PGF of the Coupon Collector Waiting Time**:
+   The waiting time $T = \sum_{i=0}^{N-1} T_i$ has PGF
+   $$P(x) = \mathbb{E}[x^T] = \prod_{i=0}^{N-1} \frac{\frac{N - i}{N} x}{1 - \frac{i}{N} x} = \frac{A(x)}{B(x)}, \qquad A(x) := \frac{N!}{N^N} x^N, \quad B(x) := \prod_{i=1}^{N-1} \left(1 - \frac{i}{N} x\right).$$
+2. **Moment Generating Function via Exponential Composition $x = e^z$**:
+   Substituting $x = e^z$ turns $x^t$ into $e^{tz} = \sum_{k \ge 0} t^k \frac{z^k}{k!}$, so
+   $$M(z) := P(e^z) = \sum_{k=0}^{\infty} \mathbb{E}[T^k] \frac{z^k}{k!} = \frac{A(e^z)}{B(e^z)}.$$
+   Notice that $P(1) = 1$, whereas $B(1) = \prod_{i=1}^{N-1} \left(1 - \frac{i}{N}\right) = \frac{(N-1)!}{N^{N-1}} \ne 0$ in $\mathbb{F}_{998244353}$ (since $N < 998244353$). Thus $B(e^z)$ has non-zero constant term $[z^0] B(e^z) = B(1) \in \mathbb{F}_p^\times$ and is **directly invertible** in $\mathbb{F}_p[[z]] / (z^{M+1})$!
+3. **Fast Evaluation of $A(e^z)$ and $B(e^z) \bmod z^{M+1}$**:
+   - **Step 1**: Multiply the $N - 1$ linear factors of $B(x) = \sum_{j=0}^{N-1} b_j x^j$ using a D&C NTT product tree in $O(N \log^2 N)$ time.
+   - **Step 2**: For any polynomial $B(x) = \sum_{j=0}^{N-1} b_j x^j$, its composition with $e^z$ satisfies
+     $$k! [z^k] B(e^z) = \sum_{j=0}^{N-1} b_j j^k = [z^k] \sum_{j=0}^{N-1} \frac{b_j}{1 - j z} \qquad (0 \le k \le M).$$
+     Summing the $N$ simple fractions $\frac{b_j}{1 - jz} = \frac{\mathcal{P}(z)}{\mathcal{Q}(z)}$ via a binary D&C NTT tree (`Ch 20`) and one polynomial inversion $\mathcal{P}(z) \mathcal{Q}(z)^{-1} \bmod z^{M+1}$ yields all coefficients of $B(e^z) \bmod z^{M+1}$ in $O(N \log^2 N + M \log M)$ time. (Alternatively, shift $B(x)$ to $B(1 + y)$ via a 1D Taylor shift and compose with $y = e^z - 1$ via Kinoshita–Li `fps_compose` in $O((N + M) \log^2(N + M))$ time.)
+   - **Step 3**: Since $A(e^z) = \frac{N!}{N^N} e^{Nz} = \frac{N!}{N^N} \sum_{k=0}^M \frac{N^k}{k!} z^k$, compute $M(z) = A(e^z) B(e^z)^{-1} \bmod z^{M+1}$ via one `fps_inv` and convolution, and output $\mathbb{E}[T^k] = k! [z^k] M(z) \bmod 998244353$ for $1 \le k \le M$.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Integers $1 \le N, M \le 2 \times 10^5$ with $N, M < p = 998244353$ so that $B(1) = \frac{(N-1)!}{N^{N-1}} \not\equiv 0 \pmod p$ and $k!$ is invertible.
+- **Postconditions (Output)**: Moments $\mathbb{E}[T^1], \dots, \mathbb{E}[T^M] \bmod 998244353$.
+- **Time & Space Complexity**: $O((N + M) \log^2(N + M))$ time and $O(N + M)$ auxiliary space.
+- **Loop / Algebraic Invariant**: The Laplace-to-OGF bridge $k!\,[z^k] B(e^z) = [z^k] \sum_{j=0}^{N-1} \frac{b_j}{1 - jz}$ replaces general series composition with a rational sum of simple fractions.
+- **Failure Modes & Edge Cases**: Notice that $1 - x$ is cancelled between numerator and denominator when forming $B(x) = \prod_{i=1}^{N-1} (1 - \frac{i}{N}x)$ (since the $i = 0$ factor $\frac{N}{N}x = x$ has no denominator and the $1 - x$ from geometric sums is already absorbed); failing to cancel $(1 - x)$ before substituting $x = e^z$ makes the denominator vanish at $z = 0$!
+
+</details>
+
+---
+
+### Advanced 2 (`#218`): LibreOJ 171 / QOJ 6504 — 幂投影 (Power Projection & Transposed Implicit Tree Sums) {#sec-prob-adv2}
+
+- **Source**: [LibreOJ 171 / QOJ 6504 — 幂投影 (Power Projection)](https://qoj.ac/problem/6504) | **Canonical ID**: `#218` (`Adv-2`)
+- **Prerequisites**: Kinoshita–Li 2D Bostan–Mori Power Projection (`§21.1`), Bivariate Generating Function Duality (`Ch 10`), Flat 1D Kronecker NTT Packing (`§21.1`).
+
+#### Problem Statement & Constraints
+
+You are given a formal power series $F(x) = \sum_{i=0}^{N-1} f_i x^i \in \mathbb{F}_{998244353}[[x]]$ (not necessarily having $f_0 = 0$) and a linear-functional weight vector $w_0, w_1, \dots, w_{N-1} \in \mathbb{F}_{998244353}$. Compute the **Power Projection** sequence $p_0, p_1, \dots, p_{M-1}$ defined by:
+$$
+p_k = \sum_{i=0}^{N-1} w_i \, [x^i] F(x)^k \pmod{998244353} \qquad \text{for all } k = 0, 1, \dots, M - 1.
+$$
+
+- **Constraints**: $1 \le N, M \le 2 \times 10^5$, $0 \le f_i, w_i < 998244353$, Time Limit $2.0\text{ s}$, Modulo $p = 998244353$.
+- **Sample Trace ($N = 3, M = 3, F(x) = 1 + 2x + 3x^2, \mathbf{w} = (1, 1, 1)$)**:
+  - $k = 0$: $F(x)^0 = 1 \implies p_0 = w_0(1) = 1$.
+  - $k = 1$: $F(x)^1 = 1 + 2x + 3x^2 \implies p_1 = 1 + 2 + 3 = 6$.
+  - $k = 2$: $F(x)^2 \equiv 1 + 4x + 10x^2 \pmod{x^3} \implies p_2 = 1 + 4 + 10 = 15$.
+  - **Constant-Term Split Verification ($c = f_0 = 1, \tilde{F}(x) = 2x + 3x^2$)**:
+    First compute $\tilde{p}_j = \sum_{i=0}^2 w_i [x^i] \tilde{F}(x)^j$ for $j = 0, 1, 2$: $\tilde{p}_0 = 1$, $\tilde{p}_1 = 2 + 3 = 5$, $\tilde{p}_2 = 4$. Then binomial convolution $p_k = \sum_{j=0}^k \binom{k}{j} c^{k-j} \tilde{p}_j$ gives $p_0 = 1$, $p_1 = 1(1) + 1(5) = 6$, $p_2 = 1(1) + 2(5) + 1(4) = 15$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model (Spoiler-Free)</strong></summary>
+
+Notice that $F(x) = c + \tilde{F}(x)$ may have a non-zero constant term $c = [x^0] F(x) \ne 0$, in which case $\frac{1}{1 - y F(x)}$ is not a well-defined formal power series in $\mathbb{F}_p[[x, y]]$. How can you reduce the general case $f_0 = c \ne 0$ to the nilpotent case $\tilde{F}(0) = 0$ using a single 1D EGF convolution?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Write $F(x) = c + \tilde{F}(x)$ where $\tilde{F}(0) = 0$. By the Binomial Theorem, $F(x)^k = \sum_{j=0}^k \binom{k}{j} c^{k-j} \tilde{F}(x)^j$. By linearity of the functional $\langle \mathbf{w}, \cdot \rangle$:
+$$
+p_k = \sum_{j=0}^k \binom{k}{j} c^{k-j} \tilde{p}_j \iff \frac{p_k}{k!} = \sum_{j=0}^k \frac{c^{k-j}}{(k-j)!} \cdot \frac{\tilde{p}_j}{j!},
+$$
+where $\tilde{p}_j = \sum_{i=0}^{N-1} w_i [x^i] \tilde{F}(x)^j$ has $\tilde{F}(0) = 0$ and vanishes for all $j \ge N$!
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+1. Strip $c = f_0$ and set $\tilde{F}(x) = F(x) - c$ so $[x^0]\tilde{F}(x) = 0$.
+2. Run Kinoshita–Li 2D Bostan–Mori `power_projection` (`§21.1`) on $(\tilde{F}, \mathbf{w})$ to obtain $\tilde{p}_0, \dots, \tilde{p}_{\min(N, M)-1}$ in $O(N \log^2 N)$ time: at each of the $\lceil \log_2 N \rceil$ rounds, multiply $P^{(r)}(x, y)$ and $Q^{(r)}(x, y)$ by $Q^{(r)}(-x, y)$ using 1D Kronecker-packed NTTs of length $4 N$ and the DFT frequency-block swap identity (`Lemma 21.2`).
+3. If $c \ne 0$, convolve $\frac{\tilde{p}_j}{j!}$ with $\frac{c^r}{r!}$ up to degree $M - 1$ in $O(M \log M)$ time!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **Decoupling the Constant Term $c = [x^0] F(x)$**:
+   Let $c = f_0$ and $\tilde{F}(x) = F(x) - c \in x \mathbb{F}_p[[x]]$. Since $\tilde{F}(x)^j$ has valuation $\ge j$, $[x^i] \tilde{F}(x)^j = 0$ for all $j > i$, so $\tilde{p}_j := \sum_{i=0}^{N-1} w_i [x^i] \tilde{F}(x)^j = 0$ for all $j \ge N$. Once $\tilde{p}_0, \dots, \tilde{p}_{\min(N, M)-1}$ are computed, expanding $(c + \tilde{F}(x))^k$ gives:
+   $$
+   p_k = k! [z^k] \left( e^{cz} \sum_{j=0}^{\min(N, M)-1} \frac{\tilde{p}_j}{j!} z^j \right) \qquad (0 \le k < M),
+   $$
+   which is a single 1D NTT convolution of length $M$.
+2. **Kinoshita–Li 2D Bostan–Mori Recursion for $\tilde{p}_0, \dots, \tilde{p}_{N-1}$ (`§21.1`)**:
+   Pad $N$ to a power of $2$ so that $n = N - 1$ has binary expansion $11\dots1_2$ (every bit of $n$ is $1$). Initialize:
+   $$
+   P^{(0)}(x, y) = \sum_{i=0}^{n} w_i x^{n - i}, \qquad Q^{(0)}(x, y) = 1 - y \tilde{F}(x) \pmod{x^{n+1}},
+   $$
+   so that $\sum_{j=0}^{n} \tilde{p}_j y^j = [x^n] \frac{P^{(0)}(x, y)}{Q^{(0)}(x, y)} \bmod y^{n+1}$.
+   In round $r = 0, 1, \dots, \log_2 N - 1$, let $d_x = N / 2^r - 1$ and $d_y = 2^r$. Pack $P^{(r)}$ and $Q^{(r)}$ into 1D arrays of stride $S = 2^{r+1}$ in $y$ (`Lemma 21.1`), execute one forward NTT of length $L = 4N$ on each, obtain $\operatorname{DFT}(Q^{(r)}(-x, y))$ in $O(N)$ time by swapping the lower and upper frequency halves (`Lemma 21.2`), multiply pointwise, and apply one inverse NTT to extract:
+   $$
+   P^{(r+1)}(x, y) = \mathcal{E}_1\!\big(P^{(r)}(x, y) Q^{(r)}(-x, y)\big) \bmod y^{2^{r+1}}, \qquad Q^{(r+1)}(x, y) = \mathcal{E}_0\!\big(Q^{(r)}(x, y) Q^{(r)}(-x, y)\big) \bmod y^{2^{r+1}}.
+   $$
+   After $\log_2 N$ rounds, $P^{(\log_2 N)}(0, y) Q^{(\log_2 N)}(0, y)^{-1} \bmod y^N$ yields $\tilde{p}_0, \dots, \tilde{p}_{N-1}$ in $O(N \log^2 N)$ time!
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Series $F(x) \bmod x^N$, weight vector $\mathbf{w} \in \mathbb{F}_p^N$, target length $M \le 2 \times 10^5$ ($N, M \ge 1$); pad $N$ to the next power of $2$ before running the 2D Bostan–Mori loop.
+- **Postconditions (Output)**: Power projection values $p_0, p_1, \dots, p_{M-1} \bmod 998244353$.
+- **Time & Space Complexity**: $O(N \log^2 N + M \log M)$ time ($\approx 2 \log_2 N$ NTTs of size $4N$) and $O(N + M)$ space.
+- **Loop / Algebraic Invariant**: After round $r$, $\deg_x P^{(r)}, \deg_x Q^{(r)} < N / 2^r$ and $\deg_y P^{(r)}, \deg_y Q^{(r)} \le 2^r$, preserving $[x^{N/2^r - 1}] \frac{P^{(r)}(x, y)}{Q^{(r)}(x, y)} \equiv \sum_{j=0}^{2^r - 1} \tilde{p}_j y^j \pmod{y^{2^r}}$.
+- **Failure Modes & Edge Cases**: Calling 2D Bostan–Mori directly on $F(x)$ when $c = [x^0] F(x) \ne 0$ corrupts $[y^0] Q^{(0)}(x, y) = 1 - c y \ne 1$; always strip $c = f_0$ first, run `power_projection` on $\tilde{F}(x) = F(x) - c$, and restore $c$ via EGF binomial convolution with $e^{cz}$.
+
+</details>
+
+---
+
+### Mastery 1 (`#235`): QOJ 8528 — Polynomial Composition (`fps_compose` via Tellegen Transposition) {#sec-prob-mas1}
+
+- **Source**: [QOJ 8528 — Polynomial Composition](https://qoj.ac/problem/8528) | **Canonical ID**: `#235` (`Mas-1`)
+- **Prerequisites**: Kinoshita–Li 2D Bostan–Mori (`§21.1`), Tellegen's Transposition Principle (`Ch 20` & `§21.2`), Taylor Shift (`Ch 05`).
+
+#### Problem Statement & Constraints
+
+You are given two dense formal power series $F(x) = \sum_{i=0}^{N-1} f_i x^i$ and $G(y) = \sum_{k=0}^{N-1} g_k y^k$ over $\mathbb{F}_{998244353}$ of degree $< N$, where $f_0 = [x^0] F(x)$ is arbitrary (if $f_0 \ne 0$, $G(y)$ is treated as a degree-$(N-1)$ polynomial in $\mathbb{F}_{998244353}[y]$). Compute the composite formal power series
+$$
+H(x) = G\big(F(x)\big) \bmod x^N = \sum_{i=0}^{N-1} h_i x^i \pmod{998244353}.
+$$
+
+- **Constraints**: $1 \le N \le 2 \times 10^5$, $0 \le f_i, g_k < 998244353$, Time Limit $2.0\text{ s}$, Modulo $p = 998244353$.
+- **Sample Trace ($N = 3, F(x) = 1 + 2x + 3x^2, G(y) = 2 + y + y^2$)**:
+  - **Step 1 (Taylor Shift for $c = f_0 = 1$)**: Shift $\tilde{G}(y) = G(y + 1) = 2 + (y + 1) + (y + 1)^2 = 4 + 3y + y^2$, and strip $\tilde{F}(x) = F(x) - 1 = 2x + 3x^2$.
+  - **Step 2 (Nilpotent Composition $\tilde{G}(\tilde{F}(x)) \bmod x^3$)**:
+    $$\tilde{G}(\tilde{F}(x)) = 4 + 3(2x + 3x^2) + (2x + 3x^2)^2 \equiv 4 + 6x + 13x^2 \pmod{x^3}.$$
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model (Spoiler-Free)</strong></summary>
+
+At $N = 2 \times 10^5$, why does Brent–Kung's $O((N \log N)^{3/2} + N^2)$ baby-step giant-step algorithm exceed the time limit, and how do you preprocess $F(x)$ and $G(y)$ when $c = [x^0] F(x) \ne 0$ so that the inner series has zero constant term?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Since $G(y)$ is a polynomial of degree $< N$, $G(F(x)) = G(c + (F(x) - c)) = \tilde{G}(\tilde{F}(x))$ where $\tilde{G}(y) = G(y + c)$ is computed by a single 1D Polynomial Taylor Shift (`Ch 06` / `Ch 20`) in $O(N \log N)$ time, and $\tilde{F}(x) = F(x) - c$ has $[x^0] \tilde{F} = 0$. Now apply the Kinoshita–Li forward and backward passes (`§21.1–§21.2`) on $\tilde{F}(x)$ and $\tilde{G}(y)$.
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Pack a 2D polynomial $A(x, y)$ with $\deg_x < L_x$ and $\deg_y \le L_y$ into a 1D array of length $4 L_x L_y = 4N$ using Kronecker stride $2 L_y$ (`index(i, j) = i * (2 * Ly) + j`). In the forward pass, use Nachia's frequency half-swap (`k_x ^ Lx`) to compute $Q_{t+1}(x, y)$ in only **two** 1D NTTs of length $4N$ (or 2D NTTs of size $2L_x \times 2L_y$) per level; in the backward pass, transpose each step via `mulT` in the same number of NTTs.
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **Constant-Term Reduction via Taylor Shift**:
+   Let $c = [x^0] F(x)$. Even when $c \ne 0$, because $G(y) = \sum_{k=0}^{N-1} g_k y^k$ is a finite polynomial of degree $< N$, the substitution $G(F(x)) \bmod x^N$ is well-defined over $\mathbb{F}_p$. Setting $\tilde{F}(x) := F(x) - c$ (so $[x^0] \tilde{F}(x) = 0$) and $\tilde{G}(y) := G(y + c) = \sum_{k=0}^{N-1} \tilde{g}_k y^k$ where
+   $$\tilde{g}_k = \frac{1}{k!} \sum_{j=k}^{N-1} (j! g_j) \frac{c^{j-k}}{(j - k)!}$$
+   is evaluated via one 1D Middle Product (`mulT`) in $O(N \log N)$ time, we have $G(F(x)) \equiv \tilde{G}(\tilde{F}(x)) \pmod{x^N}$.
+2. **Kronecker-Packed 2D Bostan–Mori Forward Pass ($t = 0 \to m - 1$)**:
+   Pad $N$ up to $2^m$. At level $t$, $L_x = 2^{m-t}$ and $L_y = 2^t$, so $L_x L_y = N$. Represent $Q_t(x, y)$ ($\deg_x < L_x, \deg_y \le L_y$) in a flat array of dimensions $2 L_x \times 2 L_y$ (total size $4N$):
+   - Apply a forward 2D NTT of dimensions $2 L_x \times 2 L_y$ to $Q_t(x, y)$.
+   - By Nachia's optimization (`§21.1`), the 2D NTT of $Q_t(-x, y)$ is $\widehat{Q_t}[r_x \oplus L_x, r_y]$.
+   - Store $\widehat{Q_t(-x, y)}$ for the backward pass, multiply $\widehat{Q_t}[r_x, r_y] \cdot \widehat{Q_t}[r_x \oplus L_x, r_y]$, and run the inverse 2D NTT to extract the even $x$-powers $\mathcal{S}_0$ truncated to $\deg_x < L_x / 2, \deg_y \le 2 L_y$, yielding $Q_{t+1}(x, y)$.
+3. **Transposed 2D Bostan–Mori Backward Pass ($t = m - 1 \downarrow 0$)**:
+   Initialize $\hat{P}_m(0, y) = \tilde{G}(y)$ ($L_x = 1, L_y = N$). For $t = m - 1$ down to $0$ ($L_x = 2^{m-t}, L_y = 2^t$):
+   - Interleave zeros at even $x$-indices: $\hat{U}_t(x, y) = x \hat{P}_{t+1}(x^2, y)$ ($\deg_x < L_x, \deg_y < 2 L_y$).
+   - Compute $\hat{P}_t(x, y) = \operatorname{mulT}_{x, y}\big(\hat{U}_t(x, y), Q_t(-x, y)\big) \bmod (x^{L_x}, y^{L_y})$ by reversing the active $(x, y)$ indices of $\hat{U}_t$ (or multiplying by the frequency-reversed DFT of $Q_t(-x, y)$ cached from the forward pass!) and running one forward + one inverse 2D NTT of size $2 L_x \times 2 L_y$.
+   - At $t = 0$, output $h_i = [x^{N-1-i} y^0] \hat{P}_0(x, y)$ for $0 \le i < N$.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Dense polynomials $F(x), G(y) \in \mathbb{F}_{998244353}[x] / (x^N)$ with $N \le 2 \times 10^5$. If $[x^0]F \ne 0$, requires $N < p$ for the factorial Taylor shift $G(y + c)$; if $[x^0]F = 0$, requires only $2 \in \mathbb{F}_p^\times$.
+- **Postconditions (Output)**: $H(x) = G(F(x)) \bmod x^N$.
+- **Time & Space Complexity**: $O(N \log^2 N)$ time ($\approx 300\text{ ms}$ at $N = 2 \times 10^5$) and $O(N \log N)$ space.
+- **Loop / Algebraic Invariant**: At level $t$, the 2D FFT grid size is $2 L_x \times 2 L_y = 2^{m-t+1} \times 2^{t+1} = 4N$, which is strictly constant across all $\log_2 N$ levels.
+- **Failure Modes & Edge Cases**: Packing the 2D array $(i, j)$ with Kronecker stride $L_y$ instead of $2 L_y$ causes cyclic wrap-around in the $y$-variable during 1D NTT multiplication (Failure Mode #1); also, if $c = [x^0] F(x) \ne 0$, you must Taylor-shift $G(y) \mapsto G(y + c)$ before calling the nilpotent Kinoshita–Li kernel.
+
+</details>
+
+---
+
+### Mastery 2 (`#017`): AtCoder `fps_24_x` — Functional Square Root (`関数的平方根`) {#sec-prob-mas2}
+
+- **Source**: [AtCoder FPS 24: 24 Problems on Formal Power Series — Problem X](https://atcoder.jp/contests/fps-24/tasks/fps_24_x) | **Canonical ID**: `#017` (`Mas-2`)
+- **Prerequisites**: Functional Square Roots & Artin–Schreier Obstruction (`§21.4`), Kinoshita–Li `compose` (`§21.2`), Linear First-Order Compositional Perturbation (`Ch 09`).
+
+#### Problem Statement & Constraints
+
+Given a formal power series $F(x) = \sum_{k=0}^{N-1} f_k x^k \in \mathbb{F}_{998244353}[[x]] / (x^N)$ with $f_0 = 0$ and $f_1 = 1$ (or general $f_0, f_1$), find a formal power series $G(x) = \sum_{k=0}^{N-1} g_k x^k \in \mathbb{F}_{998244353}[[x]] / (x^N)$ such that
+$$G(G(x)) \equiv F(x) \pmod{x^N},$$
+or report that no such series exists.
+
+- **Constraints**: $1 \le N \le 8000$ (solvable in $O(N^2)$ via indeterminate extraction or in $O(N \log^2 N)$ up to $N \le 2.5 \times 10^5$ via Newton + Kinoshita–Li `compose`), Time Limit $2.0\text{ s}$, Modulo $p = 998244353$.
+- **Sample Trace ($N = 4, F(x) = x + 2x^2 + 5x^3$)**:
+  - Set $G(x) = x + g_2 x^2 + g_3 x^3$.
+  - $G(G(x)) = (x + g_2 x^2 + g_3 x^3) + g_2(x + g_2 x^2)^2 + g_3 x^3 \equiv x + 2 g_2 x^2 + (2 g_2^2 + 2 g_3) x^3 \pmod{x^4}$.
+  - Matching $[x^2]$: $2 g_2 = 2 \implies g_2 = 1$.
+  - Matching $[x^3]$: $2(1)^2 + 2 g_3 = 5 \implies g_3 = \frac{3}{2} \equiv 499122178 \pmod{998244353}$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model (Spoiler-Free)</strong></summary>
+
+Suppose $G(x) = g_1 x + g_2 x^2 + \dots$ satisfies $G(G(x)) \equiv F(x) \pmod{x^N}$ where $F(x) = x + f_2 x^2 + \dots$ is tangent to the identity ($f_0 = 0, f_1 = 1$, choosing $g_1 = 1$). Expand $G(G(x))$ when $G(x) = G_s(x) + \Delta(x)$ with $\operatorname{val}_x(\Delta) \ge 2^s$. Why do BOTH $G_s'(\cdot) \Delta(x)$ and $\Delta(G_s(x))$ survive modulo $x^{2^{s+1}}$?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+When $G_{s+1}(x) = G_s(x) + \Delta(x)$ with $\Delta(x) \equiv 0 \pmod{x^L}$ ($L = 2^s$), applying Taylor expansion to the outer $G$ and substituting $G_s + \Delta$ inside gives:
+$$G_{s+1}(G_{s+1}(x)) = (G_s + \Delta)(G_s(x) + \Delta(x)) \equiv G_s(G_s(x)) + G_s'(G_s(x)) \Delta(x) + \Delta(G_s(x)) \pmod{x^{2L}}.$$
+How do we simplify $\Delta(G_s(x)) \bmod x^{2L}$ when $\operatorname{val}_x(\Delta) \ge L$ and $G_s(x) = x + g_2 x^2 + \dots$ has leading term $1 \cdot x$?
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Look at $\Delta(G_s(x))$ when $\Delta(x) = x^L \tilde{\Delta}(x)$ and $G_s(x) = x \tilde{G}_s(x)$ with $\tilde{G}_s(0) = 1$:
+$$\Delta(G_s(x)) = G_s(x)^L \tilde{\Delta}(G_s(x)).$$
+Because $G_s(x) = x + O(x^2)$, we have $\tilde{\Delta}(G_s(x)) \equiv \tilde{\Delta}(x) \pmod{x^L}$? Not quite—for general $\tilde{\Delta}$ we use the conjugation trick or observe that if we write $G_s(x)$ via Schröder/Abel coordinates (or for $g_1 = 1$, notice that $G_s'(x) \Delta(x) = \Delta(G_s(x))$ after dividing by the Lie generator $A(x)$ of the flow $G_s$)! Specifically, let $A_s(x)$ satisfy $A_s(G_s(x)) = G_s'(x) A_s(x) \bmod x^L$ (the infinitesimal generator / Julia equation). Or for $N \le p$: by Theorem 7.2 (`§21.4`), $G(x) \equiv F^{\circ ((p+1)/2)}(x) \pmod{x^{p+1}}$!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+1. **Classification of Degree-$0$ and Degree-$1$ Coefficients**:
+   If $[x^0] F(x) = 0$:
+   - **Case A ($f_1 = 1$, Tangent to Identity)**: Choose $g_1 = 1$. As proved in `§21.4`, for every $k \ge 2$, the degree-$k$ coefficient equation is
+     $$2 g_k = f_k - [x^k] \sum_{m=2}^{k-1} g_m G_{<k}(x)^m,$$
+     which has a unique solution in $\mathbb{F}_p$ for every odd prime $p$.
+   - **Case B ($f_1 \not\equiv 0, 1 \pmod p$)**: Check whether $f_1$ is a quadratic residue modulo $p$ via Tonelli–Shanks / Cipolla ($g_1^2 \equiv f_1 \pmod p$). If so, test both roots $\pm g_1$: at each degree $k \ge 2$, $g_1(1 + g_1^{k-1}) g_k = \text{RHS}_k$.
+   - **Case C ($f_1 = 0$)**: If $F(x) \equiv 0 \pmod{x^N}$, then $G(x) = 0$ works; otherwise, let $v = \operatorname{val}_x(F) \ge 2$. Since $\operatorname{val}_x(G \circ G) = (\operatorname{val}_x G)^2$, no solution can exist unless $v = d^2$ is a perfect square (or $v \ge N$, in which case $G(x) = c x^{\lceil \sqrt{N} \rceil}$ has $G(G(x)) \equiv 0 \pmod{x^N}$).
+2. **Method 1 — $O(N^2)$ Indeterminate Extraction / Online Relaxed Convolution (for $N \le 8000$)**:
+   Maintain the powers $G(x)^2, G(x)^3, \dots, G(x)^{N-1} \bmod x^N$ incrementally: as soon as $g_k$ is solved from $g_1(1 + g_1^{k-1}) g_k = f_k - [x^k] \sum_{m=2}^{k-1} g_m G(x)^m$, update $[x^j] G(x)^m$ for $m \le j \le N-1$, running in $O(N^2)$ operations ($\approx 15\text{ ms}$ for $N = 8000$).
+3. **Method 2 — $O(N \log^2 N)$ Newton / Lie-Flow Iteration via Kinoshita–Li `compose` (for $N \le 2.5 \times 10^5, p > N$)**:
+   When $f_0 = 0, f_1 = 1$ and $\operatorname{char}(K) = 0$ or $p > N$, every tangent-to-identity series $F(x) = x + f_2 x^2 + \dots \in \mathcal{G}_{1,1}(K)$ is the time-$1$ flow $\exp(v(x) \frac{d}{dx})(x)$ of a unique formal vector field $v(x) \frac{d}{dx}$ ($v(x) = v_2 x^2 + v_3 x^3 + \dots$), and its functional square root $G(x)$ is the time-$\frac{1}{2}$ flow $\exp(\frac{1}{2} v(x) \frac{d}{dx})(x)$!
+   Even better, in Newton's method $G_{s+1} = G_s + \Delta$ ($\Delta \equiv 0 \pmod{x^L}, L = 2^s$), the linearized equation is
+   $$G_s'(G_s(x)) \Delta(x) + \Delta(G_s(x)) \equiv F(x) - G_s(G_s(x)) \pmod{x^{2L}}.$$
+   Because $\Delta(x) = \delta_L x^L + \dots + \delta_{2L-1} x^{2L-1}$ has valuation $\ge L$ and $(G_s(x))^k = x^k (G_s(x)/x)^k$ has a $k$-dependent exponent across $L \le k < 2L$, we factor $\Delta(x) = A_s(x) U(x)$ where $U(x) \equiv 0 \pmod{x^L}$ and $A_s(x)$ is the **Julia / Lie generator** satisfying $A_s(G_s(x)) = G_s'(x) A_s(x)$. Equivalently, parameterizing $F(x) = \Psi^{\langle -1 \rangle}(\Psi(x) + 1)$ via Abel's equation $\Psi(F(x)) = \Psi(x) + 1$ (solved by Newton iteration + Kinoshita–Li `compose`) yields $G(x) = \Psi^{\langle -1 \rangle}\!\big(\Psi(x) + \frac{1}{2}\big) \bmod x^N$ in $O(N \log^2 N)$ time!
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: $F(x) \in \mathbb{F}_p[[x]]/(x^N)$ ($N \le 8000$ for $O(N^2)$ all-case solver; $N \le 2.5 \times 10^5$ for $O(N \log^2 N)$ tangent-to-identity solver); odd prime $p = 998244353$ ($2 \in \mathbb{F}_p^\times$).
+- **Postconditions (Output)**: $G(x) \bmod x^N$ satisfying $G(G(x)) \equiv F(x) \pmod{x^N}$, or `-1` if none exists.
+- **Time & Space Complexity**: $O(N^2)$ time for general $f_0, f_1$ at $N \le 8000$; $O(N \log^2 N)$ time for tangent-to-identity $F(x) = x + \dots$ at $N \le 2.5 \times 10^5$, $O(N)$ space.
+- **Loop / Algebraic Invariant**: At each degree $k \ge 2$, $[x^k] G(G(x)) = g_1(1 + g_1^{k-1}) g_k + [x^k] \sum_{m=2}^{k-1} g_m G_{<k}(x)^m$.
+- **Failure Modes & Edge Cases**: When $g_1 \ne 1$, if $g_1^{k-1} \equiv -1 \pmod p$ at some degree $k \ge 2$, the leading coefficient $g_1(1 + g_1^{k-1}) \equiv 0 \pmod p$ vanishes (resonance); if the right-hand side is non-zero at that $k$, no solution exists for that branch of $g_1$, so both square roots $\pm \sqrt{f_1} \bmod p$ must be tested.
+
+</details>
+
+---
+
+## 21.6 Diagnostic Signals, Reverse-Engineering Scratchpad, Pre-Submission Checklist & Historical Notes {#sec-ch21-summary}
+
+### Summary Table of Diagnostic Signals
+
+| Structural Feature in Problem | Diagnostic Signal | Target Operator / Reduction | Time Complexity |
+| :--- | :--- | :--- | :--- |
+| Linear functional $\sum_{i=0}^{N-1} w_i [x^i] F(x)^k$ needed for all $0 \le k < N$ | Matrix-vector product $M_F^\top \mathbf{w}$ | **Kinoshita–Li `power_projection`** on $[x^{N-1}] \frac{\sum w_i x^{N-1-i}}{1 - y F(x)} \bmod y^N$ (`§21.1`) | $O(N \log^2 N)$ |
+| Composite series $H(x) = G(F(x)) \bmod x^N$ for dense $F, G$ | Matrix-vector product $M_F \mathbf{g} = (M_F^\top)^\top \mathbf{g}$ | **Kinoshita–Li `fps_compose`** via Tellegen transpose of `power_projection` (`§21.2`) | $O(N \log^2 N)$ (all $p \ne 2$ when $F(0)=0$) |
+| Coupled binomial sum $S_n = \sum_{k=0}^n f_k \binom{\alpha n + \beta k + \gamma}{n - k}$ for all $n \le N$ | Both $n$ and $k$ appear linearly in upper index | **Elegia's Linearization** (`Theorem 21.1`): $z = u(1+u)^{-\alpha} \iff u = A(z)$, 1 call to `fps_compose` (`§21.3`) | $O(N \log^2 N)$ |
+| Compositional inverse $G = F^{\langle -1 \rangle} \bmod y^N$ when $p > N$ | $[x^0]F = 0, [x^1]F \in K^\times, p > N$ | **Route A (`noshi91` LIF + Power Projection)**: $[y^{n-k}](G/y)^{-n} = \frac{n}{k}[x^n]F(x)^k$ + `pow(-1/n)` (`§21.4`) | $O(N \log^2 N)$ |
+| Compositional inverse $G = F^{\langle -1 \rangle} \bmod y^N$ when $p \le N$ | Small prime $p \le N$ ($\frac{n}{k}$ and `pow` crash!) | **Route B (Newton + `fps_compose`)**: $G_{s+1} = G_s - \frac{F(G_s)-y}{F'(G_s)} \bmod y^{2^{s+1}}$ (`§21.4`) | $O(N \log^2 N)$ (all $p \ne 2$) |
+| Functional square root $G(G(x)) \equiv F(x) \pmod{x^N}$ ($F(x) = x + \dots$) | Tangent-to-identity iterative composition | Degree-by-degree $2 g_k = \dots$, or $F^{\circ((p+1)/2)}(x)$ when $N \le p+1$, or Newton + `compose` (`§21.4`) | $O(N^2)$ or $O(N \log^2 N)$ |
+
+### Pre-Submission Checklist for Chapter 21 Problems
+
+1. **Constant-Term Check ($[x^0] F(x) = 0$)**:
+   - In `power_projection`, if $c = [x^0] F(x) \ne 0$, did you strip $c$ upfront and apply the binomial shift $\sum_{j=0}^k \binom{k}{j} c^{k-j} \widetilde{\text{proj}}_j$, or invert $Q_m(0, y) = (1 - cy)^{2^m} \bmod y^N$ at the bottom of the recursion?
+   - In `fps_compose`, if $c = [x^0] F(x) \ne 0$, did you apply a 1D Polynomial Taylor Shift $G(y) \gets G(y + c)$ before calling the $F(0) = 0$ kernel?
+   - In `fps_revert`, is $[x^0] F(x) = 0$ and $[x^1] F(x) \in K^\times$?
+2. **Power-of-Two Padding ($N = 2^m$)**:
+   - Did you pad $N$ to a power of two $2^m$ before setting $n_0 = 2^m - 1$? If $N$ is not a power of two, $n_t = \lfloor (N-1)/2^t \rfloor$ can be even ($b_t = 0$) at some levels $t$, so you must branch on $b_t = n_t \bmod 2$ in both the forward extraction $\mathcal{S}_{b_t}$ and backward zero-interleaving $x^{b_t} \hat{P}_{t+1}(x^2, y)$.
+3. **Characteristic-$p$ Safety ($p \le N$ vs. $p > N$)**:
+   - If the prime modulus $p \le N$, did you use **Route B** (`revert_newton_compose`) instead of Route A (`revert_lif_proj`), avoiding all divisions by $1, 2, \dots, N-1$?
+
+### Historical & Pedagogical Notes
+
+- **From Brent–Kung (1978) to Kinoshita–Li (FOCS 2024)**: R. P. Brent and H. T. Kung (*Fast Algorithms for Manipulating Formal Power Series*, JACM 1978) established the $O((N \log N)^{3/2})$ baby-step giant-step algorithm for composition and inversion, as well as the duality between composition and power projection via the transposition principle. While Kedlaya and Umans (FOCS 2008 / SICOMP 2011) achieved theoretical $N^{1 + o(1)}$ algebraic complexity over finite fields via multimodular reduction, no quasi-linear *algebraic* algorithm (using only ring/field operations) was known until **Yasunori Kinoshita (`noshi91`) and Baitian Li (`Elegia` / `EI`)** published *Power Projection and Composition of Formal Power Series in $O(n \log^2 n)$ Operations* at FOCS 2024.
+- **Competitive Programming Optimizations (`noshi91` & `Nachia`, 2024)**: Within days of the preprint's release, **Nachia** introduced the frequency-domain half-swap optimization (`k_x ^ Lx`), reducing the 2D FFT count per level from $5$ to $3$ (and $2$ in the denominator tree), making Kinoshita–Li `compose` faster than Brent–Kung for all $N \ge 2048$.
+- **Curriculum Reference Registry & Verification Benchmarks (`R-32`, `R-33`, `R-34`, `R-35`)**: The Kinoshita–Li $O(N \log^2 N)$ algorithms in this chapter correspond to **`R-32`** ([Kinoshita and Li (FOCS 2024) — *Power Projection and Composition of Formal Power Series in $O(n \log^2 n)$ Operations*](https://arxiv.org/abs/2404.05177)) and **`R-33`** ([`noshi91` & `Nachia` (2024) — $O(N \log^2 N)$ FPS Composition and Compositional Inverse Blog Notes](https://noshi91.github.io/algorithm-encyclopedia/)), and can be unit-tested on the Library Checker benchmarks **`R-34`** ([`composition_of_formal_power_series_large`](https://judge.yosupo.jp/problem/composition_of_formal_power_series_large)) and **`R-35`** ([`compositional_inverse_of_formal_power_series_large`](https://judge.yosupo.jp/problem/compositional_inverse_of_formal_power_series_large)).
+
+---
+
+### Where to Go Next
+
+- Proceed to **[Checkpoint V: Part V Synthesis — D-Finite Sequences, Transposition & Fast Composition](../checkpoints/cp05-part5-dfinite-transposition-composition.qmd)** to consolidate Chapters 18–21 across diagnostic drills and mixed problem sets.
+- Continue to **[Chapter 22: Tree DP with FPS — Heavy-Light Decomposition, Static Top Trees & Zero-Divisor Maintenance](ch22-tree-dp-fps-hld-static-top-tree-zero-divisor.qmd)** to begin **Part VI: Advanced Frontiers**.

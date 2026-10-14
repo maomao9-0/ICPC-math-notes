@@ -1,0 +1,1469 @@
+---
+title: "Chapter 06: Binomial Sum Engines, Stirling Numbers, Falling Factorials & Taylor Shift"
+subtitle: "Part II: Rational Recurrences, Binomial Sums, Sieves & Pattern Inclusion-Exclusion"
+---
+
+::: {.callout-note icon=false}
+## Chapter Metadata & Curriculum Contract
+
+- **Part II — Rational Recurrences, Binomial Sums, Sieves & Pattern Inclusion-Exclusion**
+- **Prerequisites**:
+  - **Ch 01**: The formal power series ring $K[[x]]$, valuation $\operatorname{val}(F)$, Cauchy convolution (`mul`), reverse-indexed cross-correlation, divide-and-conquer product trees, and Newton inversion (`inv`).
+  - **Ch 02**: Formal calculus ($D, \vartheta = xD, \int$), characteristic-$p$ Frobenius endomorphism, and 1D Newton transcendental primitives ($\ln, \exp, \sqrt{\cdot}, P^\alpha$).
+  - **Ch 03**: Unlabeled combinatorial operators (`SEQ`, `PSET`, `MSET`) and harmonic $\ln/\exp$ compression.
+  - **Ch 04**: Exponential generating functions ($K_{\text{EGF}}[[x]]$), binomial convolution, and labeled `SET`/`CYC` assemblies.
+- **Core Algebraic Objects & Operators Introduced**:
+  - Upper-index negation $(1-x)^{-r} = \sum_{k \ge 0} \binom{r+k-1}{k} x^k$, Chu–Vandermonde convolution, and parallel summation.
+  - **Binomial Sum Engine 1 (Wilf's Snake Oil)**: Interchanging $\sum_n x^n$ with $\sum_k$ to collapse sums where the free parameter $n$ appears in a single binomial factor.
+  - **Binomial Sum Engine 2 (Egorychev Coefficient Extraction)**: Encoding $\binom{A}{B} = [u^B](1+u)^A = [u^{A-B}](1-u)^{-B-1}$ in $K[[u]]$ to sum multi-factor binomial products via geometric series in $K[[u]][[x]]$.
+  - **Polynomial Taylor Shift $\mathcal{T}_c: F(x) \mapsto F(x+c)$**, **Projective Möbius Action** $(cx+e)^d F\!\left(\frac{ax+b}{cx+e}\right)$ via Bruhat decomposition, and the **Generalized $\alpha$-Euler Transform** $(1-cx)^{-\alpha}F\!\left(\frac{ax}{1-cx}\right)$ (including **Failure Mode #14: Negative-Integer $\alpha = -d$ Pole Trap**).
+  - **Unsigned Stirling Numbers of the First Kind** $\left[\begin{smallmatrix} n \\ k \end{smallmatrix}\right]$, **Stirling Numbers of the Second Kind** $\left\{\begin{smallmatrix} n \\ k \end{smallmatrix}\right\}$, **Eulerian Numbers** $\left\langle\begin{smallmatrix} n \\ k \end{smallmatrix}\right\rangle$, **Falling-Factorial Polynomials (FFP)** $x^{\underline{k}}$ with point-value EGF $\widehat{P}(t) = C(t)e^t$, and **$O(d)$ Consecutive-Grid Lagrange Interpolation**.
+- **Complexity Targets**:
+  - Closed-form / $O(1)$-per-query binomial sum evaluation via Vandermonde, Snake Oil, or Egorychev extraction.
+  - $O(d \log d)$ Polynomial Taylor Shift, Projective Möbius Transform, and Generalized $\alpha$-Euler Transform via a single reverse-indexed NTT.
+  - $O(N \log N)$ generation of full rows and columns of $\left[\begin{smallmatrix} n \\ k \end{smallmatrix}\right]$, $\left\{\begin{smallmatrix} n \\ k \end{smallmatrix}\right\}$, and $\left\langle\begin{smallmatrix} n \\ k \end{smallmatrix}\right\rangle$.
+  - $O(m \log m)$ or $O(m^2)$ evaluation of polynomial-weighted binomial sums $\sum_{k=0}^n P(k)\binom{n}{k} a^k b^{n-k}$ for huge $n \le 10^{18}$ and $\deg P = m$ (including arbitrary non-prime moduli $M$).
+  - $O(d)$ evaluation of a degree-$d$ polynomial $P(T)$ at $T \le 10^{18}$ from consecutive sample values $P(0), P(1), \dots, P(d)$.
+:::
+
+---
+
+## 6.1 The Golden Rule of Index Alignment & Vandermonde Identities
+
+### Plain-Language Introduction: Why Binomial Sums Stall and How FPS Unlocks Them
+
+In competitive programming, counting problems and dynamic programming transitions frequently culminate in a sum of products of binomial coefficients, powers, and DP states:
+$$S_n = \sum_{k=0}^n \binom{n}{k} a_k b_{n-k}, \qquad T_n = \sum_{k=0}^n \binom{n+k}{2k} 2^{n-k}, \qquad \text{or} \qquad U_n = \sum_{k=0}^n \binom{R}{a+k}\binom{S}{b+k}.$$
+ Evaluated naively, computing $S_n$ for all $0 \le n \le N$ takes $O(N^2)$ operations, and computing a single $S_N$ when $N \le 10^{18}$ is impossible by direct iteration.
+
+Every algebraic simplification of a binomial sum rests on a single structural observation: **a binomial coefficient $\binom{A}{B}$ is not an opaque arithmetic function—it is a single coefficient extracted from a simple power series** ($(1+x)^A$ or $(1-x)^{-B-1}$), and **its factorial expansion $\frac{A!}{B!(A-B)!}$ separates into three independent pieces** depending on the upper index $A$, the lower index $B$, and their difference $A - B$. Whenever we align indices so that each factor depends *only* on $k$, *only* on $n-k$, or *only* on $n$, a quadratic loop collapses into a single $O(N \log N)$ polynomial multiplication—or, when the factors are pure binomial generating functions, into an $O(1)$ closed-form identity.
+
+::: {.callout-important}
+## Local Algebraic & Characteristic Hypotheses for Section 6.1
+
+Throughout this section, let $K$ be a commutative ring with identity $1_K$.
+1. **Ring-Level Identities ($\mathbb{Z}[x]$ and arbitrary $K[[x]]$ without division)**:
+   For any non-negative integer $n \in \mathbb{Z}_{\ge 0}$, the ordinary binomial coefficient $\binom{n}{k}$ is an integer counting $k$-element subsets of an $n$-element set. Thus polynomial identities such as $(1+x)^n = \sum_{k=0}^n \binom{n}{k} x^k$, upper-index negation $\binom{-r}{k} = (-1)^k \binom{r+k-1}{k}$ for $r \in \mathbb{Z}_{\ge 1}$, and the Chu–Vandermonde convolution hold over **any** commutative ring $K$ (including $\mathbb{Z}/M\mathbb{Z}$ for composite $M$ and $\mathbb{F}_p$ for any prime $p$) with **zero divisions required**.
+2. **Factorial Decoupling & EGF Scaling ($p > N$)**:
+   Whenever we split $\binom{n}{k} = \frac{n!}{k!(n-k)!}$ to form exponential generating functions $\sum_{k=0}^N \frac{a_k}{k!} x^k$, we divide by $k!$ for $0 \le k \le N$. This requires $k! \in K^\times$ for all $0 \le k \le N$. Over a prime field $K = \mathbb{F}_p$, this holds if and only if **$p > N$**. When $p \le N$ or $K = \mathbb{Z}/M\mathbb{Z}$ is non-prime, dividing by $k!$ is illegal; we must instead use division-free polynomial identities (such as the Falling-Factorial Absorption Identity in Section 6.4 or Lucas's Theorem in Section 6.3).
+:::
+
+---
+
+### The Golden Rule of Index Alignment: Additive vs. Difference Convolutions
+
+Suppose we wish to compute a sequence $c_0, c_1, \dots, c_N$ defined by a sum over an internal index $k$. Before touching any generating function, we apply the **Golden Rule of Index Alignment**:
+
+> **Golden Rule of Index Alignment**: Factor every summand into three separated components—a factor $\alpha(n)$ depending **only** on the external query index $n$, a factor $\beta(k)$ depending **only** on the first summation index $k$, and a factor $\gamma(m)$ depending **only** on the complementary index $m$:
+> $$c_n = \alpha(n) \sum_{k + m = n} \beta(k)\, \gamma(m) \qquad \text{or} \qquad d_n = \alpha(n) \sum_{j - i = n} \beta(i)\, \gamma(j).$$
+
+Depending on whether the two internal indices sum to $n$ or differ by $n$, we route to one of two convolution primitives from Chapter 01:
+
+1. **Regime 1 — Constant-Sum (Additive Cauchy) Convolution ($k + m = n$)**:
+   When $m = n - k$ with $0 \le k \le n \le N$, the sum is
+   $$c_n = \alpha(n) \sum_{k=0}^n \beta(k)\, \gamma(n - k).$$
+   Defining the formal power series $B(x) = \sum_{k=0}^N \beta(k) x^k$ and $G(x) = \sum_{m=0}^N \gamma(m) x^m$, the inner sum is the exact Cauchy product coefficient $[x^n](B(x)G(x))$. For example, if $c_n = \sum_{k=0}^n \binom{n}{k} a_k b_{n-k}$ and $p > N$, expanding $\binom{n}{k} = \frac{n!}{k!(n-k)!}$ yields
+   $$c_n = n! \sum_{k=0}^n \left(\frac{a_k}{k!}\right) \left(\frac{b_{n-k}}{(n-k)!}\right) = n! \, [x^n] \left(\sum_{k=0}^N \frac{a_k}{k!} x^k\right)\left(\sum_{m=0}^N \frac{b_m}{m!} x^m\right).$$
+
+2. **Regime 2 — Constant-Difference (Cross-Correlation / Reverse-Indexed) Convolution ($j - i = n$)**:
+   Frequently—most notably in Polynomial Taylor Shift (Section 6.3), inclusion-exclusion upper-triangular sums, and substring correlation—the sum runs over $0 \le i \le j \le N$ with a fixed difference $j - i = n$ (equivalently $j = i + n$):
+   $$d_n = \alpha(n) \sum_{i=0}^{N-n} u_i\, v_{i+n} = \alpha(n) \sum_{j=n}^N u_{j-n}\, v_j \qquad (0 \le n \le N).$$
+   Here the indices $i$ and $j = i+n$ do **not** sum to $n$; instead, $(-i) + j = n$. Because standard NTT polynomial multiplication requires non-negative exponents, we shift the negative index $-i$ into $[0, N]$ by defining the **reversed polynomial**
+   $$\widetilde{U}(x) = x^N U(x^{-1}) = \sum_{i=0}^N u_i x^{N-i} = \sum_{r=0}^N u_{N-r} x^r, \qquad V(x) = \sum_{j=0}^N v_j x^j.$$
+   Multiplying $\widetilde{U}(x)$ and $V(x)$ adds the exponents $(N - i) + j = N + (j - i) = N + n$:
+   $$[x^{N+n}] \bigl(\widetilde{U}(x) V(x)\bigr) = \sum_{\substack{0 \le i, j \le N \\ (N - i) + j = N + n}} u_i\, v_j = \sum_{i=0}^{N-n} u_i\, v_{i+n}.$$
+   Thus $d_n = \alpha(n) [x^{N+n}]\bigl(\widetilde{U}(x) V(x)\bigr)$ for all $0 \le n \le N$ in a **single** polynomial multiplication of degree $N$ by degree $N$ (output length $2N + 1$).
+
+::: {.callout-tip}
+## Hand-Checkable Trace ($N = 3$): Cross-Correlation via Polynomial Reversal
+
+Let $N = 3$ and suppose we want $d_n = \sum_{i=0}^{3-n} u_i v_{i+n}$ for $n = 0, 1, 2, 3$.
+- Set $\widetilde{U}(x) = u_3 + u_2 x + u_1 x^2 + u_0 x^3$ (indices reversed: $[x^r]\widetilde{U} = u_{3-r}$) and $V(x) = v_0 + v_1 x + v_2 x^2 + v_3 x^3$.
+- Let us inspect the coefficients of $\widetilde{U}(x)V(x)$ at degrees $3 + n \in \{3, 4, 5, 6\}$:
+  - $[x^{3+0}](\widetilde{U}V) = [x^3](\widetilde{U}V) = u_3 v_3 + u_2 v_2 + u_1 v_1 + u_0 v_0 = d_0$.
+  - $[x^{3+1}](\widetilde{U}V) = [x^4](\widetilde{U}V) = u_2 v_3 + u_1 v_2 + u_0 v_1 = d_1$.
+  - $[x^{3+2}](\widetilde{U}V) = [x^5](\widetilde{U}V) = u_1 v_3 + u_0 v_2 = d_2$.
+  - $[x^{3+3}](\widetilde{U}V) = [x^6](\widetilde{U}V) = u_0 v_3 = d_3$.
+Every difference sum $d_n$ sits cleanly at index $N + n$ of the product array!
+:::
+
+---
+
+### The Four Foundational Binomial & Vandermonde Identities
+
+When the summands $\beta(k)$ and $\gamma(n-k)$ are themselves binomial coefficients, we do not even need an NTT: the product $B(x)G(x)$ simplifies algebraically into a single power of $(1+x)$ or $(1-x)^{-1}$. Let us establish the four foundational identities from first principles.
+
+#### 1. Extended Binomial Coefficients & Upper-Index Negation
+
+For any formal variable or ring element $R \in K$ (when $\mathbb{Q} \subseteq K$, or in $\mathbb{Z}$ when $R \in \mathbb{Z}$) and any integer $k$, the **generalized binomial coefficient** is defined by
+$$\binom{R}{k} = \begin{cases} \dfrac{R^{\underline{k}}}{k!} = \dfrac{R(R-1)\cdots(R-k+1)}{k!} & \text{if } k \ge 0, \\[6pt] 0 & \text{if } k < 0. \end{cases}$$
+What happens when the upper index is negative, say $R = -r$ for a positive integer $r \ge 1$? Let us factor $-1$ out of each of the $k$ factors in the numerator:
+$$\binom{-r}{k} = \frac{(-r)(-r-1)(-r-2)\cdots(-r-k+1)}{k!} = (-1)^k \frac{r(r+1)(r+2)\cdots(r+k-1)}{k!} = (-1)^k \binom{r+k-1}{k}.$$
+Consequently, the generalized binomial series $(1 - x)^{-r} = \sum_{k \ge 0} \binom{-r}{k} (-x)^k$ takes the ubiquitous positive-coefficient form:
+$$\frac{1}{(1 - x)^r} = \sum_{k=0}^\infty \binom{-r}{k} (-1)^k x^k = \sum_{k=0}^\infty \binom{r + k - 1}{k} x^k = \sum_{k=0}^\infty \binom{r + k - 1}{r - 1} x^k \in \mathbb{Z}[[x]].$$
+Combinatorially, $[x^k](1 - x)^{-r} = \binom{r+k-1}{k}$ counts weak compositions of $k$ into $r$ non-negative integer parts $c_1 + c_2 + \dots + c_r = k$ (or multisets of size $k$ chosen from $r$ types).
+
+#### 2. Chu–Vandermonde Convolution (Sum of Lower Indices Fixed)
+
+> **Question Answered**: How many ways can we choose $n$ items from a disjoint union of $R$ red items and $S$ silver items, classified by how many red items $k$ are chosen?
+
+For any $R, S$ and any integer $n \ge 0$:
+$$\sum_{k=0}^n \binom{R}{k} \binom{S}{n - k} = \binom{R + S}{n}.$$
+
+- **Single-Step Algebraic Proof**:
+  $$\begin{aligned}
+  \sum_{k=0}^n \binom{R}{k} \binom{S}{n-k}
+  &= \sum_{k=0}^n \Big([x^k](1+x)^R\Big) \Big([x^{n-k}](1+x)^S\Big) && \text{(encoding each binomial as a coefficient of }(1+x)\text{)} \\
+  &= [x^n] \Big((1+x)^R (1+x)^S\Big) && \text{(definition of Cauchy product in }K[[x]]\text{)} \\
+  &= [x^n] (1+x)^{R+S} && \text{(exponent law in }K[[x]]\text{)} \\
+  &= \binom{R+S}{n}. && \text{(extracting }[x^n]\text{)}
+  \end{aligned}$$
+  Because this identity holds as a polynomial identity in $\mathbb{Q}[R, S]$, it holds for **negative** upper indices $R = -r, S = -s$ as well!
+
+#### 3. Parallel / Upper-Index Convolution (Sum of Upper Indices Fixed)
+
+> **Question Answered**: Given $n + 1$ points $1, 2, \dots, n+1$ in a row, how many ways can we choose $a + b + 1$ points, classified by the position $k + 1$ of the $(a+1)$-st chosen point?
+
+For any non-negative integers $a, b, n \ge 0$:
+$$\sum_{k=0}^n \binom{k}{a} \binom{n - k}{b} = \binom{n + 1}{a + b + 1}.$$
+
+- **Combinatorial Double-Count**:
+  To choose $a + b + 1$ elements from $\{1, 2, \dots, n+1\}$, let the $(a+1)$-st smallest chosen element be $k + 1$ (where $a \le k \le n - b$). We must choose $a$ elements from the $k$ elements $\{1, \dots, k\}$ to its left ($\binom{k}{a}$ ways) and $b$ elements from the $n - k$ elements $\{k+2, \dots, n+1\}$ to its right ($\binom{n-k}{b}$ ways). Summing over all $k$ gives $\binom{n+1}{a+b+1}$.
+- **Single-Step Generating Function Proof**:
+  Shifting indices by $i = k - a$ and $j = (n - k) - b$ (so $i + j = n - a - b$), we recognize the negative-binomial generating function $\sum_{i \ge 0} \binom{a+i}{a} x^i = (1 - x)^{-(a+1)}$:
+  $$\begin{aligned}
+  \sum_{k=0}^n \binom{k}{a} \binom{n-k}{b}
+  &= \sum_{i + j = n - a - b} \binom{a + i}{i} \binom{b + j}{j} && \text{(symmetry }\binom{a+i}{a}=\binom{a+i}{i}\text{ and index shift)} \\
+  &= [x^{n - a - b}] \left(\frac{1}{(1 - x)^{a+1}} \cdot \frac{1}{(1 - x)^{b+1}}\right) && \text{(Cauchy product of negative-binomial OGFs)} \\
+  &= [x^{n - a - b}] \frac{1}{(1 - x)^{a + b + 2}} && \text{(combining denominators)} \\
+  &= \binom{(a + b + 2) + (n - a - b) - 1}{n - a - b} = \binom{n + 1}{a + b + 1}. && \text{(extracting }[x^{n-a-b}]\text{)}
+  \end{aligned}$$
+  More generally, for an $m$-fold convolution $\sum_{k_1 + \dots + k_m = N} \prod_{r=1}^m \binom{k_r}{A_r}$, multiplying the $m$ generating functions $\prod_{r=1}^m x^{A_r}(1 - x)^{-(A_r + 1)} = x^{\sum A_r} (1 - x)^{-\sum (A_r + 1)}$ immediately yields $\binom{N + m - 1}{\sum_{r=1}^m A_r + m - 1}$ (see **SS-2: AtCoder ARC 110 D** in Section 6.5).
+
+#### 4. Symmetry Flipping When Both Lower Indices Carry $+k$
+
+What if a sum has $+k$ in **both** lower indices, such as
+$$U = \sum_{k \in \mathbb{Z}} \binom{R}{a + k} \binom{S}{b + k}$$
+for non-negative integers $R \ge 0$ and arbitrary $S, a, b$?
+
+::: {.callout-note}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: Symmetry Flipping
+
+- **Diagnostic Signal**: You see a product of two binomial coefficients $\binom{R}{a+k}\binom{S}{b+k}$ where $k$ appears with the **same sign** ($+k$ and $+k$) in both lower positions, preventing direct Chu–Vandermonde application (which requires $+k$ and $-k$).
+- **Reverse-Engineering Scratchpad**:
+  1. Look at the two upper indices $R$ and $S$. At least one of them (say $R$) is a non-negative integer.
+  2. For a non-negative integer $R \in \mathbb{Z}_{\ge 0}$, symmetry $\binom{R}{m} = \binom{R}{R - m}$ flips the sign of $m$ in the lower index!
+  3. Apply $\binom{R}{a + k} = \binom{R}{R - a - k}$. Now the two lower indices are $(R - a - k)$ and $(b + k)$, whose sum $(R - a - k) + (b + k) = R - a + b$ is **independent of $k$**!
+  4. Apply Chu–Vandermonde:
+     $$\sum_{k \in \mathbb{Z}} \binom{R}{a + k}\binom{S}{b + k} = \sum_{k \in \mathbb{Z}} \binom{R}{R - a - k}\binom{S}{b + k} = \binom{R + S}{R - a + b}.$$
+  In particular, setting $R = S = n$ and $a = b = 0$ gives the classic sum of squares $\sum_{k=0}^n \binom{n}{k}^2 = \sum_{k=0}^n \binom{n}{n-k}\binom{n}{k} = \binom{2n}{n}$.
+:::
+
+::: {.callout-warning}
+## Failure Mode & Remedy: Upper-Index vs. Lower-Index Vandermonde Confusion & Negative-Upper-Index Symmetry Trap
+
+1. **The $+1$ Offset Trap in Parallel / Upper-Index Vandermonde**:
+   - **Trap**: Writing $\sum_{k=0}^n \binom{k}{a}\binom{n-k}{b} = \binom{n}{a+b}$ by false analogy with Chu–Vandermonde $\sum_{k=0}^n \binom{R}{k}\binom{S}{n-k} = \binom{R+S}{n}$.
+   - **Algebraic Root Cause & Remedy**: In Chu–Vandermonde, we multiply $(1+x)^R (1+x)^S = (1+x)^{R+S}$, so the upper indices simply add ($R + S$) and the lower index stays $n$. In Upper-Index Vandermonde (Identity 3), the generating function of $\binom{k}{a}$ is $\frac{x^a}{(1-x)^{a+1}}$, so multiplying two such series gives $\frac{x^{a+b}}{(1-x)^{(a+1)+(b+1)}} = \frac{x^{a+b}}{(1-x)^{a+b+2}}$. The extra $+1$ in each denominator exponent adds up to $+2$, shifting **both** the upper and lower indices of the result by $+1$: $\binom{n+1}{a+b+1}$! Always check $n = a + b$: the only nonzero term is $k = a$, giving $\binom{a}{a}\binom{b}{b} = 1 = \binom{a+b+1}{a+b+1}$.
+2. **The Negative-Upper-Index Symmetry Trap ($\binom{R}{k} \neq \binom{R}{R-k}$ for $R < 0$)**:
+   - **Trap**: Applying symmetry $\binom{R}{k} = \binom{R}{R-k}$ when the upper index $R$ is a **negative integer** (or non-integer) $R = -r < 0$.
+   - **Algebraic Root Cause & Remedy**: By definition, $\binom{R}{m} = \frac{R^{\underline{m}}}{m!}$ for $m \ge 0$ and $\binom{R}{m} = 0$ for $m < 0$. When $R = -r < 0$ and $k \ge 0$, the quantity $R - k = -r - k < 0$ is negative, so $\binom{R}{R-k} = 0$ whereas $\binom{-r}{k} = (-1)^k \binom{r+k-1}{k} \neq 0$! **Rule**: Never apply symmetry $\binom{A}{B} = \binom{A}{A-B}$ unless you have first verified that $A \in \mathbb{Z}_{\ge 0}$ is a non-negative integer. If $A = -r < 0$, apply **upper-index negation** $\binom{-r}{k} = (-1)^k \binom{r+k-1}{k}$ first so the new upper index $r + k - 1 \ge 0$ is non-negative, and only then apply symmetry $\binom{r+k-1}{k} = \binom{r+k-1}{r-1}$!
+:::
+
+---
+
+## 6.2 The First Two Binomial Sum Engines (Wilf's Snake Oil & Egorychev Polynomial Extraction)
+
+### The 4-Engine Hierarchy for Binomial Sums
+
+When a binomial sum does not immediately match one of the four elementary Vandermonde patterns in Section 6.1—for instance, when the summation index $k$ appears in **both** the upper and lower positions like $\binom{n+k}{2k}$ or $\binom{2n-k}{n}$—how do we attack it systematically?
+
+Across this textbook, we organize all binomial sum techniques into a strict **4-Engine Hierarchy**, routed by the structural signature of the summand:
+
+| Engine | Name & Core Mechanism | Structural Diagnostic Signal | Chapter Home |
+| :-: | :--- | :--- | :-: |
+| **Engine 1** | **Wilf's Snake Oil Method** (External Generating Function Swap) | The free external parameter $n$ (or $m$) appears inside **only one** binomial factor (e.g., $\binom{n+k}{2k}$ or $\binom{n+k}{m+2k}$). | **Ch 06 (§6.2)** |
+| **Engine 2** | **Egorychev Coefficient Extraction** ($[u^B](1+u)^A$ in $K[[u]]$) | Multiple binomial factors depend on $k$, or $k$ appears in both upper and lower positions ($\binom{n+k}{m+2k}$), and after extracting $[u^B]$ the sum over $k$ becomes a geometric/binomial series. | **Ch 06 (§6.2)** |
+| **Engine 3** | **`EI` Differential-Residue Method** (`EI 科技` ODE Recurrence) | A product of two or more binomials $\sum_k \binom{A+Bk}{C+Dk}\binom{E+Fk}{G+Hk} x^k$ with **no free external parameter** where $[u^m]$ leaves a high-degree algebraic root, requiring an $O(d)$ D-finite ODE recurrence. | *Deferred to Ch 19 (§19.2)* |
+| **Engine 4** | **`Elegia` LIF Linearization** (Lagrange Inversion Basis) | Shifted lower indices $\binom{n + \alpha k}{k}$ or $\binom{a - bk}{k}$ where $\alpha \neq 0, 1$, requiring the generalized binomial series $\mathcal{B}_\alpha(z)^\gamma$ and Lagrange Inversion. | *Deferred to Ch 11 (§11.3)* |
+
+By mastering **Engine 1** and **Engine 2** right now using only the algebra of $K[[x]]$ and $K[[u]]$, you can already evaluate over $85\%$ of competitive programming binomial identities from first principles without guessing or induction.
+
+---
+
+### Engine 1: Wilf's Snake Oil Method (The External Generating Function Swap)
+
+Herbert Wilf coined the name **"Snake Oil"** for a method that cures seemingly intractable binomial sums by refusing to evaluate the inner sum $\sum_k$ directly. Instead, we embed the sum into a generating function over the **free external parameter** $n$, swap the order of summation, collapse the $n$-sum FIRST using a basic binomial kernel, and read off $[x^n]$ at the end.
+
+::: {.callout-note}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: Wilf's Snake Oil
+
+- **Diagnostic Signal**: You want to evaluate a sum $S_n = \sum_{k} f(n, k)$ where the external index $n$ appears inside **only one** binomial coefficient (such as $\binom{n+k}{2k}$, $\binom{2n-k}{n-k}$, or $\binom{n}{k}$), even if the rest of the summand contains complicated factors in $k$ (like $\binom{2k}{k}\frac{(-1)^k}{k+1}$).
+- **The 5-Step Snake Oil Recipe**:
+  1. **Identify the free variable**: Pick the external integer parameter $n$ (or $m$) that appears in only one binomial coefficient, and define the external OGF $F(x) = \sum_{n \ge 0} S_n x^n$.
+  2. **Interchange $\sum_n$ and $\sum_k$**: Let $k$ range over all integers $\mathbb{Z}$ (relying on the natural boundary convention $\binom{A}{B} = 0$ when $B < 0$ or $B > A \ge 0$ so you do not have to fight manual summation limits!) and pull $\sum_{k}$ outside $\sum_{n \ge 0}$.
+  3. **Collapse the inner $n$-sum**: Match the inner series $\sum_{n \ge 0} \binom{\text{expr}(n, k)}{\text{expr}(n, k)} x^n$ against the **Master Snake Oil Kernel Table** below (`K1`–`K7`). This replaces the entire $n$-sum with a simple algebraic expression in $x$ raised to the $k$-th power!
+  4. **Collapse the outer $k$-sum**: The outer sum over $k$ is now a standard generating function (geometric series, binomial theorem, or Catalan series) evaluated at a rational expression $w(x)$.
+  5. **Extract $[x^n] F(x)$**: Use partial fractions or negative-binomial expansion to read off $S_n = [x^n] F(x)$ (and check $n = 0$ or $m = 0$ boundary valuations!).
+:::
+
+#### The Master Snake Oil Kernel Dictionary (`K1`–`K7`)
+
+Every entry in the table below is an immediate consequence of $(1 + x)^A = \sum_{m \ge 0} \binom{A}{m} x^m$ or $\frac{1}{(1 - x)^{B+1}} = \sum_{m \ge 0} \binom{m}{B} x^{m - B}$:
+
+| Kernel ID | Binomial Factor with Free Variable | Generating Function Variable | Closed-Form Kernel Identity | Validity & Valuation Notes |
+| :-: | :--- | :-: | :--- | :--- |
+| **`K1`** | $\displaystyle\sum_{n \ge k} \binom{n}{k} x^n$ | $n$ (upper) | $\displaystyle\frac{x^k}{(1 - x)^{k+1}}$ | Holds for all $k \ge 0$ |
+| **`K2`** | $\displaystyle\sum_{m \ge 0} \binom{A}{m + c} x^m$ | $m$ (lower) | $\displaystyle x^{-c}(1 + x)^A \quad (\text{for } c = 0:\ (1+x)^A)$ | If $c > 0$, subtract $0 \le j < c$ terms or keep $m + c$ as the exponent |
+| **`K3`** | $\displaystyle\sum_{n \ge 0} \binom{n + k}{2k} x^n$ | $n$ (upper) | $\displaystyle\frac{x^k}{(1 - x)^{2k+1}}$ | Shift $m = n + k \ge 2k \implies n = m - k \ge k$ |
+| **`K4`** | $\displaystyle\sum_{n \ge 0} \binom{n + k}{m + 2k} x^n$ | $n$ (upper) | $\displaystyle\frac{x^{m + k}}{(1 - x)^{m + 2k + 1}}$ | Valid when $m + 2k \ge 0$ and $k \ge 0$ (watch $m=k=0$!) |
+| **`K5`** | $\displaystyle\sum_{m \ge 0} \binom{n + k}{m + 2k} y^m$ | $m$ (lower) | $\displaystyle y^{-2k}\left[(1 + y)^{n+k} - \sum_{j=0}^{2k-1} \binom{n+k}{j} y^j\right]$ | Cleaner to sum over $n$ via `K4` instead of $m$! |
+| **`K6`** | $\displaystyle\sum_{n \ge 0} \binom{a + n}{n} x^n$ | $n$ (both) | $\displaystyle\frac{1}{(1 - x)^{a+1}}$ | Valid for all $a \in K$ (via upper-index negation) |
+| **`K7`** | $\displaystyle\sum_{n \ge 2k} \binom{n - k}{k} x^n$ | $n$ (upper) | $\displaystyle\frac{x^{2k}}{(1 - x)^{k+1}}$ | Substitute $m = n - k \ge k \implies n = m + k$ |
+
+---
+
+#### Worked Derivation 1: Evaluating $\sum_{k=0}^n \binom{n+k}{2k} 2^{n-k}$ via Snake Oil
+
+> **Problem**: For $n \ge 0$, find a closed form for the binomial sum
+> $$S_n = \sum_{k=0}^n \binom{n+k}{2k} 2^{n-k}.$$
+
+- **Hand-Checkable Small Cases ($n = 0, 1, 2, 3$)**:
+  - $n = 0$: $\binom{0}{0} 2^0 = 1$.
+  - $n = 1$: $\binom{1}{0} 2^1 + \binom{2}{2} 2^0 = 2 + 1 = 3$.
+  - $n = 2$: $\binom{2}{0} 2^2 + \binom{3}{2} 2^1 + \binom{4}{4} 2^0 = 4 + 6 + 1 = 11$.
+  - $n = 3$: $\binom{3}{0} 2^3 + \binom{4}{2} 2^2 + \binom{5}{4} 2^1 + \binom{6}{6} 2^0 = 8 + 24 + 10 + 1 = 43$.
+  Notice the differences: $3 - 1 = 2$, $11 - 3 = 8$, $43 - 11 = 32$. Let us see how Snake Oil derives the exact closed form without guessing!
+
+- **Step-by-Step Verbalized Derivation**:
+  1. **Form the external OGF $F(x) = \sum_{n=0}^\infty S_n x^n$ and swap sums**:
+     $$\begin{aligned}
+     F(x)
+     &= \sum_{n=0}^\infty x^n \sum_{k=0}^\infty \binom{n+k}{2k} 2^{n-k} && \text{(extending }k > n\text{ safely since }\binom{n+k}{2k}=0\text{ for }k > n\text{)} \\
+     &= \sum_{k=0}^\infty 2^{-k} \sum_{n=0}^\infty \binom{n+k}{2k} (2x)^n. && \text{(factoring }2^{n-k} = 2^{-k}\cdot 2^n\text{ and interchanging }\sum_n, \sum_k\text{)}
+     \end{aligned}$$
+  2. **Collapse the inner $n$-sum using Kernel `K3` at variable $z = 2x$**:
+     By Kernel `K3`, $\sum_{n=0}^\infty \binom{n+k}{2k} z^n = \frac{z^k}{(1 - z)^{2k+1}}$. Substituting $z = 2x$:
+     $$\begin{aligned}
+     F(x)
+     &= \sum_{k=0}^\infty 2^{-k} \frac{(2x)^k}{(1 - 2x)^{2k+1}} && \text{(applying Kernel K3 with }z = 2x\text{)} \\
+     &= \frac{1}{1 - 2x} \sum_{k=0}^\infty \left(\frac{x}{(1 - 2x)^2}\right)^k. && \text{(canceling }2^{-k}\cdot 2^k = 1\text{ and grouping }k\text{-th powers)}
+     \end{aligned}$$
+  3. **Sum the outer geometric series over $k$**:
+     Since $\operatorname{val}\!\left(\frac{x}{(1-2x)^2}\right) = 1 \ge 1$, the geometric series converges in $\mathbb{Q}[[x]]$:
+     $$\begin{aligned}
+     F(x)
+     &= \frac{1}{1 - 2x} \cdot \frac{1}{1 - \dfrac{x}{(1 - 2x)^2}} && \text{(summing }\sum_{k \ge 0} w^k = \frac{1}{1-w}\text{)} \\
+     &= \frac{1 - 2x}{(1 - 2x)^2 - x} = \frac{1 - 2x}{1 - 5x + 4x^2} = \frac{1 - 2x}{(1 - 4x)(1 - x)}. && \text{(clearing denominator and factoring)}
+     \end{aligned}$$
+  4. **Partial fraction decomposition and $[x^n]$ extraction**:
+     Decomposing $\frac{1 - 2x}{(1 - 4x)(1 - x)} = \frac{A}{1 - 4x} + \frac{B}{1 - x}$: at $x = 1/4$, $A = \frac{1 - 1/2}{1 - 1/4} = \frac{2}{3}$; at $x = 1$, $B = \frac{1 - 2}{1 - 4} = \frac{1}{3}$. Thus
+     $$F(x) = \frac{2/3}{1 - 4x} + \frac{1/3}{1 - x} \implies S_n = [x^n] F(x) = \frac{2 \cdot 4^n + 1}{3}.$$
+     Checking $n = 0, 1, 2, 3$: $\frac{2+1}{3} = 1$, $\frac{8+1}{3} = 3$, $\frac{32+1}{3} = 11$, $\frac{128+1}{3} = 43$. Exact match!
+
+---
+
+#### Worked Derivation 2 (Catalan Dual Sum & Boundary Pitfall): $\sum_{k \ge 0} \binom{n+k}{m+2k} \binom{2k}{k} \frac{(-1)^k}{k+1}$
+
+> **Problem**: For integers $n \ge 0$ and $m \ge 1$, evaluate
+> $$S(n, m) = \sum_{k \ge 0} \binom{n+k}{m+2k} \binom{2k}{k} \frac{(-1)^k}{k+1},$$
+> and explain why the formula changes at the boundary $m = 0$.
+
+- **Step-by-Step Verbalized Derivation**:
+  1. **Choose the free variable**: Here $n$ appears only in the upper index of $\binom{n+k}{m+2k}$, and $m \ge 1$ guarantees $m + 2k \ge 1 > k$ for all $k \ge 0$. Form $F_m(x) = \sum_{n=0}^\infty S(n, m) x^n$ and apply Kernel `K4`:
+     $$\begin{aligned}
+     F_m(x)
+     &= \sum_{k=0}^\infty \binom{2k}{k} \frac{(-1)^k}{k+1} \sum_{n=0}^\infty \binom{n+k}{m+2k} x^n && \text{(swapping }\sum_n\text{ and }\sum_k\text{)} \\
+     &= \frac{x^m}{(1 - x)^{m+1}} \sum_{k=0}^\infty \frac{1}{k+1}\binom{2k}{k} \left(\frac{-x}{(1 - x)^2}\right)^k. && \text{(applying Kernel K4)}
+     \end{aligned}$$
+  2. **Recognize the Catalan generating function**:
+     Recall from Chapter 02 that the Catalan OGF $C(z) = \sum_{k=0}^\infty \frac{1}{k+1}\binom{2k}{k} z^k = \frac{1 - \sqrt{1 - 4z}}{2z}$ satisfies $1 + z C(z)^2 = C(z)$. At $z = \frac{-x}{(1 - x)^2}$, what is $1 - 4z$? It is a perfect square:
+     $$1 - 4z = 1 + \frac{4x}{(1 - x)^2} = \frac{(1 - x)^2 + 4x}{(1 - x)^2} = \frac{(1 + x)^2}{(1 - x)^2}.$$
+     Taking the unique formal power series square root with constant term $+1$ gives $\sqrt{1 - 4z} = \frac{1 + x}{1 - x}$, so
+     $$C\!\left(\frac{-x}{(1 - x)^2}\right) = \frac{1 - \dfrac{1 + x}{1 - x}}{\dfrac{-2x}{(1 - x)^2}} = \frac{\dfrac{-2x}{1 - x}}{\dfrac{-2x}{(1 - x)^2}} = 1 - x.$$
+  3. **Substitute back and extract $[x^n]$**:
+     $$F_m(x) = \frac{x^m}{(1 - x)^{m+1}} \cdot (1 - x) = \frac{x^m}{(1 - x)^m} \implies S(n, m) = [x^n] \frac{x^m}{(1 - x)^m} = \binom{n - 1}{m - 1} \quad (m \ge 1).$$
+
+::: {.callout-warning}
+## Failure Mode & Remedy: The $m = 0$ Boundary Valuation Trap in Kernel `K4`
+
+What if $m = 0$ in $S(n, 0) = \sum_{k \ge 0} \binom{n+k}{2k} \binom{2k}{k} \frac{(-1)^k}{k+1}$?
+- **The Trap**: Blindly plugging $m = 0$ into $\binom{n-1}{m-1} = \binom{n-1}{-1} = 0$ claims $S(n, 0) = 0$ for all $n \ge 0$. Yet for $n = 0, m = 0$, the $k = 0$ term is $\binom{0}{0}\binom{0}{0}\frac{1}{1} = 1 \neq 0$!
+- **Why It Happens**: Actually, Kernel `K4` at $m = 0$ *still* holds ($\sum_{n \ge 0} \binom{n+k}{2k} x^n = \frac{x^k}{(1-x)^{2k+1}}$ for all $k \ge 0$), so $F_0(x) = \frac{1}{1 - x} \cdot (1 - x) = 1 = x^0$! The mistake is in step 3: for $m = 0$, $[x^n] \frac{x^0}{(1-x)^0} = [x^n] 1 = [n = 0]$, whereas the negative-binomial formula $[x^{n-m}](1-x)^{-m} = \binom{n-1}{m-1}$ is only valid for $m \ge 1$!
+- **Remedy**: Always check the exponent of $(1 - x)^{-m}$ before applying $\binom{m + r - 1}{m - 1}$: when $m = 0$, $(1 - x)^0 = 1$ has $[x^n] 1 = [n = 0]$.
+:::
+
+---
+
+### Engine 2: Egorychev's Coefficient-Extraction Method in $K[[u]]$
+
+What if the free parameter $n$ appears in **two or more** binomial coefficients at once—such as $\sum_{k=0}^n \binom{n}{k}\binom{n+k}{k}(-1)^k$ or $\sum_{k} (-1)^k \binom{n}{k}\binom{2n-2k}{n-1}$—so that Snake Oil cannot isolate $n$ into a single factor?
+
+Georgy Egorychev developed a systematic method (originally phrased via complex Cauchy contour integrals $\frac{1}{2\pi i}\oint \frac{(1+u)^A}{u^{B+1}} du$, and translated into pure competitive-programming formal power series algebra by Elegia and EI) that **replaces all but one binomial coefficient by coefficient extraction operators $[u^B]$ in an auxiliary variable $u$**, swaps $[u^B]$ outside $\sum_k$, and collapses the $k$-sum via the binomial or geometric series!
+
+::: {.callout-note}
+## The 6-Rule Egorychev Substitution Dictionary in $K[[u]]$
+
+Let $A \ge 0$ and $B \in \mathbb{Z}$ be integers. In the formal power series ring $K[[u]]$:
+
+| Rule ID | Binomial Expression | Formal Power Series Representation | When to Choose This Encoding (Diagnostic Signal) |
+| :-: | :--- | :--- | :--- |
+| **`E1` (Fixed-Upper)** | $\displaystyle\binom{A}{B}$ | $\displaystyle[u^B] (1 + u)^A$ | Use when the **upper index $A$ does not depend on $k$** (or is linear in $k$), and $B$ is a linear function of $k$ such as $k$, $n - k$, or $m - 2k$. Automatically vanishes for $B < 0$ or $B > A$! |
+| **`E2` (Moving-Upper)** | $\displaystyle\binom{A}{B}$ | $\displaystyle[u^{A - B}] \frac{1}{(1 - u)^{B+1}}$ | Use when the **difference $A - B$ is simpler than $B$** (e.g., $\binom{n+k}{2k}$ has $A - B = n - k$, or $\binom{2n-k}{n}$ has $B = n$ fixed so $(1-u)^{-(n+1)}$ is independent of $k$!). Valid whenever $B \ge 0$. |
+| **`E3` (Index Shift)** | $\displaystyle[u^{m - ck}] F(u)$ | $\displaystyle[u^m] \Big(u^{ck} F(u)\Big)$ | Absorbs the summation index $k$ from the extraction operator $[u^{m - ck}]$ into the power series as the multiplier $(u^c)^k$ so $[u^m]$ becomes **independent of $k$** and can be pulled outside $\sum_k$! |
+| **`E4` (Binomial Collapse)** | $\displaystyle\sum_{k=0}^n \binom{n}{k} W(u)^k$ | $\displaystyle\big(1 + W(u)\big)^n$ | Whenever one $\binom{n}{k}$ is kept intact and all other $k$-dependent binomials are converted via `E1`–`E3` into powers $W(u)^k$, the entire $\sum_k$ collapses into $(1 + W(u))^n$! |
+| **`E5` (Geometric Collapse)** | $\displaystyle\sum_{k \ge 0} W(u)^k$ | $\displaystyle\frac{1}{1 - W(u)}$ | When $\operatorname{val}(W(u)) \ge 1$ (or when working in $K((u))$ and all $k \ge 0$ terms beyond the upper limit vanish automatically), $\sum_{k \ge 0} W(u)^k$ collapses to $(1 - W(u))^{-1}$. |
+| **`E6` (Change of Variables)** | $\displaystyle[u^m] G\big(w(u)\big)$ | Substitute $w = w(u)$ via residue / LIF (or factor $1 + W(u)$ directly) | When $1 + W(u)$ factors into a power of $u$ times $(1 \pm u)^c$, extract $[u^m]$ directly in $O(1)$ without needing Lagrange Inversion! |
+:::
+
+::: {.callout-important}
+## Why Must You Never Blindly Extend a Geometric Series Without Checking Boundary Zeros?
+
+Look closely at the contrast between **Rule `E4`** and **Rule `E5`**:
+- If you keep one factor $\binom{n}{k}$ outside the $[u^m]$ operator and convert the remaining binomials into $[u^m] G(u) W(u)^k$, then **$\binom{n}{k}$ naturally restricts $k$ to $0 \le k \le n$**, so $\sum_{k=0}^n \binom{n}{k} W(u)^k = (1 + W(u))^n$ is an **exact finite polynomial sum**! You do not even need $\operatorname{val}(W(u)) \ge 1$; $W(u)$ can even contain $u^{-1}$ (such as $W(u) = -\frac{1+u}{u}$), because $\binom{n}{k}$ is only summed over $0 \le k \le n$.
+- If instead you convert **all** binomials into $[u^{\dots}]$ and sum $\sum_{k \ge 0} W(u)^k = \frac{1}{1 - W(u)}$, you **must** ensure that for all $k > n$, the extracted coefficient $[u^{\dots}]$ of the original summand is identically $0$! The cleanest way to guarantee this is to use Rule `E1` on the factor whose lower index is $n - k$ (so for $k > n$, the exponent $n - k < 0$ has coefficient $0$ in $(1+u)^A$).
+:::
+
+---
+
+#### Worked Derivation 3: Evaluating $\sum_{k=0}^n (-1)^k \binom{n}{k} \binom{n+k}{k}$ via Egorychev Extraction
+
+> **Problem**: For any integer $n \ge 0$, evaluate
+> $$S_n = \sum_{k=0}^n (-1)^k \binom{n}{k} \binom{n+k}{k}.$$
+
+- **Diagnostic Signal & Reverse-Engineering Scratchpad**:
+  - Both $\binom{n}{k}$ and $\binom{n+k}{k}$ contain the free parameter $n$, so Snake Oil on $n$ does not apply directly.
+  - Keep $\binom{n}{k}$ intact for **Rule `E4`** ($\sum_{k=0}^n \binom{n}{k} W(u)^k = (1 + W(u))^n$).
+  - How should we encode the second factor $\binom{n+k}{k}$? Notice that its upper index is $n + k$ and its lower index is $k$, so their difference is $(n + k) - k = n$, which is **independent of $k$**!
+  - By symmetry $\binom{n+k}{k} = \binom{n+k}{n}$, the lower index is now $n$ (independent of $k$!), so applying **Rule `E1`** gives
+    $$\binom{n+k}{k} = \binom{n+k}{n} = [u^n] (1 + u)^{n + k} = [u^n] \Big((1 + u)^n \cdot (1 + u)^k\Big).$$
+  Notice how `[u^n]` has zero $k$-dependence—we don't even need an index shift!
+
+- **Single-Step Verbalized Derivation**:
+  $$\begin{aligned}
+  S_n
+  &= \sum_{k=0}^n (-1)^k \binom{n}{k} \binom{n+k}{n} && \text{(symmetry }\binom{n+k}{k} = \binom{n+k}{n}\text{ since }n, k \ge 0\text{)} \\
+  &= \sum_{k=0}^n (-1)^k \binom{n}{k} [u^n] (1 + u)^{n+k} && \text{(Rule E1: }\binom{n+k}{n} = [u^n](1+u)^{n+k}\text{)} \\
+  &= [u^n] (1 + u)^n \sum_{k=0}^n \binom{n}{k} \big(-(1 + u)\big)^k && \text{(linearity of }[u^n]\text{ and factoring }(1+u)^{n+k}\text{)} \\
+  &= [u^n] (1 + u)^n \Big(1 - (1 + u)\Big)^n && \text{(Rule E4: Binomial Theorem }\sum_{k=0}^n \binom{n}{k} W^k = (1+W)^n\text{)} \\
+  &= [u^n] (1 + u)^n (-u)^n && \text{(simplifying }1 - (1+u) = -u\text{)} \\
+  &= (-1)^n [u^0] (1 + u)^n = (-1)^n. && \text{(Rule E3 shift }[u^n] u^n F(u) = [u^0] F(u)\text{)}
+  \end{aligned}$$
+
+---
+
+#### Worked Derivation 4: Evaluating $\sum_{k=0}^n (-1)^k \binom{n}{k} \binom{2n - 2k}{n - 1}$ via Egorychev
+
+> **Problem**: Given $n \ge 1$, evaluate $T_n = \sum_{k=0}^n (-1)^k \binom{n}{k} \binom{2n - 2k}{n - 1}$.
+
+- **Diagnostic Signal & Reverse-Engineering Scratchpad**:
+  - Keep $\binom{n}{k}$ intact for **Rule `E4`**.
+  - Encode $\binom{2n - 2k}{n - 1}$ via **Rule `E1`**: since the lower index $n - 1 \ge 0$ is independent of $k$,
+    $$\binom{2n - 2k}{n - 1} = [u^{n-1}] (1 + u)^{2n - 2k}.$$
+    Specifically, for all $0 \le k \le n$, the upper index satisfies $2n - 2k \ge 0$; even when $k > \lfloor \frac{n+1}{2} \rfloor$ so that $0 \le 2n - 2k < n - 1$, the polynomial $(1 + u)^{2n - 2k}$ has degree $2n - 2k < n - 1$, so $[u^{n-1}](1 + u)^{2n - 2k} = 0 = \binom{2n - 2k}{n - 1}$ holds automatically for **every** $0 \le k \le n$ without exception!
+
+- **Single-Step Verbalized Derivation**:
+  $$\begin{aligned}
+  T_n
+  &= \sum_{k=0}^n (-1)^k \binom{n}{k} [u^{n-1}] (1 + u)^{2n - 2k} && \text{(Rule E1; valid for all }0 \le k \le n\text{ since }2n-2k \ge 0\text{)} \\
+  &= [u^{n-1}] (1 + u)^{2n} \sum_{k=0}^n \binom{n}{k} \big(-(1 + u)^{-2}\big)^k && \text{(pulling }[u^{n-1}](1+u)^{2n}\text{ outside }\sum_k\text{)} \\
+  &= [u^{n-1}] (1 + u)^{2n} \left(1 - \frac{1}{(1 + u)^2}\right)^n && \text{(Rule E4: Binomial Theorem over }0 \le k \le n\text{)} \\
+  &= [u^{n-1}] \Big((1 + u)^2 - 1\Big)^n && \text{(absorbing }(1+u)^{2n}\text{ into the }n\text{-th power)} \\
+  &= [u^{n-1}] \big(u^2 + 2u\big)^n = [u^{n-1}] u^n (2 + u)^n = 0. && \text{(since }\operatorname{val}(u^n(2+u)^n) = n > n - 1\text{)}
+  \end{aligned}$$
+  Look how clean that is: $(u^2 + 2u)^n = u^n (2 + u)^n$ starts at degree $u^n$, so its $[u^{n-1}]$ coefficient is $0$ for every $n \ge 1$! (And if the lower index were $n$ instead of $n - 1$, $[u^n] u^n(2 + u)^n = [u^0](2 + u)^n = 2^n$.)
+
+---
+
+## 6.3 Polynomial Taylor Shift $F(x+c)$, Generalized $\alpha$-Euler Transform & Failure Mode #14
+
+### Polynomial Taylor Shift $\mathcal{T}_c: F(x) \mapsto F(x + c)$ in $O(d \log d)$
+
+#### Plain-Language Introduction & Combinatorial Question
+
+Suppose we have a polynomial of degree $d$, written in the standard monomial basis:
+$$F(x) = \sum_{n=0}^d f_n x^n \in K[x].$$
+Given a shift constant $c \in K$, the **Polynomial Taylor Shift** $\mathcal{T}_c F$ is the polynomial $G(x) = F(x + c) = \sum_{k=0}^d g_k x^k$ obtained by replacing $x$ with $x + c$ and expanding back into powers of $x$.
+
+> **Combinatorial Question Answered by $F(x + c)$**:
+> Suppose $f_n = [x^n]F(x)$ is the total weight of configurations of size $n$. In each configuration of size $n$, if we select a subset of $k$ items to keep as "active" ($x^k$) and color each of the remaining $n - k$ items with one of $c$ colors ($c^{n-k}$), what is the total weight $g_k = [x^k]F(x+c)$ of configurations leaving exactly $k$ active items?
+> $$g_k = \sum_{n=k}^d \binom{n}{k} f_n c^{n-k} \qquad (0 \le k \le d).$$
+
+This exact sum appears across competitive programming in three major disguises:
+1. **Binomial Inclusion–Exclusion (`至少 k 个` $\leftrightarrow$ `恰好 k 个`)**: If $f_n$ counts ways to choose $n$ guaranteed violations and extend arbitrarily, then the number of ways with *exactly* $k$ violations is $g_k = \sum_{n=k}^d (-1)^{n-k}\binom{n}{k} f_n = [x^k] F(x - 1)$—which is simply a Taylor shift by $c = -1$! (We will exploit this extensively in Chapter 08.)
+2. **Eigenbasis Diagonalization of Pascal Transition Matrices**: When a Markov chain or linear operator acts on polynomials via $x \mapsto x + 1$ or $x \mapsto \frac{x + 1}{2}$, shifting the origin to the fixed point via $F(x \pm 1)$ diagonalizes the transition matrix into pure scalar powers (as in **Adv-1: CF 923E — Perpetual Subtraction** in Section 6.5).
+3. **Rising Factorial Doubling**: To compute $x^{\overline{2m}} = x^{\overline{m}} \cdot (x + m)^{\overline{m}}$ in $O(m \log m)$ time, we evaluate $P_m(x + m)$ from $P_m(x) = x^{\overline{m}}$ via a Taylor shift by $c = m$ (Section 6.4).
+
+::: {.callout-important}
+## Local Algebraic Hypothesis for $O(d \log d)$ Taylor Shift
+
+To decouple $\binom{n}{k} = \frac{n!}{k!(n-k)!}$ into a single convolution, we divide by $k!$ and $(n-k)!$ for $0 \le k \le n \le d$. Therefore, the $O(d \log d)$ NTT Taylor shift requires **$d! \in K^\times$** (over $K = \mathbb{F}_p$, this means **$p > d$**). When $p \le d$, see the **Characteristic-$p$ Lucas / SOS DP Fallback** callout below.
+:::
+
+#### Diagnostic Signal, Reverse-Engineering Scratchpad & Single-Step Derivation
+
+- **Diagnostic Signal**: You need $g_k = \sum_{n=k}^d \binom{n}{k} f_n c^{n-k}$ for all $0 \le k \le d$ simultaneously.
+- **Reverse-Engineering Scratchpad**:
+  1. Apply the Golden Rule of Index Alignment to $g_k = \sum_{n=k}^d \frac{n!}{k!(n-k)!} f_n c^{n-k}$.
+  2. Pull $\frac{1}{k!}$ outside the sum: $k!\, g_k = \sum_{n=k}^d (n! f_n) \cdot \frac{c^{n-k}}{(n-k)!}$.
+  3. Notice the indices: $u_n = n! f_n$ has index $n$, and $v_{n-k} = \frac{c^{n-k}}{(n-k)!}$ has index $n - k$. Since $n - (n - k) = k$, this is a **Regime 2 Constant-Difference Cross-Correlation** from Section 6.1!
+  4. Reverse $u_n$ into $\widetilde{U}(x) = \sum_{n=0}^d (n! f_n) x^{d - n}$ and multiply by $V(x) = \sum_{j=0}^d \frac{c^j}{j!} x^j$.
+
+- **Single-Step Verbalized Derivation**:
+  $$\begin{aligned}
+  F(x + c)
+  &= \sum_{n=0}^d f_n (x + c)^n && \text{(definition of }F(x+c)\text{)} \\
+  &= \sum_{n=0}^d f_n \sum_{k=0}^n \binom{n}{k} x^k c^{n-k} && \text{(Binomial Theorem on }(x+c)^n\text{)} \\
+  &= \sum_{k=0}^d \frac{x^k}{k!} \sum_{n=k}^d (n!\, f_n) \frac{c^{n-k}}{(n - k)!} && \text{(swapping }\sum_n, \sum_k\text{ and splitting }\binom{n}{k}\text{)} \\
+  &= \sum_{k=0}^d \frac{x^k}{k!} [z^{d - k}] \left(\sum_{n=0}^d (n!\, f_n) z^{d - n}\right)\left(\sum_{j=0}^d \frac{c^j}{j!} z^j\right). && \text{(reversing }n \mapsto d - n\text{; exponent }(d-n)+(n-k) = d-k\text{)}
+  \end{aligned}$$
+  Note the two equivalent indexing conventions for the reversal:
+  - If we reverse the factorial-scaled coefficients $u_n = n! f_n$ into $A_{\text{rev}}(z) = \sum_{r=0}^d (d - r)! f_{d - r} z^r$ and convolve with $B(z) = \sum_{j=0}^d \frac{c^j}{j!} z^j$, then for $r = d - n$ and $j = n - k$, the exponent sum is $r + j = (d - n) + (n - k) = d - k$. Hence:
+    $$g_k = \frac{1}{k!} [z^{d - k}] \big(A_{\text{rev}}(z) B(z)\big) \qquad (0 \le k \le d).$$
+
+::: {.callout-tip}
+## Hand-Checkable Trace ($d = 3, c = 2$): Taylor Shift Step-by-Step
+
+Let $F(x) = 1 + 2x + 3x^2 + 4x^3$ ($d = 3$) and $c = 2$. Directly,
+$$F(x+2) = 1 + 2(x+2) + 3(x+2)^2 + 4(x+2)^3 = 49 + 62x + 27x^2 + 4x^3.$$
+Let us verify the convolution formula $g_k = \frac{1}{k!}[z^{3-k}](A_{\text{rev}}(z)B(z))$:
+1. Compute $n! f_n$ for $n = 0, 1, 2, 3$: $(0!\cdot 1, 1!\cdot 2, 2!\cdot 3, 3!\cdot 4) = (1, 2, 6, 24)$.
+2. Reverse into $A_{\text{rev}}(z) = 24 + 6z + 2z^2 + 1z^3$.
+3. Form $B(z) = \sum_{j=0}^3 \frac{2^j}{j!} z^j = 1 + 2z + 2z^2 + \frac{4}{3}z^3$.
+4. Multiply $C(z) = A_{\text{rev}}(z) B(z)$ up to $z^3$:
+   - $[z^0]C = 24 \cdot 1 = 24 \implies g_3 = \frac{1}{3!} [z^{3-3}]C = \frac{24}{6} = 4$.
+   - $[z^1]C = 24 \cdot 2 + 6 \cdot 1 = 54 \implies g_2 = \frac{1}{2!} [z^{3-2}]C = \frac{54}{2} = 27$.
+   - $[z^2]C = 24 \cdot 2 + 6 \cdot 2 + 2 \cdot 1 = 62 \implies g_1 = \frac{1}{1!} [z^{3-1}]C = \frac{62}{1} = 62$.
+   - $[z^3]C = 24 \cdot \frac{4}{3} + 6 \cdot 2 + 2 \cdot 2 + 1 \cdot 1 = 32 + 12 + 4 + 1 = 49 \implies g_0 = \frac{1}{0!} [z^{3-0}]C = 49$.
+Thus $F(x+2) = 49 + 62x + 27x^2 + 4x^3$, recovered in one convolution!
+:::
+
+::: {.callout-note title="First Principles: Umbral Calculus as a Linear Functional on $K[x]$"}
+In classical combinatorics, **umbral calculus** (`[EN]` umbral evaluation / `[ZH]` 阴算子 / 符号幂代换) is often written via the shorthand $(a + b)^n \mapsto \sum_{k=0}^n \binom{n}{k} a_k b^{n-k}$, where exponents $a^k$ are "lowered to subscripts" $a_k$ after expansion. There is zero mystery in this notation: it is simply the application of a **$K$-linear functional** $L_a : K[u] \to K$ defined on the basis of monomials by $L_a(u^k) := a_k$ (or on the falling-factorial basis by $L(x^{\underline{k}}) := y^k$). Because $L_a$ is linear, applying $L_a$ to any polynomial identity in $u$—such as $(u + 1)^n = \sum_{k=0}^n \binom{n}{k} u^k$ or $x^n = \sum_{k=0}^n \left\{ \begin{matrix} n \\ k \end{matrix} \right\} x^{\underline{k}}$—immediately produces a valid scalar identity $L_a((u+1)^n) = \sum_{k=0}^n \binom{n}{k} a_k$ without any hand-waving.
+:::
+
+::: {.callout-note icon=false}
+## Algorithm Contract: `poly_taylor_shift(F, c)`
+
+- **Input**: Polynomial array $F = [f_0, f_1, \dots, f_d] \in K^{d+1}$ of degree $d \ge 0$, shift scalar $c \in K$.
+- **Algebraic Precondition**: $d! \in K^\times$ (over $\mathbb{F}_p$, requires $p > d$).
+- **Output**: Array $G = [g_0, g_1, \dots, g_d] \in K^{d+1}$ such that $\sum_{k=0}^d g_k x^k = F(x + c)$.
+- **Index & Loop Contract**:
+  1. If $c = 0$, return $F$ immediately.
+  2. Precompute factorials $\text{fact}[i] = i!$ and inverse factorials $\text{ifact}[i] = (i!)^{-1}$ for $0 \le i \le d$.
+  3. Build $A_{\text{rev}}[r] = f_{d - r} \cdot \text{fact}[d - r]$ and $B[j] = c^j \cdot \text{ifact}[j]$ for $0 \le r, j \le d$ (with $0^0 := 1$).
+  4. Compute $C = \text{mul}(A_{\text{rev}}, B)$ (1 NTT of length $L = 2^{\lceil \log_2(2d+1) \rceil}$).
+  5. Set $g_k = C[d - k] \cdot \text{ifact}[k]$ for $0 \le k \le d$.
+- **Invariant**: Every pair $(n, k)$ with $0 \le k \le n \le d$ maps bijectively to $r = d - n \in [0, d]$ and $j = n - k \in [0, d]$ satisfying $r + j = d - k$, so $C[d - k]$ accumulates $(n! f_n)\frac{c^{n-k}}{(n-k)!}$ exactly once for each $n \in [k, d]$.
+- **Complexity**: $O(d \log d)$ time (1 polynomial multiplication of size $d+1$) and $O(d)$ auxiliary space.
+:::
+
+::: {.callout-warning}
+## Failure Mode & Remedy: Characteristic $p \le d$ in Taylor Shift (`Lucas / SOS DP Fallback`)
+
+- **The Pitfall**: When working over $\mathbb{F}_p$ with a small prime $p \le d$ (for instance, $p = 2$ or $p = 3$), $p! = 0 \in \mathbb{F}_p$, so $\text{ifact}[k]$ does not exist for $k \ge p$ and the NTT convolution algorithm crashes with division by zero.
+- **The Algebraic Remedy**: By **Lucas's Theorem**, in $\mathbb{F}_p$ we have $\binom{n}{k} \equiv \prod_{i \ge 0} \binom{n_i}{k_i} \pmod p$, where $n = \sum n_i p^i$ and $k = \sum k_i p^i$ are the base-$p$ digit expansions of $n$ and $k$. Furthermore, $c^{n - k} = \prod_{i \ge 0} (c^{p^i})^{n_i - k_i}$ whenever $0 \le k_i \le n_i < p$ for all digits $i$ (and if $k_i > n_i$ for any digit $i$, $\binom{n_i}{k_i} = 0$).
+- Therefore, when $p \le d$, $g_k = \sum_{n=k}^d \binom{n}{k} f_n c^{n-k} \bmod p$ is a **Sum-Over-Subsets (SOS) / Digit DP in base $p$**: iterating over each base-$p$ digit position $i = 0, 1, \dots, \lfloor \log_p d \rfloor$ and transitioning $k_i \le n_i$ in $O(p)$ per state computes all $g_0, \dots, g_d$ in $O(d \cdot p \log_p d) = O(d \log d)$ operations for fixed $p$ without a single division!
+:::
+
+---
+
+### Projective Möbius Transformations & The 4-Step Bruhat Decomposition
+
+More generally, suppose $g = \begin{pmatrix} a & b \\ c & e \end{pmatrix} \in \operatorname{GL}_2(K)$ is a $2 \times 2$ matrix with $ae - bc \neq 0$, and we want to compute the degree-$d$ **projective Möbius transformation**
+$$(\mathcal{M}_g F)(x) = (cx + e)^d F\!\left(\frac{ax + b}{cx + e}\right) = \sum_{n=0}^d f_n (ax + b)^n (cx + e)^{d - n}.$$
+Naive expansion takes $O(d^2)$ time, and Divide-and-Conquer tree multiplication takes $O(d \log^2 d)$ time. Can we compute $(\mathcal{M}_g F)(x)$ in **$O(d \log d)$ time using at most 2 NTTs**?
+
+Yes! Just as every invertible $2 \times 2$ matrix decomposes into elementary row/column operations (**Bruhat decomposition**), any projective Möbius transformation decomposes into three primitive polynomial operations on arrays of length $d + 1$:
+1. **Diagonal Scaling $\mathcal{D}_\lambda$ ($\lambda \in K^\times$)**: $(\mathcal{D}_\lambda F)(x) = F(\lambda x) = \sum_{n=0}^d (f_n \lambda^n) x^n$ in **$O(d)$ time**.
+2. **Projective Reversal $\mathcal{R}$**: $(\mathcal{R} F)(x) = x^d F(1/x) = \sum_{n=0}^d f_{d - n} x^n$ (reversing the coefficient array in place) in **$O(d)$ time**.
+3. **Taylor Shift $\mathcal{T}_u$ ($u \in K$)**: $(\mathcal{T}_u F)(x) = F(x + u)$ in **$O(d \log d)$ time** (1 NTT).
+
+- **Case 1 ($c = 0$, Affine Transformation)**: Since $ae \neq 0$, $e \in K^\times$, so
+  $$(0\cdot x + e)^d F\!\left(\frac{ax + b}{e}\right) = e^d F\!\left(\frac{a}{e}x + \frac{b}{e}\right) = e^d (\mathcal{D}_{a/e} \circ \mathcal{T}_{b/e} F)(x)$$
+  in **1 Taylor Shift** ($O(d \log d)$).
+- **Case 2 ($c \neq 0$, General Möbius Transformation)**: Perform polynomial division of $ax + b$ by $cx + e$:
+  $$\frac{ax + b}{cx + e} = \frac{a}{c} + \frac{bc - ae}{c(cx + e)}.$$
+  Putting $\alpha = \frac{a}{c}$ and $\beta = \frac{bc - ae}{c}$, we write $(cx + e)^d F\!\left(\alpha + \frac{\beta}{cx + e}\right)$ as a composition of 4 steps:
+  1. **Shift by $\alpha = a/c$**: Compute $F_1(y) = F(y + \alpha)$ via 1 Taylor Shift ($O(d \log d)$). Now we need $(cx + e)^d F_1\!\left(\frac{\beta}{cx + e}\right)$.
+  2. **Scale by $\beta$ and Reverse**: Compute $F_2(z) = z^d F_1(\beta / z) = \sum_{n=0}^d \big([y^n]F_1(y) \cdot \beta^n\big) z^{d - n}$ in $O(d)$ time.
+  3. **Substitute $z = cx + e$**: Since $F_2(z) = z^d F_1(\beta / z)$, evaluating $F_2$ at $z = cx + e$ gives $(cx + e)^d F_1\!\left(\frac{\beta}{cx + e}\right)$! We compute $F_3(w) = F_2(w + e)$ via 1 Taylor Shift ($O(d \log d)$, or 0 NTTs if $e = 0$!).
+  4. **Scale $w = cx$**: Return $F_4(x) = F_3(cx) = \sum_{k=0}^d \big([w^k]F_3(w) \cdot c^k\big) x^k$ in $O(d)$ time.
+
+Notice that this 4-step pipeline **never divides by $e$**, so it works seamlessly even when $e = 0$! In particular, the **Krawtchouk Transform** $(1 - x)^d F\!\left(\frac{1 + x}{1 - x}\right)$ (used in Walsh–Hadamard / hypercube coding theory and **Int-2: KUPC 2019 K — One or All** in Section 6.5) takes just 2 Taylor shifts: $F(y) \xrightarrow{y \gets y - 1} F_1(y) \xrightarrow{\text{scale }2\text{ & rev}} z^d F_1(2/z) \xrightarrow{z \gets z + 1} F_3(w) \xrightarrow{w \gets -x} F_3(-x)$.
+
+---
+
+### The Generalized $\alpha$-Euler Transform & Canonical Failure Mode #14
+
+Closely related to the projective Möbius action is the **Generalized $\alpha$-Euler Transform** on truncated formal power series: given $F(y) = \sum_{k=0}^{N-1} f_k y^k \in K[[y]]/(y^N)$ and parameters $a, c, \alpha \in K$, compute the first $N$ coefficients of
+$$G(x) = \frac{1}{(1 - cx)^\alpha} F\!\left(\frac{ax}{1 - cx}\right) \bmod x^N.$$
+
+Let us expand $G(x)$ in powers of $x$ using the negative-binomial series $(1 - cx)^{-(k + \alpha)} = \sum_{n \ge k} \binom{n + \alpha - 1}{n - k} c^{n - k} x^{n - k}$:
+$$\begin{aligned}
+[x^n] G(x)
+&= \sum_{k=0}^n f_k a^k [x^{n-k}] \frac{1}{(1 - cx)^{k + \alpha}} \\
+&= \sum_{k=0}^n f_k a^k c^{n-k} \binom{n + \alpha - 1}{n - k}.
+\end{aligned}$$
+How do we decouple $\binom{n + \alpha - 1}{n - k}$ into a factor of $n$, a factor of $k$, and a factor of $n - k$? Using the rising factorial $\alpha^{\overline{m}} = \alpha(\alpha + 1)\cdots(\alpha + m - 1)$:
+$$\binom{n + \alpha - 1}{n - k} = \frac{(\alpha + k)(\alpha + k + 1)\cdots(\alpha + n - 1)}{(n - k)!} = \frac{\alpha^{\overline{n}}}{\alpha^{\overline{k}} \cdot (n - k)!}.$$
+Thus, **provided $\alpha^{\overline{k}} \in K^\times$ for all $0 \le k \le n < N$**, we have the 1-NTT Cauchy convolution formula:
+$$[x^n] G(x) = c^n \alpha^{\overline{n}} \sum_{k=0}^n \left(\frac{f_k (a/c)^k}{\alpha^{\overline{k}}}\right) \cdot \frac{1}{(n - k)!} \qquad (0 \le n < N).$$
+
+::: {.callout-warning}
+## Canonical Failure Mode #14: The Negative-Integer $\alpha = -d$ Pole Trap in the Generalized $\alpha$-Euler Transform
+
+- **The Trap**: Suppose you call the 1-NTT $\alpha$-Euler Transform formula above when $\alpha = -d$ is a **non-positive integer** in $\{-(N-2), \dots, -1, 0\}$. Specifically, this happens whenever you compute the truncated polynomial expansion
+  $$(1 - cx)^d F\!\left(\frac{ax}{1 - cx}\right) \bmod x^N \qquad \text{with } 0 \le d \le N - 2$$
+  (or when $\alpha = 0$, i.e., pure substitution $F\!\left(\frac{ax}{1 - cx}\right) \bmod x^N$!).
+  Look at the rising factorial $\alpha^{\overline{k}} = (-d)(-d+1)\cdots(-d + k - 1)$ in the denominator: **at $k = d + 1$, the factor $(-d + d) = 0$ appears, so $\alpha^{\overline{k}} = 0$ for every $k \ge d + 1$!** Dividing $f_k (a/c)^k$ by $\alpha^{\overline{k}}$ divides by zero at $k = d + 1$, even though $\binom{n - d - 1}{n - k}$ is a perfectly well-defined integer!
+- **Why the Naive Formula Fails Algebraically**: For $0 \le k \le d$, $(1 - cx)^{d - k}$ is a **polynomial** of degree $d - k$, whose coefficients vanish for $n > d$; whereas for $k \ge d + 1$, $(1 - cx)^{-(k - d)}$ is an **infinite negative-binomial series**. The single ratio $\frac{(-d)^{\overline{n}}}{(-d)^{\overline{k}}}$ attempts to pass through the zero $(-d)^{\overline{d+1}} = 0$ separating the polynomial regime ($k \le d$) from the negative-binomial regime ($k \ge d + 1$).
+- **The Exact Remedy (Head–Tail Split $F = F_{\le d} + y^{d+1} F_{>d}$)**:
+  Whenever $\alpha = -d \in \{-(N-2), \dots, -1, 0\}$, split $F(y)$ at degree $d$ into a **head polynomial** $F_{\le d}(y) = \sum_{k=0}^d f_k y^k$ and a **shifted tail** $F_{>d}(y) = \sum_{j=0}^{N - d - 2} f_{d + 1 + j} y^j$:
+  $$F(y) = F_{\le d}(y) + y^{d+1} F_{>d}(y).$$
+  Multiplying by $(1 - cx)^d$ and substituting $y = \frac{ax}{1 - cx}$ splits $G(x) \bmod x^N$ into two completely pole-free pieces:
+  $$G(x) = \underbrace{(1 - cx)^d F_{\le d}\!\left(\frac{ax}{1 - cx}\right)}_{\text{Head } G_{\text{head}}(x):\text{ exact degree-}\le d\text{ polynomial!}} + \underbrace{(ax)^{d+1} \cdot \frac{1}{1 - cx} F_{>d}\!\left(\frac{ax}{1 - cx}\right)}_{\text{Tail } G_{\text{tail}}(x):\text{ }\alpha'\text{-Euler Transform with }\alpha' = 1 > 0!}.$$
+  1. **Head Piece ($k \le d$)**: $G_{\text{head}}(x) = \sum_{k=0}^d f_k (ax)^k (1 - cx)^{d - k}$ has degree $\le d$ and is computed in 1 Taylor shift (or directly via $k! \in K^\times$ since $\binom{d-k}{n-k} = \frac{(d-k)!}{(n-k)!(d-n)!}$ has no zeros for $0 \le k \le n \le d$!):
+     $$[x^n] G_{\text{head}}(x) = \frac{(-c)^n}{(d - n)!} \sum_{k=0}^n \Big(f_k (a / (-c))^k (d - k)!\Big) \frac{1}{(n - k)!} \qquad (0 \le n \le d),$$
+     and $[x^n] G_{\text{head}}(x) = 0$ for all $n > d$!
+  2. **Tail Piece ($k \ge d + 1$)**: In $G_{\text{tail}}(x)$, the factor $\left(\frac{ax}{1 - cx}\right)^{d+1}$ cancels $(1 - cx)^d$ and leaves $(1 - cx)^{-1}$, shifting the Euler parameter from $\alpha = -d \le 0$ to **$\alpha' = 1 > 0$**, where $(1)^{\overline{m}} = m! \neq 0$ has **zero poles**! Calling the standard $\alpha' = 1$ Euler Transform on $F_{>d}$ and shifting by $(ax)^{d+1}$ computes $G_{\text{tail}}(x) \bmod x^N$ in 1 NTT!
+:::
+
+::: {.callout-tip}
+## Hand-Checkable Trace ($N = 4, d = 1, a = c = 1$): Watching the Head–Tail Split Defeat Failure Mode #14
+
+Suppose $N = 4$, $\alpha = -1$ ($d = 1$), $a = c = 1$, and $F(y) = f_0 + f_1 y + f_2 y^2 + f_3 y^3$. We want
+$$G(x) = (1 - x)^1 F\!\left(\frac{x}{1 - x}\right) \bmod x^4.$$
+- **Why the naive formula crashes**: $\alpha^{\overline{k}} = (-1)^{\overline{k}}$ has $(-1)^{\overline{0}} = 1$, $(-1)^{\overline{1}} = -1$, and $(-1)^{\overline{2}} = (-1)(0) = 0$! So $f_2$ and $f_3$ cannot be divided by $(-1)^{\overline{k}}$.
+- **Applying the Head–Tail Split at $d = 1$**:
+  - **Head ($k \le 1$)**: $G_{\text{head}}(x) = (1 - x)\left(f_0 + f_1 \frac{x}{1 - x}\right) = f_0(1 - x) + f_1 x = f_0 + (f_1 - f_0)x + 0x^2 + 0x^3$.
+  - **Tail ($k \ge 2$, $\alpha' = 1$)**: $F_{>1}(y) = f_2 + f_3 y$, and
+    $$G_{\text{tail}}(x) = x^2 \cdot \frac{1}{1 - x} F_{>1}\!\left(\frac{x}{1 - x}\right) = x^2 \left(\frac{f_2}{1 - x} + \frac{f_3 x}{(1 - x)^2}\right) \equiv f_2 x^2 + (f_2 + f_3) x^3 \pmod{x^4}.$$
+  - **Total $G(x) \bmod x^4$**: $f_0 + (f_1 - f_0)x + f_2 x^2 + (f_2 + f_3)x^3$, computed with zero divisions by zero!
+:::
+
+::: {.callout-important}
+## Algorithm Contract: `poly_moebius_transform` & `poly_alpha_euler_transform`
+
+- **Input**:
+  - `poly_moebius_transform(F, a, b, c, e)`: Coefficient array $F = [f_0, \dots, f_d] \in K^{d+1}$ and $2 \times 2$ matrix entries $a, b, c, e \in K$ with $ae - bc \neq 0$.
+  - `poly_alpha_euler_transform(F, a, c, alpha, N)`: Coefficient array $F = [f_0, \dots, f_{N-1}] \in K^N$, scalars $a, c, \alpha \in K$, and truncation length $N \ge 1$.
+- **Preconditions**: $\max(d, N - 1)! \in K^\times$ (over $\mathbb{F}_p$, requires $p > \max(d, N - 1)$).
+- **Postconditions**:
+  - `poly_moebius_transform` returns $[x^k] (cx + e)^d F\!\left(\frac{ax+b}{cx+e}\right)$ for $0 \le k \le d$.
+  - `poly_alpha_euler_transform` returns $[x^n] (1 - cx)^{-\alpha} F\!\left(\frac{ax}{1 - cx}\right)$ for $0 \le n < N$.
+- **Core Invariant**:
+  - In `poly_moebius_transform` when $c \neq 0$, the 4-step Bruhat factorization $\frac{ax+b}{cx+e} = \frac{a}{c} + \frac{bc - ae}{c(cx+e)}$ shifts by $a/c$, scales by $\frac{bc-ae}{c}$ and reverses, shifts by $e$, and scales by $c$, never dividing by $e$.
+  - In `poly_alpha_euler_transform`, if $\alpha = -d \in \{-(N-2), \dots, -1, 0\}$, splitting $F(y) = F_{\le d}(y) + y^{d+1} F_{>d}(y)$ isolates the degree-$\le d$ head polynomial from the pole-free $\alpha' = 1$ tail series before any division by $\alpha^{\overline{k}}$ occurs.
+- **Complexity**: $O(d \log d)$ time (at most 2 NTTs) for `poly_moebius_transform`; $O(N \log N)$ time (at most 2 NTTs) and $O(N)$ space for `poly_alpha_euler_transform`.
+:::
+
+---
+
+## 6.4 Stirling Numbers ($S_1, S_2$), Eulerian Numbers, Falling Factorial Polynomials (FFP) & $O(d)$ Consecutive Lagrange Interpolation
+
+### Plain-Language Introduction: Why Standard Monomials $k^m$ Fight Binomial Coefficients $\binom{n}{k}$
+
+Why is a polynomial-weighted binomial sum like $\sum_{k=0}^n k^m \binom{n}{k} x^k$ awkward to evaluate directly when $n = 10^9$ and $m = 2 \times 10^5$?
+Because the monomial $k^m = k \cdot k \cdots k$ and the binomial denominator $k! = k(k-1)\cdots 1$ in $\binom{n}{k} = \frac{n!}{k!(n-k)!}$ do not cancel cleanly: canceling one factor of $k$ leaves $k^{m-1}$ against $(k-1)!$, where the top is still $k$ instead of $k - 1$.
+
+By contrast, the **falling factorial** of degree $j$,
+$$k^{\underline{j}} := k(k - 1)(k - 2)\cdots(k - j + 1) = j! \binom{k}{j},$$
+is tailor-made to cancel the first $j$ factors of $k! = k^{\underline{j}} (k - j)!$. Similarly, the **rising factorial** of degree $n$,
+$$x^{\overline{n}} := x(x + 1)(x + 2)\cdots(x + n - 1),$$
+encodes cycle decompositions and negative-binomial coefficients $\binom{x + n - 1}{n} = \frac{x^{\overline{n}}}{n!}$.
+
+The **Stirling numbers of the first and second kinds** are simply the change-of-basis matrices between the standard monomial basis $\{1, x, x^2, \dots\}$ and the rising/falling factorial bases $\{1, x^{\overline{1}}, x^{\overline{2}}, \dots\}$ and $\{1, x^{\underline{1}}, x^{\underline{2}}, \dots\}$.
+
+---
+
+### Combinatorial & Algebraic Foundations of Stirling Numbers $\left[\begin{smallmatrix} n \\ k \end{smallmatrix}\right]$ and $\left\{\begin{smallmatrix} n \\ k \end{smallmatrix}\right\}$
+
+#### 1. Unsigned Stirling Numbers of the First Kind $\left[\begin{smallmatrix} n \\ k \end{smallmatrix}\right]$ (Cycles $\leftrightarrow$ Rising Factorials)
+
+- **Combinatorial Objects Counted**:
+  1. **Disjoint Cycles**: $\begin{bmatrix} n \\ k \end{bmatrix}$ is the number of permutations of $\{1, 2, \dots, n\}$ having **exactly $k$ disjoint cycles**.
+  2. **Prefix Maxima (Records) via the Rényi–Foata Bijection**: Write each cycle of a permutation with its largest element first, and sort the cycles in increasing order of their largest elements; erasing the parentheses produces a bijection between permutations with $k$ cycles and permutations with **exactly $k$ left-to-right maxima** (elements strictly larger than all preceding elements).
+- **Recurrence & Polynomial Identity**:
+  When inserting element $n$ into a permutation of $\{1, \dots, n-1\}$, either $n$ forms its own $1$-cycle (contributing $\begin{bmatrix} n-1 \\ k-1 \end{bmatrix}$) or $n$ is inserted immediately after any of the $n - 1$ existing elements inside an existing cycle (contributing $(n - 1)\begin{bmatrix} n-1 \\ k \end{bmatrix}$):
+  $$\begin{bmatrix} n \\ k \end{bmatrix} = \begin{bmatrix} n - 1 \\ k - 1 \end{bmatrix} + (n - 1) \begin{bmatrix} n - 1 \\ k \end{bmatrix} \qquad (n \ge 1, \quad \begin{bmatrix} 0 \\ k \end{bmatrix} = [k = 0]).$$
+  Multiplying by $x^k$ and summing over $k$ shows that $P_n(x) = \sum_{k=0}^n \begin{bmatrix} n \\ k \end{bmatrix} x^k$ satisfies $P_n(x) = (x + n - 1) P_{n-1}(x)$, yielding the fundamental basis conversion:
+  $$x^{\overline{n}} = x(x + 1)\cdots(x + n - 1) = \sum_{k=0}^n \begin{bmatrix} n \\ k \end{bmatrix} x^k, \qquad x^{\underline{n}} = (-1)^n (-x)^{\overline{n}} = \sum_{k=0}^n (-1)^{n-k} \begin{bmatrix} n \\ k \end{bmatrix} x^k.$$
+
+#### 2. Stirling Numbers of the Second Kind $\left\{\begin{smallmatrix} n \\ k \end{smallmatrix}\right\}$ (Set Partitions $\leftrightarrow$ Falling Factorials)
+
+- **Combinatorial Objects Counted**:
+  1. **Unlabeled Set Partitions**: $\begin{Bmatrix} n \\ k \end{Bmatrix}$ is the number of ways to partition a labeled set $\{1, 2, \dots, n\}$ into **$k$ non-empty, unlabeled (indistinguishable) subsets**.
+  2. **Surjections**: Multiplying by $k!$ labels the $k$ subsets, so **$k! \begin{Bmatrix} n \\ k \end{Bmatrix}$ is the number of surjective functions** from $\{1, \dots, n\}$ onto $\{1, \dots, k\}$.
+- **Recurrence & Polynomial Identity**:
+  When placing element $n$ into a partition of $\{1, \dots, n-1\}$, either $\{n\}$ forms a new singleton block ($\begin{Bmatrix} n-1 \\ k-1 \end{Bmatrix}$ ways) or $n$ joins one of the $k$ existing blocks ($k \begin{Bmatrix} n - 1 \\ k \end{Bmatrix}$ ways):
+  $$\begin{Bmatrix} n \\ k \end{Bmatrix} = \begin{Bmatrix} n - 1 \\ k - 1 \end{Bmatrix} + k \begin{Bmatrix} n - 1 \\ k \end{Bmatrix} \qquad (n \ge 1, \quad \begin{Bmatrix} 0 \\ k \end{Bmatrix} = [k = 0]).$$
+  Double-counting all $x^n$ functions from $\{1, \dots, n\}$ to $\{1, \dots, x\}$ by the exact size $k$ of their image ($\binom{x}{k}$ ways to choose the $k$-element image in $\{1, \dots, x\}$ times $k! \begin{Bmatrix} n \\ k \end{Bmatrix}$ surjections onto it) proves the basis conversion:
+  $$x^n = \sum_{k=0}^n \begin{Bmatrix} n \\ k \end{Bmatrix} k! \binom{x}{k} = \sum_{k=0}^n \begin{Bmatrix} n \\ k \end{Bmatrix} x^{\underline{k}}, \qquad x^n = \sum_{k=0}^n (-1)^{n-k} \begin{Bmatrix} n \\ k \end{Bmatrix} x^{\overline{k}}.$$
+
+---
+
+### The 4-Regime $O(N \log N)$ Stirling Generation Dictionary
+
+In competitive programming ($N \le 2 \times 10^5$, prime $p > N$), you will frequently need an entire **row** (fixed $n$, all $0 \le k \le n$) or an entire **column** (fixed $k$, all $k \le n \le N$) of $\begin{bmatrix} n \\ k \end{bmatrix}$ or $\begin{Bmatrix} n \\ k \end{Bmatrix}$. Never confuse the four regimes:
+
+| Regime | Target Sequence | Generating Function / Polynomial Identity | $O(N \log N)$ Algorithm & NTT Cost |
+| :--- | :--- | :--- | :--- |
+| **1. $S_2$ Row** (`stirling_2nd_row`) | $\begin{Bmatrix} n \\ 0 \end{Bmatrix}, \dots, \begin{Bmatrix} n \\ n \end{Bmatrix}$ (fixed $n$) | $\displaystyle\begin{Bmatrix} n \\ k \end{Bmatrix} = \sum_{j=0}^k \frac{j^n}{j!} \cdot \frac{(-1)^{k-j}}{(k - j)!}$ | **1 NTT Convolution** of $A_j = \frac{j^n}{j!}$ and $B_m = \frac{(-1)^m}{m!}$. |
+| **2. $S_2$ Column** (`stirling_2nd_col`) | $\begin{Bmatrix} k \\ k \end{Bmatrix}, \dots, \begin{Bmatrix} N \\ k \end{Bmatrix}$ (fixed $k$) | $\displaystyle\sum_{n=k}^N \begin{Bmatrix} n \\ k \end{Bmatrix} \frac{x^n}{n!} = \frac{(e^x - 1)^k}{k!}$ | **Valuation Shift + $\ln/\exp$**: set $U(x) = \frac{e^x - 1}{x}$ ($[x^0]U = 1$), compute $\frac{x^k}{k!} \exp(k \ln U(x)) \bmod x^{N+1}$. |
+| **3. $S_1$ Row** (`stirling_1st_row`) | $\begin{bmatrix} n \\ 0 \end{bmatrix}, \dots, \begin{bmatrix} n \\ n \end{bmatrix}$ (fixed $n$) | $\displaystyle P_n(x) = \sum_{k=0}^n \begin{bmatrix} n \\ k \end{bmatrix} x^k = x^{\overline{n}}$ | **Doubling + Taylor Shift**: $P_{2m}(x) = P_m(x) P_m(x + m)$ ($T(n) = T(n/2) + O(n \log n) = O(n \log n)$). |
+| **4. $S_1$ Column** (`stirling_1st_col`) | $\begin{bmatrix} k \\ k \end{bmatrix}, \dots, \begin{bmatrix} N \\ k \end{bmatrix}$ (fixed $k$) | $\displaystyle\sum_{n=k}^N \begin{bmatrix} n \\ k \end{bmatrix} \frac{x^n}{n!} = \frac{1}{k!}\left(\ln\frac{1}{1 - x}\right)^k$ | **Valuation Shift + $\ln/\exp$**: set $V(x) = \frac{-\ln(1-x)}{x}$ ($[x^0]V = 1$), compute $\frac{x^k}{k!} \exp(k \ln V(x)) \bmod x^{N+1}$. |
+
+#### Why Do Regimes 2 and 4 work? (Symbolic Method + Valuation Shift)
+
+By Chapter 04's Labeled Symbolic Dictionary:
+- A partition of $\{1, \dots, n\}$ into $k$ non-empty blocks is an unordered `SET` of size $k$ of non-empty labeled sets ($\mathcal{B} = \operatorname{SET}_{\ge 1}(\mathcal{Z})$ with EGF $B(x) = e^x - 1$), so its EGF is $\frac{(e^x - 1)^k}{k!}$. Extracting $[x^n/n!]$ from $(e^x - 1)^k = \sum_{j=0}^k (-1)^{k-j}\binom{k}{j} e^{jx}$ also immediately proves the Regime 1 row formula $\begin{Bmatrix} n \\ k \end{Bmatrix} = \frac{1}{k!}\sum_{j=0}^k (-1)^{k-j}\binom{k}{j} j^n$!
+- Similarly, a permutation of $\{1, \dots, n\}$ with $k$ disjoint cycles is an unordered `SET` of size $k$ of directed cycles ($\mathcal{C} = \operatorname{CYC}(\mathcal{Z})$ with EGF $C(x) = \ln\frac{1}{1-x}$), so its EGF is $\frac{1}{k!}\left(\ln\frac{1}{1-x}\right)^k$.
+- Notice that both $e^x - 1 = x + \frac{x^2}{2!} + \dots$ and $\ln\frac{1}{1-x} = x + \frac{x^2}{2} + \dots$ have **valuation $1$** ($[x^0] = 0, [x^1] = 1$), so we cannot take $\ln(e^x - 1)$ directly. Dividing by $x$ first produces a unit $U(x) = 1 + \frac{x}{2!} + \dots$ with $[x^0]U = 1$, allowing $\exp(k \ln U(x)) \bmod x^{N - k + 1}$ in $O(N \log N)$ time!
+
+#### Why Does Regime 3 (`stirling_1st_row`) Run in $O(n \log n)$ Instead of $O(n \log^2 n)$?
+
+If we computed $x^{\overline{n}} = x(x+1)\cdots(x+n-1)$ by a generic divide-and-conquer product tree (Chapter 01), it would take $O(n \log^2 n)$ time. Instead, we exploit translation symmetry: the second half of the product $(x + m)(x + m + 1)\cdots(x + 2m - 1)$ is simply the first half $P_m(x) = x(x+1)\cdots(x+m-1)$ **shifted by $c = m$**:
+$$P_{2m}(x) = P_m(x) \cdot P_m(x + m), \qquad P_{2m+1}(x) = P_{2m}(x) \cdot (x + 2m).$$
+At each doubling step $m \to 2m$, we perform **1 Taylor shift** `poly_taylor_shift(P_m, m)` ($O(m \log m)$) and **1 polynomial multiplication** ($O(m \log m)$). Because the work geometric-series sums over $m, m/2, m/4, \dots$, the total time is $T(n) = T(n/2) + O(n \log n) = O(n \log n)$!
+
+---
+
+### Falling-Factorial Polynomials (FFP), The Absorption Identity & Point-Value EGF
+
+#### 1. The Falling-Factorial Absorption Identity for Huge-$n$ Binomial Sums
+
+> **Combinatorial Question**: How do we evaluate $\sum_{k=0}^n P(k) \binom{n}{k} a^k b^{n-k}$ when $n \le 10^{18}$ is gigantic and $P(k)$ is a polynomial of moderate degree $m$?
+
+The key is the **Falling-Factorial Absorption Identity**: for all integers $n, k, j \ge 0$,
+$$k^{\underline{j}} \binom{n}{k} = n^{\underline{j}} \binom{n - j}{k - j}.$$
+
+- **Combinatorial Double-Count (Why Zero Divisions Are Needed!)**:
+  Both sides count the number of ways to choose a committee of $k$ people from $n$ people, and then elect an ordered sequence of $j$ distinct officers (President, VP, $\dots$) from within that committee:
+  - **Left-hand side**: First choose the $k$-person committee from $n$ people ($\binom{n}{k}$ ways), then pick the $j$ ordered officers from the $k$ committee members ($k^{\underline{j}}$ ways).
+  - **Right-hand side**: First pick the $j$ ordered officers directly from the $n$ people ($n^{\underline{j}}$ ways), then choose the remaining $k - j$ ordinary committee members from the remaining $n - j$ people ($\binom{n-j}{k-j}$ ways).
+  Because this is a bijection between finite sets, $k^{\underline{j}}\binom{n}{k} = n^{\underline{j}}\binom{n-j}{k-j}$ holds in $\mathbb{Z}$ and therefore modulo **any** integer $M$ (even when $M$ is composite and $\gcd(j!, M) > 1$!).
+
+Suppose we expand our degree-$m$ polynomial $P(k)$ in the falling-factorial basis:
+$$P(k) = \sum_{j=0}^m c_j k^{\underline{j}}.$$
+(If $P(k) = \sum_{i=0}^m a_i k^i$ is given in the monomial basis, then $k^i = \sum_{j=0}^i \begin{Bmatrix} i \\ j \end{Bmatrix} k^{\underline{j}}$ immediately gives $c_j = \sum_{i=j}^m a_i \begin{Bmatrix} i \\ j \end{Bmatrix}$ with **zero divisions**!) Substituting $P(k) = \sum_{j=0}^m c_j k^{\underline{j}}$ into the binomial sum collapses the $O(n)$ sum over $k$ into an **$O(m)$ sum over $j$**:
+$$\begin{aligned}
+\sum_{k=0}^n P(k) \binom{n}{k} a^k b^{n-k}
+&= \sum_{j=0}^{\min(n, m)} c_j \sum_{k=j}^n k^{\underline{j}} \binom{n}{k} a^k b^{n-k} && \text{(swapping }\sum_k, \sum_j\text{)} \\
+&= \sum_{j=0}^{\min(n, m)} c_j n^{\underline{j}} a^j \sum_{k=j}^n \binom{n - j}{k - j} a^{k - j} b^{(n - j) - (k - j)} && \text{(Absorption Identity)} \\
+&= \sum_{j=0}^{\min(n, m)} c_j n^{\underline{j}} a^j (a + b)^{n - j}. && \text{(Binomial Theorem on }r = k - j\text{)}
+\end{aligned}$$
+In particular, when $a = p$ and $b = 1 - p$ (the binomial distribution $\operatorname{Binomial}(n, p)$ where $a + b = 1$), the factor $(a + b)^{n - j} = 1^{n - j} = 1$ disappears completely, leaving $\sum_{j=0}^{\min(n, m)} c_j n^{\underline{j}} p^j$!
+
+---
+
+#### 2. The Point-Value EGF Theorem for Falling-Factorial Polynomials (`下降幂多项式`)
+
+What if $m \le 2 \times 10^5$ is too large for $O(m^2)$ Stirling triangle precomputation, or $P$ is given by its consecutive point values $P(0), P(1), \dots, P(m)$?
+
+Let $P(x) = \sum_{k=0}^d c_k x^{\underline{k}}$ be a polynomial in the falling-factorial basis, let $C(t) = \sum_{k=0}^d c_k t^k$ be the ordinary generating function of its falling-factorial coefficients, and let $\widehat{P}(t) = \sum_{m=0}^\infty P(m) \frac{t^m}{m!}$ be the **exponential generating function of its point evaluations on $\mathbb{Z}_{\ge 0}$**.
+
+::: {.callout-tip}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: Falling-Factorial Basis & Point-Value EGF
+
+- **Diagnostic Signal**: You are multiplying polynomials expressed in the falling-factorial basis $P(x) = \sum_{k=0}^d c_k x^{\underline{k}}$, converting between falling-factorial coefficients $c_k$ and consecutive point evaluations $P(0), P(1), \dots, P(d)$, or evaluating $\sum_{m \ge 0} P(m) \frac{t^m}{m!}$ for $d \le 2 \times 10^5$.
+- **Reverse-Engineering Scratchpad**: Why do falling factorials $m^{\underline{k}} = \frac{m!}{(m-k)!}$ pair so naturally with the exponential generating function weight $\frac{t^m}{m!}$? Write down the single basis term $m^{\underline{k}} \frac{t^m}{m!}$: the numerator $m!$ in $m^{\underline{k}}$ **cancels the EGF denominator $m!$**, leaving $\frac{t^m}{(m-k)!} = t^k \frac{t^{m-k}}{(m-k)!}$! Summing over $m \ge k$ turns the shifted index $r = m - k$ into a pure factor of $e^t = \sum_{r \ge 0} \frac{t^r}{r!}$, decoupling the coefficient OGF $C(t) = \sum_{k=0}^d c_k t^k$ from $e^t$ as the single product $\widehat{P}(t) = C(t) e^t$.
+:::
+
+> **Theorem (Point-Value EGF of a Falling-Factorial Polynomial)**:
+> $$\widehat{P}(t) = \sum_{m=0}^\infty P(m) \frac{t^m}{m!} = C(t) e^t, \qquad \text{and inversely} \qquad C(t) = \widehat{P}(t) e^{-t} \pmod{t^{d+1}}.$$
+
+- **Single-Step Verbalized Proof**:
+  $$\begin{aligned}
+  \widehat{P}(t)
+  &= \sum_{m=0}^\infty \left(\sum_{k=0}^d c_k m^{\underline{k}}\right) \frac{t^m}{m!} && \text{(substituting }P(m) = \sum_{k=0}^d c_k m^{\underline{k}}\text{)} \\
+  &= \sum_{k=0}^d c_k t^k \sum_{m=k}^\infty \frac{m^{\underline{k}}}{m!} t^{m - k} && \text{(since }m^{\underline{k}} = 0\text{ for }0 \le m < k\text{)} \\
+  &= \sum_{k=0}^d c_k t^k \sum_{m=k}^\infty \frac{t^{m - k}}{(m - k)!} && \text{(canceling }\frac{m^{\underline{k}}}{m!} = \frac{1}{(m-k)!}\text{)} \\
+  &= C(t) e^t. && \text{(recognizing }\sum_{r \ge 0} \frac{t^r}{r!} = e^t\text{)}
+  \end{aligned}$$
+
+This single identity unlocks fast $O(d \log d)$ arithmetic on Falling-Factorial Polynomials:
+1. **Point Values $P(0 \dots d) \to$ Falling-Factorial Coefficients $c_0 \dots d$ (`ffp_from_values`, 1 NTT)**:
+   Compute $C(t) = \left(\sum_{m=0}^d \frac{P(m)}{m!} t^m\right) \left(\sum_{j=0}^d \frac{(-1)^j}{j!} t^j\right) \bmod t^{d+1}$.
+2. **Falling-Factorial Coefficients $c_0 \dots d \to$ Point Values $P(0 \dots d)$ (`ffp_to_values`, 1 NTT)**:
+   Compute $\widehat{P}(t) = C(t) \left(\sum_{j=0}^d \frac{1}{j!} t^j\right) \bmod t^{d+1}$ and read off $P(m) = m! [t^m]\widehat{P}(t)$.
+3. **Falling-Factorial Polynomial Multiplication (`ffp_mul`, 3 NTTs)**:
+   Since $(P \cdot Q)(m) = P(m) Q(m)$ pointwise, convert both $P$ and $Q$ to point values up to degree $d_P + d_Q$ via $e^t$, multiply their point values $P(m)Q(m)$ in $O(d)$ time, and multiply by $e^{-t}$!
+
+::: {.callout-tip}
+## Hand-Checkable Trace ($d = 2$): Recovering Falling-Factorial Coefficients via $\widehat{P}(t) e^{-t}$
+
+Let $P(x) = x^2$. In the falling-factorial basis, since $x^{\underline{2}} = x^2 - x$ and $x^{\underline{1}} = x$, we have $x^2 = 0 \cdot x^{\underline{0}} + 1 \cdot x^{\underline{1}} + 1 \cdot x^{\underline{2}}$, so $(c_0, c_1, c_2) = (0, 1, 1)$.
+Let us verify that $C(t) = \widehat{P}(t) e^{-t} \bmod t^3$ recovers $(0, 1, 1)$ from the point values $(P(0), P(1), P(2)) = (0, 1, 4)$:
+- $\widehat{P}(t) \bmod t^3 = \frac{0}{0!} + \frac{1}{1!} t + \frac{4}{2!} t^2 = t + 2t^2$.
+- $e^{-t} \bmod t^3 = 1 - t + \frac{1}{2}t^2$.
+- Multiply $(t + 2t^2)(1 - t + \frac{1}{2}t^2) \bmod t^3 = t + (2 - 1)t^2 = 0 + 1t + 1t^2 \implies (c_0, c_1, c_2) = (0, 1, 1)$!
+:::
+
+---
+
+### Eulerian Numbers $\left\langle\begin{smallmatrix} n \\ k \end{smallmatrix}\right\rangle$ & Worpitzky's Identity
+
+Closely related to Stirling numbers are the **Eulerian numbers** $\left\langle\begin{smallmatrix} n \\ k \end{smallmatrix}\right\rangle$ ($0 \le k < n$, with $\left\langle\begin{smallmatrix} 0 \\ 0 \end{smallmatrix}\right\rangle = 1$), defined combinatorially as the number of permutations $\pi = (\pi_1, \dots, \pi_n)$ of $\{1, 2, \dots, n\}$ with **exactly $k$ ascents** (indices $1 \le i \le n - 1$ where $\pi_i < \pi_{i+1}$).
+
+- **Recurrence**: Inserting $n$ into a permutation of $\{1, \dots, n-1\}$ with $j$ ascents either preserves the ascent count if $n$ is placed at the very beginning or splits an existing ascent pair ($k + 1$ slots when $j = k$), or creates one new ascent if placed at the end or splits a descent pair ($n - k$ slots when $j = k - 1$):
+  $$\left\langle \begin{matrix} n \\ k \end{matrix} \right\rangle = (k + 1) \left\langle \begin{matrix} n - 1 \\ k \end{matrix} \right\rangle + (n - k) \left\langle \begin{matrix} n - 1 \\ k - 1 \end{matrix} \right\rangle.$$
+
+::: {.callout-tip}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: Worpitzky's Identity
+
+- **Diagnostic Signal**: You need to convert ordinary powers $m^n$ into a shifted binomial basis $\binom{m+k}{n}$ (so that summing over $m$ becomes a clean rational series $\frac{A_n(x)}{(1-x)^{n+1}}$), or you need a single row $\left\langle\begin{smallmatrix} n \\ 0 \end{smallmatrix}\right\rangle, \dots, \left\langle\begin{smallmatrix} n \\ n-1 \end{smallmatrix}\right\rangle$ of Eulerian numbers in $O(n \log n)$ time.
+- **Reverse-Engineering Scratchpad**: Where does $m^n = \sum_{k=0}^{n-1} \left\langle\begin{smallmatrix} n \\ k \end{smallmatrix}\right\rangle \binom{m+k}{n}$ come from combinatorially? A function $f : \{1, \dots, n\} \to \{1, \dots, m\}$ ($m^n$ choices) can be sorted by its values by reading its standardize-permutation $\pi \in S_n$ (where ties are broken so $i < j \implies \pi_i < \pi_j$); if $\pi$ has $k$ ascents and $n - 1 - k$ descents, then the sorted sequence $1 \le f(\pi_1) \le \dots \le f(\pi_n) \le m$ must be *strictly* increasing at the $n - 1 - k$ descent positions of $\pi^{-1}$. Adding $0, 1, \dots, n-1-k$ at the strict steps bijects the $m^n$ functions onto pairs $(\pi, S)$ where $\pi$ has $k$ ascents and $S$ is a multiset of size $n$ chosen from $m + k - (n-1)$... or algebraically, multiplying by $x^m$ and summing over $m \ge 0$ places the Eulerian polynomial $A_n(x) = \sum_{k=0}^{n-1} \left\langle\begin{smallmatrix} n \\ k \end{smallmatrix}\right\rangle x^k$ in the numerator of $\sum_{m \ge 0} (m+1)^n x^m = \frac{A_n(x)}{(1-x)^{n+1}}$, isolating $A_n(x) = (1-x)^{n+1} \sum_{m \ge 0} (m+1)^n x^m \bmod x^n$ as a single 1-NTT convolution!
+:::
+
+- **Worpitzky's Identity (Monomials $\leftrightarrow$ Shifted Binomial Basis)**:
+  For all $n \ge 1$ and all $m$:
+  $$m^n = \sum_{k=0}^{n-1} \left\langle \begin{matrix} n \\ k \end{matrix} \right\rangle \binom{m + k}{n}.$$
+- **Single-Step $O(n \log n)$ Row Extraction Formula (`K1` + Reversal Symmetry)**:
+  Using the reversal symmetry $\left\langle \begin{matrix} n \\ k \end{matrix} \right\rangle = \left\langle \begin{matrix} n \\ n - 1 - k \end{matrix} \right\rangle$ (reversing a permutation swaps ascents and descents), set $j = n - 1 - k$ in Worpitzky's identity so $\binom{m + k}{n} = \binom{m + n - 1 - j}{n}$. Now multiply by $x^{m-1}$ and sum over $m \ge 1$ (setting $r = m - 1 \ge 0$):
+  $$
+  \begin{aligned}
+  \sum_{r=0}^{\infty} (r + 1)^n x^r
+  &= \sum_{r=0}^{\infty} \sum_{j=0}^{n-1} \left\langle \begin{matrix} n \\ j \end{matrix} \right\rangle \binom{r + n - j}{n} x^r
+  && \text{(substitute Worpitzky at } m = r + 1 \text{ with } j = n - 1 - k\text{)} \\[4pt]
+  &= \sum_{j=0}^{n-1} \left\langle \begin{matrix} n \\ j \end{matrix} \right\rangle x^j \sum_{r=j}^{\infty} \binom{(r - j) + n}{n} x^{r-j}
+  && \text{(swap sums and factor } x^j \text{ so inner index is } s = r - j \ge 0\text{)} \\[4pt]
+  &= \frac{1}{(1 - x)^{n+1}} \sum_{j=0}^{n-1} \left\langle \begin{matrix} n \\ j \end{matrix} \right\rangle x^j.
+  && \text{(apply Kernel K1: } \sum_{s \ge 0} \binom{s + n}{n} x^s = (1 - x)^{-(n+1)}\text{)}
+  \end{aligned}
+  $$
+  Multiplying both sides by $(1 - x)^{n+1} = \sum_{j=0}^{n+1} (-1)^j \binom{n+1}{j} x^j$ isolates the Eulerian row polynomial $A_n(x)$ as **1 NTT convolution** in $O(n \log n)$ time:
+  $$A_n(x) = \sum_{k=0}^{n-1} \left\langle \begin{matrix} n \\ k \end{matrix} \right\rangle x^k = (1 - x)^{n+1} \sum_{r=0}^{n-1} (r + 1)^n x^r \pmod{x^n}, \qquad \left\langle \begin{matrix} n \\ k \end{matrix} \right\rangle = \sum_{j=0}^k (-1)^j \binom{n + 1}{j} (k + 1 - j)^n.$$
+
+::: {.callout-important}
+## Algorithm Contract: 4-Regime Stirling Generation, FFP Engine & Eulerian Row Extraction
+
+- **Input**: Dimension $N \ge 1$ (and column index $k \le N$ for column regimes, or point-value/coefficient arrays of degree $d \le N$).
+- **Preconditions**: $N! \in K^\times$ (over $\mathbb{F}_p$, requires $p > N$).
+- **Postconditions**:
+  1. `stirling_2nd_row(n)` returns $\left[\begin{Bmatrix} n \\ 0 \end{Bmatrix}, \dots, \begin{Bmatrix} n \\ n \end{Bmatrix}\right]$ via 1 NTT of $A_j = \frac{j^n}{j!}$ and $B_m = \frac{(-1)^m}{m!}$.
+  2. `stirling_2nd_col(N, k)` returns $\left[\begin{Bmatrix} k \\ k \end{Bmatrix}, \dots, \begin{Bmatrix} N \\ k \end{Bmatrix}\right]$ via $n! [x^n] \frac{x^k}{k!} \exp\!\left(k \ln\frac{e^x - 1}{x}\right) \bmod x^{N+1}$.
+  3. `stirling_1st_row(n)` returns $\left[\begin{bmatrix} n \\ 0 \end{bmatrix}, \dots, \begin{bmatrix} n \\ n \end{bmatrix}\right] = [x^k] x^{\overline{n}}$ via recursive doubling $P_{2m}(x) = P_m(x) P_m(x + m)$.
+  4. `stirling_1st_col(N, k)` returns $\left[\begin{bmatrix} k \\ k \end{bmatrix}, \dots, \begin{bmatrix} N \\ k \end{bmatrix}\right]$ via $n! [x^n] \frac{x^k}{k!} \exp\!\left(k \ln\frac{-\ln(1 - x)}{x}\right) \bmod x^{N+1}$.
+  5. `ffp_from_values(P)` / `ffp_to_values(C)` convert between $[P(0), \dots, P(d)]$ and falling-factorial coefficients $[c_0, \dots, c_d]$ via $C(t) = \widehat{P}(t) e^{-t} \bmod t^{d+1}$ and $\widehat{P}(t) = C(t) e^t \bmod t^{d+1}$.
+  6. `eulerian_row(n)` returns $\left[\left\langle\begin{smallmatrix} n \\ 0 \end{smallmatrix}\right\rangle, \dots, \left\langle\begin{smallmatrix} n \\ n-1 \end{smallmatrix}\right\rangle\right]$ via 1 NTT of $(1 - x)^{n+1}$ and $\sum_{m=0}^{n-1} (m + 1)^n x^m \bmod x^n$.
+- **Core Invariant**: In Regimes 2 and 4, dividing $e^x - 1$ and $-\ln(1 - x)$ by $x$ shifts their valuation from $1$ to $0$ with constant term $1$ before applying `poly_ln` and `poly_exp`.
+- **Complexity**: $O(N \log N)$ time and $O(N)$ space across all six primitives.
+:::
+
+---
+
+### $O(d)$ Consecutive-Grid Lagrange Interpolation & Faulhaber Power Sums
+
+Finally, suppose we know that a sequence $P(0), P(1), \dots, P(d)$ is the restriction of a degree-$d$ polynomial $P(x)$ to the $d + 1$ consecutive integers $\{0, 1, \dots, d\}$, and we want to evaluate $P(T) \bmod p$ at a single huge integer $T \le 10^{18}$ (assuming $p > d$).
+
+Do we need $O(d \log d)$ NTT to convert $P(0 \dots d)$ into falling-factorial coefficients first? **No!** We can evaluate $P(T)$ in **$O(d)$ linear time** directly from Lagrange's interpolation formula:
+$$P(T) = \sum_{i=0}^d P(i) \prod_{\substack{0 \le j \le d \\ j \neq i}} \frac{T - j}{i - j}.$$
+
+Why does this take $O(d)$ instead of $O(d^2)$ on the grid $\{0, 1, \dots, d\}$?
+1. **The Denominator Splits into Factorials**:
+   For a fixed $i \in \{0, \dots, d\}$, the product $\prod_{j \neq i} (i - j)$ splits into $j < i$ and $j > i$:
+   $$\prod_{j=0}^{i-1} (i - j) = i(i-1)\cdots 1 = i!, \qquad \prod_{j=i+1}^d (i - j) = (-1)(-2)\cdots(-(d - i)) = (-1)^{d-i} (d - i)!.$$
+   Thus the denominator is simply $(-1)^{d - i}\, i!\, (d - i)!$, whose inverse is $(-1)^{d-i}\, \text{ifact}[i]\, \text{ifact}[d - i]$.
+2. **The Numerator Splits into Prefix and Suffix Products**:
+   For $T \notin \{0, 1, \dots, d\}$ (if $0 \le T \le d$, simply return $P(T)$ in $O(1)$!), the product $\prod_{j \neq i} (T - j)$ is the product of a prefix $\text{pref}[i] = \prod_{j=0}^{i-1} (T - j)$ and a suffix $\text{suff}[i] = \prod_{j=i+1}^d (T - j)$. Precomputing $\text{pref}[0 \dots d]$ left-to-right and $\text{suff}[0 \dots d]$ right-to-left takes $2d$ multiplications and **zero divisions**!
+
+::: {.callout-note icon=false}
+## Algorithm Contract: `eval_consecutive_lagrange(Y, T)`
+
+- **Input**: Array $Y = [P(0), P(1), \dots, P(d)] \in K^{d+1}$ of evaluations of a degree-$\le d$ polynomial at $0, 1, \dots, d$; target evaluation point $T \in K$.
+- **Algebraic Precondition**: $d! \in K^\times$ (over $\mathbb{F}_p$, requires $p > d$).
+- **Output**: $P(T) \in K$.
+- **Index & Loop Contract**:
+  1. If $T \in \{0, 1, \dots, d\}$, return $Y[T]$ directly.
+  2. Precompute $\text{ifact}[0 \dots d]$ in $O(d)$ time.
+  3. Build $\text{pref}[0] = 1$, $\text{pref}[i] = \text{pref}[i-1] \cdot (T - (i - 1))$ for $1 \le i \le d$.
+  4. Build $\text{suff}[d] = 1$, $\text{suff}[i] = \text{suff}[i+1] \cdot (T - (i + 1))$ for $d - 1 \ge i \ge 0$.
+  5. Return $\sum_{i=0}^d (-1)^{d - i}\, Y[i] \cdot \text{pref}[i] \cdot \text{suff}[i] \cdot \text{ifact}[i] \cdot \text{ifact}[d - i]$.
+- **Invariant**: At index $i$, $\text{pref}[i] \cdot \text{suff}[i] = \prod_{0 \le j \le d, j \neq i} (T - j)$ avoids dividing by $(T - i)$ (which could be $0 \bmod p$ if $T \equiv i \pmod p$!), making the evaluation safe for every $T \in \mathbb{F}_p$.
+- **Complexity**: $O(d)$ time and $O(d)$ space.
+- **Canonical Application (Faulhaber's Power Sum)**: Since $S_k(n) = \sum_{i=1}^n i^k$ satisfies $S_k(n) - S_k(n-1) = n^k$, $S_k(n)$ is a polynomial in $n$ of degree **$d = k + 1$**. Computing $S_k(0), S_k(1), \dots, S_k(k+1)$ in $O(k)$ via a linear sieve of $i^k$ and calling `eval_consecutive_lagrange(S_k, N)` evaluates $\sum_{i=1}^N i^k \bmod p$ for $N \le 10^{18}$ in **$O(k)$ time**!
+:::
+
+---
+
+## 6.5 The 8-Problem 4-Tier Practice Ladder
+
+We now apply every tool from Sections 6.1–6.4 across our canonical 8-problem 4-tier ladder (`2 Stepping Stone`, `2 Intermediate`, `2 Advanced`, `2 Mastery`). Every problem is 100% self-contained.
+
+---
+
+### Stepping Stone 1 (`#005`) — AtCoder `fps_24_h`: Jump
+
+- **Source**: [AtCoder `fps_24_h` — Jump](https://atcoder.jp/contests/fps-24/tasks/fps_24_h)
+- **Prerequisite Tags**: `Ch 01 (Cauchy Convolution)`, `Ch 06 (§6.1 Index Alignment, §6.2 Snake Oil / Egorychev)`
+- **Target Complexity**: $O((N + M) \log p)$ or $O(N + M)$ time, $O(N + M)$ space
+
+#### Problem Statement & Exact Constraints
+Given positive integers $N, M \le 2.5 \times 10^5$, compute
+$$\left(\sum_{k=0}^{N-1} 2^k \binom{M}{k} + \sum_{i=0}^{N-1} \sum_{j=0}^{M} 2^{i+j} \binom{N}{i} \binom{N-1+j}{j}\right) \bmod 998244353.$$
+- **Sample Trace ($N \le 4$)**: For $N = 2, M = 1$: the first sum over $k \in \{0, 1\}$ is $2^0 \binom{1}{0} + 2^1 \binom{1}{1} = 1 + 2 = 3$. In the double sum over $i \in \{0, 1\}, j \in \{0, 1\}$, factoring gives $\left(2^0\binom{2}{0} + 2^1\binom{2}{1}\right)\left(2^0\binom{1}{0} + 2^1\binom{2}{1}\right) = (1 + 4)(1 + 4) = 25$. Total $= 3 + 25 = 28$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+The first sum $\sum_{k=0}^{N-1} 2^k \binom{M}{k}$ has only $N$ terms and can be summed directly in $O(N)$ time. Look at the double sum: does $i$ interact with $j$? No! The summand $2^i \binom{N}{i} \cdot 2^j \binom{N-1+j}{j}$ factors into a sum over $i$ times a sum over $j$—or even deeper, represents the total coefficient sum of the bivariate rational generating function $\frac{1 - y}{1 - 2y - x}$ inside the rectangle $[0, N-1] \times [0, M]$!
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Separate the double sum into the product of two independent 1D sums:
+$$\sum_{i=0}^{N-1} \sum_{j=0}^{M} 2^{i+j} \binom{N}{i} \binom{N-1+j}{j} = \left(\sum_{i=0}^{N-1} 2^i \binom{N}{i}\right) \left(\sum_{j=0}^{M} 2^j \binom{N-1+j}{j}\right).$$
+Notice that the $i$-sum is the full binomial expansion of $(1 + 2)^N = 3^N$ minus the $i = N$ term $2^N$:
+$$\sum_{i=0}^{N-1} 2^i \binom{N}{i} = 3^N - 2^N.$$
+And every term in the $j$-sum is computable directly in $O(M)$ time! (Bonus: let us also see how the bivariate generating function $\frac{1 - y}{1 - 2y - x}$ explains why the first sum and the double sum appear together in combinatorial grid-jump problems.)
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Precompute factorials and inverse factorials up to $N + M$ in $O(N + M)$ time, evaluate the two linear sums in $O(N + M)$ additions/multiplications, and combine modulo $998244353$.
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Direct Algebraic Decoupling ($O(N + M)$)
+Let $S_1 = \sum_{k=0}^{N-1} 2^k \binom{M}{k}$ and $S_2 = \sum_{i=0}^{N-1} \sum_{j=0}^{M} 2^{i+j} \binom{N}{i} \binom{N-1+j}{j}$.
+Because the summand of $S_2$ factors into an $i$-dependent factor $2^i \binom{N}{i}$ and a $j$-dependent factor $2^j \binom{N-1+j}{j}$, the Golden Rule of Index Alignment decouples $S_2$ immediately:
+$$\begin{aligned}
+S_2
+&= \left(\sum_{i=0}^{N-1} \binom{N}{i} 2^i\right) \left(\sum_{j=0}^M \binom{N - 1 + j}{j} 2^j\right) \\
+&= \big((1 + 2)^N - 2^N\big) \sum_{j=0}^M \binom{N - 1 + j}{j} 2^j \\
+&= (3^N - 2^N) \sum_{j=0}^M \binom{N - 1 + j}{j} 2^j.
+\end{aligned}$$
+Meanwhile, $S_1 = \sum_{k=0}^{\min(N-1, M)} \binom{M}{k} 2^k$. Both $S_1$ and the remaining $j$-sum have at most $\max(N, M + 1) \le 2.5 \times 10^5$ terms.
+
+#### 2. Deeper Generating Function Insight (Why These Two Sums Belong Together)
+In the AtCoder `fps_24` curriculum, this expression arises from summing $[x^a y^b] \frac{1 - y}{1 - 2y - x}$ over the rectangle $0 \le a < N, 0 \le b \le M$:
+- Using the 2D geometric boundary identity $\frac{1}{1 - 2y - x} = \sum_{a, b \ge 0} \binom{a+b}{b} 2^b x^a y^b$, summing over $0 \le a < N$ and $0 \le b \le M$ telescopes along the top and right boundaries of the $[0, N-1] \times [0, M]$ grid into a boundary sum along $a = N$ (producing $\binom{N-1+j}{j} 2^j$) and $b = M$ (producing $\binom{M}{k} 2^k$).
+
+#### 3. Hand-Checkable Trace & Algorithm Contract
+- **Hand-Checkable Trace ($N = 2, M = 1$)**:
+  - $S_1 = \sum_{k=0}^1 2^k \binom{1}{k} = 1 + 2 = 3$.
+  - $3^N - 2^N = 3^2 - 2^2 = 5$, and $\sum_{j=0}^1 \binom{1+j}{j} 2^j = \binom{1}{0} \cdot 1 + \binom{2}{1} \cdot 2 = 5$, so $S_2 = 5 \times 5 = 25$ and $S_1 + S_2 = 28$.
+- **Input & Preconditions**: Positive integers $N, M \le 2.5 \times 10^5$; prime modulus $p = 998244353 > N + M$ so factorials up to $N + M$ are invertible.
+- **Postconditions (Output)**: Returns $(S_1 + S_2) \bmod 998244353$.
+- **Time & Space Complexity**: $O(N + M)$ time and $O(N + M)$ space to precompute factorials, inverse factorials, and powers of $2$ up to $N + M \le 5 \times 10^5$.
+- **Loop / Algebraic Invariant**: After processing index $j \in [0, M]$, the running accumulator holds $\sum_{r=0}^j \binom{N-1+r}{r} 2^r \bmod p$, which is scaled once by $(3^N - 2^N) \bmod p$.
+- **Failure Modes & Edge Cases**: In $S_1 = \sum_{k=0}^{N-1} 2^k \binom{M}{k}$, when $k > M$ we must have $\binom{M}{k} = 0$ (cap the loop at $\min(N - 1, M)$); when $N = 1$, $S_1 = 1$ and $3^1 - 2^1 = 1$, yielding $S_1 + S_2 = 2^{M+1} \bmod p$.
+
+</details>
+
+---
+
+### Stepping Stone 2 (`#055`) — AtCoder ARC 110 D: Binomial Coefficient is Fun
+
+- **Source**: [AtCoder ARC 110 D — Binomial Coefficient is Fun](https://atcoder.jp/contests/arc110/tasks/arc110_d)
+- **Prerequisite Tags**: `Ch 06 (§6.1 Parallel / Upper-Index Vandermonde Convolution, Negative-Binomial OGF)`
+- **Target Complexity**: $O(N + \sum A_i)$ time, $O(1)$ space
+
+#### Problem Statement & Exact Constraints
+You are given $N$ non-negative integers $A_1, A_2, \dots, A_N$ ($1 \le N \le 2000$, $0 \le A_i \le 2000$) and an integer $M$ ($1 \le M \le 10^9$). Find the sum
+$$S = \sum_{\substack{B_1, B_2, \dots, B_N \ge 0 \\ B_1 + B_2 + \dots + B_N \le M}} \prod_{i=1}^N \binom{B_i}{A_i} \bmod (10^9 + 7).$$
+- **Sample Trace ($N \le 4$)**: For $N = 2$, $A = (1, 1)$, $M = 3$: the valid pairs $(B_1, B_2)$ with $B_1, B_2 \ge 1$ and $B_1 + B_2 \le 3$ are $(1, 1)$ giving $\binom{1}{1}\binom{1}{1} = 1$, $(2, 1)$ giving $\binom{2}{1}\binom{1}{1} = 2$, and $(1, 2)$ giving $\binom{1}{1}\binom{2}{1} = 2$. Total $S = 1 + 2 + 2 = 5 = \binom{3 + 2}{2 + 2} = \binom{5}{4}$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+The summation runs over non-negative integer tuples $(B_1, \dots, B_N)$ with $\sum_{i=1}^N B_i \le M$, and each factor $\binom{B_i}{A_i}$ has the summation variable $B_i$ in the **upper index** and the fixed constant $A_i$ in the **lower index**. This is the $N$-fold generalization of the Parallel / Upper-Index Convolution from Section 6.1!
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+What is the ordinary generating function of $\binom{B_i}{A_i}$ over $B_i \ge 0$?
+By Kernel `K1` (or Section 6.1 Identity 3),
+$$\sum_{B_i = 0}^\infty \binom{B_i}{A_i} x^{B_i} = \frac{x^{A_i}}{(1 - x)^{A_i + 1}}.$$
+Multiply these $N$ generating functions together to get the generating function for fixed $\sum_{i=1}^N B_i = K$, and then multiply by $\frac{1}{1 - x}$ to sum over all $0 \le K \le M$!
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Let $S_A = \sum_{i=1}^N A_i$. Then the total generating function is $\frac{x^{S_A}}{(1 - x)^{S_A + N + 1}}$, whose $[x^M]$ coefficient is $\binom{M + N}{S_A + N}$. Since $S_A + N \le 2000 \times 2000 + 2000 \approx 4 \times 10^6$ while $M \le 10^9$, compute $\binom{M + N}{S_A + N} = \frac{(M + N)^{\underline{S_A + N}}}{(S_A + N)!} \bmod (10^9 + 7)$ directly in $O(N + S_A)$ time!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Generating Function Derivation
+Let $S_A = \sum_{i=1}^N A_i$. By the definition of the Cauchy product of $N$ formal power series, for a fixed sum $K = B_1 + \dots + B_N$:
+$$\begin{aligned}
+\sum_{B_1 + \dots + B_N = K} \prod_{i=1}^N \binom{B_i}{A_i}
+&= [x^K] \prod_{i=1}^N \left(\sum_{B_i=0}^\infty \binom{B_i}{A_i} x^{B_i}\right) && \text{(Cauchy product of }N\text{ factors)} \\
+&= [x^K] \prod_{i=1}^N \frac{x^{A_i}}{(1 - x)^{A_i + 1}} && \text{(Kernel K1: }\sum_{b \ge 0} \binom{b}{a} x^b = \frac{x^a}{(1-x)^{a+1}}\text{)} \\
+&= [x^K] \frac{x^{S_A}}{(1 - x)^{S_A + N}}. && \text{(summing exponents in numerator and denominator)}
+\end{aligned}$$
+Now we must sum this coefficient over all $0 \le K \le M$. Recall from Chapter 01 that taking the prefix sum $\sum_{K=0}^M [x^K] F(x)$ of a formal power series $F(x)$ is equivalent to multiplying $F(x)$ by $\frac{1}{1 - x} = 1 + x + x^2 + \dots$ and extracting $[x^M]$:
+$$\begin{aligned}
+S = \sum_{K=0}^M [x^K] \frac{x^{S_A}}{(1 - x)^{S_A + N}}
+&= [x^M] \frac{x^{S_A}}{(1 - x)^{S_A + N + 1}} && \text{(prefix-sum operator }(1-x)^{-1}\text{)} \\
+&= [x^{M - S_A}] \frac{1}{(1 - x)^{S_A + N + 1}} && \text{(shift rule }[x^M] x^{S_A} G(x) = [x^{M-S_A}] G(x)\text{)} \\
+&= \binom{(S_A + N + 1) + (M - S_A) - 1}{M - S_A} = \binom{M + N}{M - S_A} = \binom{M + N}{S_A + N}.
+\end{aligned}$$
+
+#### 2. Combinatorial Double-Count Verification
+Let us also verify $\binom{M + N}{S_A + N}$ by a direct Stars-and-Bars double-count:
+Adding a slack variable $B_{N+1} = M - \sum_{i=1}^N B_i \ge 0$ converts the inequality $\sum_{i=1}^N B_i \le M$ into the equality $B_1 + \dots + B_N + B_{N+1} = M$. Imagine $M + N$ balls in a row. Choosing $S_A + N$ balls from these $M + N$ balls:
+- Use the $(A_1 + 1)$-st, $(A_1 + A_2 + 2)$-nd, $\dots$, $(S_A + N)$-th chosen balls as **dividers** that partition the remaining $(M + N) - N = M$ non-divider balls into $N + 1$ boxes of sizes $B_1, B_2, \dots, B_{N+1}$.
+- Then inside box $i$ ($1 \le i \le N$), exactly $A_i$ balls were chosen in $\binom{B_i}{A_i}$ ways!
+
+#### 3. Hand-Checkable Trace & Algorithm Contract
+- **Hand-Checkable Trace ($N = 2, A = (1, 1), M = 3$)**: Here $S_A = 1 + 1 = 2$ and $D = S_A + N = 4$. The formula gives $\binom{M + N}{D} = \binom{3 + 2}{4} = \binom{5}{4} = 5$, matching $(B_1, B_2) \in \{(1, 1), (2, 1), (1, 2)\}$.
+- **Input & Preconditions**: Array $A_1, \dots, A_N \ge 0$ ($N \le 2000$, $S_A = \sum A_i \le 4 \times 10^6$), upper bound $M \le 10^9$, and prime modulus $p = 10^9 + 7 > S_A + N$.
+- **Postconditions (Output)**: Returns $\binom{M + N}{S_A + N} \bmod (10^9 + 7)$.
+- **Time & Space Complexity**: Let $D = S_A + N \le 4,002,000 < 10^9 + 7$. Computing $\binom{M + N}{D} = \frac{\prod_{j=0}^{D-1} (M + N - j)}{D!} \bmod (10^9 + 7)$ takes $O(N + \sum A_i)$ time and $O(1)$ auxiliary space.
+- **Loop / Algebraic Invariant**: After $r$ iterations ($0 \le r \le D$), the numerator accumulator holds $(M + N)^{\underline{r}} \bmod p$ and the denominator accumulator holds $r! \bmod p$.
+- **Failure Modes & Edge Cases**: If $M < S_A$, then $M + N < D$ and the product $(M + N)^{\underline{D}}$ contains the factor $0$, so the answer is $0$ (return $0$ immediately); do not precompute factorials up to $M + N \approx 10^9$—use the falling-factorial formula of length $D = S_A + N \le 4 \times 10^6$.
+
+</details>
+
+---
+
+### Intermediate 1 (`#193`) — Luogu P6620: [省选联考 2020 A 卷] 组合数问题
+
+- **Source**: [Luogu P6620 — [省选联考 2020 A 卷] 组合数问题](https://www.luogu.com.cn/problem/P6620)
+- **Prerequisite Tags**: `Ch 06 (§6.4 Stirling Numbers S2, Falling-Factorial Basis Conversion, Division-Free Absorption Identity)`
+- **Target Complexity**: $O(m^2 + m \log n)$ time, $O(m^2)$ (or $O(m)$) space
+
+#### Problem Statement & Exact Constraints
+You are given positive integers $n, x, p$ ($1 \le n, x, p \le 10^9$) and the coefficients $a_0, a_1, \dots, a_m$ ($0 \le a_i \le 10^9$, $1 \le m \le 10^3$) of a degree-$m$ polynomial $f(k) = \sum_{i=0}^m a_i k^i$. Note that the modulus $p$ is **an arbitrary positive integer and is NOT necessarily prime**. Compute:
+$$\left(\sum_{k=0}^n f(k) x^k \binom{n}{k}\right) \bmod p.$$
+- **Sample Trace ($N \le 4$)**: For $n = 3, x = 2, p = 100, m = 2$ with $f(k) = k^2$ ($a = [0, 0, 1]$): directly, $\sum_{k=0}^3 k^2 2^k \binom{3}{k} = 0 + 1 \cdot 2 \cdot 3 + 4 \cdot 4 \cdot 3 + 9 \cdot 8 \cdot 1 = 6 + 48 + 72 = 126 \equiv 26 \pmod{100}$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Look at the three critical features of the problem statement:
+1. $n \le 10^9$ is huge, while the polynomial degree $m \le 1000$ is small.
+2. We are summing $f(k) \binom{n}{k} x^k$ over $0 \le k \le n$.
+3. The modulus $p \le 10^9$ is **not necessarily prime**, so **every division (including dividing by $j!$ to form $\binom{n}{j}$) is strictly forbidden**!
+Which tool in Section 6.4 evaluates polynomial-weighted binomial sums with **zero divisions**?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+1. Convert each monomial $k^i = \sum_{j=0}^i \begin{Bmatrix} i \\ j \end{Bmatrix} k^{\underline{j}}$ into the falling-factorial basis using Stirling numbers of the second kind. Because $\begin{Bmatrix} i \\ j \end{Bmatrix} = \begin{Bmatrix} i-1 \\ j-1 \end{Bmatrix} + j \begin{Bmatrix} i-1 \\ j \end{Bmatrix}$ uses only additions and multiplications, we can precompute $\begin{Bmatrix} i \\ j \end{Bmatrix} \bmod p$ for $0 \le j \le i \le m$ in $O(m^2)$ time!
+2. Then $f(k) = \sum_{j=0}^m b_j k^{\underline{j}}$ where $b_j = \sum_{i=j}^m a_i \begin{Bmatrix} i \\ j \end{Bmatrix} \bmod p$.
+3. Apply the **Falling-Factorial Absorption Identity** $k^{\underline{j}} \binom{n}{k} = n^{\underline{j}} \binom{n - j}{k - j}$, which holds in $\mathbb{Z}$ with **zero divisions**!
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+After absorbing $k^{\underline{j}} \binom{n}{k} = n^{\underline{j}} \binom{n-j}{k-j}$, swap the sums over $k$ and $j$, and collapse the inner sum over $k$ using $\sum_{k=j}^n \binom{n-j}{k-j} x^k = x^j (1 + x)^{n - j}$. Notice that $n^{\underline{j}} = n(n-1)\cdots(n-j+1)$ is a product of $j$ integers and never divides by $j!$!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Division-Free Basis Conversion via $\begin{Bmatrix} i \\ j \end{Bmatrix}$
+Because $p$ is not prime, we cannot use NTT or divide by factorials. Instead, recall from Section 6.4 that for every integer $i \ge 0$,
+$$k^i = \sum_{j=0}^i \begin{Bmatrix} i \\ j \end{Bmatrix} k^{\underline{j}} \in \mathbb{Z}[k].$$
+Substituting this into $f(k) = \sum_{i=0}^m a_i k^i$ and changing the order of summation gives:
+$$f(k) = \sum_{i=0}^m a_i \sum_{j=0}^i \begin{Bmatrix} i \\ j \end{Bmatrix} k^{\underline{j}} = \sum_{j=0}^m \left(\sum_{i=j}^m a_i \begin{Bmatrix} i \\ j \end{Bmatrix}\right) k^{\underline{j}} = \sum_{j=0}^m b_j k^{\underline{j}},$$
+where $b_j = \sum_{i=j}^m a_i \begin{Bmatrix} i \\ j \end{Bmatrix} \bmod p$.
+
+#### 2. Collapsing the Binomial Sum via Absorption
+Now substitute $f(k) = \sum_{j=0}^m b_j k^{\underline{j}}$ into the target sum $S = \sum_{k=0}^n f(k) x^k \binom{n}{k}$:
+$$\begin{aligned}
+S
+&= \sum_{k=0}^n \left(\sum_{j=0}^m b_j k^{\underline{j}}\right) \binom{n}{k} x^k && \text{(expanding }f(k)\text{ in the falling-factorial basis)} \\
+&= \sum_{j=0}^{\min(n, m)} b_j \sum_{k=j}^n k^{\underline{j}} \binom{n}{k} x^k && \text{(swapping sums; }k^{\underline{j}} = 0\text{ for }k < j\text{)} \\
+&= \sum_{j=0}^{\min(n, m)} b_j n^{\underline{j}} x^j \sum_{k=j}^n \binom{n - j}{k - j} x^{k - j} && \text{(Absorption Identity }k^{\underline{j}}\binom{n}{k} = n^{\underline{j}}\binom{n-j}{k-j}\text{)} \\
+&= \sum_{j=0}^{\min(n, m)} b_j n^{\underline{j}} x^j (1 + x)^{n - j} \pmod p. && \text{(Binomial Theorem on }r = k - j \in [0, n - j]\text{)}
+\end{aligned}$$
+
+#### 3. Hand-Checkable Trace & Algorithm Contract
+- **Hand-Checkable Trace ($n = 3, x = 2, p = 100, f(k) = k^2$)**:
+  - Since $k^2 = 1 \cdot k^{\underline{1}} + 1 \cdot k^{\underline{2}}$, we have $(b_0, b_1, b_2) = (0, 1, 1)$.
+  - For $j = 1$: $b_1 \cdot 3^{\underline{1}} \cdot 2^1 \cdot (1+2)^{3-1} = 1 \cdot 3 \cdot 2 \cdot 9 = 54$.
+  - For $j = 2$: $b_2 \cdot 3^{\underline{2}} \cdot 2^2 \cdot (1+2)^{3-2} = 1 \cdot 6 \cdot 4 \cdot 3 = 72$.
+  - Total $S = 54 + 72 = 126 \equiv 26 \pmod{100}$, with zero divisions!
+- **Input & Preconditions**: Integers $n, x, p \in [1, 10^9]$ ($p$ is an **arbitrary positive integer**, not necessarily prime) and polynomial coefficients $a_0, \dots, a_m$ ($m \le 10^3$).
+- **Postconditions (Output)**: Returns $\left(\sum_{k=0}^n f(k) x^k \binom{n}{k}\right) \bmod p$ using **zero divisions**:
+  1. **Stirling Precomputation**: Initialize $S_2[0][0] = 1 \bmod p$, and for $i = 1 \dots m$, $j = 1 \dots i$, compute $S_2[i][j] = (S_2[i-1][j-1] + j \cdot S_2[i-1][j]) \bmod p$.
+  2. **Coefficient Transformation**: Compute $b_j = \sum_{i=j}^m a_i S_2[i][j] \bmod p$ for $0 \le j \le m$.
+  3. **Final Evaluation**: Maintain $\text{ff}_j = n^{\underline{j}} \bmod p$, $x^j \bmod p$, and $(1 + x)^{n - j} \bmod p$ for $0 \le j \le \min(n, m)$.
+- **Time & Space Complexity**: $O(m^2 + \log n)$ time and $O(m)$ space (using a 1D rolling array for $S_2$).
+- **Loop / Algebraic Invariant**: At index $j \in [0, \min(n, m)]$, $\text{ff}_j = n(n-1)\cdots(n-j+1) \bmod p$ is maintained purely by multiplication, and $b_j = [k^{\underline{j}}] f(k) \bmod p$.
+- **Failure Modes & Edge Cases**: Because $p$ is not necessarily prime, never divide by $j!$ or $(1 + x) \bmod p$ (`Failure Mode #4`); precompute $(1+x)^{n - \min(n, m)} \bmod p$ once via binary exponentiation and multiply by $(1 + x)$ from $j = \min(n, m)$ down to $0$, capping the outer loop at $\min(n, m)$ so $n - j \ge 0$ always holds when $n < m$.
+
+</details>
+
+---
+
+### Intermediate 2 (`#080`) — AtCoder KUPC 2019 K: One or All
+
+- **Source**: [AtCoder KUPC 2019 K — One or All](https://atcoder.jp/contests/kupc2019/tasks/kupc2019_k)
+- **Prerequisite Tags**: `Ch 06 (§6.3 Projective Möbius / Krawtchouk Transform via Taylor Shift)`
+- **Target Complexity**: $O(N \log N)$ time, $O(N)$ space
+
+#### Problem Statement & Exact Constraints
+Given $N$ non-negative integers $A_0, A_1, \dots, A_{N-1}$ ($1 \le N \le 10^5$, $0 \le A_i < 998244353$), compute for all $1 \le j \le N$ the Krawtchouk linear combinations
+$$S_j = \sum_{i=0}^{N-1} A_i [x^i] \big((1 + x)^{N - j} (1 - x)^{j - 1}\big) \bmod 998244353.$$
+- **Sample Trace ($N \le 4$)**: For $N = 3$ ($d = 2$) and $A = (1, 2, 3)$:
+  - $j = 1$ ($k = 0$): $(1+x)^2 = 1 + 2x + x^2 \implies S_1 = 1(1) + 2(2) + 3(1) = 8$.
+  - $j = 2$ ($k = 1$): $(1+x)(1-x) = 1 - x^2 \implies S_2 = 1(1) + 2(0) + 3(-1) = -2 \equiv 998244351$.
+  - $j = 3$ ($k = 2$): $(1-x)^2 = 1 - 2x + x^2 \implies S_3 = 1(1) + 2(-2) + 3(1) = 0$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Look at the basis polynomials $K_{j-1}(x) = (1 + x)^{N - 1 - (j - 1)} (1 - x)^{j - 1}$ for $k = j - 1 \in \{0, 1, \dots, N - 1\}$. We want to dualize the inner product $S_{k+1} = \sum_{i=0}^{N-1} A_i [x^i] \big((1 + x)^{N - 1 - k} (1 - x)^k\big)$ for all $0 \le k \le N - 1$. Notice that $(1 + x)^{N - 1 - k} (1 - x)^k = (1 + x)^{N - 1} \left(\frac{1 - x}{1 + x}\right)^k$ is the exact **Projective Möbius / Krawtchouk Transform** of Section 6.3!
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Let $d = N - 1$ and let $M_{k, i} = [x^i] \big((1 + x)^{d - k} (1 - x)^k\big)$ be the Krawtchouk matrix entry. Why can't we sum $\sum_{k=0}^d M_{k, i} y^k$ directly into a single power? Because the Binomial Theorem requires a factor of $\binom{d}{k}$ in front of $(1 + x)^{d - k} (1 - x)^k$!
+Once we multiply $M_{k, i}$ by $\binom{d}{k}$, the bivariate generating function over $x$ and $y$ becomes completely symmetric in $x$ and $y$:
+$$\sum_{k=0}^d \binom{d}{k} M_{k, i} y^k = [x^i] \sum_{k=0}^d \binom{d}{k} (1 + x)^{d - k} \big(y(1 - x)\big)^k = [x^i] \big((1 + x) + y(1 - x)\big)^d = [x^i] \big((1 + y) + x(1 - y)\big)^d = \binom{d}{i} (1 + y)^{d - i} (1 - y)^i.$$
+Extracting $[y^k]$ from both sides yields the **Krawtchouk Reciprocity Identity**:
+$$\binom{d}{k} [x^i] \big((1 + x)^{d - k} (1 - x)^k\big) = \binom{d}{i} [y^k] \big((1 + y)^{d - i} (1 - y)^i\big).$$
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+By the Krawtchouk reciprocity identity $\binom{d}{k} M_{k, i} = \binom{d}{i} M_{i, k}$, our target sum $S_{k+1} = \sum_{i=0}^d A_i M_{k, i}$ becomes
+$$S_{k+1} = \frac{1}{\binom{d}{k}} \sum_{i=0}^d A_i \binom{d}{i} M_{i, k} = \frac{1}{\binom{d}{k}} [y^k] \sum_{i=0}^d \left(A_i \binom{d}{i}\right) (1 + y)^{d - i} (1 - y)^i = \frac{1}{\binom{d}{k}} [y^k] (1 + y)^d F\!\left(\frac{1 - y}{1 + y}\right),$$
+where $F(z) = \sum_{i=0}^d A_i \binom{d}{i} z^i$! And $(1 + y)^d F\!\left(\frac{1 - y}{1 + y}\right)$ is computed in **$O(N \log N)$ time using just 2 Taylor shifts** via the Bruhat decomposition of Section 6.3!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Reverse-Engineering the Krawtchouk Reciprocity Identity
+Let $d = N - 1$ and $k = j - 1 \in \{0, 1, \dots, d\}$. We need to compute, for every $0 \le k \le d$,
+$$S_{k+1} = \sum_{i=0}^d A_i [x^i] \big((1 + x)^{d - k} (1 - x)^k\big).$$
+In this raw form, $i$ is the extracted exponent $[x^i]$ while $k$ is in the power $(1 + x)^{d-k}(1 - x)^k$. To swap the roles of $i$ and $k$, consider the bivariate generating function
+$$\Phi(x, y) = \big((1 + x) + y(1 - x)\big)^d = \big((1 + y) + x(1 - y)\big)^d.$$
+- Expanding the left-hand side in powers of $y$ via the Binomial Theorem gives:
+  $$[x^i y^k] \Phi(x, y) = \binom{d}{k} [x^i] \big((1 + x)^{d - k} (1 - x)^k\big).$$
+- Expanding the right-hand side in powers of $x$ via the Binomial Theorem gives:
+  $$[x^i y^k] \Phi(x, y) = \binom{d}{i} [y^k] \big((1 + y)^{d - i} (1 - y)^i\big).$$
+Equating the two expressions proves **Krawtchouk Reciprocity**:
+$$[x^i] \big((1 + x)^{d - k} (1 - x)^k\big) = \frac{\binom{d}{i}}{\binom{d}{k}} [y^k] \big((1 + y)^{d - i} (1 - y)^i\big).$$
+
+#### 2. Reducing All $S_{k+1}$ to a Single Projective Möbius Transform
+Define the scaled polynomial $F(z) = \sum_{i=0}^d f_i z^i$ with $f_i = A_i \binom{d}{i} \bmod 998244353$. Substituting Krawtchouk Reciprocity into $S_{k+1}$ pulls $[y^k]$ outside the sum over $i$:
+$$\begin{aligned}
+S_{k+1}
+&= \frac{1}{\binom{d}{k}} [y^k] \sum_{i=0}^d f_i (1 + y)^{d - i} (1 - y)^i \\
+&= \frac{1}{\binom{d}{k}} [y^k] \left((1 + y)^d F\!\left(\frac{1 - y}{1 + y}\right)\right).
+\end{aligned}$$
+Now apply the **4-Step Bruhat Decomposition** from Section 6.3 to $\frac{1 - y}{1 + y} = -1 + \frac{2}{1 + y}$:
+1. **Taylor Shift by $c = -1$**: Compute $F_1(u) = F(u - 1)$ using `poly_taylor_shift(F, -1)` in 1 NTT.
+2. **Scale by $2$ and Reverse**: Form $F_2(v) = v^d F_1(2/v) = \sum_{i=0}^d \big([u^i]F_1(u) \cdot 2^i\big) v^{d - i}$ in $O(d)$ time.
+3. **Taylor Shift by $c = 1$**: Substitute $v = 1 + y$ by computing $F_3(y) = F_2(y + 1)$ using `poly_taylor_shift(F_2, 1)` in 1 NTT.
+4. **Extract and Unscale**: For each $0 \le k \le d$, $S_{k+1} = \binom{d}{k}^{-1} [y^k] F_3(y) \bmod 998244353$.
+
+#### 3. Hand-Checkable Trace & Algorithm Contract
+- **Hand-Checkable Trace ($N = 3, d = 2, A = (1, 2, 3)$)**:
+  - Scale $f_i = A_i \binom{2}{i}$: $F(z) = 1\binom{2}{0} + 2\binom{2}{1}z + 3\binom{2}{2}z^2 = 1 + 4z + 3z^2$.
+  - Step 1 ($F_1(u) = F(u - 1)$): $1 + 4(u-1) + 3(u-1)^2 = 0 - 2u + 3u^2$.
+  - Step 2 ($F_2(v) = v^2 F_1(2/v)$): $0\cdot v^2 + (-2 \cdot 2)v + (3 \cdot 4) = 12 - 4v + 0v^2$.
+  - Step 3 ($F_3(y) = F_2(y + 1)$): $12 - 4(y + 1) = 8 - 4y + 0y^2$.
+  - Step 4 (Divide by $\binom{2}{k}$): $(S_1, S_2, S_3) = (8/1, -4/2, 0/1) = (8, -2, 0)$. Exact match!
+- **Input & Preconditions**: Array $A_0, \dots, A_{N-1} \in \mathbb{F}_p$ ($N \le 10^5$, $p = 998244353 > N$ so $0!, \dots, (N-1)!$ are invertible).
+- **Postconditions (Output)**: Returns $S_1, \dots, S_N \bmod 998244353$, where $S_{k+1} = \binom{d}{k}^{-1} [y^k] (1+y)^d F\!\left(\frac{1-y}{1+y}\right)$ for $d = N - 1$ and $0 \le k \le d$.
+- **Time & Space Complexity**: Computing $F_3(y) = (1 + y)^d F\!\left(\frac{1 - y}{1 + y}\right)$ requires **2 NTTs of size $2N$**, running in $O(N \log N)$ time and $O(N)$ space.
+- **Loop / Algebraic Invariant**: After the 4-step Bruhat decomposition (`poly_taylor_shift(F, -1)`, power-of-2 scaling + coefficient reversal, and `poly_taylor_shift(F_2, 1)`), $[y^k] F_3(y) = \binom{d}{k} S_{k+1} \bmod p$ for every $0 \le k \le d$.
+- **Failure Modes & Edge Cases**: When reversing $F_1(u)$ to form $F_2(v) = v^d F_1(2/v)$, always pad $F_1$ to exact length $d + 1 = N$ before reversing so trailing zero high-degree coefficients are not dropped; for $N = 1$ ($d = 0$), return $S_1 = A_0 \bmod p$ directly.
+
+</details>
+
+---
+
+### Advanced 1 (`#094`) — Codeforces 923E: Perpetual Subtraction
+
+- **Source**: [Codeforces 923E — Perpetual Subtraction](https://codeforces.com/problemset/problem/923/E)
+- **Prerequisite Tags**: `Ch 06 (§6.3 Polynomial Taylor Shift F(x \pm 1), Eigenbasis Diagonalization of Upper-Triangular Transition Matrices)`
+- **Target Complexity**: $O(N \log N + N \log M)$ time, $O(N)$ space
+
+#### Problem Statement & Exact Constraints
+You are given an integer $N \le 10^5$, a step count $M \le 10^{18}$, and an initial probability distribution $p_0, p_1, \dots, p_N$ over $\{0, 1, \dots, N\}$ (given modulo $998244353$). Initially, a random integer $x$ is chosen with $\Pr[x = i] = p_i$. Then the following operation is repeated $M$ times independently:
+- Replace $x$ with an integer chosen uniformly at random from $\{0, 1, \dots, x\}$.
+
+Compute the final probability distribution $p_0^{(M)}, p_1^{(M)}, \dots, p_N^{(M)}$ modulo $998244353$ after $M$ steps.
+- **Sample Trace ($N \le 4$)**: For $N = 2, M = 1$, and $P_0 = (0, 0, 1)$ (starts at $x = 2$ with probability $1$): after $M = 1$ step, $x$ is uniform on $\{0, 1, 2\}$, so $P_1 = (1/3, 1/3, 1/3)$. Via the eigenbasis $y = x - 1$: $P_0(x) = x^2 = (y + 1)^2 = 1 + 2y + y^2$, scaling by $(k+1)^{-1}$ gives $Q_1(y) = 1 + \frac{2}{2}y + \frac{1}{3}y^2 = 1 + y + \frac{1}{3}y^2$, and shifting back $y = x - 1$ gives $P_1(x) = 1 + (x - 1) + \frac{1}{3}(x - 1)^2 = \frac{1}{3} + \frac{1}{3}x + \frac{1}{3}x^2$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+In a single step, if the current state is $j \in \{0, \dots, N\}$, it transitions to each $i \in \{0, \dots, j\}$ with probability $\frac{1}{j + 1}$:
+$$p_i^{(t+1)} = \sum_{j=i}^N \frac{p_j^{(t)}}{j + 1}.$$
+Because $M \le 10^{18}$ is huge, we cannot apply this transition $M$ times directly. Instead, form the probability generating function $P_t(x) = \sum_{i=0}^N p_i^{(t)} x^i$. How does the linear operator $\mathcal{L}: P_t(x) \mapsto P_{t+1}(x)$ act on a polynomial $P(x)$?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Write out $\mathcal{L}(x^j) = \frac{1}{j+1} \sum_{i=0}^j x^i = \frac{1}{j+1} \frac{x^{j+1} - 1}{x - 1} = \frac{1}{x - 1} \int_1^x t^j\, dt$.
+What is the **eigenbasis** of the operator $\mathcal{L}$? Instead of monomials $x^j$, test the **shifted monomials $(x - 1)^k$** around $x = 1$:
+$$\mathcal{L}\big((x - 1)^k\big) = \frac{1}{x - 1} \int_1^x (t - 1)^k\, dt = \frac{1}{x - 1} \cdot \frac{(x - 1)^{k+1}}{k + 1} = \frac{1}{k + 1} (x - 1)^k.$$
+Every shifted monomial $(x - 1)^k$ is an **exact eigenvector** of $\mathcal{L}$ with eigenvalue $\lambda_k = \frac{1}{k + 1}$!
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+This gives a 3-step algorithm for any $M \le 10^{18}$:
+1. **Change to Eigenbasis ($x = y + 1$, Taylor Shift by $+1$)**: Compute $Q_0(y) = P_0(y + 1) = \sum_{k=0}^N q_k^{(0)} y^k$ via `poly_taylor_shift(P_0, +1)` in 1 NTT.
+2. **Apply $M$ Steps in $O(N \log M)$**: Since $y^k = (x - 1)^k$ is an eigenvector with eigenvalue $\frac{1}{k + 1}$, after $M$ steps $q_k^{(M)} = q_k^{(0)} \cdot (k + 1)^{-M} \bmod 998244353$.
+3. **Return to Monomial Basis ($y = x - 1$, Taylor Shift by $-1$)**: Compute $P_M(x) = Q_M(x - 1)$ via `poly_taylor_shift(Q_M, -1)` in 1 NTT!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Reverse-Engineering the Operator $\mathcal{L}$ on $K[x]$
+Let $P_t(x) = \sum_{i=0}^N p_i^{(t)} x^i$. A single step of the Markov chain maps $P_t(x)$ to:
+$$\begin{aligned}
+(\mathcal{L} P_t)(x)
+&= \sum_{i=0}^N x^i \sum_{j=i}^N \frac{p_j^{(t)}}{j + 1} && \text{(definition of single-step transition)} \\
+&= \sum_{j=0}^N \frac{p_j^{(t)}}{j + 1} \sum_{i=0}^j x^i && \text{(swapping }\sum_i\text{ and }\sum_j\text{)} \\
+&= \sum_{j=0}^N p_j^{(t)} \frac{x^{j+1} - 1}{(j + 1)(x - 1)} && \text{(summing geometric series }\sum_{i=0}^j x^i\text{)} \\
+&= \frac{1}{x - 1} \int_1^x P_t(u)\, du. && \text{(recognizing }\int_1^x u^j du = \frac{x^{j+1}-1}{j+1}\text{)}
+\end{aligned}$$
+Why does $\int_1^x$ have lower limit $1$? Because at $x = 1$, total probability is conserved. This lower limit $u = 1$ is our **Diagnostic Signal** to expand $P_t(u)$ around $u = 1$ in powers of $y = u - 1$!
+
+#### 2. Diagonalizing $\mathcal{L}$ via Taylor Shift
+Substitute $u = 1 + y$ (so $x = 1 + y$ and $P_t(x) = P_t(1 + y) =: Q_t(y) = \sum_{k=0}^N q_k^{(t)} y^k$). Then:
+$$(\mathcal{L} P_t)(1 + y) = \frac{1}{y} \int_0^y Q_t(v)\, dv = \frac{1}{y} \sum_{k=0}^N q_k^{(t)} \frac{y^{k+1}}{k + 1} = \sum_{k=0}^N \left(\frac{q_k^{(t)}}{k + 1}\right) y^k.$$
+In the $y$-basis ($y = x - 1$), the entire upper-triangular transition matrix becomes **diagonal**:
+$$q_k^{(t+1)} = \frac{q_k^{(t)}}{k + 1} \implies q_k^{(M)} = \frac{q_k^{(0)}}{(k + 1)^M} \qquad (0 \le k \le N).$$
+Equivalently, in matrix language, let $B_{i, r} = \binom{r}{i}$ be the Pascal matrix (Taylor shift by $+1$, mapping $p \mapsto q = B p$) and $B^{-1}_{r, j} = (-1)^{r-j}\binom{r}{j}$ be its inverse (Taylor shift by $-1$). For the single-step transition matrix $M_{r, j} = \frac{1}{j + 1}$ ($0 \le r \le j$), the Hockey-Stick identity $\sum_{r=i}^j \binom{r}{i} = \binom{j+1}{i+1}$ and Absorption identity $\frac{1}{j+1}\binom{j+1}{i+1} = \frac{1}{i+1}\binom{j}{i}$ immediately verify that every entry $(B M)_{i, j}$ for $0 \le i \le j$ satisfies:
+$$(B M)_{i, j} = \sum_{r=i}^j \binom{r}{i} \frac{1}{j + 1} = \frac{1}{j + 1} \binom{j + 1}{i + 1} = \frac{1}{i + 1} \binom{j}{i} = (\Lambda B)_{i, j},$$
+where $\Lambda = \operatorname{diag}\!\left(1, \frac{1}{2}, \dots, \frac{1}{N+1}\right)$, confirming $B M = \Lambda B \iff M = B^{-1} \Lambda B$!
+
+#### 3. Hand-Checkable Trace & Algorithm Contract
+- **Hand-Checkable Trace ($N = 2, M = 2, P_0(x) = x^2$)**:
+  - $Q_0(y) = P_0(y + 1) = 1 + 2y + y^2$.
+  - After $M = 2$ steps, divide $[y^k]$ by $(k+1)^2$: $Q_2(y) = 1 + \frac{2}{4}y + \frac{1}{9}y^2 = 1 + \frac{1}{2}y + \frac{1}{9}y^2$.
+  - Shift back $P_2(x) = Q_2(x - 1) = 1 + \frac{1}{2}(x - 1) + \frac{1}{9}(x^2 - 2x + 1) = \frac{11}{18} + \frac{5}{18}x + \frac{2}{18}x^2$.
+- **Input & Preconditions**: Initial distribution array $P_0 = [p_0, \dots, p_N] \in \mathbb{F}_p^{N+1}$ ($N \le 10^5$), step count $M \le 10^{18}$, and prime $p = 998244353 > N + 1$ so $1, \dots, N + 1$ are invertible.
+- **Postconditions (Output)**: Returns $P_M = [p_0^{(M)}, \dots, p_N^{(M)}] \bmod 998244353$ via 3 steps:
+  1. **Forward Taylor Shift ($c = +1$)**: Compute $Q_0 = \text{poly\_taylor\_shift}(P_0, 1)$ in 1 NTT:
+     $$q_k^{(0)} = \frac{1}{k!} \sum_{j=k}^N (j!\, p_j) \frac{1^{j-k}}{(j - k)!}.$$
+  2. **Diagonal Eigenvalue Scaling ($M$ steps)**: For each $0 \le k \le N$, set $q_k^{(M)} = q_k^{(0)} \cdot ((k + 1)^{-1})^{M \bmod (p - 1)} \bmod 998244353$.
+  3. **Inverse Taylor Shift ($c = -1$)**: Compute $P_M = \text{poly\_taylor\_shift}(Q_M, -1)$ in 1 NTT:
+     $$p_i^{(M)} = \frac{1}{i!} \sum_{k=i}^N \big(k!\, q_k^{(M)}\big) \frac{(-1)^{k-i}}{(k - i)!}.$$
+- **Time & Space Complexity**: 2 NTTs of size $2N$, taking $O(N \log N + N \log p)$ time and $O(N)$ space.
+- **Loop / Algebraic Invariant**: In the shifted eigenbasis $y = x - 1$, each mode $q_k^{(t)} = [y^k] P_t(y + 1)$ evolves independently as $q_k^{(t)} = q_k^{(0)} (k + 1)^{-t} \bmod p$, preserving total probability $q_0^{(t)} = P_t(1) = \sum_{i=0}^N p_i^{(t)}$.
+- **Failure Modes & Edge Cases**: When $M = 0$, $(k + 1)^{-0} = 1$ and the composition of $+1$ and $-1$ Taylor shifts returns $P_0$ unchanged; reduce the exponent $M \bmod (p - 1)$ by Fermat's Little Theorem (since $1 \le k + 1 \le N + 1 < p$ is nonzero modulo $p$).
+
+</details>
+
+---
+
+### Advanced 2 (`#096`) — Codeforces 960G: Bandit Blues
+
+- **Source**: [Codeforces 960G — Bandit Blues](https://codeforces.com/problemset/problem/960/G)
+- **Prerequisite Tags**: `Ch 04 (Cycle EGF ln(1/(1-x)))`, `Ch 06 (§6.4 Unsigned Stirling S1, Rényi–Foata Bijection, Doubling + Taylor Shift)`
+- **Target Complexity**: $O(N \log N)$ time, $O(N)$ space
+
+#### Problem Statement & Exact Constraints
+Given three integers $n, A, B$ ($1 \le n \le 10^5$, $0 \le A, B \le n$), count the number of permutations $p = (p_1, p_2, \dots, p_n)$ of $\{1, 2, \dots, n\}$ that have **exactly $A$ prefix maxima** (indices $i$ where $p_i = \max_{1 \le j \le i} p_j$) and **exactly $B$ suffix maxima** (indices $i$ where $p_i = \max_{i \le j \le n} p_j$). Output the answer modulo $998244353$.
+- **Sample Trace ($N \le 4$)**: For $n = 3, A = 2, B = 2$: the formula gives $\binom{A+B-2}{A-1}\begin{bmatrix} n-1 \\ A+B-2 \end{bmatrix} = \binom{2}{1}\begin{bmatrix} 2 \\ 2 \end{bmatrix} = 2 \times 1 = 2$. Indeed, among the $6$ permutations of $\{1, 2, 3\}$, the $2$ valid permutations with $2$ prefix maxima and $2$ suffix maxima are $(1, 3, 2)$ and $(2, 3, 1)$ (where $3$ is in the middle).
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Where is the global maximum element $n$ located in the permutation?
+Wherever $n$ stands, $n$ is simultaneously the **last** prefix maximum (since nothing after $n$ can exceed $n$) and the **first** suffix maximum (since nothing before $n$ can exceed $n$).
+Thus the elements to the left of $n$ must form $A - 1$ prefix maxima, and the elements to the right of $n$ must form $B - 1$ suffix maxima (equivalently, $B - 1$ prefix maxima when read right-to-left). By the **Rényi–Foata Bijection** (Section 6.4), which sequence counts permutations of $m$ elements with $k$ prefix maxima?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+By the Rényi–Foata Bijection, the number of permutations of $m$ distinct elements with $k$ prefix maxima is the unsigned Stirling number of the first kind $\begin{bmatrix} m \\ k \end{bmatrix}$!
+If $i$ elements lie to the left of $n$ and $n - 1 - i$ elements lie to the right of $n$, we get
+$$\text{Ans} = \sum_{i=0}^{n-1} \binom{n - 1}{i} \begin{bmatrix} i \\ A - 1 \end{bmatrix} \begin{bmatrix} n - 1 - i \\ B - 1 \end{bmatrix}.$$
+Can we collapse this sum over $i$ into a **single** Stirling number without even convolving two columns? Look at what $\begin{bmatrix} i \\ A - 1 \end{bmatrix}$ and $\begin{bmatrix} n - 1 - i \\ B - 1 \end{bmatrix}$ count in terms of disjoint cycles (or their EGF $\frac{1}{k!}\left(\ln\frac{1}{1-x}\right)^k$)!
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Partitioning $n - 1$ elements into $A - 1$ left cycles and $B - 1$ right cycles is identical to partitioning all $n - 1$ elements into $(A - 1) + (B - 1) = A + B - 2$ cycles first ($\begin{bmatrix} n - 1 \\ A + B - 2 \end{bmatrix}$ ways) and then choosing which $A - 1$ of those cycles go to the left of $n$ ($\binom{A + B - 2}{A - 1}$ ways)!
+Thus $\text{Ans} = \binom{A + B - 2}{A - 1} \begin{bmatrix} n - 1 \\ A + B - 2 \end{bmatrix}$, and $\begin{bmatrix} n - 1 \\ A + B - 2 \end{bmatrix} = [x^{A+B-2}] x^{\overline{n-1}}$ is computed in $O(n \log n)$ time via `stirling_1st_row` (Doubling + Taylor Shift)!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Decomposition Around the Global Maximum $n$
+First handle boundary cases: if $A = 0$ or $B = 0$ or $A + B - 2 > n - 1$ or $A + B - 2 < 0$, the answer is $0$ (since $n$ itself contributes $1$ to both $A$ and $B$, and each of the remaining $n - 1$ elements can contribute to at most one of $A$ or $B$). If $n = 1$, the answer is $1$ if $A = 1, B = 1$ and $0$ otherwise.
+
+Now assume $n \ge 2$ and $A, B \ge 1$. Suppose the global maximum $n$ stands at position $i + 1$ ($0 \le i \le n - 1$).
+- Any prefix maximum after position $i + 1$ would have to exceed $n$, which is impossible. Thus the $A$ prefix maxima consist of $A - 1$ prefix maxima among the $i$ elements to the left of $n$, plus $n$ itself.
+- Symmetrically, the $B$ suffix maxima consist of $n$ itself, plus $B - 1$ suffix maxima among the $n - 1 - i$ elements to the right of $n$.
+- Choosing which $i$ elements of $\{1, \dots, n - 1\}$ go to the left of $n$ takes $\binom{n - 1}{i}$ ways. By the Rényi–Foata bijection (Section 6.4), the number of permutations of an $m$-element set with $k$ prefix maxima (or $k$ suffix maxima, by reversing the sequence) is $\begin{bmatrix} m \\ k \end{bmatrix}$. Hence:
+  $$\text{Ans} = \sum_{i=0}^{n-1} \binom{n - 1}{i} \begin{bmatrix} i \\ A - 1 \end{bmatrix} \begin{bmatrix} n - 1 - i \\ B - 1 \end{bmatrix}.$$
+
+#### 2. Collapsing the Binomial Convolution of Stirling Columns
+We can prove the identity
+$$\sum_{i=0}^{n-1} \binom{n - 1}{i} \begin{bmatrix} i \\ A - 1 \end{bmatrix} \begin{bmatrix} n - 1 - i \\ B - 1 \end{bmatrix} = \binom{A + B - 2}{A - 1} \begin{bmatrix} n - 1 \\ A + B - 2 \end{bmatrix}$$
+in two complementary ways:
+- **Combinatorial Proof**: By the Rényi–Foata correspondence, each record-block between consecutive prefix maxima (and suffix maxima) is a directed cycle rooted at its maximum element. Partitioning $\{1, \dots, n - 1\}$ into an ordered pair of a left set with $A - 1$ cycles and a right set with $B - 1$ cycles is bijectively equivalent to partitioning $\{1, \dots, n - 1\}$ into $A + B - 2$ unordered cycles ($\begin{bmatrix} n - 1 \\ A + B - 2 \end{bmatrix}$ ways) and then selecting which $A - 1$ of those cycles belong to the left side ($\binom{A + B - 2}{A - 1}$ ways).
+- **One-Line EGF Proof**: By Regime 4 of Section 6.4, the column EGF of $\begin{bmatrix} m \\ k \end{bmatrix}$ is $\sum_{m \ge 0} \begin{bmatrix} m \\ k \end{bmatrix} \frac{x^m}{m!} = \frac{1}{k!}\left(\ln\frac{1}{1-x}\right)^k$. Therefore, the binomial convolution of column $A - 1$ and column $B - 1$ is:
+  $$\begin{aligned}
+  \sum_{i=0}^{n-1} \binom{n-1}{i} \begin{bmatrix} i \\ A-1 \end{bmatrix} \begin{bmatrix} n-1-i \\ B-1 \end{bmatrix}
+  &= (n - 1)! [x^{n-1}] \left( \frac{\left(\ln\frac{1}{1-x}\right)^{A-1}}{(A - 1)!} \cdot \frac{\left(\ln\frac{1}{1-x}\right)^{B-1}}{(B - 1)!} \right) \\
+  &= \frac{(A + B - 2)!}{(A - 1)!(B - 1)!} \cdot (n - 1)! [x^{n-1}] \frac{\left(\ln\frac{1}{1-x}\right)^{A+B-2}}{(A + B - 2)!} \\
+  &= \binom{A + B - 2}{A - 1} \begin{bmatrix} n - 1 \\ A + B - 2 \end{bmatrix}.
+  \end{aligned}$$
+
+#### 3. Hand-Checkable Trace & Algorithm Contract
+- **Hand-Checkable Trace ($n = 4, A = 2, B = 2$)**:
+  - We need $\binom{2}{1} \begin{bmatrix} 3 \\ 2 \end{bmatrix}$.
+  - Expanding $x^{\overline{3}} = x(x+1)(x+2) = x^3 + 3x^2 + 2x$ gives $\begin{bmatrix} 3 \\ 2 \end{bmatrix} = [x^2] x^{\overline{3}} = 3$.
+  - Thus $\text{Ans} = 2 \times 3 = 6$.
+- **Input & Preconditions**: Integers $n \le 10^5$, $0 \le A, B \le n$, and prime modulus $p = 998244353 > n$.
+- **Postconditions (Output)**: Returns $\binom{A + B - 2}{A - 1} \begin{bmatrix} n - 1 \\ A + B - 2 \end{bmatrix} \bmod 998244353$.
+- **Time & Space Complexity**: Compute $P_{n-1}(x) = x^{\overline{n-1}} = \sum_{k=0}^{n-1} \begin{bmatrix} n - 1 \\ k \end{bmatrix} x^k$ in $O(n \log n)$ time via the recursive doubling relation $P_{2m}(x) = P_m(x) P_m(x + m)$ (`poly_taylor_shift`, Regime 3 of §6.4), or in $O(n \log^2 n)$ time via a D&C product tree $\prod_{j=0}^{n-2}(x + j)$; space complexity is $O(n)$.
+- **Loop / Algebraic Invariant**: At each doubling step from degree $m$ to $2m$ (plus a linear factor $(x + 2m)$ when odd), $P_m(x) = x(x+1)\cdots(x+m-1) \bmod p$ holds identically in $\mathbb{F}_p[x]$.
+- **Failure Modes & Edge Cases**: If $A = 0$ or $B = 0$ or $A + B - 2 > n - 1$ or $A + B - 2 < 0$, return $0$ immediately (do not index $[x^{A+B-2}]P_{n-1}(x)$ out of bounds!); when $n = 1$, return $1$ if $A = 1, B = 1$ and $0$ otherwise.
+
+</details>
+
+---
+
+### Mastery 1 (`#098`) — Codeforces 995F: Cowmpany Cowmpensation
+
+- **Source**: [Codeforces 995F — Cowmpany Cowmpensation](https://codeforces.com/problemset/problem/995/F)
+- **Prerequisite Tags**: `Ch 06 (§6.4 O(d) Consecutive-Grid Lagrange Interpolation, Polynomial Degree Bound of Prefix-Sum Tree DP, Falling-Factorial Decomposition)`
+- **Target Complexity**: $O(N^2)$ time, $O(N^2)$ space
+
+#### Problem Statement & Exact Constraints
+A company hierarchy is a rooted tree of $N$ employees ($1 \le N \le 3000$), rooted at employee $1$. You must assign each employee $u$ an integer salary $s_u \in \{1, 2, \dots, D\}$ ($1 \le D \le 10^9$) such that for every employee $u \neq 1$, $s_u \le s_{\text{parent}(u)}$. Count the number of valid salary assignments modulo $10^9 + 7$.
+- **Sample Trace ($N \le 4$)**: For $N = 3$ where root $1$ has two leaf children $2$ and $3$, and $D = 2$:
+  - Leaves $u \in \{2, 3\}$ have $\text{dp}[u][y] = y$.
+  - Root $1$ has $\text{dp}[1][x] = \sum_{y=1}^x y^2 = \frac{x(x+1)(2x+1)}{6}$, a degree-$3$ polynomial!
+  - At $x = 0, 1, 2, 3$, $\text{dp}[1][x] = (0, 1, 5, 14)$; at $D = 2$, $\text{dp}[1][2] = 5$ (specifically: $s_1 = 1 \implies (1,1,1)$; $s_1 = 2 \implies (2, 1\text{ or }2, 1\text{ or }2)$ giving $1 + 4 = 5$).
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+Let $\text{dp}[u][x]$ be the number of valid salary assignments in the subtree of $u$ when all salaries in $u$'s subtree are chosen from $\{1, 2, \dots, x\}$ (i.e., $s_u \le x$).
+If $u$ is assigned salary $y \in \{1, \dots, x\}$, each child $v$ of $u$ independently has $\text{dp}[v][y]$ valid subtree assignments. Thus:
+$$\text{dp}[u][x] = \sum_{y=1}^x \prod_{v \in \text{child}(u)} \text{dp}[v][y], \qquad \text{dp}[u][0] = 0.$$
+Why can we evaluate $\text{dp}[1][D]$ when $D \le 10^9$ is huge and $N \le 3000$ is small? What kind of function of $x$ is $\text{dp}[u][x]$?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Prove by structural induction on the tree that for every vertex $u$ with subtree size $\text{sz}(u)$, **$\text{dp}[u][x]$ is a polynomial in $x$ of degree $\text{sz}(u)$**!
+- **Base case (leaf $u$, $\text{sz}(u) = 1$)**: $\text{dp}[u][x] = \sum_{y=1}^x 1 = x$, which is a polynomial of degree $1 = \text{sz}(u)$.
+- **Inductive step**: Multiplying polynomials across children $v \in \text{child}(u)$ adds their degrees: $\deg\left(\prod_v \text{dp}[v][y]\right) = \sum_v \text{sz}(v) = \text{sz}(u) - 1$. And by Faulhaber's theorem / finite calculus ($\Delta_x \text{dp}[u][x] = \prod_v \text{dp}[v][x]$), taking the prefix sum $\sum_{y=1}^x$ increases the polynomial degree by exactly $1$, to $(\text{sz}(u) - 1) + 1 = \text{sz}(u)$!
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Since $\text{dp}[1][x]$ is a polynomial in $x$ of degree $N$, it is uniquely determined by its $N + 1$ consecutive values at $x = 0, 1, 2, \dots, N$!
+1. Run the tree DP only for $x \in \{0, 1, \dots, N\}$ in $O(N^2)$ time.
+2. Call `eval_consecutive_lagrange(dp[1][0..N], D)` from Section 6.4 to evaluate $\text{dp}[1][D] \bmod (10^9 + 7)$ in $O(N)$ time!
+*(Bonus Alternative View: Why is $\text{dp}[1][x]$ a degree-$N$ polynomial combinatorially? Because any valid assignment uses $k \in \{1, \dots, N\}$ distinct salary values, chosen in $\binom{x}{k}$ ways!)*
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Polynomial Degree Proof via Finite Calculus & Falling Factorials
+We give two complementary proofs that $P_u(x) := \text{dp}[u][x]$ is a polynomial in $x$ of degree $\text{sz}(u)$:
+
+- **Proof A (Finite Difference / Faulhaber Induction)**:
+  In the falling-factorial basis, any polynomial $Q(y) = \sum_{k=0}^d c_k (y - 1)^{\underline{k}}$ of degree $d$ satisfies
+  $$\sum_{y=1}^x Q(y) = \sum_{k=0}^d c_k k! \sum_{y=1}^x \binom{y - 1}{k} = \sum_{k=0}^d c_k k! \binom{x}{k + 1} = \sum_{k=0}^d \frac{c_k}{k + 1} x^{\underline{k+1}},$$
+  which is a polynomial in $x$ of degree $d + 1$ with constant term $0$ at $x = 0$.
+  By induction on the tree:
+  1. For each child $v$ of $u$, $P_v(y)$ is a polynomial of degree $\text{sz}(v)$.
+  2. Their pointwise product $Q_u(y) = \prod_{v \in \text{child}(u)} P_v(y)$ is a polynomial in $y$ of degree $\sum_{v \in \text{child}(u)} \text{sz}(v) = \text{sz}(u) - 1$.
+  3. Therefore, $P_u(x) = \sum_{y=1}^x Q_u(y)$ (with $P_u(0) = 0$) is a polynomial in $x$ of degree $(\text{sz}(u) - 1) + 1 = \text{sz}(u)$.
+
+- **Proof B (Combinatorial Order-Compression Bijection in the Binomial Basis)**:
+  In any valid salary assignment to the $N$ employees of the tree using salaries from $\{1, 2, \dots, x\}$, let $k \in \{1, 2, \dots, N\}$ be the number of **distinct** salary values that actually appear.
+  - Let $c_k$ be the number of valid relative salary assignments onto **all** of $\{1, 2, \dots, k\}$ (surjective onto $\{1, \dots, k\}$).
+  - For any $x \ge 0$, every valid assignment in $\{1, \dots, x\}$ is uniquely obtained by choosing $k$ distinct values from $\{1, \dots, x\}$ in $\binom{x}{k}$ ways and mapping them in order-preserving fashion to a surjective assignment on $\{1, \dots, k\}$ in $c_k$ ways:
+    $$\text{dp}[1][x] = \sum_{k=1}^N c_k \binom{x}{k} = \sum_{k=1}^N \frac{c_k}{k!} x^{\underline{k}},$$
+    which is manifestly a polynomial in $x$ of degree $N$!
+
+#### 2. $O(N^2)$ Tree DP + $O(N)$ Consecutive Lagrange Interpolation
+1. Traverse the tree in post-order (from $u = N$ down to $1$ if parent indices $< u$, or via DFS):
+   - Initialize $Q_u[y] = 1$ for $1 \le y \le N$.
+   - For each child $v$ of $u$ and each $y \in \{1, \dots, N\}$, set $Q_u[y] \gets Q_u[y] \cdot \text{dp}[v][y] \bmod (10^9 + 7)$.
+   - Set $\text{dp}[u][0] = 0$, and for $x = 1 \dots N$, compute the prefix sum $\text{dp}[u][x] = (\text{dp}[u][x-1] + Q_u[x]) \bmod (10^9 + 7)$.
+2. Once $\text{dp}[1][0], \text{dp}[1][1], \dots, \text{dp}[1][N]$ are computed, invoke `eval_consecutive_lagrange(dp[1][0..N], D)` (Section 6.4):
+   $$\text{dp}[1][D] = \sum_{i=0}^N (-1)^{N - i}\, \text{dp}[1][i] \cdot \frac{\prod_{0 \le j \le N, j \neq i} (D - j)}{i!\, (N - i)!} \bmod (10^9 + 7).$$
+
+#### 3. Hand-Checkable Trace & Algorithm Contract
+- **Hand-Checkable Trace ($N = 3$, root $1$ with leaves $2, 3$, $D = 4$)**:
+  - From the tree DP at $x = 0, 1, 2, 3$, $Y = [\text{dp}[1][0 \dots 3]] = [0, 1, 5, 14]$.
+  - Lagrange interpolation at $D = 4$:
+    $$\text{dp}[1][4] = 0 + (-1)^2 \cdot 1 \cdot \frac{4 \cdot 2 \cdot 1}{1! 2!} + (-1)^1 \cdot 5 \cdot \frac{4 \cdot 3 \cdot 1}{2! 1!} + (-1)^0 \cdot 14 \cdot \frac{4 \cdot 3 \cdot 2}{3! 0!} = 4 - 30 + 56 = 30 = 1^2 + 2^2 + 3^2 + 4^2.$$
+- **Input & Preconditions**: Rooted tree of $N \le 3000$ vertices, salary bound $D \le 10^9$, and prime modulus $p = 10^9 + 7 > N$.
+- **Postconditions (Output)**: Returns $\text{dp}[1][D] \bmod (10^9 + 7)$ via `eval_consecutive_lagrange(dp[1][0..N], D)`.
+- **Time & Space Complexity**:
+  - **Tree DP**: Each tree edge $(u, v)$ performs $N$ multiplications, and each vertex $u$ performs $N$ additions, totaling $O(N^2)$ time and $O(N^2)$ space.
+  - **Lagrange Evaluation**: Prefix and suffix products of $(D - j)$ and inverse factorials up to $N \le 3000 < 10^9 + 7$ run in $O(N)$ time. Total complexity: $O(N^2)$ time and $O(N^2)$ space.
+- **Loop / Algebraic Invariant**: At every vertex $u$, $\text{dp}[u][x]$ is the evaluation at $x \in \{0, 1, \dots, N\}$ of a polynomial $P_u(x)$ of degree $\text{sz}(u)$ satisfying $P_u(0) = 0$ and $P_u(x) - P_u(x-1) = \prod_{v \in \text{child}(u)} P_v(x)$.
+- **Failure Modes & Edge Cases**: If $D \le N$, return $\text{dp}[1][D]$ directly from the DP table in $O(1)$ time (or use prefix/suffix products $\text{pref}[i]\cdot\text{suff}[i]$ rather than dividing a total product by $D - i$, avoiding division by zero when $D \in \{0, \dots, N\}$).
+
+</details>
+
+---
+
+### Mastery 2 (`#109`) — Codeforces 1278F: Cards
+
+- **Source**: [Codeforces 1278F — Cards](https://codeforces.com/problemset/problem/1278/F)
+- **Prerequisite Tags**: `Ch 06 (§6.4 Stirling Numbers S2, 1-NTT Row Generation, Falling-Factorial Binomial Moment Collapse)`
+- **Target Complexity**: $O(k \log k)$ time (or $O(k^2)$ for $k \le 5000$), $O(k)$ space
+
+#### Problem Statement & Exact Constraints
+A deck of $m$ cards contains $1$ Joker and $m - 1$ ordinary cards. You perform the following experiment $n$ times independently ($1 \le n, m < 998244353$): shuffle the deck uniformly at random and look at the top card. Let $X$ be the total number of times the top card is the Joker across the $n$ rounds. Given $k$ ($1 \le k \le 5000$ in the original problem, and up to $k \le 2 \times 10^5$ in the NTT version), compute the expected value $\mathbb{E}[X^k] \bmod 998244353$.
+- **Sample Trace ($N \le 4$)**: For $n = 3, m = 2$ ($p = 1/2$), $k = 2$: $X \sim \operatorname{Binomial}(3, 1/2)$ has $\mathbb{E}[X^2] = \operatorname{Var}(X) + (\mathbb{E}[X])^2 = \frac{3}{4} + \frac{9}{4} = 3$. Using Stirling numbers $\begin{Bmatrix} 2 \\ 1 \end{Bmatrix} = 1, \begin{Bmatrix} 2 \\ 2 \end{Bmatrix} = 1$: $\sum_{j=1}^2 \begin{Bmatrix} 2 \\ j \end{Bmatrix} 3^{\underline{j}} (1/2)^j = 1 \cdot 3 \cdot \frac{1}{2} + 1 \cdot 6 \cdot \frac{1}{4} = \frac{3}{2} + \frac{3}{2} = 3$.
+
+<details>
+<summary><strong>Hint 1 — Diagnostic Signal & Combinatorial Model</strong></summary>
+
+In each of the $n$ independent rounds, the top card is the Joker with probability $p = \frac{1}{m}$ and an ordinary card with probability $q = 1 - p = \frac{m - 1}{m}$.
+Thus $X \sim \operatorname{Binomial}(n, p)$, and we want the **$k$-th raw moment** of a Binomial random variable:
+$$\mathbb{E}[X^k] = \sum_{i=0}^n \binom{n}{i} p^i (1 - p)^{n - i} i^k \bmod 998244353.$$
+Here $n \le 998244352$ is huge while $k$ is the degree of the monomial $i^k$. How do we collapse $\sum_{i=0}^n \binom{n}{i} p^i (1 - p)^{n - i} i^k$ from $n$ terms down to $k$ terms?
+
+</details>
+
+<details>
+<summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
+
+Never compute raw moments $\mathbb{E}[X^k]$ of a Binomial distribution directly in the monomial basis $i^k$!
+Instead, compute the **falling-factorial moments** $\mathbb{E}[X^{\underline{j}}]$ first, using the Absorption Identity $i^{\underline{j}}\binom{n}{i} = n^{\underline{j}}\binom{n-j}{i-j}$:
+$$\mathbb{E}[X^{\underline{j}}] = \sum_{i=j}^n i^{\underline{j}} \binom{n}{i} p^i (1 - p)^{n - i} = n^{\underline{j}} p^j \sum_{i=j}^n \binom{n - j}{i - j} p^{i - j} (1 - p)^{n - i} = n^{\underline{j}} p^j (p + 1 - p)^{n - j} = n^{\underline{j}} p^j.$$
+Look at that: the $j$-th falling-factorial moment of $\operatorname{Binomial}(n, p)$ is simply **$n^{\underline{j}} p^j$**!
+
+</details>
+
+<details>
+<summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
+
+Convert $X^k = \sum_{j=0}^k \begin{Bmatrix} k \\ j \end{Bmatrix} X^{\underline{j}}$ via Stirling numbers of the second kind. By linearity of expectation:
+$$\mathbb{E}[X^k] = \sum_{j=0}^{\min(n, k)} \begin{Bmatrix} k \\ j \end{Bmatrix} \mathbb{E}[X^{\underline{j}}] = \sum_{j=0}^{\min(n, k)} \begin{Bmatrix} k \\ j \end{Bmatrix} n^{\underline{j}} m^{-j} \bmod 998244353.$$
+Use Regime 1 (`stirling_2nd_row`) from Section 6.4 to compute all $\begin{Bmatrix} k \\ 0 \end{Bmatrix}, \dots, \begin{Bmatrix} k \\ k \end{Bmatrix}$ in **1 NTT** ($O(k \log k)$ time)!
+
+</details>
+
+<details>
+<summary><strong>Complete Derivation & Solution</strong></summary>
+
+#### 1. Binomial Falling-Factorial Moment Collapse
+Let $p = m^{-1} \bmod 998244353$ (well-defined since $1 \le m < 998244353$) and $q = 1 - p$. The random variable $X$ takes value $i \in \{0, 1, \dots, n\}$ with probability $\binom{n}{i} p^i q^{n - i}$.
+Expanding $i^k$ in the falling-factorial basis via Section 6.4:
+$$i^k = \sum_{j=0}^k \begin{Bmatrix} k \\ j \end{Bmatrix} i^{\underline{j}}.$$
+Substituting this into $\mathbb{E}[X^k]$ and applying the Falling-Factorial Absorption Identity $i^{\underline{j}}\binom{n}{i} = n^{\underline{j}}\binom{n - j}{i - j}$:
+$$\begin{aligned}
+\mathbb{E}[X^k]
+&= \sum_{i=0}^n \binom{n}{i} p^i q^{n - i} \sum_{j=0}^k \begin{Bmatrix} k \\ j \end{Bmatrix} i^{\underline{j}} && \text{(basis conversion }i^k = \sum_{j=0}^k \begin{Bmatrix} k \\ j \end{Bmatrix} i^{\underline{j}}\text{)} \\
+&= \sum_{j=0}^{\min(n, k)} \begin{Bmatrix} k \\ j \end{Bmatrix} \sum_{i=j}^n i^{\underline{j}} \binom{n}{i} p^i q^{n - i} && \text{(swapping }\sum_i, \sum_j\text{; }i^{\underline{j}} = 0\text{ for }i < j\text{)} \\
+&= \sum_{j=0}^{\min(n, k)} \begin{Bmatrix} k \\ j \end{Bmatrix} n^{\underline{j}} p^j \sum_{i=j}^n \binom{n - j}{i - j} p^{i - j} q^{(n - j) - (i - j)} && \text{(Absorption Identity)} \\
+&= \sum_{j=0}^{\min(n, k)} \begin{Bmatrix} k \\ j \end{Bmatrix} n^{\underline{j}} p^j (p + q)^{n - j} && \text{(Binomial Theorem on }r = i - j\text{)} \\
+&= \sum_{j=0}^{\min(n, k)} \begin{Bmatrix} k \\ j \end{Bmatrix} n^{\underline{j}} \left(\frac{1}{m}\right)^j. && \text{(since }p + q = 1\text{ and }1^{n-j} = 1\text{)}
+\end{aligned}$$
+
+#### 2. Indicator-Variable Combinatorial Double-Count (Bonus Verification)
+Why does $\mathbb{E}[X^k] = \sum_{j=0}^{\min(n, k)} \begin{Bmatrix} k \\ j \end{Bmatrix} n^{\underline{j}} m^{-j}$ hold combinatorially?
+Write $X = I_1 + I_2 + \dots + I_n$, where $I_r \in \{0, 1\}$ is the indicator that round $r$ draws the Joker ($\mathbb{E}[I_r] = 1/m$). Expanding $X^k = (I_1 + \dots + I_n)^k$ gives $n^k$ terms $I_{r_1} I_{r_2} \cdots I_{r_k}$ corresponding to functions $f: \{1, \dots, k\} \to \{1, \dots, n\}$.
+- If the image of $f$ has size $|\operatorname{Im}(f)| = j$, then since $I_r^c = I_r$ for any $c \ge 1$ and different rounds are independent, $\mathbb{E}[I_{r_1}\cdots I_{r_k}] = (1/m)^j$!
+- How many functions $f: \{1, \dots, k\} \to \{1, \dots, n\}$ have image size $j$? There are $\begin{Bmatrix} k \\ j \end{Bmatrix}$ ways to partition the domain $\{1, \dots, k\}$ into $j$ non-empty blocks, and $n^{\underline{j}}$ ways to assign distinct rounds in $\{1, \dots, n\}$ to those $j$ blocks! Summing over $j$ gives $\sum_{j=0}^{\min(n, k)} \begin{Bmatrix} k \\ j \end{Bmatrix} n^{\underline{j}} m^{-j}$ immediately!
+
+#### 3. Hand-Checkable Trace & Algorithm Contract
+- **Hand-Checkable Trace ($n = 3, m = 2, k = 3$)**:
+  - Using $\begin{Bmatrix} 3 \\ 1 \end{Bmatrix} = 1, \begin{Bmatrix} 3 \\ 2 \end{Bmatrix} = 3, \begin{Bmatrix} 3 \\ 3 \end{Bmatrix} = 1$:
+    $$\mathbb{E}[X^3] = 1 \cdot 3 \cdot \left(\frac{1}{2}\right)^1 + 3 \cdot 6 \cdot \left(\frac{1}{2}\right)^2 + 1 \cdot 6 \cdot \left(\frac{1}{2}\right)^3 = \frac{3}{2} + \frac{9}{2} + \frac{3}{4} = \frac{27}{4},$$
+    matching $\frac{1}{8}(0^3 \binom{3}{0} + 1^3 \binom{3}{1} + 2^3 \binom{3}{2} + 3^3 \binom{3}{3}) = \frac{3 + 24 + 27}{8} = \frac{54}{8} = \frac{27}{4}$.
+- **Input & Preconditions**: Integers $1 \le n, m < 998244353$, moment exponent $k \ge 1$ ($k \le 5000$ in standard version, $k \le 2 \times 10^5$ in NTT version), and prime modulus $p = 998244353 > k$ (with $m \not\equiv 0 \pmod p$).
+- **Postconditions (Output)**: Returns $\mathbb{E}[X^k] = \sum_{j=0}^{\min(n, k)} \begin{Bmatrix} k \\ j \end{Bmatrix} n^{\underline{j}} (m^{-1})^j \bmod 998244353$:
+  1. Compute row $k$ of the Stirling numbers of the second kind via 1 NTT (`stirling_2nd_row`, Section 6.4):
+     $$\begin{Bmatrix} k \\ j \end{Bmatrix} = [x^j] \left(\sum_{r=0}^k \frac{r^k}{r!} x^r\right) \left(\sum_{s=0}^k \frac{(-1)^s}{s!} x^s\right) \qquad (0 \le j \le k).$$
+  2. Accumulate $\sum_{j=0}^{\min(n, k)} \begin{Bmatrix} k \\ j \end{Bmatrix} n^{\underline{j}} (m^{-1})^j \bmod 998244353$ in $O(k)$ time.
+- **Time & Space Complexity**: $O(k \log k)$ time and $O(k)$ space via 1 NTT (or $O(k^2)$ DP when $k \le 5000$).
+- **Loop / Algebraic Invariant**: At index $j \in [0, \min(n, k)]$, the running term maintains $\mathbb{E}[X^{\underline{j}}] = n^{\underline{j}} m^{-j} \bmod p$ via $\text{term}_0 = 1$ and $\text{term}_{j+1} = \text{term}_j \cdot (n - j) \cdot m^{-1} \bmod p$.
+- **Failure Modes & Edge Cases**: Cap the summation at $\min(n, k)$ (though $\text{term}_j = 0$ automatically for $j > n$ since $n^{\underline{j}}$ hits the factor $n - n = 0$); do not precompute factorials up to $n \le 998244352$—compute $n^{\underline{j}}$ incrementally in $O(k)$ multiplications.
+
+</details>
+
+---
+
+## 6.6 Chapter Summary, Diagnostic Routing Checklist & Quarantined Library Verification Footnotes
+
+### Fast Diagnostic Routing Checklist for Chapter 06
+
+When faced with a binomial sum, polynomial shift, or power-weighted combinatorial expression, run through this 6-question diagnostic checklist in order:
+
+1. **Can the sum be aligned into a 1-NTT Cauchy or Cross-Correlation convolution?**
+   - If the summand factors into $\alpha(n)\beta(k)\gamma(n-k)$, use Cauchy convolution (`mul`).
+   - If the summand factors into $\alpha(n)\beta(i)\gamma(i+n)$ ($j - i = n$), reverse $\beta$ into $\widetilde{B}[r] = \beta(N - r)$ and read $[x^{N+n}](\widetilde{B} \cdot G)$ (§6.1).
+2. **Is it a pure binomial product with a standard Vandermonde structure?**
+   - Sum of lower indices fixed ($\binom{R}{k}\binom{S}{n-k}$) $\to$ Chu–Vandermonde $\binom{R+S}{n}$ (§6.1).
+   - Both lower indices carry $+k$ ($\binom{R}{a+k}\binom{S}{b+k}$ with $R \in \mathbb{Z}_{\ge 0}$) $\to$ flip $\binom{R}{a+k} = \binom{R}{R-a-k}$ (§6.1).
+   - Sum of upper indices fixed ($\binom{k}{a}\binom{n-k}{b}$) $\to$ Parallel summation $\binom{n+1}{a+b+1}$ via $(1-x)^{-(a+1)}(1-x)^{-(b+1)}$ (§6.1).
+3. **Does the free external parameter $n$ appear in only ONE binomial factor?**
+   - Apply **Engine 1 (Wilf's Snake Oil)**: form $\sum_{n \ge 0} S_n x^n$, swap $\sum_n$ inside $\sum_k$, collapse the $n$-sum via Master Kernels `K1`–`K7`, sum the $k$-series, and extract $[x^n]$ (§6.2).
+4. **Do multiple binomial factors depend on both $n$ and $k$?**
+   - Apply **Engine 2 (Egorychev Extraction)**: keep one $\binom{n}{k}$ intact, replace the other binomials via $\binom{A}{B} = [u^B](1+u)^A$ (Rule `E1`) or $[u^{A-B}](1-u)^{-B-1}$ (Rule `E2`), shift $k$ out of $[u^{\dots}]$ as $u^{ck}$, and collapse $\sum_k \binom{n}{k} W(u)^k = (1 + W(u))^n$ (§6.2).
+5. **Do you need $F(x + c)$, $(cx + e)^d F\!\left(\frac{ax+b}{cx+e}\right)$, or $(1 - cx)^{-\alpha} F\!\left(\frac{ax}{1-cx}\right) \bmod x^N$?**
+   - Use `poly_taylor_shift` in 1 NTT ($O(d \log d)$ when $p > d$; Lucas/SOS digit DP when $p \le d$) and the 4-step Bruhat decomposition for Möbius transforms (§6.3).
+   - **Watch Failure Mode #14**: When $\alpha = -d \in \{-(N-2), \dots, 0\}$ in the $\alpha$-Euler Transform, split $F(y) = F_{\le d}(y) + y^{d+1}F_{>d}(y)$ to shift the tail to $\alpha' = 1 > 0$ and avoid dividing by $(-d)^{\overline{d+1}} = 0$ (§6.3).
+6. **Is a polynomial $P(k)$ (or monomial $k^m$) weighting a huge-$n$ binomial sum $\sum_{k=0}^n P(k)\binom{n}{k} a^k b^{n-k}$, or is a DP polynomial in $x \le 10^9$?**
+   - Convert $P(k) = \sum_{j=0}^m c_j k^{\underline{j}}$ into the falling-factorial basis (via $\begin{Bmatrix} i \\ j \end{Bmatrix}$ when given monomials, or via $\widehat{P}(t)e^{-t}$ in 1 NTT when given point values $P(0 \dots m)$) and apply the division-free **Absorption Identity** $k^{\underline{j}}\binom{n}{k} = n^{\underline{j}}\binom{n-j}{k-j}$ (§6.4).
+   - If a degree-$d$ polynomial $P(x)$ is known at consecutive points $0, 1, \dots, d$, evaluate $P(T)$ at $T \le 10^{18}$ in **$O(d)$ time** via `eval_consecutive_lagrange` (§6.4).
+
+---
+
+### Quarantined Library Verification Footnotes
+
+In accordance with the textbook's **Strict Anti-Template Quarantine Policy** (`PROBLEM_CURATION.md` §5), bare algorithm-verification templates are excluded from the 8-problem pedagogical ladder above and provided here as unit-test benchmarks for your polynomial library:
+
+| Quarantine ID | Judge & Problem Title | Primitive / Engine Verified | Notes & Cross-Chapter Context |
+| :-: | :--- | :--- | :--- |
+| **`R-20`** | [Luogu P5395](https://www.luogu.com.cn/problem/P5395) / [Library Checker `stirling_number_of_the_second_kind`](https://judge.yosupo.jp/problem/stirling_number_of_the_second_kind) — *第二类斯特林数·行* | `stirling_2nd_row` (§6.4 Regime 1) | Unit-tests 1-NTT generation of $\begin{Bmatrix} n \\ 0 \end{Bmatrix}, \dots, \begin{Bmatrix} n \\ n \end{Bmatrix}$. Applied in **Mas-2 (`CF 1278F`)**. |
+| **`R-21`** | [Luogu P5396](https://www.luogu.com.cn/problem/P5396) / [Library Checker `stirling_number_of_the_second_kind_fixed_k`](https://judge.yosupo.jp/problem/stirling_number_of_the_second_kind_fixed_k) — *第二类斯特林数·列* | `stirling_2nd_col` (§6.4 Regime 2) | Unit-tests valuation shift $U(x) = \frac{e^x-1}{x}$ and $\frac{x^k}{k!}\exp(k \ln U(x))$. |
+| **`R-22`** | [Luogu P5408](https://www.luogu.com.cn/problem/P5408) / [Library Checker `stirling_number_of_the_first_kind`](https://judge.yosupo.jp/problem/stirling_number_of_the_first_kind) — *第一类斯特林数·行* | `stirling_1st_row` (§6.4 Regime 3) | Unit-tests $O(n \log n)$ doubling Taylor shift $P_{2m}(x) = P_m(x)P_m(x+m)$ for $x^{\overline{n}}$. Applied in **Adv-2 (`CF 960G`)**. |
+| **`R-23`** | [Luogu P5409](https://www.luogu.com.cn/problem/P5409) / [Library Checker `stirling_number_of_the_first_kind_fixed_k`](https://judge.yosupo.jp/problem/stirling_number_of_the_first_kind_fixed_k) — *第一类斯特林数·列* | `stirling_1st_col` (§6.4 Regime 4) | Unit-tests valuation shift $V(x) = \frac{-\ln(1-x)}{x}$ and $\frac{x^k}{k!}\exp(k \ln V(x))$. |
+| **`R-28`** | [Luogu P5393 / P5394](https://www.luogu.com.cn/problem/P5393) — *【模板】下降幂多项式乘法* | `ffp_from_values`, `ffp_to_values`, `ffp_mul` (§6.4) | Unit-tests the Point-Value EGF bridge $\widehat{P}(t) = C(t)e^t \iff C(t) = \widehat{P}(t)e^{-t}$. |
+| **`R-29`** | [Library Checker `polynomial_taylor_shift`](https://judge.yosupo.jp/problem/polynomial_taylor_shift) — *Polynomial Taylor Shift $F(x+c)$* | `poly_taylor_shift` (§6.3) | Unit-tests 1-NTT reverse-indexed convolution for $F(x+c)$. Applied in **Int-2 (`KUPC 2019 K`)** and **Adv-1 (`CF 923E`)**. |
+| **`R-46`** | [Codeforces 1264D2](https://codeforces.com/problemset/problem/1264/D2) — *Beautiful Bracket Sequence (Hard Version)* | Chu–Vandermonde & Absorption (§6.1, §6.4) | Reduces $\sum_k k \binom{a}{k}\binom{b}{c-k}$ via $k\binom{a}{k} = a\binom{a-1}{k-1}$ to a 1-line Vandermonde identity $\sum_i \binom{n}{i}$. |
+| **`R-05`–`R-12`, `R-30`–`R-34`, `R-44`, `R-47`** | Companion Prerequisite & Sequel Templates ([Luogu P4512](https://www.luogu.com.cn/problem/P4512), [LC `log`/`exp`/`pow`](https://judge.yosupo.jp/), [Luogu P5667](https://www.luogu.com.cn/problem/P5667), [LC `chirp_z`](https://judge.yosupo.jp/problem/multipoint_evaluation_on_geometric_sequence), [LC `compose`/`revert`](https://judge.yosupo.jp/)) | Underlying FPS Primitives (`Ch 01`–`Ch 05`) & Sequel Extensions (`Ch 07, 20, 21`) | Cross-referenced for readers benchmarking $\ln/\exp$ (`Ch 02`, used in `R-21, R-23`), Chirp-$Z$ (`Ch 07`), $O(d \log d)$ Shift of Sampling Points (`Ch 20`), and Fast Composition (`Ch 21`). |

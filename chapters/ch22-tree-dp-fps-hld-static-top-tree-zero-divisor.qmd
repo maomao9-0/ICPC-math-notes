@@ -1,0 +1,1333 @@
+---
+title: "Chapter 22: Polynomials on Trees: Heavy-Light Spine Divide-and-Conquer & Weight-Balanced Static Top Trees"
+subtitle: "From O(N²) Subtree Size Bounds to O(N log² N) Heavy-Light Rake/Compress, Dynamic DP Zero-Divisor Pairs (a, c) ≡ a · 0^c, and Vandermonde mulT on Trees"
+---
+
+::: {.callout-note}
+## Prerequisites & Learning Objectives
+
+**Prerequisites**:
+
+- [Chapter 5: Rational Generating Functions, Bostan–Mori & Berlekamp–Massey](ch05-rational-bostan-mori-berlekamp-massey.qmd) (polynomial ring operations and rational recurrences)
+- [Chapter 9: Divide-and-Conquer FFT & Online Relaxed Convolution](ch09-cdq-fft-online-relaxed-convolution.qmd) (divide-and-conquer polynomial multiplication and balanced merge trees)
+- [Chapter 13: Graphical Generating Functions: Eulerian, Bipartite, DAGs & Spanning Trees](ch13-graphical-gf-eulerian-bipartite-dags-sccs.qmd) (combinatorial structures on trees and graphs)
+
+**Learning Objectives**:
+
+1. **Distinguish $O(N^2)$ Naive Subtree Convolution from $\Theta(N^2 \log N)$ Unbalanced NTT Merging**: Prove the $\binom{N}{2}$ Lowest Common Ancestor (LCA) pair bound for naive subtree knapsack ($O(NK)$), and demonstrate why replacing inner loops with NTT still degrades to $\Theta(N^2 \log N)$ on path and caterpillar trees unless the tree topology is re-balanced.
+2. **Architect Heavy-Light `Rake` & 3-Way Weighted-Midpoint `Compress` ($O(N \log^2 N)$)**: Decompose arbitrary rooted tree polynomial recurrences into off-spine light-child merges (`Rake` via a degree-ordered min-heap) and on-spine heavy-chain matrix products (`Compress` via 3-way weighted-midpoint splitting on a Weight-Balanced Static Top Tree / `全局平衡二叉树`), accelerating $c \times c$ matrix products in the Fourier domain from $3c^3$ to $3c^2$ NTTs.
+3. **Eliminate Dynamic DP Division-by-Zero via Zero-Divisor Pairs (Failure Mode #10)**: Maintain light-child point-value products under dynamic vertex updates in $\mathbb{F}_p$ by lifting each frequency into the multiplicative group of pairs $(a, c) \equiv a \cdot 0^c$ ($a \in \mathbb{F}_p^\times, c \in \mathbb{Z}_{\ge 0}$), preventing permanent state corruption when an intermediate factor hits $0 \pmod p$.
+4. **Vectorize Subtree Subset Sums via Transposed Vandermonde Convolution (`mulT`)**: Reformulate global $k$-subset tree queries (such as Steiner tree size sums across all $\binom{N}{k}$ subsets) into a single $O(N \log N)$ reverse-indexed polynomial convolution over the subtree size frequency table.
+:::
+
+---
+
+## 22.1 Subtree Size Convolution Bounds ($O(N^2)$) vs. Arbitrary-Degree Polynomial Merging ($O(N \log^2 N)$)
+
+### The Concrete Combinatorial Model
+
+Suppose we are given a rooted tree $T = (V, E)$ with $N = |V|$ vertices rooted at $r = 1$. For each vertex $u \in V$, let $T_u$ denote the subtree rooted at $u$, and let $\text{sz}[u] = |T_u|$ denote its vertex count. In a wide class of tree counting problems—such as counting independent sets of size $k$, $k$-matchings, connected induced subgraphs, or antichains—the dynamic programming state at vertex $u$ is naturally packaged as a polynomial (or truncated formal power series) in $K[x]$ whose degree is bounded by $\text{sz}[u]$:
+
+$$F_u(x) = \sum_{k=0}^{\text{sz}[u]} f_{u,k} x^k,$$
+
+where $f_{u,k} = [x^k] F_u(x)$ counts the number of valid configurations inside $T_u$ of size (or weight) $k$. When $u$ merges the independent choices from its children $v_1, v_2, \dots, v_d \in \text{child}(u)$, the transition multiplies their generating functions:
+
+$$F_u(x) \leftarrow \text{Combine}\!\left(x, \prod_{v \in \text{child}(u)} F_v(x)\right).$$
+
+Before reaching for Fast Fourier Transform / Number Theoretic Transform (NTT) engines, every competitive programmer must first understand the exact boundary between the classical $O(N^2)$ naive subtree knapsack and the $O(N \log^2 N)$ Heavy-Light polynomial architecture.
+
+---
+
+### Theorem 22.1 (The $\binom{N}{2}$ Subtree Knapsack Bound and $O(NK)$ Truncation)
+
+Suppose we compute the product $\prod_{v \in \text{child}(u)} F_v(x)$ at every vertex $u \in T$ using the naive quadratic polynomial multiplication loop, maintaining an accumulator polynomial $A_u(x)$ whose current degree is $\text{cur\_sz}$ and multiplying it by the next child's polynomial $F_v(x)$ of degree $\text{sz}[v]$:
+
+```cpp
+// Naive subtree knapsack accumulator merge at vertex u (<= 15 lines)
+vector<mint> A = {1}; // cur_sz = 0 initially (counts vertex u alone)
+int cur_sz = 1;
+for (int v : child[u]) {
+    vector<mint> next_A(min(K, cur_sz + sz[v]) + 1, 0);
+    for (int i = 0; i <= min(K, cur_sz); ++i)
+        for (int j = 0; j <= min(K, sz[v]) && i + j <= K; ++j)
+            next_A[i + j] += A[i] * F[v][j];
+    A = move(next_A);
+    cur_sz += sz[v];
+}
+```
+
+1. **Untruncated Bound ($K = N$)**: The total number of inner-loop scalar multiplications `A[i] * F[v][j]` across the entire tree $T$ is exactly $\binom{N}{2} = \frac{N(N-1)}{2} = \Theta(N^2)$ (plus lower-order boundary terms for $i=0$ or $j=0$).
+2. **Capacity-Truncated Bound ($K \le N$)**: If every polynomial is truncated modulo $x^{K+1}$ (keeping only degrees $0 \le k \le K$), the total number of inner-loop operations across the entire tree is $O(NK)$.
+
+#### Proof by Bijective Double Counting
+
+Consider the untruncated case $K = N$. When vertex $u$ merges a child $v \in \text{child}(u)$ into its running accumulator $A_u(x)$, the degree of $A_u(x)$ equals the total number of vertices in $T_u$ already processed (namely $u$ itself plus all previously merged subtrees $T_{v'}$ for $v'$ preceding $v$ in $\text{child}(u)$), while the degree of $F_v(x)$ equals $\text{sz}[v] = |T_v|$.
+
+Therefore, the number of inner-loop iterations $(i, j)$ with $1 \le i \le \text{cur\_sz}$ and $1 \le j \le \text{sz}[v]$ equals:
+
+$$\text{cur\_sz} \times \text{sz}[v] = \left|\{w_1 \in T_u \text{ already processed}\}\right| \times \left|\{w_2 \in T_v\}\right|.$$
+
+Each such pair $(w_1, w_2)$ of vertices in $T$ has $\operatorname{LCA}(w_1, w_2) = u$, and is counted **exactly once** throughout the entire DFS—specifically, at the unique moment when the child subtree $T_v$ containing $w_2$ is merged into the accumulator at $u = \operatorname{LCA}(w_1, w_2)$ that already contains $w_1$. Summing over all $u \in V$ and all children $v \in \text{child}(u)$ bijectively partitions the set of all unordered vertex pairs $\{w_1, w_2\} \subseteq V$:
+
+$$\sum_{u \in V} \sum_{v \in \text{child}(u)} \text{cur\_sz}_{u,v} \cdot \text{sz}[v] = \binom{N}{2} = \frac{N(N-1)}{2}.$$
+
+For the capacity-truncated case $K \le N$, the merge between an accumulator of size $s_1 = \text{cur\_sz}$ and a child of size $s_2 = \text{sz}[v]$ performs $\min(s_1, K) \cdot \min(s_2, K)$ operations. We split all merges across the tree into three disjoint cases:
+
+- **Case 1 ($s_1 \ge K$ and $s_2 \ge K$)**: Both merged components contain at least $K$ vertices. Treating components of size $\ge K$ as macro-nodes in a binary merge tree, there are at most $\lfloor N/K \rfloor$ disjoint subtrees of size $\ge K$, so at most $\lfloor N/K \rfloor - 1$ merges can occur between two components both of size $\ge K$. Each such merge costs $K^2$, contributing at most $(N/K) \cdot K^2 = NK$.
+- **Case 2 ($s_1 < K$ and $s_2 < K$)**: The merge cost is $s_1 \cdot s_2$, which equals the number of vertex pairs $(w_1, w_2)$ between the two components whose merged component still has size $< 2K$. Each vertex can participate in at most $2K$ such pairs before its component size exceeds $2K$, contributing at most $2NK$ overall.
+- **Case 3 (One of $s_1, s_2$ is $\ge K$ and the other is $< K$)**: Without loss of generality $s_1 \ge K$ and $s_2 < K$. The merge cost is $K \cdot s_2$. Every vertex in the smaller component $T_v$ (of size $s_2 < K$) is absorbed into a component of size $\ge K$; once inside a component of size $\ge K$, that vertex can never belong to the smaller side ($< K$) of a Case 3 merge again! Thus each vertex $w \in V$ is charged at most $K$ once in its lifetime, contributing at most $NK$.
+
+Summing all three cases proves that capacity-$K$ tree knapsack runs in $O(NK)$ time and $O(NK)$ space without any FFT/NTT machinery. $\blacksquare$
+
+::: {.callout-important}
+## Algorithm Contract: Truncated Subtree Knapsack Convolution ($O(NK)$ / $O(N^2)$)
+
+- **Input & Preconditions**: A rooted tree $T = (V, E)$ with $N$ vertices, integer capacity $K \in [1, N]$, and at each vertex $u$ a base polynomial $F_u^{(0)}(x)$ of degree $\le 1$ (initializing $\text{sz}[u] = 1$).
+- **Postconditions (Output)**: Computes for every vertex $u \in V$ the truncated subtree polynomial $F_u(x) \bmod x^{\min(\text{sz}[u], K) + 1}$ of degree $\le \min(\text{sz}[u], K)$.
+- **Time & Space Complexity**: $O(NK)$ time ($O(N^2)$ when $K = N$) and $O(NK)$ space across the entire tree without FFT/NTT.
+- **Loop / Algebraic Invariant**: Before merging child $v$ into $u$, $\text{sz}[u]$ equals the exact number of vertices merged into $u$'s prefix of children so far, and the loop bounds $i \in [0, \min(\text{sz}[u], K)]$, $j \in [0, \min(\text{sz}[v], K - i)]$ evaluate the exact truncated product $F_u^{\text{old}}(x) F_v(x) \bmod x^{\min(\text{sz}[u] + \text{sz}[v], K) + 1}$ before updating $\text{sz}[u] \gets \text{sz}[u] + \text{sz}[v]$.
+- **Failure Modes & Edge Cases**: Updating $\text{sz}[u] \gets \text{sz}[u] + \text{sz}[v]$ *before* the nested loop or iterating $i$ up to $K$ without clamping to $\text{sz}[u]$ destroys the LCA pair-counting bound and degrades the runtime from $O(NK)$ to $\Theta(N K^2)$ (or $\Theta(N^3)$ when $K = N$).
+:::
+
+---
+
+### Why Naive NTT Tree DP Still Degrades to $\Theta(N^2 \log N)$
+
+When $N \le 2 \times 10^5$ and we need the **entire polynomial** $F_{\text{root}}(x)$ up to degree $N$ (i.e., $K = N$), $O(N^2)$ is far too slow. A natural first instinct is to replace the nested `for` loop in the DP with an $O((d_1 + d_2) \log(d_1 + d_2))$ NTT multiplication.
+
+**Why does this fail?** Unlike the naive loop—where multiplying a polynomial of degree $N-1$ by a polynomial of degree $1$ takes $O(N \cdot 1) = O(N)$ time—an NTT convolution of degree $d_1$ and degree $d_2$ must transform both operands to length $2^{\lceil \log_2(d_1 + d_2 + 1) \rceil}$, taking $\Theta((d_1 + d_2) \log(d_1 + d_2))$ time even when $\min(d_1, d_2) = 1$!
+
+We encounter two distinct geometric bottlenecks on trees:
+
+1. **Horizontal Bottleneck (High-Degree Star Vertex)**: If vertex $u$ has $d$ leaf children $v_1, \dots, v_d$ each of degree $1$, merging them sequentially one by one via NTT costs $\sum_{i=1}^d i \log i = \Theta(d^2 \log d)$.
+   - *Fix*: As learned in Chapter 9, merging the children of $u$ in a **Min-Heap (Huffman) priority queue ordered by polynomial degree** reduces the horizontal merge at $u$ to $O(D_u \log^2 D_u)$ where $D_u = \sum_{v \in \text{child}(u)} \text{sz}[v]$.
+2. **Vertical Bottleneck (Long Path / Caterpillar Spine)**: Suppose $T$ is a simple path $1 - 2 - 3 - \dots - N$ (or a caterpillar where every spine vertex $u_i$ has one leaf child and one spine child $u_{i+1}$). At vertex $u_i$, $\text{sz}[u_{i+1}] = N - i$. Even if there is only one child (or one leaf child of degree $1$), computing $F_{u_i}(x)$ from $F_{u_{i+1}}(x)$ via a polynomial multiplication of size $N - i$ at every step $i = N-1, N-2, \dots, 1$ costs:
+   $$\sum_{i=1}^{N-1} \Theta((N - i) \log(N - i)) = \Theta(N^2 \log N).$$
+
+Notice the irony: on a path of length $N$, naive quadratic multiplication takes $O(N^2)$ (or $O(N)$ if each step only shifts/adds a constant), whereas sequential bottom-up NTT takes $\Theta(N^2 \log N)$!
+
+---
+
+### Concrete Hand-Checkable Trace ($N = 4$ Tree Independent Set Polynomials)
+
+Before formalizing the Heavy-Light architecture, let us trace the **Tree Independent Set Polynomial** on a 4-vertex tree $T$ rooted at $1$, with edges $(1,2), (2,3), (1,4)$ (so $1$ has children $2$ and $4$, and $2$ has child $3$).
+
+We want to compute $F_1(x) = \sum_{k=0}^4 f_k x^k$, where $f_k$ is the number of independent sets of $T$ of size $k$. At each vertex $u$, we track two polynomials:
+
+- $F_{u,0}(x)$: independent sets of $T_u$ where $u$ is **not** selected ($u \notin I$). If $u \notin I$, each child $v \in \text{child}(u)$ may either be selected or not:
+  $$F_{u,0}(x) = \prod_{v \in \text{child}(u)} \bigl(F_{v,0}(x) + F_{v,1}(x)\bigr).$$
+- $F_{u,1}(x)$: independent sets of $T_u$ where $u$ **is** selected ($u \in I$, contributing factor $x^1$). If $u \in I$, no child $v$ may be selected:
+  $$F_{u,1}(x) = x \prod_{v \in \text{child}(u)} F_{v,0}(x).$$
+
+Let us trace all 4 vertices by hand:
+
+1. **Leaves $u = 3$ and $u = 4$** ($\text{child}(u) = \emptyset$, empty product $= 1$):
+   $$F_{3,0}(x) = 1, \quad F_{3,1}(x) = x, \qquad F_{4,0}(x) = 1, \quad F_{4,1}(x) = x.$$
+2. **Vertex $u = 2$** (sole child $v = 3$):
+   $$F_{2,0}(x) = F_{3,0}(x) + F_{3,1}(x) = 1 + x, \qquad F_{2,1}(x) = x \cdot F_{3,0}(x) = x.$$
+   Total in $T_2 = \{2, 3\}$: $F_2(x) = F_{2,0}(x) + F_{2,1}(x) = 1 + 2x$ ($1$ empty set, $2$ singletons $\{2\}, \{3\}$, and $0$ pairs since $(2,3) \in E$).
+3. **Root $u = 1$** (children $v \in \{2, 4\}$):
+   $$F_{1,0}(x) = \bigl(F_{2,0}(x) + F_{2,1}(x)\bigr)\bigl(F_{4,0}(x) + F_{4,1}(x)\bigr) = (1 + 2x)(1 + x) = 1 + 3x + 2x^2,$$
+   $$F_{1,1}(x) = x \cdot F_{2,0}(x) F_{4,0}(x) = x(1 + x)(1) = x + x^2.$$
+   Summing gives the global independent set polynomial of $T$:
+   $$F_1(x) = F_{1,0}(x) + F_{1,1}(x) = 1 + 4x + 3x^2.$$
+
+**Hand Verification**:
+- $k = 0$: $\emptyset$ ($1$ set).
+- $k = 1$: $\{1\}, \{2\}, \{3\}, \{4\}$ ($4$ sets).
+- $k = 2$: non-adjacent pairs among $(1,2), (2,3), (1,4)$ are $\{1,3\}, \{2,4\}, \{3,4\}$ ($3$ sets).
+- $k = 3$: any 3 vertices include either $\{1,2\}$ or $\{2,3\}$ or $\{1,4\}$, so $0$ sets.
+
+---
+
+### The Diagnostic Signal & Reverse-Engineering Scratchpad
+
+::: {.callout-tip}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: Spine vs. Off-Spine Separation
+
+- **The Diagnostic Signal**: You have a bottom-up Tree DP where each vertex $u$ computes one or a constant number $c$ of polynomials $\mathbf{F}_u(x) = (F_{u,0}(x), \dots, F_{u,c-1}(x))^T$ of degree $O(\text{sz}[u])$, and $N \le 2 \times 10^5$ prevents $O(N^2)$ knapsack.
+- **The Reverse-Engineering Scratchpad**:
+  1. Why did bottom-up NTT fail on a path? Because at every vertex $u$ on the spine, we multiplied a *huge* polynomial $F_{\text{heavy}(u)}(x)$ (of degree $\approx \text{sz}[u]$) with a *tiny* polynomial from the remaining children (of degree $\text{sz}[u] - 1 - \text{sz}[\text{heavy}(u)]$).
+  2. Fix the imbalance by singling out the **heavy child** $h_u = \arg\max_{v \in \text{child}(u)} \text{sz}[v]$ at every non-leaf vertex $u$, and calling all other children $v \in \text{light}(u) = \text{child}(u) \setminus \{h_u\}$ **light children**.
+  3. In our Independent Set recurrence, separate $h_u$ from $\text{light}(u)$:
+     $$L_{u,0}(x) = \prod_{v \in \text{light}(u)} \bigl(F_{v,0}(x) + F_{v,1}(x)\bigr), \qquad L_{u,1}(x) = x \prod_{v \in \text{light}(u)} F_{v,0}(x).$$
+     Once $L_{u,0}(x)$ and $L_{u,1}(x)$ are known, the dependency of $\mathbf{F}_u(x)$ on the heavy child $\mathbf{F}_{h_u}(x)$ is a **linear $2 \times 2$ polynomial matrix transition**:
+     $$\begin{pmatrix} F_{u,0}(x) \\ F_{u,1}(x) \end{pmatrix} = \underbrace{\begin{pmatrix} L_{u,0}(x) & L_{u,0}(x) \\ L_{u,1}(x) & 0 \end{pmatrix}}_{M_u(x)} \begin{pmatrix} F_{h_u, 0}(x) \\ F_{h_u, 1}(x) \end{pmatrix}.$$
+  4. Now the entire heavy chain $u_1 \to u_2 \to \dots \to u_k$ (where $u_k$ is a leaf with $F_{u_k,0}(x) = L_{u_k,0}(x) = 1$ and $F_{u_k,1}(x) = L_{u_k,1}(x) = x$) reduces to an associative matrix product $M_{u_1}(x) M_{u_2}(x) \cdots M_{u_{k-1}}(x) \mathbf{F}_{u_k}(x)$, which we can balance by **weight-balanced divide-and-conquer**!
+:::
+
+---
+
+## 22.2 HLD + Weight-Balanced Static Top Tree (`全局平衡二叉树`): `Rake` & 3-Way Weighted-Midpoint `Compress`
+
+### Heavy-Light Decomposition and the Two Tree Contraction Primitives
+
+Let $T = (V, E)$ be a rooted tree of size $N$. For each vertex $u \in V$:
+
+- If $u$ is a leaf, $\text{heavy}(u) = \text{null}$ and $\text{light}(u) = \emptyset$.
+- If $u$ is an internal vertex, choose one child $h_u = \text{heavy}(u) \in \text{child}(u)$ maximizing $\text{sz}[h_u]$ (breaking ties arbitrarily), and define $\text{light}(u) = \text{child}(u) \setminus \{h_u\}$.
+
+The edges $(u, \text{heavy}(u))$ are **heavy edges**, which partition $V$ into vertex-disjoint **heavy chains** $C = (u_1, u_2, \dots, u_L)$, where $u_1$ is the chain head and $u_L$ is a leaf. The edges $(u, v)$ for $v \in \text{light}(u)$ are **light edges**.
+
+In the language of Sleator–Tarjan–Alstrup **Top Trees** (known in the Chinese competitive programming literature as **Weight-Balanced Static Top Trees** or **`全局平衡二叉树`**, introduced for Dynamic DP by杨哲 / Yang Zhe in 2007), contracting a rooted tree to a single root cluster uses two fundamental algebraic primitives:
+
+1. **`Rake` (Horizontal Off-Spine Contraction)**: At each vertex $u$, merge the completed polynomial results $\mathbf{F}_v(x)$ of all light children $v \in \text{light}(u)$ into the local transfer matrix $M_u(x)$.
+2. **`Compress` (Vertical On-Spine Contraction)**: Along each heavy chain $u_1 \to u_2 \to \dots \to u_L$, multiply the polynomial transfer matrices $M_{u_1}(x) M_{u_2}(x) \cdots M_{u_{L-1}}(x) \mathbf{F}_{u_L}(x)$ using a balanced divide-and-conquer tree.
+
+```{mermaid}
+flowchart TD
+    subgraph HeavyChain["Heavy Chain C: u1 -> u2 -> u3 -> u4 (Compress via 3-Way Weighted Split)"]
+        direction TB
+        U1["u1 (Chain Head, weight w1)"] -->|"Heavy edge"| U2["u2 (Weighted Midpoint m, weight w2)"]
+        U2 -->|"Heavy edge"| U3["u3 (weight w3)"]
+        U3 -->|"Heavy edge"| U4["u4 (Leaf, weight w4 = 1)"]
+    end
+    subgraph LightChildren["Light Subtrees (Rake via Min-Heap Merge at u2)"]
+        direction LR
+        V1["Light child v1 (deg sz[v1])"] -->|"Rake (Min-Heap NTT)"| M2["Local Matrix M_u2(x)"]
+        V2["Light child v2 (deg sz[v2])"] -->|"Rake (Min-Heap NTT)"| M2
+        M2 --> U2
+    end
+```
+
+---
+
+### Step 1: `Rake` — Merging Light Children in $O(N \log^2 N)$ Globally
+
+#### Lemma 22.2 (Light-Degree Sum Bound)
+
+For every light child $v \in \text{light}(u)$, $\text{sz}[v] \le \frac{1}{2}\text{sz}[u]$. Consequently, the unique path from any vertex $w \in V$ to the global root $r$ traverses at most $\lfloor \log_2 N \rfloor$ light edges, and the sum of degrees of all light-child polynomials across the entire tree satisfies:
+
+$$\sum_{u \in V} \sum_{v \in \text{light}(u)} \text{sz}[v] \le N \log_2 N.$$
+
+*Proof*: Since $h_u$ maximizes subtree size among the children of $u$, $\text{sz}[h_u] \ge \text{sz}[v]$ for every $v \in \text{light}(u)$. Thus $\text{sz}[u] \ge 1 + \text{sz}[h_u] + \text{sz}[v] > 2\,\text{sz}[v]$, so $\text{sz}[v] \le \lfloor \frac{1}{2}\text{sz}[u] \rfloor$. Every time we step from a light child $v$ to its parent $u$, the subtree size at least doubles, which can happen at most $\lfloor \log_2 N \rfloor$ times along any leaf-to-root path. Rewriting $\sum_{u \in V} \sum_{v \in \text{light}(u)} \text{sz}[v] = \sum_{w \in V} (\text{number of light edges on the path from } w \text{ to } r)$ yields the bound $\le N \log_2 N$. $\blacksquare$
+
+At a fixed vertex $u$, suppose we need to compute $L_u(x) = \prod_{v \in \text{light}(u)} G_v(x)$, where $\deg G_v \le \text{sz}[v]$. Let $W_u = \sum_{v \in \text{light}(u)} \text{sz}[v]$ be the total light weight at $u$. By pushing all polynomials $\{G_v(x) : v \in \text{light}(u)\}$ into a **min-heap ordered by polynomial degree** and repeatedly multiplying the two lowest-degree polynomials via NTT:
+
+- Every polynomial $G_v(x)$ participates in at most $O(\log(|\text{light}(u)| + 1)) \le O(\log N)$ merges within $u$'s min-heap (or, equivalently, we can split the list of light children at their degree midpoint).
+- Thus the `Rake` work at vertex $u$ is $O(W_u \log^2 W_u)$.
+- Summing over all $u \in V$ using $\sum_{u \in V} W_u \le N \log_2 N$ (and noting more tightly that each vertex $w \in V$ participates in at most $\log_2 N$ light subtrees and at most $\log_2 N$ heap merges inside each, paying $O(\log N)$ per NTT butterfly per merge) gives a global `Rake` complexity of $O(N \log^2 N)$.
+
+---
+
+### Step 2: `Compress` — 3-Way Weighted-Midpoint Divide-and-Conquer Along Heavy Chains
+
+Now consider a single heavy chain $C = (u_1, u_2, \dots, u_L)$, where $u_{i+1} = \text{heavy}(u_i)$ for $1 \le i < L$ and $u_L$ is a leaf. After the `Rake` phase has merged all light children of every $u_i \in C$ (having already recursively solved their subtrees), each vertex $u_i$ ($1 \le i < L$) holds a $c \times c$ polynomial transfer matrix $M_{u_i}(x)$ whose entries have degree at most the **light weight** of $u_i$:
+
+$$w_i = 1 + \sum_{v \in \text{light}(u_i)} \text{sz}[v] = \text{sz}[u_i] - \text{sz}[u_{i+1}].$$
+
+For the leaf $u_L$ at the bottom of the chain, its state vector $\mathbf{F}_{u_L}(x)$ has degree $w_L = 1$ (and we can view $\mathbf{F}_{u_L}(x)$ as the final $c \times c$ or $c \times 1$ factor at index $L$). Notice that the sum of light weights along the entire heavy chain $C$ equals the subtree size of the chain head $u_1$:
+
+$$W_{[1, L]} = \sum_{i=1}^L w_i = \sum_{i=1}^{L-1} \bigl(\text{sz}[u_i] - \text{sz}[u_{i+1}]\bigr) + \text{sz}[u_L] = \text{sz}[u_1].$$
+
+Moreover, because the heavy chains partition all vertices of $T$ and every light subtree is the $\text{sz}[u_1]$ of its own heavy chain head $u_1$, Lemma 22.2 immediately implies that the sum of $\text{sz}[u_1]$ over **all** heavy chain heads $u_1$ in $T$ satisfies:
+
+$$\sum_{C \in \text{Chains}(T)} W_C = \sum_{C \in \text{Chains}(T)} \text{sz}[\text{head}(C)] = N + \sum_{u \in V} \sum_{v \in \text{light}(u)} \text{sz}[v] \le N (\log_2 N + 1).$$
+
+How should we parenthesize the matrix chain product $M_{u_1}(x) M_{u_2}(x) \cdots M_{u_L}(x)$ along a single heavy chain $C$ of total weight $W_C = \text{sz}[u_1]$?
+
+::: {.callout-warning}
+## Failure Mode: Naive Index-Midpoint Halving ($m = \lfloor (l+r)/2 \rfloor$) Degrades to $O(N \log^3 N)$
+
+A very common implementation bug in Heavy-Light polynomial DP is to recursively multiply $M_{u_l}(x) \cdots M_{u_r}(x)$ by splitting at the **array index midpoint** $m = \lfloor (l + r) / 2 \rfloor$:
+
+$$\text{solve}(l, r) = \text{solve}(l, m) \times \text{solve}(m + 1, r).$$
+
+**Why does this fail?** The polynomial degree of $M_{u_i}(x)$ is $w_i$, which is **not** uniform ($w_i \neq 1$)! Suppose $u_1$ has a light child of size $N/3$, while $u_2, \dots, u_{N/2}$ have no light children ($w_2 = \dots = w_{N/2} = 1$). If we split by index midpoint $m = \lfloor(l+r)/2\rfloor$, the heavy matrix $M_{u_1}(x)$ of degree $N/3$ is repeatedly multiplied across $\Theta(\log L) = \Theta(\log N)$ recursion levels *inside this single heavy chain*, costing $\Theta(W_C \log^2 W_C)$ per chain. When this happens across nested heavy chains, the global time complexity degrades to $O(N \log^3 N)$ (causing TLE on $N = 2 \times 10^5$ with $2 \times 2$ or $3 \times 3$ matrices).
+
+**Why naive 2-way weighted split also fails**: What if we pick the split point $m$ where the prefix weight $\sum_{i=l}^m w_i \approx \frac{1}{2} W_{[l,r]}$ and recurse on $[l, m]$ and $[m+1, r]$? If a **single vertex** $u_m$ has huge light weight $w_m = 0.99 \, W_{[l,r]}$, then whichever side $[l, m]$ or $[m, r]$ contains $u_m$ still has weight $\ge 0.99 \, W_{[l,r]}$! It can take $\Omega(L)$ steps to isolate $u_m$, degrading the recursion tree to depth $\Omega(L)$.
+:::
+
+---
+
+### The Fix: 3-Way Weighted-Midpoint Split (`[l, m-1]`, `{m}`, `[m+1, r]`)
+
+To guarantee geometric weight decay at every recursion step regardless of how skewed the vertex weights $w_i$ are, we isolate the **weighted midpoint vertex $u_m$ as a middle factor**:
+
+#### Theorem 22.3 (3-Way Weighted-Midpoint `Compress` Bound)
+
+Given a heavy-chain subsegment $[l, r]$ with positive integer weights $w_l, w_{l+1}, \dots, w_r$ and total weight $W = \sum_{i=l}^r w_i$, let $m \in [l, r]$ be the **first** index such that the prefix weight reaches at least half of $W$:
+
+$$\sum_{i=l}^{m} w_i \ge \frac{W}{2} \quad \text{and} \quad \sum_{i=l}^{m-1} w_i < \frac{W}{2}.$$
+
+Then:
+
+1. The strict left subsegment $[l, m-1]$ has total weight $W_{\text{left}} = \sum_{i=l}^{m-1} w_i < \frac{W}{2}$.
+2. The strict right subsegment $[m+1, r]$ has total weight $W_{\text{right}} = W - \sum_{i=l}^m w_i \le W - \frac{W}{2} = \frac{W}{2}$.
+3. Computing the segment product via the **3-way decomposition**
+   $$P_{[l, r]}(x) = P_{[l, m-1]}(x) \cdot M_{u_m}(x) \cdot P_{[m+1, r]}(x)$$
+   (where $M_{u_m}(x)$ is already computed during `Rake` and requires **no further vertical recursion**) guarantees that every recursive subproblem $[l, m-1]$ and $[m+1, r]$ has total weight $\le \lfloor W/2 \rfloor$.
+
+#### Global $O(N \log^2 N)$ Time Complexity Proof
+
+Let us analyze the total NTT work across the entire tree $T$:
+
+1. **Within a single heavy chain $C$ of total weight $W_C$**: At the node $m$ of the divide-and-conquer tree covering $[l, r]$ of total weight $W$, we perform at most two polynomial matrix multiplications of total degree $W$ (first multiplying the smaller of $P_{[l, m-1]}$ and $P_{[m+1, r]}$ with $M_{u_m}$, then multiplying by the remaining side), costing $O(c^3 W \log W)$ operations. Because both recursive children $[l, m-1]$ and $[m+1, r]$ have weight $\le W/2$ and their weights are disjoint ($W_{\text{left}} + w_m + W_{\text{right}} = W$), each vertex weight $w_i$ participates in the `Compress` multiplications of only the $O(\log(W_C / w_i))$ ancestor intervals $[l, r]$ that strictly contain $i$ as a left or right child, plus at most once as the midpoint $m$ itself.
+2. **Globally across the entire Static Top Tree (`全局平衡二叉树`)**: Consider any vertex $v \in V$. Its base weight is $1$. As we walk up the Static Top Tree from $v$ to the global root:
+   - Moving from a `Compress` child ($[l, m-1]$ or $[m+1, r]$) to its parent interval $[l, r]$ at least **doubles** the total subtree/segment weight.
+   - Moving across a `Rake` light edge (from the head $u_1$ of a heavy chain into a light child of $p = \text{parent}(u_1)$) also at least **doubles** the total subtree size ($\text{sz}[p] \ge 2\,\text{sz}[u_1]$).
+   - Therefore, the total depth of the combined `Rake` + `Compress` tree from any vertex $v \in V$ to the global root is at most $2 \log_2 N$! Every unit of degree $1$ participates in at most $2 \log_2 N$ polynomial multiplications across the entire algorithm, each costing $O(\log N)$ per degree in NTT. Summing over all $N$ vertices yields an exact global bound of $O(c^3 N \log^2 N)$ time and $O(c^2 N)$ space. $\blacksquare$
+
+---
+
+### The Fourier-Domain $3c^2$ Matrix Multiplication Optimization
+
+When the state dimension is $c = 2$ (e.g., Independent Sets or Vertex Cover) or $c = 3$ (e.g., Tree Paths or Max Subtree Sum), a naive $c \times c$ polynomial matrix product $C(x) = A(x) B(x)$ computes $c^3$ independent polynomial products $A_{i,k}(x) B_{k,j}(x)$, requiring $3c^3$ NTT calls (24 NTTs for $c = 2$, 81 NTTs for $c = 3$).
+
+Because the Discrete Fourier Transform is a **linear ring isomorphism** on $\mathbb{F}_p[x] / (x^L - 1)$ whenever $L = 2^{\lceil \log_2(\deg A + \deg B + 1) \rceil}$, we can commute the matrix multiplication with the NTT:
+
+1. **Forward Transform ($2c^2$ NTTs)**: Zero-pad all $c^2$ entries of $A(x)$ and all $c^2$ entries of $B(x)$ to length $L$ and apply a forward NTT of length $L$ to each entry, obtaining point-value matrices $\widehat{A}(\omega^t)$ and $\widehat{B}(\omega^t)$ for $t = 0, \dots, L-1$.
+2. **Pointwise Scalar Matrix Product ($O(c^3 L)$ scalar ops, $0$ NTTs)**: For each frequency $t \in [0, L-1]$, multiply the $c \times c$ scalar matrices in $\mathbb{F}_p$:
+   $$\widehat{C}_{i,j}(\omega^t) = \sum_{k=0}^{c-1} \widehat{A}_{i,k}(\omega^t) \cdot \widehat{B}_{k,j}(\omega^t) \pmod p.$$
+3. **Inverse Transform ($c^2$ INTTs)**: Apply an inverse NTT of length $L$ to each of the $c^2$ entries of $\widehat{C}$ to recover the coefficient matrix $C(x)$ of degree $\deg A + \deg B$.
+
+This reduces the number of NTT transforms from $3c^3$ to **$3c^2$**—cutting the NTT count from $24 \to 12$ for $2 \times 2$ matrices ($2\times$ speedup) and from $81 \to 27$ for $3 \times 3$ matrices ($3\times$ speedup)!
+
+```cpp
+// 3-Way Weighted-Midpoint Compress along heavy chain C[l..r] (<= 15 lines)
+PolyMat compress_solve(int l, int r, const vector<PolyMat>& M, const vector<int>& pref) {
+    if (l == r) return M[l];
+    int total_w = pref[r + 1] - pref[l], m = l;
+    while (m < r && (pref[m + 1] - pref[l]) * 2 < total_w) ++m;
+    if (m == l) return poly_mat_mul(M[l], compress_solve(l + 1, r, M, pref));
+    if (m == r) return poly_mat_mul(compress_solve(l, r - 1, M, pref), M[r]);
+    PolyMat L = compress_solve(l, m - 1, M, pref);
+    PolyMat R = compress_solve(m + 1, r, M, pref);
+    return poly_mat_mul(poly_mat_mul(L, M[m]), R);
+}
+```
+
+---
+
+### Concrete Hand-Checkable Trace ($N = 5$ Tree Antichain Polynomial via `Rake` + `Compress`)
+
+Let us trace **AtCoder ABC 269 Ex (Antichain)** on a 5-vertex tree $T$ rooted at $1$:
+- Edges: $(1,2), (2,3), (3,4)$ forming a heavy spine $1 \to 2 \to 3 \to 4$, plus a light leaf $(2,5)$ attached to vertex $2$.
+- Subtree sizes: $\text{sz}[4] = 1$, $\text{sz}[3] = 2$, $\text{sz}[5] = 1$, $\text{sz}[2] = 1 + \text{sz}[3] + \text{sz}[5] = 4$, $\text{sz}[1] = 5$.
+- At vertex $2$, $\text{sz}[3] = 2 > \text{sz}[5] = 1$, so $\text{heavy}(2) = 3$ and $\text{light}(2) = \{5\}$. Thus the main heavy chain is $C = (1, 2, 3, 4)$, and $\{5\}$ is a singleton heavy chain of its own.
+
+**Combinatorial Recurrence for Antichains**: An antichain in $T_u$ either selects $u$ itself (contributing $x^1$ and forbidding all descendants of $u$) or selects an independent antichain inside each child subtree $T_v$ for $v \in \text{child}(u)$:
+
+$$F_u(x) = x + \prod_{v \in \text{child}(u)} F_v(x).$$
+
+Separating the heavy child $h_u$ from the light children $\text{light}(u)$ gives the 1D affine transition along the heavy chain:
+
+$$F_u(x) = L_u(x) F_{h_u}(x) + x, \qquad \text{where } L_u(x) = \prod_{v \in \text{light}(u)} F_v(x).$$
+
+In $2 \times 2$ homogeneous matrix form (or equivalently tracked as a pair $(A_u(x), B_u(x))$ representing the affine map $F \mapsto A_u(x) F + B_u(x)$):
+
+$$\begin{pmatrix} F_u(x) \\ 1 \end{pmatrix} = \underbrace{\begin{pmatrix} L_u(x) & x \\ 0 & 1 \end{pmatrix}}_{M_u(x)} \begin{pmatrix} F_{h_u}(x) \\ 1 \end{pmatrix}, \qquad \begin{pmatrix} F_{\text{leaf}}(x) \\ 1 \end{pmatrix} = \begin{pmatrix} 1 + x \\ 1 \end{pmatrix}.$$
+
+Let us execute the algorithm step by step:
+
+1. **Solve Light Chain $(5)$**: Vertex $5$ is a leaf, so $F_5(x) = 1 + x$.
+2. **`Rake` on Main Heavy Chain $C = (1, 2, 3, 4)$**:
+   - $u_1 = 1$: $\text{light}(1) = \emptyset \implies L_1(x) = 1$, weight $w_1 = 1$. Affine map $M_1 = (1, x)$.
+   - $u_2 = 2$: $\text{light}(2) = \{5\} \implies L_2(x) = F_5(x) = 1 + x$, weight $w_2 = 1 + \text{sz}[5] = 2$. Affine map $M_2 = (1 + x, x)$.
+   - $u_3 = 3$: $\text{light}(3) = \emptyset \implies L_3(x) = 1$, weight $w_3 = 1$. Affine map $M_3 = (1, x)$.
+   - $u_4 = 4$ (leaf): $F_4(x) = 1 + x$, represented at the chain tail as affine map $M_4 = (0, 1 + x)$ applied to dummy $0$, or simply multiplying $M_1 M_2 M_3$ and evaluating at $F_4(x) = 1 + x$.
+3. **3-Way Weighted-Midpoint `Compress` on $[1, 3]$** with weights $(w_1, w_2, w_3) = (1, 2, 1)$, total weight $W = 4$:
+   - Prefix weights: $w_1 = 1 < 2$, $w_1 + w_2 = 3 \ge 2 \implies$ weighted midpoint is $m = 2$!
+   - Left subsegment $[1, 1]$ has $M_1 = (1, x)$ (weight $1 \le 2$).
+   - Midpoint is $M_2 = (1 + x, x)$ (weight $2$).
+   - Right subsegment $[3, 3]$ has $M_3 = (1, x)$ (weight $1 \le 2$).
+   - Composing affine maps $(A_1, B_1) \circ (A_2, B_2) = (A_1 A_2, A_1 B_2 + B_1)$:
+     $$M_1 \circ M_2 = (1, x) \circ (1 + x, x) = (1 + x, x + x) = (1 + x, 2x),$$
+     $$(M_1 \circ M_2) \circ M_3 = (1 + x, 2x) \circ (1, x) = \bigl(1 + x, (1 + x)x + 2x\bigr) = (1 + x, 3x + x^2).$$
+4. **Apply to Leaf $F_4(x) = 1 + x$**:
+   $$F_1(x) = (1 + x) F_4(x) + (3x + x^2) = (1 + x)^2 + 3x + x^2 = 1 + 5x + 2x^2.$$
+
+**Hand Verification on $T$**:
+- $k = 0$: $\emptyset$ ($1$ antichain).
+- $k = 1$: $\{1\}, \{2\}, \{3\}, \{4\}, \{5\}$ ($5$ antichains).
+- $k = 2$: Since $1$ is an ancestor of all nodes and $2$ is an ancestor of $\{3,4,5\}$, any 2-element antichain must choose one element from $T_3 = \{3,4\}$ and one from $T_5 = \{5\}$, giving $\{3,5\}$ and $\{4,5\}$ ($2$ antichains).
+- $k \ge 3$: $0$ antichains. The polynomial $1 + 5x + 2x^2$ is exact!
+
+::: {.callout-important}
+## Algorithm Contract: Heavy-Light `Rake` & 3-Way Weighted `Compress` Engine
+
+- **Input & Preconditions**: A rooted tree $T = (V, E)$ with $N$ vertices ($1 \le N \le 2 \times 10^5$), state dimension $c \ge 1$, and a local transition specification constructing for each vertex $u$ a $c \times c$ polynomial matrix $M_u(x)$ from the light-child polynomials $\{\mathbf{F}_v(x) : v \in \text{light}(u)\}$. Modulus $p$ is an NTT-friendly prime (e.g., $p = 998244353$) with $2^{\lceil \log_2(N+1) \rceil} \mid (p - 1)$, and subtree sizes $\text{sz}[u]$ and heavy children $\text{heavy}(u) = \arg\max_{v \in \text{child}(u)} \text{sz}[v]$ are precomputed via a single $O(N)$ DFS.
+- **Postconditions (Output)**: Returns the root polynomial state vector $\mathbf{F}_r(x) \in (\mathbb{F}_p[x])^c$ of degree $\le N$ (and $\mathbf{F}_{\text{head}(C)}(x)$ for every heavy chain head in $T$).
+- **Time & Space Complexity**: $O(c^2 N \log^2 N)$ time using Fourier-domain $3c^2$ matrix multiplication (plus $O(c^3 N \log N)$ pointwise scalar inner products) and $O(c^2 N)$ auxiliary space.
+- **Loop / Algebraic Invariant**: At every heavy chain $C = (u_1, \dots, u_L)$, the weight $w_i = 1 + \sum_{v \in \text{light}(u_i)} \text{sz}[v]$ upper-bounds the degree of every entry of $M_{u_i}(x)$, and the 3-way split at the first index $m$ with $\sum_{i=l}^m w_i \ge \frac{1}{2} \sum_{i=l}^r w_i$ guarantees $\max(W_{[l, m-1]}, W_{[m+1, r]}) \le \lfloor \frac{1}{2} W_{[l,r]} \rfloor$, ensuring that total recursion depth across all `Rake` and `Compress` steps is $\le 2 \log_2 N$.
+- **Failure Modes & Edge Cases**: Splitting a heavy chain at the unweighted index midpoint $m = \lfloor(l+r)/2\rfloor$ degrades to $O(N \log^3 N)$, while a 2-way weighted split $[l, m]$ vs. $[m+1, r]$ degrades to $O(N^2)$ when a single vertex $u_m$ carries $\ge 99\%$ of the chain weight; the 3-way split isolating $M_{u_m}(x)$ (with boundary checks $m = l$ and $m = r$) is mandatory.
+:::
+
+---
+
+## 22.3 Dynamic DP with Polynomials / FWT & Failure Mode #10 (Zero-Divisor Pairs $(a, c) \equiv a \cdot 0^c$)
+
+### From Static Tree Polynomials to Dynamic Point Updates (`全局平衡二叉树`)
+
+Suppose now that each vertex $u \in V$ carries a weight or label $v_u$ (for instance, an integer $v_u \in [0, M-1]$ where $M = 2^k$ in a connected-subgraph XOR problem, or a polynomial evaluation point), and we must process $Q$ online point updates `Change(u, new_val)` interleaved with global tree queries `Query()`.
+
+If we evaluate our generating functions at $M$ fixed points $\omega_0, \omega_1, \dots, \omega_{M-1} \in \mathbb{F}_p$ (either via a length-$M$ Fast Walsh–Hadamard Transform for XOR/AND/OR convolutions, or at $M$ roots of unity / interpolation nodes for degree-$<M$ polynomials), then at each frequency $r \in [0, M-1]$, the polynomial transition matrix $M_u(x)$ becomes a **scalar $c \times c$ matrix** $\widehat{M}_u(\omega_r) \in \mathbb{F}_p^{c \times c}$!
+
+How do we maintain the tree product under point updates at vertex $u$?
+Instead of rebuilding the entire tree, we build the **Weight-Balanced Static Top Tree (`全局平衡二叉树`)** once at the beginning in $O(N)$ time:
+
+1. For each heavy chain $C = (u_1, \dots, u_L)$, the 3-way weighted-midpoint recursion tree from Theorem 22.3 defines a **static binary search tree (BST)** over the chain vertices $u_1, \dots, u_L$, rooted at the weighted midpoint $u_m$, with left child = root of BST for $[1, m-1]$ and right child = root of BST for $[m+1, L]$.
+2. The root of the BST for heavy chain $C$ is connected via a **light pointer** to the vertex $p = \text{parent}(u_1)$ in the parent heavy chain.
+3. By Theorem 22.3, the total height of this global tree (counting both BST edges inside heavy chains and light pointers between chains) is **at most $2 \log_2 N$**!
+4. Unlike Link-Cut Trees (which require splay rotations and higher constant factors), the `全局平衡二叉树` is **100% static**: an update at vertex $u$ simply walks straight up parent pointers from $u$ to the global root in $\le 2 \log_2 N$ steps:
+   - When stepping along a **BST edge** inside a heavy chain, recompute the node's $c \times c$ matrix product `sum[x] = sum[ls[x]] * mat[x] * sum[rs[x]]`.
+   - When stepping across a **light pointer** from the root of a child chain $C_v$ (representing $F_v(\omega_r)$ of light child $v = \text{head}(C_v)$) into its parent vertex $p$, we must update $p$'s light-child accumulator:
+     $$L_p(\omega_r) = \prod_{w \in \text{light}(p)} \widehat{g}_w(\omega_r)$$
+     in **$O(1)$ time** without re-scanning all $|\text{light}(p)|$ light children of $p$!
+
+---
+
+### Failure Mode #10: Division by Zero in Point-Value / FWT Light-Child Products
+
+To update $L_p(\omega_r)$ in $O(1)$ when one light child $v \in \text{light}(p)$ changes its factor from $g_{\text{old}} = \widehat{g}_v^{\text{old}}(\omega_r)$ to $g_{\text{new}} = \widehat{g}_v^{\text{new}}(\omega_r)$, we want to divide out $g_{\text{old}}$ and multiply by $g_{\text{new}}$:
+
+$$L_p^{\text{new}}(\omega_r) = L_p^{\text{old}}(\omega_r) \cdot g_{\text{old}}^{-1} \cdot g_{\text{new}} \pmod p.$$
+
+::: {.callout-warning}
+## Failure Mode #10: Naive Modular Inverse Corrupts Zero Point-Values
+
+In $\mathbb{F}_p$, even when the polynomial $g_v(x)$ is non-zero, its **evaluation at a specific point or FWT frequency $\omega_r$ can equal $0 \pmod p$**! For example, in XOR-FWT over $\mathbb{Z}_2^k$, the transform of $1 + x^{v}$ at frequency $r$ is $1 + (-1)^{\operatorname{popcount}(r \ \& \ v)}$, which equals **$0 \pmod p$** for half of all frequencies $r$!
+
+If a programmer writes naive modular division `L[p][r] = L[p][r] * qpow(g_old, p - 2) % p * g_new % p`:
+
+1. When $g_{\text{old}} \equiv 0 \pmod p$, `L[p][r]` became $0$ when $v$ first acquired that value, **destroying all information** about the product of the *other* light children $\prod_{w \in \text{light}(p) \setminus \{v\}} \widehat{g}_w(\omega_r)$.
+2. Furthermore, `qpow(0, p - 2)` returns $0$, so `L[p][r]` remains **permanently stuck at $0$ forever**, even after $v$ is updated to a new value with $g_{\text{new}} \not\equiv 0 \pmod p$!
+:::
+
+---
+
+### The Algebraic Remedy: The Multiplicative Group of Zero-Divisor Pairs $(a, c) \equiv a \cdot 0^c$
+
+How do we make multiplication and division by $0 \pmod p$ completely reversible in $O(1)$ time?
+Consider the formal multiplicative monoid generated by $\mathbb{F}_p^\times$ and a formal symbol $\mathbf{0}$ representing a zero factor. Every product of elements from $\mathbb{F}_p$ can be factored uniquely into the product of all its **non-zero** factors $a \in \mathbb{F}_p^\times$ and the **count** $c \in \mathbb{Z}_{\ge 0}$ of its zero factors:
+
+$$(a, c) \equiv a \cdot \mathbf{0}^c, \qquad \text{where } a \in \mathbb{F}_p^\times = \{1, 2, \dots, p-1\} \text{ and } c \in \mathbb{Z}_{\ge 0}.$$
+
+::: {.callout-tip}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: Zero-Divisor Packaging
+
+- **The Diagnostic Signal**: A dynamic Tree DP (or sliding-window / rerooting DP) maintains the product $L_p = \prod_{v \in \text{light}(p)} \widehat{g}_v$ modulo $p$, and point updates require dividing out an old factor $\widehat{g}_v^{\text{old}}$ that may equal $0 \pmod p$.
+- **The Reverse-Engineering Scratchpad**: Never multiply a zero factor into the scalar accumulator! Instead, factor every element of $\mathbb{F}_p$ into the commutative monoid $\mathbb{F}_p^\times \times \mathbb{Z}_{\ge 0}$ via $(a, c) \equiv a \cdot \mathbf{0}^c$, where $a \in \mathbb{F}_p^\times$ multiplies/divides only the non-zero factors via `inv_table` and $c \ge 0$ counts the multiplicity of zero factors (`++c` on multiplying by $0$, `--c` on dividing by $0$).
+:::
+
+Notice the similarity to $p$-adic valuation in Chapter 2 (where we separated $p^v$ from the unit part $u \not\equiv 0 \pmod p$): here we separate the **multiplicity of zero factors** $c$ from the **non-zero residue product** $a \in \mathbb{F}_p^\times$:
+
+1. **Identity Element**: $(1, 0)$ (representing $1 \cdot \mathbf{0}^0 = 1$).
+2. **Multiplying $(a, c)$ by a scalar $x \in \mathbb{F}_p$ (`mul(x)`)**:
+   - Normalize $x \leftarrow (x \bmod p + p) \bmod p$.
+   - If $x == 0$: increment the zero counter while preserving $a$: $(a, c) \mapsto (a, c + 1)$.
+   - If $x \neq 0$: multiply the non-zero residue: $(a, c) \mapsto (a \cdot x \bmod p, c)$.
+3. **Dividing $(a, c)$ by a previously multiplied scalar $x \in \mathbb{F}_p$ (`div(x)`)**:
+   - Normalize $x \leftarrow (x \bmod p + p) \bmod p$.
+   - If $x == 0$: decrement the zero counter: $(a, c) \mapsto (a, c - 1)$ (valid because $x = 0$ was previously multiplied into the accumulator, so $c \ge 1$).
+   - If $x \neq 0$: multiply by the modular inverse $x^{-1} \bmod p$: $(a, c) \mapsto (a \cdot x^{-1} \bmod p, c)$.
+4. **Evaluating $(a, c)$ back into $\mathbb{F}_p$ (`eval()`)**:
+   $$\operatorname{eval}(a, c) = \begin{cases} 0 & \text{if } c > 0, \\ a & \text{if } c = 0. \end{cases}$$
+
+```cpp
+// Zero-Divisor Pair (a, c) === a * 0^c (mod MOD) for Dynamic DP (<= 15 lines)
+struct ZeroDivPair {
+    int a = 1, c = 0; // Invariant: a in [1, MOD - 1], c >= 0
+    void mul(int x) {
+        x = (x % MOD + MOD) % MOD;
+        if (x == 0) ++c; else a = 1LL * a * x % MOD;
+    }
+    void div(int x) {
+        x = (x % MOD + MOD) % MOD;
+        if (x == 0) --c; else a = 1LL * a * inv_table[x] % MOD;
+    }
+    int eval() const { return c > 0 ? 0 : a; }
+};
+```
+
+---
+
+### Concrete Hand-Checkable Trace (Zero-Divisor Pair across Light-Child Updates)
+
+Suppose $p = 10007$ (as in **[SDOI2017] Tree Cutting Game**), and vertex $p$ has two light children $v_1, v_2$ whose evaluations at FWT frequency $r$ are initially $\widehat{g}_{v_1} = 5$ and $\widehat{g}_{v_2} = 3$.
+
+1. **Initialization**: Start with $L_p = (1, 0)$.
+   - `L_p.mul(5)` $\implies L_p = (5, 0)$.
+   - `L_p.mul(3)` $\implies L_p = (15, 0)$. Currently `L_p.eval() = 15`.
+2. **Update 1 ($v_1$'s factor changes from $5 \to 0$)**:
+   - `L_p.div(5)` $\implies L_p = (15 \cdot 5^{-1} \bmod 10007, 0) = (3, 0)$.
+   - `L_p.mul(0)` $\implies L_p = (3, 1)$.
+   - Now `L_p.eval() = 0` (since $c = 1 > 0$), while the non-zero residue $a = 3$ of $v_2$ is **safely preserved inside $L_p$**!
+3. **Update 2 ($v_2$'s factor changes from $3 \to 7$ while $v_1$ is still $0$)**:
+   - `L_p.div(3)` $\implies L_p = (1, 1)$.
+   - `L_p.mul(7)` $\implies L_p = (7, 1)$. Still `L_p.eval() = 0`.
+4. **Update 3 ($v_1$'s factor changes from $0 \to 4$)**:
+   - `L_p.div(0)` $\implies L_p = (7, 0)$.
+   - `L_p.mul(4)` $\implies L_p = (28, 0)$.
+   - Now `L_p.eval() = 28` ($= 4 \times 7$), recovering the exact product without ever touching $v_2$!
+
+::: {.callout-important}
+## Algorithm Contract: Static Top Tree (`全局平衡二叉树`) with Zero-Divisor Pairs
+
+- **Input & Preconditions**: A rooted tree $T = (V, E)$ of size $N$, $M$ evaluation points / FWT frequencies ($0 \le r < M$), initial vertex parameters $v_u$, and a stream of $Q$ point updates `Change(u, new_val)` and tree queries; prime modulus $p$ (so every $x \in \{1, \dots, p-1\}$ is a unit in $\mathbb{F}_p^\times$). If $p$ is small (e.g., $p = 10007$), precompute `inv_table[1..p-1]` in $O(p)$ time so `div(x)` runs in $O(1)$ without a $\log p$ binary exponentiation factor.
+- **Postconditions (Output)**: After each `Change(u, new_val)`, updates the global root state vector $\widehat{\mathbf{F}}_r(\omega_0), \dots, \widehat{\mathbf{F}}_r(\omega_{M-1})$ in $O(M \log N)$ time; inverse FWT / interpolation recovers the coefficient answer in $O(M \log M)$.
+- **Time & Space Complexity**: $O(N M)$ preprocessing, $O(M \log N)$ per vertex update across at most $2 \log_2 N$ Static Top Tree ancestors, and $O(N M)$ total space.
+- **Loop / Algebraic Invariant**: At every vertex $p$ and frequency $r \in [0, M-1]$, the `ZeroDivPair` $(a_{p,r}, c_{p,r})$ satisfies $a_{p,r} \equiv \prod_{v \in \text{light}(p),\, \widehat{g}_v(\omega_r) \not\equiv 0} \widehat{g}_v(\omega_r) \pmod p$ with $a_{p,r} \in \mathbb{F}_p^\times$ and $c_{p,r} = \bigl|\{v \in \text{light}(p) : \widehat{g}_v(\omega_r) \equiv 0 \pmod p\}\bigr| \ge 0$.
+- **Failure Modes & Edge Cases**: Dividing by $\widehat{g}_v^{\text{old}}(\omega_r) \equiv 0 \pmod p$ via naive modular inverse `qpow(0, p - 2)` zeros out the entire light product permanently (Failure Mode #10); during a point update walk up the Static Top Tree, you must divide out the old chain-root contribution at a light pointer *before* updating the child BST node on that heavy chain.
+:::
+
+---
+
+## 22.4 Subtree Frequency Rerooting & Vandermonde `mulT` on Trees
+
+### The Concrete Combinatorial Model: Global $k$-Subset Tree Queries
+
+Not every polynomial problem on a tree requires Heavy-Light Decomposition. A major competing paradigm arises when a problem asks for a **global sum over all $\binom{N}{k}$ vertex subsets $S \subseteq V$ of size $k$**, Simultaneously for **every $k = 1, 2, \dots, N$**.
+
+Let us study the canonical archetype: **AtCoder AGC 005 F — Many Easy Problems** (`#068`).
+
+- **The Combinatorial Question**: Given a tree $T = (V, E)$ with $N \le 2 \times 10^5$ vertices, for any non-empty subset $S \subseteq V$, define $f(S)$ to be the number of vertices in the minimal connected subtree (Steiner tree) of $T$ spanning $S$. Compute
+  $$\text{ans}_k = \sum_{S \subseteq V,\, |S| = k} f(S) \pmod{924844033} \qquad \text{for all } k = 1, 2, \dots, N.$$
+
+---
+
+### The Diagnostic Signal & Reverse-Engineering Scratchpad
+
+::: {.callout-tip}
+## Diagnostic Signal & Reverse-Engineering Scratchpad: Subtree Frequency `mulT`
+
+- **The Diagnostic Signal**: You need to compute $\sum_{|S|=k} \text{cost}(S)$ on a tree for all $k = 1, \dots, N$, where $\text{cost}(S)$ counts vertices, edges, or components induced by $S$, and $N \le 2 \times 10^5$.
+- **The Reverse-Engineering Scratchpad**:
+  1. **Switch from Subset-Centric to Vertex/Edge-Centric Double Counting**: Instead of running a Tree DP to build a polynomial at every vertex, ask: *When does a single vertex $u \in V$ (or edge $e \in E$) fail to belong to the Steiner tree of $S$?*
+  2. Delete $u$ from $T$. This splits $T \setminus \{u\}$ into $d_u$ connected components of sizes $s_{u,1}, s_{u,2}, \dots, s_{u,d_u}$. Vertex $u$ lies **outside** the Steiner tree of $S$ if and only if all $k$ vertices of $S$ fall inside a **single** connected component of $T \setminus \{u\}$!
+  3. Notice that across all $u \in V$, the connected components of $T \setminus \{u\}$ are simply the $N-1$ downward subtrees $T_v$ (of size $\text{sz}[v]$) and the $N-1$ upward complements $V \setminus T_v$ (of size $N - \text{sz}[v]$) corresponding to the two orientations of each of the $N-1$ edges of $T$!
+  4. Group all $2(N-1)$ directed-edge component sizes into a **frequency histogram** $\text{cnt}[s]$ ($1 \le s \le N-1$). Then for every $k$, the sum $\sum_{s=k}^{N-1} \text{cnt}[s] \binom{s}{k}$ expands as $\frac{1}{k!} \sum_{s=k}^{N-1} (\text{cnt}[s] \cdot s!) \frac{1}{(s - k)!}$, which is a single **transposed (`mulT`) / reverse-indexed convolution**!
+:::
+
+---
+
+### Single-Step Verbalized Derivation of the Steiner Tree `mulT` Formula
+
+Let us derive the exact formula for $\text{ans}_k$ as a sequence of single-step equalities:
+
+$$\begin{aligned}
+\text{ans}_k
+&= \sum_{S \subseteq V,\, |S| = k} \sum_{u \in V} [u \in \text{Steiner}(S)]
+&& \text{(decompose } f(S) = |\text{Steiner}(S)| \text{ into vertex indicators)} \\[4pt]
+&= \sum_{u \in V} \sum_{S \subseteq V,\, |S| = k} \Bigl(1 - [u \notin \text{Steiner}(S)]\Bigr)
+&& \text{(switch to the complement event } u \notin \text{Steiner}(S)\text{)} \\[4pt]
+&= N \binom{N}{k} - \sum_{u \in V} \sum_{C \in \text{Comp}(T \setminus \{u\})} \binom{|C|}{k}
+&& \text{(} u \notin \text{Steiner}(S) \iff S \subseteq C \text{ for one component } C \text{ of } T \setminus \{u\}\text{)} \\[4pt]
+&= N \binom{N}{k} - \sum_{(u, v) \in E} \left[ \binom{\text{sz}[v]}{k} + \binom{N - \text{sz}[v]}{k} \right]
+&& \text{(bijection between pairs } (u, C) \text{ and directed edges of } T\text{)} \\[4pt]
+&= N \binom{N}{k} - \sum_{s=1}^{N-1} \text{cnt}[s] \binom{s}{k}
+&& \text{(group the } 2(N-1) \text{ component sizes into histogram } \text{cnt}[s]\text{)} \\[4pt]
+&= N \binom{N}{k} - \frac{1}{k!} \sum_{s=k}^{N-1} \bigl(\text{cnt}[s] \cdot s!\bigr) \cdot \frac{1}{(s - k)!}.
+&& \text{(expand } \binom{s}{k} = \frac{s!}{k!(s-k)!} \text{ to decouple } s \text{ and } s - k\text{)}
+\end{aligned}$$
+
+Look at the inner sum $C_k = \sum_{s=k}^{N-1} A_s B_{s-k}$, where $A_s = \text{cnt}[s] \cdot s!\,$ and $B_j = \frac{1}{j!}$. This is the **correlation (or transposed convolution `mulT`)** of $A$ and $B$. By reversing the array $A$ into $A^{\text{rev}}_{N-1-s} = A_s$, the sum becomes a standard Cauchy polynomial convolution at index $N - 1 - k$:
+
+$$C_k = \sum_{s=k}^{N-1} A^{\text{rev}}_{N-1-s} B_{s-k} = [x^{N-1-k}] \Bigl(A^{\text{rev}}(x) \cdot B(x)\Bigr).$$
+
+One single NTT multiplication of degree $N - 1$ computes $\text{ans}_k$ for **all** $k = 1, 2, \dots, N$ in $O(N \log N)$ time!
+
+::: {.callout-note}
+## Alternative Edge-Count Derivation ($|\text{Steiner}(S)| - |\text{Edges}(\text{Steiner}(S))| = 1$)
+
+Every non-empty Steiner subtree is a tree, so it satisfies $|\text{Vertices}| - |\text{Edges}| = 1$. An undirected edge $e = (u, v)$ (with $v$ the child of $u$, so deleting $e$ splits $T$ into sizes $\text{sz}[v]$ and $N - \text{sz}[v]$) belongs to $\text{Steiner}(S)$ if and only if $S$ intersects **both** sides of $e$, which happens for $\binom{N}{k} - \binom{\text{sz}[v]}{k} - \binom{N - \text{sz}[v]}{k}$ subsets $S$ of size $k$. Summing $1 + \sum_{e \in E} [e \in \text{Steiner}(S)]$ over all $\binom{N}{k}$ subsets immediately yields:
+$$\begin{aligned}
+\text{ans}_k &= \binom{N}{k} + \sum_{e=(u,v) \in E} \left[\binom{N}{k} - \binom{\text{sz}[v]}{k} - \binom{N - \text{sz}[v]}{k}\right] \\
+&= \bigl(1 + (N - 1)\bigr)\binom{N}{k} - \sum_{e=(u,v) \in E} \left[\binom{\text{sz}[v]}{k} + \binom{N - \text{sz}[v]}{k}\right] = N \binom{N}{k} - \sum_{s=1}^{N-1} \text{cnt}[s] \binom{s}{k}.
+\end{aligned}$$
+Both double-counts arrive at the exact same polynomial convolution!
+:::
+
+---
+
+### Concrete Hand-Checkable Trace ($N = 4$ Star Tree for `AGC 005 F`)
+
+Consider the 4-vertex star tree $T$ with center $1$ and leaves $2, 3, 4$ (edges $(1,2), (1,3), (1,4)$):
+
+1. **Subtree Sizes & Directed Component Histogram $\text{cnt}[s]$**:
+   - Each of the 3 edges $(1, v)$ ($v \in \{2,3,4\}$) has downward subtree size $\text{sz}[v] = 1$ and upward complement size $N - \text{sz}[v] = 4 - 1 = 3$.
+   - Thus the $2(N-1) = 6$ directed components have sizes $\{1, 1, 1, 3, 3, 3\}$:
+     $$\text{cnt}[1] = 3, \quad \text{cnt}[2] = 0, \quad \text{cnt}[3] = 3.$$
+2. **Convolution Sum $S_k = \sum_{s=k}^3 \text{cnt}[s] \binom{s}{k}$ and $\text{ans}_k = 4\binom{4}{k} - S_k$**:
+   - $k = 1$: $S_1 = 3\binom{1}{1} + 0\binom{2}{1} + 3\binom{3}{1} = 3 + 9 = 12 \implies \text{ans}_1 = 4\binom{4}{1} - 12 = 16 - 12 = 4$. (Each singleton $\{u\}$ has Steiner tree of size $1$: $4 \times 1 = 4$.)
+   - $k = 2$: $S_2 = 0\binom{2}{2} + 3\binom{3}{2} = 9 \implies \text{ans}_2 = 4\binom{4}{2} - 9 = 24 - 9 = 15$. (The 3 pairs containing center $1$ have size $2$, and the 3 pairs of leaves $\{2,3\}, \{2,4\}, \{3,4\}$ must pass through $1$ so they have size $3$: $3 \times 2 + 3 \times 3 = 15$.)
+   - $k = 3$: $S_3 = 3\binom{3}{3} = 3 \implies \text{ans}_3 = 4\binom{4}{3} - 3 = 16 - 3 = 13$. (The 3 triples containing center $1$ have size $3$, and $\{2,3,4\}$ spans all $4$ vertices: $3 \times 3 + 1 \times 4 = 13$.)
+   - $k = 4$: $S_4 = 0 \implies \text{ans}_4 = 4\binom{4}{4} - 0 = 4$. (The full set $\{1,2,3,4\}$ has size $4$.)
+
+```cpp
+// Subtree Frequency Vandermonde mulT for AGC 005 F (<= 15 lines)
+vector<mint> A_rev(N, 0), B(N, 0), ans(N + 1, 0);
+for (int s = 1; s < N; ++s) A_rev[N - 1 - s] = mint(cnt[s]) * fact[s];
+for (int j = 0; j < N; ++j) B[j] = inv_fact[j];
+vector<mint> C = multiply_ntt(A_rev, B, MOD); // MOD = 924844033 (primitive root 5)
+for (int k = 1; k <= N; ++k) {
+    mint sub = (k < N ? C[N - 1 - k] * inv_fact[k] : mint(0));
+    ans[k] = mint(N) * C_binom(N, k) - sub;
+}
+```
+
+::: {.callout-important}
+## Algorithm Contract: Subtree Frequency `mulT` Engine
+
+- **Input & Preconditions**: A tree $T = (V, E)$ with $N$ vertices ($1 \le N \le 2 \times 10^5$) and a binomial kernel $\sum_{s=k}^{N-1} \text{cnt}[s] \binom{s}{k}$ over directed subtree sizes $s \in [1, N-1]$; prime modulus $p > N$ (so $1!, 2!, \dots, N!\,$ are invertible in $\mathbb{F}_p^\times$) and $p$ is NTT-friendly (Note: in AGC 005 F, $p = 924844033 = 441 \times 2^{21} + 1$ with primitive root $g = 5$, **not** $998244353$).
+- **Postconditions (Output)**: Outputs the array $\text{ans}[1 \dots N]$ where $\text{ans}[k] = N\binom{N}{k} - \sum_{s=k}^{N-1} \text{cnt}[s]\binom{s}{k} \pmod p$.
+- **Time & Space Complexity**: $O(N)$ DFS to accumulate $\text{cnt}[1 \dots N-1]$ plus a single length-$2^{\lceil \log_2(2N) \rceil}$ NTT multiplication in $O(N \log N)$ time and $O(N)$ space.
+- **Loop / Algebraic Invariant**: After reversing $A_s = \text{cnt}[s] \cdot s!\,$ into $A^{\text{rev}}_{N-1-s}$, the coefficient $[x^{N-1-k}](A^{\text{rev}}(x) B(x))$ equals $\sum_{s=k}^{N-1} A_s B_{s-k}$, pairing every subtree size $s \ge k$ with the exact factorial denominator $\frac{1}{(s-k)!}$.
+- **Failure Modes & Edge Cases**: Hardcoding primitive root $g = 3$ (valid for $998244353$) instead of $g = 5$ for $p = 924844033$ corrupts all NTT butterflies (since $3^{(p-1)/2} \equiv 1 \pmod{924844033}$); forgetting that $k = N$ has no directed components of size $s \ge N$ (`sub = 0`, `ans[N] = N`) causes an out-of-bounds read `C[-1]`.
+:::
+
+---
+
+## 22.5 Diagnostic Signals & Reverse-Engineering Scratchpad
+
+When confronted with a generating function or counting problem on a tree $T = (V, E)$, use the following diagnostic table to select the right algebraic and algorithmic engine:
+
+| Structural Feature in Problem | Diagnostic Signal | Target Engine & Representation | Time Complexity |
+| :--- | :--- | :--- | :--- |
+| Subtree DP $F_u(x)$ truncated to degree $\le K$ | Only coefficients $[x^0 \dots x^K]$ needed, $NK \le 10^8$ | Naive Subtree Knapsack (Theorem 22.1, no NTT!) | $O(NK)$ |
+| Factorized per-vertex contribution $\prod_{u \in V} P_u(x)$ | Inclusion-Exclusion or Prüfer sequence decouples vertices into independent factors of degree $c_u$ | Global Min-Heap (Huffman) NTT Merge | $O(N \log^2 N)$ |
+| Full-degree bottom-up Tree DP $\mathbf{F}_u(x) \in (\mathbb{F}_p[x])^c$ | $F_u(x)$ combines $\prod_{v \in \text{child}(u)} G_v(x)$ up to degree $\text{sz}[u]$, $N \le 2 \times 10^5$ | HLD `Rake` (Min-Heap) + 3-Way Weighted-Midpoint `Compress` + $3c^2$ Fourier Matrix Product (§22.2) | $O(c^2 N \log^2 N)$ |
+| Tree DP with $Q$ point updates + length-$M$ FWT/DFT | Online `Change(u, val)` queries, small $M \le 128$ or root-of-unity evaluations | Static Top Tree (`全局平衡二叉树`) + `ZeroDivPair` $(a, c) \equiv a \cdot 0^c$ (§22.3) | $O((N + Q) M \log N)$ |
+| Global sum $\sum_{\lvert S \rvert = k} \text{cost}(S)$ for all $k = 1 \dots N$ | $\text{cost}(S)$ is a sum of vertex/edge indicators depending only on component sizes | Directed Subtree Histogram $\text{cnt}[s]$ + Reverse-Indexed `mulT` (§22.4) | $O(N \log N)$ |
+
+---
+
+## 22.6 Practice Ladder: 8 Canonical Tree Polynomial & Top Tree Problems
+
+Below are the 8 canonical problems for Chapter 22, graduated across four tiers (**2 Stepping Stones**, **2 Intermediate**, **2 Advanced**, **2 Mastery**). Every problem is completely self-contained with a hand-checkable trace, three progressive hints, a complete derivation from first principles, and an explicit 5-part Algorithm Contract.
+
+---
+
+### Stepping Stone 1 (`#031`) — AtCoder ABC 269 Ex: Antichain
+
+- **Source**: [AtCoder Beginner Contest 269 — Task Ex: Antichain](https://atcoder.jp/contests/abc269/tasks/abc269_h)
+- **Prerequisite Tags**: HLD, `Rake` (Min-Heap NTT), 3-Way Weighted-Midpoint `Compress`, 1D Affine Polynomial Map
+
+#### Problem Statement & Exact Constraints
+
+You are given a rooted tree $T$ with $N$ vertices numbered $1, 2, \dots, N$, rooted at vertex $1$. For vertex $i$ ($2 \le i \le N$), its parent is $P_i$ ($1 \le P_i < i$). A subset of vertices $S \subseteq V$ is called an **antichain** if no two distinct vertices $u, v \in S$ satisfy that $u$ is an ancestor of $v$ in $T$.
+
+For every $k = 1, 2, \dots, N$, compute the number of antichains $S \subseteq V$ with $|S| = k$, modulo $998244353$.
+
+- **Constraints**: $1 \le N \le 2 \times 10^5$, $1 \le P_i < i$ for $2 \le i \le N$. Time limit: $4.0\text{ s}$. Required complexity: $O(N \log^2 N)$ time and $O(N)$ space.
+
+#### Sample Trace ($N = 4$)
+
+Suppose $N = 4$ with parents $P_2 = 1, P_3 = 2, P_4 = 2$ (so $1$ has child $2$, and $2$ has leaf children $3$ and $4$):
+
+- Leaves $3, 4$: $F_3(x) = 1 + x$, $F_4(x) = 1 + x$.
+- Vertex $2$: either select $2$ ($x^1$) or select antichains independently inside $T_3$ and $T_4$:
+  $$F_2(x) = x + F_3(x) F_4(x) = x + (1 + x)^2 = 1 + 3x + x^2.$$
+- Root $1$: either select $1$ ($x^1$) or select an antichain inside $T_2$:
+  $$F_1(x) = x + F_2(x) = 1 + 4x + x^2.$$
+- Outputs for $k = 1, 2, 3, 4$: `4, 1, 0, 0` (the 4 singletons and the unique pair $\{3, 4\}$).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+For any subtree $T_u$ rooted at $u$, if you include $u$ in your antichain $S$, can you include any other vertex from $T_u$? If you do **not** include $u$ in $S$, how do the choices in the subtrees $T_{v_1}, \dots, T_{v_d}$ of $u$'s children interact with one another?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Because the decisions at the children $v \in \text{child}(u)$ are completely independent whenever $u \notin S$, the OGF $F_u(x) = \sum_{k \ge 0} a_{u,k} x^k$ satisfies $F_u(x) = x + \prod_{v \in \text{child}(u)} F_v(x)$. Since $\deg F_u = \text{sz}[u]$ and $N = 2 \times 10^5$, separate the heavy child $h_u$ from the light children $\text{light}(u)$ using Heavy-Light Decomposition (`Rake` + 3-Way Weighted `Compress`).
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Define the light product $L_u(x) = \prod_{v \in \text{light}(u)} F_v(x)$. Then along any heavy chain $u_1 \to u_2 \to \dots \to u_m$ (where $u_m$ is a leaf with $F_{u_m}(x) = 1 + x$), each vertex $u_i$ ($1 \le i < m$) applies the 1D affine polynomial transformation $F_{u_i}(x) = L_{u_i}(x) F_{u_{i+1}}(x) + x$, and two affine maps $(A_1(x), B_1(x)) \circ (A_2(x), B_2(x))$ compose as $\bigl(A_1(x) A_2(x),\, A_1(x) B_2(x) + B_1(x)\bigr)$.
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### 1. Generating Function Recurrence from First Principles
+
+For each vertex $u \in V$, let $F_u(x) = \sum_{k=0}^{\text{sz}[u]} f_{u,k} x^k$, where $f_{u,k}$ is the number of antichains of size $k$ contained in $T_u$. Every antichain $S \subseteq T_u$ falls into one of two disjoint cases:
+
+1. **$u \in S$**: Since $u$ is an ancestor of every other vertex in $T_u$, no other vertex in $T_u$ may belong to $S$. This forces $S = \{u\}$, contributing $x^1$ to $F_u(x)$.
+2. **$u \notin S$**: Since vertices in distinct child subtrees $T_{v}$ and $T_{v'}$ ($v \neq v' \in \text{child}(u)$) have $\operatorname{LCA}(w, w') = u$, no vertex in $T_v$ is an ancestor of any vertex in $T_{v'}$. Thus $S \cap T_u$ is an antichain if and only if $S \cap T_v$ is an antichain in $T_v$ for each $v \in \text{child}(u)$ independently. By the product rule for OGFs, this case contributes $\prod_{v \in \text{child}(u)} F_v(x)$.
+
+Combining the two disjoint cases gives:
+
+$$F_u(x) = x + \prod_{v \in \text{child}(u)} F_v(x), \qquad F_{\text{leaf}}(x) = 1 + x.$$
+
+#### 2. Heavy-Light `Rake` and 3-Way Weighted `Compress`
+
+Perform a DFS to compute $\text{sz}[u]$ and $\text{heavy}(u) = \arg\max_{v \in \text{child}(u)} \text{sz}[v]$. For every vertex $u$, define:
+
+$$L_u(x) = \prod_{v \in \text{light}(u)} F_v(x), \qquad w_u = 1 + \deg L_u(x).$$
+
+- **`Rake` Phase**: Recursively compute $F_v(x)$ for each light child $v \in \text{light}(u)$ (each $v$ is the head of its own heavy chain). Push $\{F_v(x) : v \in \text{light}(u)\}$ into a min-heap ordered by polynomial degree and repeatedly multiply the two smallest polynomials via NTT to obtain $L_u(x)$.
+- **`Compress` Phase**: Let $u_1 \to u_2 \to \dots \to u_m$ be a heavy chain where $u_m$ is a leaf. Notice we can fold the leaf base case $F_{u_m}(x) = 1 + x$ into the same affine form by setting $L_{u_m}(x) = 1$ (acting on $0$, or treating the chain as applying $M_{u_1} \circ \dots \circ M_{u_{m-1}}$ to $F_{u_m}(x) = 1 + x$). Specifically, represent each vertex $u_i$ ($1 \le i < m$) by the affine pair $M_{u_i}(x) = (L_{u_i}(x), x)$ of weight $w_{u_i} = \max(1, \deg L_{u_i}(x))$.
+  Using the 3-way weighted split on $[l, r] \subseteq [1, m-1]$, compose pairs via $(A_1, B_1) \circ (A_2, B_2) = (A_1 A_2, A_1 B_2 + B_1)$ (requiring just 2 polynomial multiplications per merge), and finally evaluate $F_{u_1}(x) = A_{[1, m-1]}(x) (1 + x) + B_{[1, m-1]}(x)$.
+
+#### 3. Boundary Cases
+
+- If $N = 1$, vertex $1$ is a leaf with $F_1(x) = 1 + x$, and we output `[x^1] F_1(x) = 1`.
+- If a heavy chain has length $m = 1$ (a single leaf $u_1$), `Compress` requires $0$ matrix compositions and directly returns $1 + x$.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Integer $N$ ($1 \le N \le 2 \times 10^5$) and parent array $P_2, \dots, P_N$ ($1 \le P_i < i$); prime modulus $p = 998244353$.
+- **Postconditions (Output)**: Prints $[x^k] F_1(x) \bmod 998244353$ for $k = 1, 2, \dots, N$.
+- **Time & Space Complexity**: $O(N \log^2 N)$ time and $O(N)$ auxiliary space.
+- **Loop / Algebraic Invariant**: For any heavy-chain subsegment $[l, r]$, the composed affine pair $(A_{[l,r]}(x), B_{[l,r]}(x))$ satisfies $F_{u_l}(x) = A_{[l,r]}(x) F_{u_{r+1}}(x) + B_{[l,r]}(x)$ with $\deg A_{[l,r]}, \deg B_{[l,r]} \le \sum_{i=l}^r w_{u_i}$.
+- **Failure Modes & Edge Cases**: Using unweighted midpoint `(l + r) / 2` in `Compress` instead of the 3-way weighted split degrades to $O(N^2)$ on unbalanced broom trees; when a heavy chain has length $m = 1$ (a single leaf $u_1$), `Compress` must bypass $[1, m-1]$ and directly return $F_{u_1}(x) = 1 + x$.
+
+</details>
+
+---
+
+### Stepping Stone 2 (`#124`) — Codeforces 1613F: Tree Coloring
+
+- **Source**: [Codeforces Educational Round 118 — Problem 1613F: Tree Coloring](https://codeforces.com/problemset/problem/1613/F)
+- **Prerequisite Tags**: Principle of Inclusion-Exclusion (PIE), Vertex-Factorized Generating Function, Min-Heap / Divide-and-Conquer NTT
+
+#### Problem Statement & Exact Constraints
+
+You are given a rooted tree $T$ with $N$ vertices numbered $1, 2, \dots, N$, rooted at vertex $1$. Count the number of permutations $p = (p_1, p_2, \dots, p_N)$ of $\{1, 2, \dots, N\}$ such that for every vertex $v \neq 1$, its label does **not** satisfy $p_v = p_{\text{parent}(v)} - 1$. Output the answer modulo $998244353$.
+
+- **Constraints**: $2 \le N \le 2.5 \times 10^5$. Time limit: $4.5\text{ s}$. Required complexity: $O(N \log^2 N)$ time and $O(N)$ space.
+
+#### Sample Trace ($N = 4$)
+
+Suppose $N = 4$ and $T$ is a star rooted at $1$ with children $2, 3, 4$ (so $c_1 = 3$ and $c_2 = c_3 = c_4 = 0$):
+
+- Polynomial of violated-edge choices: $P(x) = \prod_{u=1}^4 (1 + c_u x) = (1 + 3x)(1)^3 = 1 + 3x$.
+- By Inclusion-Exclusion over $k = 0, 1$ violated edges:
+  $$\text{ans} = (-1)^0 \cdot 4! \cdot [x^0]P(x) + (-1)^1 \cdot 3! \cdot [x^1]P(x) = 24 \cdot 1 - 6 \cdot 3 = 6.$$
+- Direct Verification: A violation $p_v = p_1 - 1$ occurs at one of the 3 leaves $v \in \{2, 3, 4\}$ whenever $p_1 \in \{2, 3, 4\}$ (since $p_1 - 1 \in \{1, 2, 3\}$ must then be placed at one of the 3 leaves). Thus $p_v \neq p_1 - 1$ for all leaves $v$ if and only if $p_1 = 1$, leaving $3! = 6$ valid permutations of $\{2, 3, 4\}$ on the leaves.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Instead of directly counting permutations with **zero** bad edges (where a bad edge $(u, v)$ is a parent-child edge satisfying $p_v = p_u - 1$), suppose we pick a subset $F \subseteq E$ of $k$ edges and force **every** edge $(u, v) \in F$ to satisfy $p_v = p_u - 1$. Because $p$ is a permutation (a bijection), how many children $v$ of the same parent $u$ can simultaneously satisfy $p_v = p_u - 1$?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Since all $p_v$ are distinct, at most **one** child $v \in \text{child}(u)$ can equal $p_u - 1$. Furthermore, since $T$ is a rooted tree, choosing at most one outgoing tree edge $(u, v)$ from each vertex $u$ always forms a collection of $N - k$ vertex-disjoint directed paths! How do the choices at different vertices $u \in V$ interact when selecting $k$ bad edges?
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Because the choice of at most one child edge at vertex $u$ (out of $c_u = |\text{child}(u)|$ children) is completely independent across all $u \in V$, the number of valid $k$-edge subsets $F \subseteq E$ is $[x^k] P(x)$ where $P(x) = \prod_{u=1}^N (1 + c_u x)$. For each such $F$ of size $k$, contracting its $k$ edges leaves $N - k$ rigid value chains that can be permuted in $(N - k)!\,$ ways, giving $\sum_{k=0}^{N-1} (-1)^k (N - k)! \, [x^k] P(x)$.
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### 1. Inclusion-Exclusion over Violated Tree Edges
+
+For each directed tree edge $e = (u, v) \in E$ (where $u = \text{parent}(v)$), let $A_e$ be the set of permutations $p \in S_N$ that violate edge $e$, i.e., $p_v = p_u - 1$. By the Principle of Inclusion-Exclusion, the number of valid permutations avoiding all $A_e$ is:
+
+$$\text{ans} = \sum_{F \subseteq E} (-1)^{|F|} \left|\bigcap_{e \in F} A_e\right|.$$
+
+When is $\bigcap_{e \in F} A_e$ non-empty for a subset $F \subseteq E$ of size $|F| = k$?
+
+1. **Out-degree $\le 1$ in $F$**: If two distinct edges $(u, v_1), (u, v_2) \in F$ share the same parent $u$, then $p_{v_1} = p_u - 1 = p_{v_2}$, which is impossible in a permutation since $v_1 \neq v_2$.
+2. **In-degree $\le 1$ in $F$**: In a rooted tree $T$, every vertex $v$ already has at most $1$ parent in $E$, so in-degree $\le 1$ holds automatically for every $F \subseteq E$, and $F$ is acyclic because $T$ is a DAG.
+
+Therefore, $\bigcap_{e \in F} A_e$ is non-empty if and only if every vertex $u \in V$ selects at most one outgoing edge to a child $v \in \text{child}(u)$. When this holds, the $k$ edges of $F$ partition $V$ into $N - k$ vertex-disjoint directed paths. Along each path $u_1 \to u_2 \to \dots \to u_r$, the labels must form a contiguous descending block $m, m-1, \dots, m - r + 1$. Contracting each of the $N - k$ paths into a single block of contiguous integers establishes a bijection with the permutations of $N - k$ blocks, so:
+
+$$\left|\bigcap_{e \in F} A_e\right| = (N - k)!.$$
+
+#### 2. Generating Function Factorization
+
+Since each vertex $u \in \{1, \dots, N\}$ independently chooses either $0$ outgoing edges ($1$ way) or $1$ outgoing edge among its $c_u = |\text{child}(u)|$ children ($c_u$ ways), the generating function for the number of valid subsets $F \subseteq E$ of size $k$ is:
+
+$$P(x) = \prod_{u=1}^N (1 + c_u x) = \sum_{k=0}^{N-1} a_k x^k.$$
+
+Multiplying the $N$ linear factors $(1 + c_u x)$ via divide-and-conquer NTT (or a min-heap of polynomial degrees) computes $a_0, \dots, a_{N-1}$ in $O(N \log^2 N)$ time, and the final answer is:
+
+$$\text{ans} = \sum_{k=0}^{N-1} (-1)^k (N - k)! \, a_k \pmod{998244353}.$$
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Integer $N$ ($2 \le N \le 2.5 \times 10^5$) and $N - 1$ undirected edges of a tree rooted at $1$; prime modulus $p = 998244353$. Root the tree at $1$ via BFS/DFS to count children $c_1 = \deg(1)$ and $c_u = \deg(u) - 1$ for $u \ge 2$.
+- **Postconditions (Output)**: Returns $\sum_{k=0}^{N-1} (-1)^k (N-k)! [x^k] \prod_{u=1}^N (1 + c_u x) \bmod 998244353$.
+- **Time & Space Complexity**: $O(N \log^2 N)$ time and $O(N)$ space.
+- **Loop / Algebraic Invariant**: Because $\sum_{u=1}^N c_u = N - 1$, the total degree across all non-trivial factors $(1 + c_u x)$ is at most $N - 1$, and balanced D&C multiplication guarantees depth $\le \lceil \log_2 N \rceil$.
+- **Failure Modes & Edge Cases**: Using raw undirected degree $\deg(u)$ instead of the number of children $c_u = \deg(u) - [u \neq 1]$ corrupts every factor for $u \ge 2$; multiplying the factors sequentially one-by-one instead of via balanced D&C / min-heap NTT degrades to $O(N^2)$ time.
+
+</details>
+
+---
+
+### Intermediate 1 (`#046`) — AtCoder ABC 355 G: Baseball
+
+- **Source**: [AtCoder Beginner Contest 355 — Task G: Baseball](https://atcoder.jp/contests/abc355/tasks/abc355_g)
+- **Prerequisite Tags**: Laminar Interval Containment Tree, Polynomial Knapsack on Trees, HLD `Rake` & `Compress`
+
+#### Problem Statement & Exact Constraints
+
+A baseball season consists of $K$ games numbered $1, 2, \dots, K$. You are given $N$ laminar intervals $[L_i, R_i] \subseteq [1, K]$ ($1 \le i \le N$, where any two intervals are either disjoint or one is contained in the other), together with a root interval $[1, K]$. In each game $j \in \{1, \dots, K\}$, a team independently scores a run with probability $p_u$ determined by the smallest interval $u$ containing $j$, and each interval $u$ also has a local sweep bonus $c_u x^{\text{sz}_w[u]}$ triggered when all $\text{sz}_w[u] = R_u - L_u + 1$ games inside $[L_u, R_u]$ are won.
+
+Concretely, when we represent the laminar interval family by its rooted **containment tree** $T$ (where $v$ is a child of $u$ iff $[L_v, R_v] \subsetneq [L_u, R_u]$ is maximal), each node $u \in T$ owns $w_u = (R_u - L_u + 1) - \sum_{v \in \text{child}(u)} (R_v - L_v + 1) \ge 0$ uncovered elementary games (so $\sum_{u \in T} w_u = K$). The generating function $F_u(x)$ of total won games inside $[L_u, R_u]$ has degree at most $\text{sz}_w[u] = w_u + \sum_{v \in \text{child}(u)} \text{sz}_w[v]$ and satisfies:
+
+$$F_u(x) = B_u(x) \prod_{v \in \text{child}(u)} F_v(x) + c_u x^{\text{sz}_w[u]}, \qquad B_u(x) = \sum_{j=0}^{w_u} \binom{w_u}{j} p_u^j (1 - p_u)^{w_u - j} x^j.$$
+
+Given the laminar intervals $[L_i, R_i]$ and transition parameters modulo $998244353$, compute the global root generating function $[x^k] F_{\text{root}}(x) \bmod 998244353$ for all $0 \le k \le K$.
+
+- **Constraints**: $1 \le N, K \le 5 \times 10^4$, modulus $p = 998244353$. Time limit: $4.0\text{ s}$. Required complexity: $O((N + K) \log^2(N + K))$ time and $O(N + K)$ space.
+
+#### Sample Trace ($N = 3, K = 3$)
+
+Suppose $K = 3$ games with root interval $I_1 = [1, 3]$ and two disjoint child intervals $I_2 = [1, 2]$ and $I_3 = [3, 3]$. The containment tree $T$ has root $1$ with children $2$ and $3$, and uncovered game counts $w_1 = 3 - (2 + 1) = 0$, $w_2 = 2$, $w_3 = 1$. With unnormalized binomial weights $B_u(x) = (1 + x)^{w_u}$ and sweep bonuses $c_2 = 1, c_3 = 1, c_1 = 0$:
+
+- Node $2$ ($I_2 = [1, 2], w_2 = 2$): $F_2(x) = (1 + x)^2 + 1 \cdot x^2 = (1 + 2x + x^2) + x^2 = 1 + 2x + 2x^2$.
+- Node $3$ ($I_3 = [3, 3], w_3 = 1$): $F_3(x) = (1 + x)^1 + 1 \cdot x^1 = 1 + 2x$.
+- Root $1$ ($I_1 = [1, 3], w_1 = 0$): $F_1(x) = 1 \cdot F_2(x) F_3(x) = (1 + 2x + 2x^2)(1 + 2x) = 1 + 4x + 6x^2 + 4x^3$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Whenever a collection of intervals $[L_i, R_i]$ is laminar (no two intervals partially overlap without one containing the other), adding a root interval $[1, K]$ turns the containment relation into a **rooted tree** $T$, where the gap segments inside $[L_u, R_u]$ not covered by any child interval $[L_v, R_v]$ give vertex $u$ its own local weight $w_u \ge 0$.
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+On the laminar containment tree $T$, the polynomial state at vertex $u$ has degree bounded by the subtree weight $\text{sz}_w[u] = w_u + \sum_{v \in \text{child}(u)} \text{sz}_w[v]$. Because $N, K \le 5 \times 10^4$, naive $O(NK)$ knapsack requires $2.5 \times 10^9$ operations, whereas Heavy-Light Decomposition defined using the **weighted subtree sizes $\text{sz}_w[u]$** reduces the merge to $O((N + K) \log^2(N + K))$.
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Define the heavy child of $u$ by $h_u = \arg\max_{v \in \text{child}(u)} \text{sz}_w[v]$ (using weighted subtree sizes $\text{sz}_w[v] + 1$ so zero-weight vertices still progress). Merge the local polynomial $B_u(x)$ together with all light children $\{F_v(x) : v \in \text{light}(u)\}$ in a degree-ordered min-heap (`Rake`), and then apply the 3-way weighted-midpoint `Compress` along each heavy chain.
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### 1. Laminar Containment Tree and Weighted Subtree Sizes
+
+First, sort the laminar intervals by left endpoint ascending (and right endpoint descending on ties) and use a monotonic stack in $O(N \log N)$ time to construct the rooted containment tree $T$. Each vertex $u \in V$ is assigned its uncovered gap length $w_u = (R_u - L_u + 1) - \sum_{v \in \text{child}(u)} (R_v - L_v + 1) \ge 0$, so that $\sum_{u \in V} w_u = K$.
+
+To ensure that every polynomial at $u$ has degree bounded by its subtree capacity while also counting the vertex itself in the recursion tree size, define the effective weight of $u$ as $\widetilde{w}_u = w_u + 1$ and the subtree weight as:
+
+$$\text{sz}_w[u] = \widetilde{w}_u + \sum_{v \in \text{child}(u)} \text{sz}_w[v], \qquad \text{with } \sum_{u=\text{root}} \text{sz}_w[u] = N + K.$$
+
+#### 2. Heavy-Light `Rake` & 3-Way Weighted `Compress`
+
+Choose the heavy child $h_u = \arg\max_{v \in \text{child}(u)} \text{sz}_w[v]$. By Lemma 22.2 applied to the positive vertex weights $\widetilde{w}_u$, every light child $v \in \text{light}(u)$ satisfies $\text{sz}_w[v] \le \frac{1}{2}\text{sz}_w[u]$.
+
+1. **Local Factor & `Rake`**: At vertex $u$, construct the local gap polynomial $B_u(x)$ of degree $w_u$ in $O(w_u)$ time using precomputed factorials. Insert $B_u(x)$ and the recursively computed polynomials of all light children $v \in \text{light}(u)$ into a min-heap ordered by polynomial degree, and merge them into the light transfer matrix $M_u(x)$ of degree $d_u = w_u + \sum_{v \in \text{light}(u)} \deg F_v(x)$.
+2. **3-Way Weighted `Compress`**: Along each heavy chain $u_1 \to u_2 \to \dots \to u_L$, use the weights $\text{wt}_i = d_{u_i} + 1$ to find the 3-way weighted midpoint $m$ where $\sum_{i=l}^m \text{wt}_i \ge \frac{1}{2}\sum_{i=l}^r \text{wt}_i$, multiplying $P_{[l, m-1]}(x) \cdot M_{u_m}(x) \cdot P_{[m+1, r]}(x)$ via Fourier-domain matrix multiplication.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: $N$ laminar intervals inside $[1, K]$ ($1 \le N, K \le 5 \times 10^4$) and transition parameters modulo $p = 998244353$; factorials up to $N + K$ are precomputed in $O(N + K)$.
+- **Postconditions (Output)**: Returns the root generating function coefficients $[x^0 \dots x^K] F_{\text{root}}(x) \bmod 998244353$.
+- **Time & Space Complexity**: $O((N + K) \log^2(N + K))$ time and $O(N + K)$ space.
+- **Loop / Algebraic Invariant**: Because HLD is defined with respect to $\text{sz}_w[u] = (w_u + 1) + \sum_{v \in \text{child}(u)} \text{sz}_w[v]$, the sum of chain weights across all heavy chains is bounded by $(N + K) \log_2(N + K)$.
+- **Failure Modes & Edge Cases**: Defining heavy children by unweighted node count $\text{sz}[u]$ instead of weighted subtree size $\text{sz}_w[u]$ allows a "light" child to carry $\Omega(K)$ gap weight, degrading `Rake` to $O(N K)$; forgetting to sort intervals by $(L_i \uparrow, R_i \downarrow)$ breaks containment tree construction when two intervals share the same left endpoint.
+
+</details>
+
+---
+
+### Intermediate 2 (`#198`) — Luogu P7279: 光棱碎片 (Prism Shards)
+
+- **Source**: [Luogu P7279 — 光棱碎片 (Prism Shards)](https://www.luogu.com.cn/problem/P7279)
+- **Prerequisite Tags**: $2 \times 2$ Polynomial Matrix Transition, HLD `Rake` & 3-Way Weighted `Compress`, $3c^2$ Fourier Matrix Product
+
+#### Problem Statement & Exact Constraints
+
+You are given a rooted tree $T$ with $N$ vertices rooted at $1$, where every internal (non-leaf) vertex has **at least $2$ children** ($|\text{child}(u)| \ge 2$). First, we choose a binary weight $a_u \in \{0, 1\}$ for every leaf $u$, which induces the bottom-up sum $a_u = \sum_{v \in \text{child}(u)} a_v$ at every internal vertex $u$. Next, we may perform a **shatter operation** on any subset of internal vertices $S \subseteq V_{\text{int}}$: shattering $u \in S$ resets its displayed weight to $a_u \leftarrow 0$ (without changing the already-computed sums of its ancestors). Two initial leaf assignments are considered **shatter-equivalent** if there exists a subset of internal vertices whose shattering produces the exact same array of vertex weights $(a_1, \dots, a_N)$ across the entire tree; canonically, we count the number of distinct weight configurations obtainable when an internal vertex $u$ is only shattered if doing so is forced or canonical (specifically, when $a_u > 0$, all child subtrees look identical to an empty subtree only if their sums are zero, whereas if all children of $u$ already have sum $0$, shattering $u$ leaves $a_u = 0$ unchanged and merges with the all-zero state).
+
+To count canonical distinguishable configurations on each subtree $T_u$ by the unshattered root sum $k = a_u$ (tracked by $x^k$), we maintain two coupled generating functions at $u$:
+
+- $F_{u,0}(x)$: generating function of valid canonical configurations of $T_u$ where $u$'s true subtree leaf sum $a_u$ is visible at $u$ (with $F_{\text{leaf}, 0}(x) = 1 + x$),
+- $F_{u,1}(x)$: generating function of configurations where $u$ is shattered / collapsed to effective weight $0$ at its parent (with $F_{\text{leaf}, 1}(x) = 1$, or $0$ depending on whether leaves can be shattered; here at each child $v$ of an internal node $u$, $v$ can either retain its nonzero visible state $F_{v,0}(x)$ or be shattered into $F_{v,1}(x)$ provided not all children are trivially zero-equivalent).
+
+By inclusion-exclusion on the event that all children $v \in \text{child}(u)$ transition without shattering vs. with shattering, this concrete combinatorial rule is a special case of the general parameterized $2$-state tree recurrence with $(\alpha_u, \beta_u, \gamma_u, \delta_u) = (1, -1, 1, 0)$:
+
+$$\begin{aligned}
+F_{u,0}(x) &= \prod_{v \in \text{child}(u)} \bigl(F_{v,0}(x) + \alpha_u F_{v,1}(x)\bigr) + \beta_u \prod_{v \in \text{child}(u)} F_{v,0}(x), \\
+F_{u,1}(x) &= \gamma_u \prod_{v \in \text{child}(u)} \bigl(F_{v,0}(x) + \delta_u F_{v,1}(x)\bigr),
+\end{aligned}$$
+
+where for Prism Shards, $\alpha_u = 1$ (each child $v$ may independently be kept or shattered), $\beta_u = -1$ (subtracting the overcounted case where no child is shattered in the redundant branch), $\gamma_u = 1$, and $\delta_u = 0$ (when $u$ itself is shattered, its children cannot be redundantly shattered again). We write the transition in the general parameterized form $(\alpha_u, \beta_u, \gamma_u, \delta_u)$ so that the resulting $2 \times 2$ heavy-light transfer matrix $M_u(x)$ applies verbatim to any $2$-state symmetric tree DP. Compute $[x^k] F_{1,0}(x) \bmod 998244353$ for all $k = 0, 1, \dots, N_{\text{leaves}}$.
+
+- **Constraints**: $1 \le N \le 10^5$, $|\text{child}(u)| \ge 2$ for internal $u$, modulus $p = 998244353$. Time limit: $2.0\text{ s}$. Required complexity: $O(N \log^2 N)$ time with Fourier-domain $2 \times 2$ matrix optimization.
+
+#### Sample Trace ($N = 3$)
+
+Suppose $N = 3$: root $1$ has two leaf children $2$ and $3$, with the Prism Shards parameters $(\alpha_1, \beta_1, \gamma_1, \delta_1) = (1, -1, 1, 0)$:
+
+- Leaves $2, 3$: $F_{v,0}(x) = 1 + x$ (leaf weight $a_v \in \{0, 1\}$), $F_{v,1}(x) = 1$, so $F_{v,0}(x) + F_{v,1}(x) = 2 + x$.
+- Root $1$:
+  $$F_{1,0}(x) = (2 + x)^2 - (1 + x)^2 = (4 + 4x + x^2) - (1 + 2x + x^2) = 3 + 2x,$$
+  $$F_{1,1}(x) = (1 + x)^2 = 1 + 2x + x^2.$$
+  Thus there are $[x^0] F_{1,0}(x) = 3$, $[x^1] F_{1,0}(x) = 2$, and $[x^2] F_{1,0}(x) = 0$ valid states at root $1$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+At any internal vertex $u$, the transitions for $F_{u,0}(x)$ and $F_{u,1}(x)$ are linear combinations of pure products over $v \in \text{child}(u)$ of the form $\prod_{v \in \text{child}(u)} (F_{v,0}(x) + c \cdot F_{v,1}(x))$. How does isolating the heavy child $h_u \in \text{child}(u)$ transform each such product?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Once the light children $v \in \text{light}(u)$ are multiplied together via a min-heap (`Rake`) into the light polynomials $P_u(x) = \prod_{v \in \text{light}(u)} (F_{v,0} + \alpha_u F_{v,1})$, $Q_u(x) = \prod_{v \in \text{light}(u)} F_{v,0}$, and $R_u(x) = \prod_{v \in \text{light}(u)} (F_{v,0} + \delta_u F_{v,1})$, the vector $\mathbf{F}_u(x) = (F_{u,0}(x), F_{u,1}(x))^T$ is obtained from $\mathbf{F}_{h_u}(x)$ by a **$2 \times 2$ polynomial matrix multiplication** $\mathbf{F}_u(x) = M_u(x) \mathbf{F}_{h_u}(x)$.
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Explicitly, the $2 \times 2$ heavy-edge transfer matrix at $u$ is:
+$$M_u(x) = \begin{pmatrix} P_u(x) + \beta_u Q_u(x) & \alpha_u P_u(x) \\ \gamma_u R_u(x) & \gamma_u \delta_u R_u(x) \end{pmatrix}.$$
+Multiply $M_{u_1}(x) \cdots M_{u_{L-1}}(x)$ along each heavy chain using the 3-way weighted split, and perform each $2 \times 2$ polynomial matrix product using **$12$ NTTs** ($4$ forward on $A$, $4$ forward on $B$, $4$ inverse on $C$) instead of $24$.
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### 1. Decoupling Light Products from the Heavy Child
+
+For each internal vertex $u$ with heavy child $h_u = \arg\max_{v \in \text{child}(u)} \text{sz}[v]$ and light children $\text{light}(u) = \text{child}(u) \setminus \{h_u\}$, define the three light products:
+
+$$P_u(x) = \prod_{v \in \text{light}(u)} \bigl(F_{v,0}(x) + \alpha_u F_{v,1}(x)\bigr), \quad Q_u(x) = \prod_{v \in \text{light}(u)} F_{v,0}(x), \quad R_u(x) = \prod_{v \in \text{light}(u)} \bigl(F_{v,0}(x) + \delta_u F_{v,1}(x)\bigr).$$
+
+Substituting $\prod_{v \in \text{child}(u)} = (\text{factor at } h_u) \times \prod_{v \in \text{light}(u)}$ into the recurrence for $F_{u,0}(x)$ and $F_{u,1}(x)$ gives:
+
+$$\begin{aligned}
+F_{u,0}(x) &= P_u(x)\bigl(F_{h_u, 0}(x) + \alpha_u F_{h_u, 1}(x)\bigr) + \beta_u Q_u(x) F_{h_u, 0}(x) \\
+&= \bigl(P_u(x) + \beta_u Q_u(x)\bigr) F_{h_u, 0}(x) + \alpha_u P_u(x) F_{h_u, 1}(x), \\[4pt]
+F_{u,1}(x) &= \gamma_u R_u(x) F_{h_u, 0}(x) + \gamma_u \delta_u R_u(x) F_{h_u, 1}(x).
+\end{aligned}$$
+
+In matrix form, this is $\mathbf{F}_u(x) = M_u(x) \mathbf{F}_{h_u}(x)$ with:
+
+$$M_u(x) = \begin{pmatrix} P_u(x) + \beta_u Q_u(x) & \alpha_u P_u(x) \\ \gamma_u R_u(x) & \gamma_u \delta_u R_u(x) \end{pmatrix}.$$
+
+#### 2. `Rake` and 3-Way Weighted `Compress` with $12$-NTT Matrix Product
+
+- **`Rake` Phase**: At vertex $u$, after recursively solving all light children $v \in \text{light}(u)$, compute $P_u(x)$, $Q_u(x)$, and $R_u(x)$ using degree-ordered min-heap NTT merges. Note that if $\delta_u \in \{0, \alpha_u\}$, $R_u(x)$ coincides with $Q_u(x)$ or $P_u(x)$, saving an entire min-heap merge!
+- **`Compress` Phase**: Along heavy chain $u_1 \to u_2 \to \dots \to u_L$ (ending at leaf $u_L$), assign weight $w_i = \max(\deg M_{u_i}, 1)$ to each $i \in [1, L-1]$ and use `compress_solve(1, L - 1)` with the 3-way weighted split. Each $2 \times 2$ matrix product $C(x) = A(x) B(x)$ pads the 4 entries of $A$ and 4 entries of $B$ to $2^{\lceil \log_2(\deg A + \deg B + 1) \rceil}$, runs 8 forward NTTs, computes the $2 \times 2$ dot product pointwise, and runs 4 inverse NTTs. Finally, multiply $M_{[1, L-1]}(x)$ by the leaf vector $\mathbf{F}_{u_L}(x) = (1 + x, 1)^T$.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Rooted tree $T$ with $N \le 10^5$ vertices where every internal node has $\ge 2$ children; prime modulus $p = 998244353$.
+- **Postconditions (Output)**: Returns $[x^k] F_{1,0}(x) \bmod 998244353$ for $0 \le k \le N_{\text{leaves}}$.
+- **Time & Space Complexity**: $O(N \log^2 N)$ time (with $12$ NTTs per $2 \times 2$ `Compress` step) and $O(N)$ space.
+- **Loop / Algebraic Invariant**: Every entry of $M_u(x)$ has degree bounded by the number of leaves in the light subtrees of $u$, so the total degree along any heavy chain is bounded by the number of leaves in $T_{\text{head}(C)}$.
+- **Failure Modes & Edge Cases**: Using $2c^3 = 16$ or $24$ NTTs per $2 \times 2$ matrix multiplication instead of the Fourier-cached $3c^2 = 12$ NTTs doubles the constant factor and risks TLE at $N = 10^5$; using unweighted midpoint D&C on heavy chains degrades to $O(N^2)$ when a single node on the chain has $\Omega(N)$ light leaves.
+
+</details>
+
+---
+
+### Advanced 1 (`#149`) — Luogu P3781 / LOJ 2269: [SDOI2017] 切树游戏 (Tree Cutting Game)
+
+- **Source**: [LibreOJ 2269 / Luogu P3781 — [SDOI2017] 切树游戏](https://loj.ac/p/2269)
+- **Prerequisite Tags**: Dynamic DP (`全局平衡二叉树`), XOR Fast Walsh–Hadamard Transform (FWT), Zero-Divisor Pairs $(a, c) \equiv a \cdot 0^c$ (Failure Mode #10)
+
+#### Problem Statement & Exact Constraints
+
+You are given an undirected tree $T$ with $N$ vertices numbered $1, \dots, N$ and an integer $M = 2^k$. Each vertex $u$ initially has an integer value $v_u \in [0, M - 1]$. The **value of a non-empty connected subgraph** (subtree) $S \subseteq V$ is the bitwise XOR sum $\bigoplus_{u \in S} v_u$ of its vertices. Process $Q$ operations of two types:
+
+1. `Change a x`: Change the value of vertex $a$ to $x$ ($0 \le x < M$).
+2. `Query k`: Output the number of non-empty connected subgraphs of $T$ whose XOR sum equals $k$, modulo $10007$.
+
+- **Constraints**: $1 \le N, Q \le 3 \times 10^4$, $M \in \{1, 2, 4, 8, 16, 32, 64, 128\}$, modulus $p = 10007$ (note: $10007$ is a prime!). Time limit: $3.0\text{ s}$. Required complexity: $O((N + Q) M \log N)$ time and $O(NM)$ space.
+
+#### Sample Trace ($N = 3, M = 4$)
+
+Suppose $N = 3, M = 4$ on a path $1 - 2 - 3$ rooted at $1$ with initial values $v_1 = 1, v_2 = 2, v_3 = 3$:
+
+- Under XOR convolution $\mathbb{F}_p[x] / (x^{\oplus M})$, where $x^a \cdot x^b = x^{a \oplus b}$:
+  - Node $3$: $F_3(x) = x^3$, $G_3(x) = x^3$.
+  - Node $2$: $F_2(x) = x^2(F_3(x) + 1) = x^2(x^3 + 1) = x^1 + x^2$, and $G_2(x) = F_2(x) + G_3(x) = x^1 + x^2 + x^3$.
+  - Node $1$: $F_1(x) = x^1(F_2(x) + 1) = x^1(1 + x^1 + x^2) = x^0 + x^1 + x^3$, and $G_1(x) = F_1(x) + G_2(x) = x^0 + 2x^1 + x^2 + 2x^3$.
+- Connected subgraphs by XOR sum $0, 1, 2, 3$: `1, 2, 1, 2` (total $6 = \binom{4}{2}$ subpaths of the 3-vertex path).
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Root the tree arbitrarily at $1$. Every non-empty connected subgraph $S \subseteq V$ has a unique **highest vertex** (closest to the root $1$). Let $F_u(x)$ be the XOR generating function of connected subgraphs of $T_u$ that **contain $u$**, and let $G_u(x) = \sum_{w \in T_u} F_w(x)$ be the XOR generating function of **all** non-empty connected subgraphs entirely inside $T_u$. Write the recurrences for $F_u(x)$ and $G_u(x)$ in terms of $u$'s children!
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+We have $F_u(x) = x^{v_u} \prod_{c \in \text{child}(u)} (F_c(x) + 1)$ and $G_u(x) = F_u(x) + \sum_{c \in \text{child}(u)} G_c(x)$ under XOR convolution of length $M \le 128$. Apply the XOR Fast Walsh–Hadamard Transform (FWT) so that XOR convolution becomes **pointwise multiplication at $M$ frequencies $r \in [0, M-1]$**, and maintain the heavy-chain transitions on a **Weight-Balanced Static Top Tree (`全局平衡二叉树`)** using **Zero-Divisor Pairs $(a, c) \equiv a \cdot 0^c \pmod{10007}$** (Failure Mode #10) for light-child products!
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+At each FWT frequency $r \in [0, M-1]$, define the light product $L_u = \widehat{x^{v_u}}_r \prod_{c \in \text{light}(u)} (\widehat{F}_c(r) + 1)$ (maintained via a `ZeroDivPair` per vertex and frequency) and the light sum $S_u = \sum_{c \in \text{light}(u)} \widehat{G}_c(r)$. Then along a heavy chain, $(F_u, G_u, 1)^T$ updates from $(F_{h_u}, G_{h_u}, 1)^T$ via the structured $3 \times 3$ matrix:
+$$\begin{pmatrix} F_u \\ G_u \\ 1 \end{pmatrix} = \begin{pmatrix} L_u & 0 & L_u \\ L_u & 1 & L_u + S_u \\ 0 & 0 & 1 \end{pmatrix} \begin{pmatrix} F_{h_u} \\ G_{h_u} \\ 1 \end{pmatrix},$$
+where any product of two matrices of the form $\begin{pmatrix} a & 0 & b \\ c & 1 & d \\ 0 & 0 & 1 \end{pmatrix}$ remains in the **exact same 4-parameter subgroup**:
+$$(a_1, b_1, c_1, d_1) \circ (a_2, b_2, c_2, d_2) = (a_1 a_2,\; a_1 b_2 + b_1,\; c_1 a_2 + c_2,\; c_1 b_2 + d_1 + d_2),$$
+requiring only **$4$ scalar multiplications** per frequency instead of $27$!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### 1. Generating Function Recurrence and FWT Diagonalization
+
+Root $T$ at $1$. In the group ring $\mathbb{F}_{10007}[\mathbb{Z}_2^k]$ where $x^a \cdot x^b = x^{a \oplus b}$:
+
+$$F_u(x) = x^{v_u} \prod_{c \in \text{child}(u)} \bigl(F_c(x) + x^0\bigr), \qquad G_u(x) = F_u(x) + \sum_{c \in \text{child}(u)} G_c(x).$$
+
+Applying the length-$M$ XOR-FWT $\widehat{P}(r) = \sum_{i=0}^{M-1} (-1)^{\operatorname{popcount}(r \ \& \ i)} [x^i] P(x)$ diagonalizes XOR multiplication into $M$ independent scalar recurrences for $r = 0, \dots, M-1$, where $\widehat{x^{v_u}}(r) = (-1)^{\operatorname{popcount}(r \ \& \ v_u)} \in \{1, 10006\}$ and $\widehat{x^0}(r) = 1$.
+
+#### 2. Heavy-Light Separation and the 4-Parameter Matrix Subgroup
+
+For each vertex $u$ and frequency $r \in [0, M-1]$, separate $h_u = \text{heavy}(u)$ from $\text{light}(u)$:
+
+$$L_u(r) = \widehat{x^{v_u}}(r) \prod_{c \in \text{light}(u)} \bigl(\widehat{F}_c(r) + 1\bigr), \qquad S_u(r) = \sum_{c \in \text{light}(u)} \widehat{G}_c(r).$$
+
+If $u$ is a leaf (no heavy child, or equivalently feeding $(F_{\text{null}}, G_{\text{null}}, 1)^T = (0, 0, 1)^T$ into the transition), we obtain:
+
+$$\widehat{F}_u(r) = L_u(r) \widehat{F}_{h_u}(r) + L_u(r), \qquad \widehat{G}_u(r) = L_u(r) \widehat{F}_{h_u}(r) + \widehat{G}_{h_u}(r) + \bigl(L_u(r) + S_u(r)\bigr).$$
+
+Representing the transition matrix $\begin{pmatrix} a & 0 & b \\ c & 1 & d \\ 0 & 0 & 1 \end{pmatrix}$ by the 4-tuple $(a, b, c, d) = (L_u, L_u, L_u, L_u + S_u)$, the closure law is:
+
+$$(a_1, b_1, c_1, d_1) \circ (a_2, b_2, c_2, d_2) = (a_1 a_2,\; a_1 b_2 + b_1,\; c_1 a_2 + c_2,\; c_1 b_2 + d_1 + d_2) \pmod{10007}.$$
+
+When applied to the tail $(0, 0, 1)^T$ at the bottom of a heavy chain, a chain product $(a, b, c, d)$ yields $\widehat{F}_{\text{head}}(r) = b$ and $\widehat{G}_{\text{head}}(r) = d$.
+
+#### 3. Zero-Divisor Pairs on the Static Top Tree (`全局平衡二叉树`)
+
+Build the Static Top Tree (`全局平衡二叉树`) once by recursively picking the weighted midpoint $m$ on each heavy chain with weight $w_u = 1 + \sum_{c \in \text{light}(u)} \text{sz}[c]$. At each vertex $u$ and frequency $r$, store:
+
+- `ZeroDivPair light_prod[u][r]` maintaining $\prod_{c \in \text{light}(u)} (\widehat{F}_c(r) + 1)$.
+- `int light_sum[u][r]` maintaining $S_u(r) = \sum_{c \in \text{light}(u)} \widehat{G}_c(r) \pmod{10007}$.
+
+Why are `ZeroDivPair` instances mandatory here? Because whenever a light child $c$ has $\widehat{F}_c(r) \equiv -1 \equiv 10006 \pmod{10007}$, the factor $\widehat{F}_c(r) + 1$ equals **$0 \pmod{10007}$**! Using `light_prod[p][r].div(old_F + 1)` and `light_prod[p][r].mul(new_F + 1)` handles $0 \pmod{10007}$ factors in $O(1)$ without information loss.
+
+On `Change(u, new_val)`, update $v_u \leftarrow \text{new\_val}$ and walk up the Static Top Tree from $u$ to the root ($\le 2 \log_2 N$ steps), updating 4-tuples along BST edges and `light_prod` / `light_sum` across light pointers. On `Query(k)`, apply the $O(M \log M)$ inverse XOR-FWT (or dot product of $\widehat{G}_{\text{root}}$ with frequency basis) to extract $[x^k] G_{\text{root}}(x) \bmod 10007$.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Tree $T$ of $N \le 3 \times 10^4$ vertices, $M = 2^k \le 128$, initial values $v_1, \dots, v_N \in [0, M-1]$, and $Q \le 3 \times 10^4$ operations; prime modulus $p = 10007$ with precomputed `inv_table[1..10006]` in $O(p)$ time.
+- **Postconditions (Output)**: Outputs $[x^k] G_1(x) \bmod 10007$ for each `Query k`.
+- **Time & Space Complexity**: $O((N + Q) M \log N)$ time and $O(NM)$ space.
+- **Loop / Algebraic Invariant**: At every node $x$ of the Static Top Tree, `sum_mat[x][r] = sum_mat[ls[x]][r] * local_mat[x][r] * sum_mat[rs[x]][r]`, and for every light pointer $x \to p$, `light_prod[p][r]` stores the exact `ZeroDivPair` of $\prod_{c \in \text{light}(p)} (\widehat{F}_c(r) + 1)$.
+- **Failure Modes & Edge Cases**: Whenever $\widehat{F}_c(r) \equiv 10006 \equiv -1 \pmod{10007}$, the light-child factor $\widehat{F}_c(r) + 1$ equals $0 \pmod{10007}$, so naive division without `ZeroDivPair` permanently zeroes out `light_prod[p][r]` (Failure Mode #10); also, general $3 \times 3$ matrix multiplication ($27$ ops) instead of the 4-parameter subgroup closure ($4$ ops) causes TLE.
+
+</details>
+
+---
+
+### Advanced 2 (`#136`) — Codeforces 2006E: Iris's Full Binary Tree
+
+- **Source**: [Codeforces Round 969 (Div. 1) — Problem 2006E: Iris's Full Binary Tree](https://codeforces.com/problemset/problem/2006/E)
+- **Prerequisite Tags**: Dynamic Tree DP, Heavy-Light / Static Top Tree Maintenance, Full Binary Tree Embedding Height
+
+#### Problem Statement & Exact Constraints
+
+You are given a tree $T$ with $N$ vertices numbered $1, 2, \dots, N$ such that for every $k = 1, 2, \dots, N$, the induced subgraph $T_k$ on vertices $\{1, 2, \dots, k\}$ is a tree (i.e., vertex $i \ge 2$ is connected to a single parent $P_i \in \{1, \dots, i-1\}$).
+
+A rooted tree $R$ can be embedded into a **full binary tree of height $H$** (having $2^{H-1}$ leaves at depth $H$) by subdividing edges of $R$ into paths so that every original vertex of $R$ maps to a distinct node of the binary tree while preserving ancestor-descendant relationships. For each prefix tree $T_k$ ($k = 1, 2, \dots, N$), compute the minimum possible height $H(T_k)$ over all choices of the root $r \in \{1, \dots, k\}$.
+
+- **Constraints**: $1 \le N \le 2 \times 10^5$ per testcase, $\sum N \le 2 \times 10^5$. Time limit: $4.0\text{ s}$. Required complexity: $O(N \log N)$ or $O(N \log^2 N)$ time and $O(N)$ space.
+
+#### Sample Trace ($N = 4$)
+
+Suppose $T_4$ is a star centered at $1$ with edges $(1,2), (1,3), (1,4)$:
+
+- For a fixed root $r$, if vertex $u$ has children $c_1, \dots, c_d$ with required heights $h_{c_1} \ge h_{c_2} \ge \dots \ge h_{c_d}$, binary-splitting the $d$ children into a caterpillar of binary branches beneath $u$ requires height:
+  $$h_u = \begin{cases} 1 & \text{if } d = 0, \\ h_{c_1} + 1 & \text{if } d = 1, \\ \max\!\bigl(\max_{1 \le i \le d-1} (h_{c_i} + i),\; h_{c_d} + d - 1\bigr) & \text{if } d \ge 2. \end{cases}$$
+- Specifically, for $d = 1$, $u$ has a single child $c_1$ at depth $1$ beneath $u$, so $h_u = 1 + h_{c_1}$; for $d = 3$ with $h_{c_1} = h_{c_2} = h_{c_3} = 1$, the last two leaves share depth $d - 1 = 2$, giving height $1 + 2 = 3$, and yielding for $k = 1, 2, 3, 4$ on the star: `1, 2, 3, 3`.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+First fix the root $r$ of $T_k$. If a vertex $u$ has $d$ children $c_1, \dots, c_d$ whose subtrees already require minimum binary tree heights $h_{c_1} \ge h_{c_2} \ge \dots \ge h_{c_d}$, notice that at most **two** children can be attached directly under $u$ at distance $1$; if $d > 2$, we must insert auxiliary binary branching nodes between $u$ and its children. How does $h_u$ depend on the sorted sequence $h_{c_1} \ge h_{c_2} \ge \dots \ge h_{c_d}$?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Notice that in the sorted order $h_{c_1} \ge h_{c_2} \ge \dots \ge h_{c_d}$, the largest child height $h_{c_1}$ and second-largest child height $h_{c_2}$ dominate unless there are many children of similar height, and more tightly: because $\sum_{v \in \text{child}(u)} \text{sz}[v] < \text{sz}[u]$, how large can the difference $h_u - \max_{v \in \text{child}(u)} h_v$ be, and how does the optimal root $r$ relate to the tree's **diameter / heavy centroid path**?
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+For any vertex $u$ with child heights sorted as $h_{c_1} \ge h_{c_2} \ge \dots \ge h_{c_d}$, attaching them along a binary spine beneath $u$ gives $h_u = \max\bigl(\max_{1 \le i \le d-1}(h_{c_i} + i),\; h_{c_d} + d - 1\bigr)$ for $d \ge 2$ (and $h_{c_1} + 1$ for $d = 1$). Along a heavy chain, $h_u = \max(h_{\text{heavy}(u)} + \Delta_u, B_u)$ is a $(\max, +)$ tropical affine transition! Maintaining these $(\max, +)$ matrices on the Static Top Tree (`全局平衡二叉树`) or via HLD + binary search along the centroid spine updates $H(T_k)$ in $O(\log^2 N)$ per vertex insertion.
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### 1. Fixed-Root Height Recurrence as a Tropical $(\max, +)$ Affine Transition
+
+In Problem 2006E, embedding a rooted tree $R$ into a full binary tree requires that at every vertex $u$ with children $c_1, \dots, c_d$ sorted by non-increasing subtree height $h_{c_1} \ge h_{c_2} \ge \dots \ge h_{c_d}$, we arrange $c_1, \dots, c_d$ as leaves of a binary caterpillar/tree rooted at $u$, yielding the exact DP recurrence:
+
+$$h_u = \max\!\left(1,\; \max_{1 \le i \le d} (h_{c_i} + i - [i = d \text{ and } d \ge 2])\right),$$
+
+where if $d = 0$, $h_u = 1$; if $d = 1$, $h_u = h_{c_1} + 1$; and if $d \ge 2$, the $i$-th largest child ($1 \le i < d$) sits at depth $i$ below $u$ while the last two children $c_{d-1}, c_d$ share depth $d - 1$, so:
+
+$$h_u = \max\!\Bigl(\max_{1 \le i \le d-1} (h_{c_i} + i),\; h_{c_d} + d - 1\Bigr).$$
+
+#### 2. Convexity and Heavy-Light / Centroid Maintenance
+
+Observe that as we move the root $r$ across an edge $(u, v)$ from $u$ to $v$, the height $h_v(r)$ can only decrease while the complement height $h_u(r)$ can only increase. Therefore, the function $r \mapsto H(T_k, r)$ is **convex on tree paths**, and the optimal root $r^*$ lies on the heavy-height path from $1$ (specifically at the point where the downward height $h_{r^*}$ and upward complement height are balanced, akin to a tree diameter center).
+
+By building the full tree $T_N$ offline and using Heavy-Light Decomposition (or a Static Top Tree over $T_N$ where vertices $k = 1, \dots, N$ are activated one by one):
+
+1. Each vertex $u$ maintains a balanced multiset (`std::multiset` or Fenwick tree over heights) of its active light children's heights $\{h_v : v \in \text{light}(u) \cap \{1, \dots, k\}\}$.
+2. Because inserting $h_{\text{heavy}(u)}$ into the sorted order of light children shifts the rank of light children with $h_v \le h_{\text{heavy}(u)}$ by $+1$, the transition from $h_{\text{heavy}(u)}$ to $h_u$ is a piecewise $(\max, +)$ step function maintained on the HLD segment tree / Static Top Tree.
+3. Walking down the heavy tree from the current root (or binary-searching along the active diameter path) finds the optimal root $r^*$ and updates $\min_{r \in T_k} H(T_k, r)$ in $O(\log^2 N)$ time per prefix $k$.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Integer $N$ ($1 \le N \le 2 \times 10^5$) and parent edges forming prefix trees $T_1, \dots, T_N$ such that every prefix $\{1, \dots, k\}$ induces a connected subtree of $T_N$.
+- **Postconditions (Output)**: Prints $\min_{r \in \{1,\dots,k\}} H(T_k, r)$ for each $k = 1, 2, \dots, N$.
+- **Time & Space Complexity**: $O(N \log^2 N)$ time and $O(N)$ space.
+- **Loop / Algebraic Invariant**: At step $k$, every active vertex $u \le k$ maintains the sorted multiset of its active light-child heights, and the Static Top Tree / HLD segment tree aggregates the exact $(\max, +)$ transition along each heavy chain.
+- **Failure Modes & Edge Cases**: For $d \ge 2$ children, the last two children $c_{d-1}, c_d$ share depth $d - 1$ beneath $u$ (giving $h_{c_d} + d - 1$, not $h_{c_d} + d$), whereas for $d = 1$ the single child $c_1$ sits at depth $1$ ($h_{c_1} + 1$); forgetting the $[i = d \text{ and } d \ge 2]$ offset off-by-ones all binary branching heights.
+
+</details>
+
+---
+
+### Mastery 1 (`#166`) — Luogu P5281 / LOJ 3044: [ZJOI2019] Minimax 搜索 (Minimax Search)
+
+- **Source**: [LibreOJ 3044 / Luogu P5281 — [ZJOI2019] Minimax 搜索](https://loj.ac/p/3044)
+- **Prerequisite Tags**: Static Top Tree (`全局平衡二叉树`), De Morgan Depth Complementation, Dynamic DP with Zero-Divisor Pairs $(a, c) \equiv a \cdot 0^c$, Amortized Leaf State Flips
+
+#### Problem Statement & Exact Constraints
+
+You are given a rooted tree $T$ with $N$ vertices numbered $1, 2, \dots, N$, rooted at vertex $1$ (which has depth $1$). The value $w_u$ of each vertex $u$ is defined recursively:
+
+- If $u$ is a **leaf**, $w_u = u$ (its vertex index!).
+- If $u$ is an internal vertex at **odd depth** ($1, 3, 5, \dots$), $w_u = \max_{v \in \text{child}(u)} w_v$.
+- If $u$ is an internal vertex at **even depth** ($2, 4, 6, \dots$), $w_u = \min_{v \in \text{child}(u)} w_v$.
+
+Let $W = w_1$ be the initial minimax value at the root, and let $M$ be the total number of leaves in $T$. For any subset of leaves $S \subseteq \text{Leaves}(T)$, if we are allowed to replace the value of each leaf $u \in S$ with an arbitrary integer $w'_u \in [u - k, u + k]$, define the **stability cost $c(S)$** to be the minimum non-negative integer $k$ under which it is possible to change the root value $w_1$ to some $w'_1 \neq W$ (if $w_1$ cannot be changed for any $k$, let $c(S) = N$).
+
+Given $L, R$ ($1 \le L \le R \le N$), for each $k = L, L + 1, \dots, R$, compute the number of leaf subsets $S \subseteq \text{Leaves}(T)$ such that $c(S) = k$, modulo $998244353$.
+
+- **Constraints**: $2 \le N \le 2 \times 10^5$, $1 \le L \le R \le N$. Time limit: $2.0\text{ s}$. Required complexity: $O(N \log N)$ time and $O(N)$ space.
+
+#### Sample Trace ($N = 4$)
+
+Suppose $N = 4$ with root $1$ (odd depth, $\max$) having child $2$ (even depth, $\min$) and leaf $3$, and vertex $2$ having leaf child $4$:
+
+- Leaves are $\{3, 4\}$ ($M = 2$, $2^M = 4$ subsets).
+- Initial values: $w_4 = 4 \implies w_2 = \min(4) = 4$; $w_3 = 3$; $w_1 = \max(w_2, w_3) = \max(4, 3) = 4$, so $W = 4$.
+- When can a subset $S \subseteq \{3, 4\}$ change $w_1$ from $W = 4$ using modification radius $k$?
+  - $S = \emptyset$: never changes $w_1$, so $c(\emptyset) = 4$.
+  - $S = \{4\}$: at $k = 1$, lowering $w'_4 = 4 - 1 = 3$ gives $w'_2 = 3$ and $w'_1 = \max(3, 3) = 3 \neq 4$, so $c(\{4\}) = 1$.
+  - $S = \{3\}$: at $k = 1$, raising $w'_3 = 3 + 1 = 4$ leaves $\max(4, 4) = 4$, whereas at $k = 2$, raising $w'_3 = 3 + 2 = 5$ gives $w'_1 = \max(4, 5) = 5 > 4$, so $c(\{3\}) = 2$.
+  - $S = \{3, 4\}$: at $k = 1$, lowering $w'_4 = 3$ already gives $w'_1 = 3 \neq 4$, so $c(\{3, 4\}) = 1$.
+- Counts for $k = 1, 2, 3, 4$: `2, 1, 0, 1`.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Instead of computing the number of subsets with $c(S) = k$ directly, it is much easier to count the number of subsets $S$ with $c(S) > k$ (i.e., subsets $S$ for which **every** valid modification within radius $k$ still leaves the root locked at $w'_1 = W$). Notice that on the critical path of vertices with $w_u = W$, the root is a $\max$ over one child equal to $W$ and others $< W$, which in turn is a $\min$ over one child equal to $W$ and others $> W$. Can a single modification simultaneously make $w'_1 > W$ and $w'_1 < W$?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+Because the root $1$ has $w_1 = W$, changing $w'_1 \neq W$ happens if and only if we **either** make $w'_1 > W$ **or** make $w'_1 < W$—and these two requirements depend on **completely disjoint sets of leaves** (leaves in subtrees with $w_v \le W$ can only help make $w'_1 > W$, while leaves in subtrees with $w_v \ge W$ can only help make $w'_1 < W$)! Thus, if we pick each leaf $u \in \text{Leaves}(T)$ independently with probability $\frac{1}{2}$, the probability that $w'_1 = W$ remains locked is $P(w'_1 \le W) \cdot P(w'_1 \ge W)$! Moreover, as $k$ increases from $1$ to $N - 1$, each leaf $u$ changes its threshold feasibility ($u + k > W$ or $u - k < W$) **at most once** (specifically at $k = |u - W| + 1$)!
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Let $p_u$ be the probability that $w'_u > W$ in the first DP (on subtrees relevant to $> W$). At an odd-depth node ($\max$), $w'_u > W$ iff **at least one** child has $w'_v > W$: $p_u = 1 - \prod_{v \in \text{child}(u)} (1 - p_v)$. At an even-depth node ($\min$), $w'_u > W$ iff **all** children have $w'_v > W$: $p_u = \prod_{v \in \text{child}(u)} p_v$. By substituting $\widetilde{p}_u = p_u$ at odd depths and $\widetilde{p}_u = 1 - p_u$ at even depths (**De Morgan Depth Complementation**), **every** internal node at every depth satisfies the identical recurrence:
+$$\widetilde{p}_u = 1 - \prod_{v \in \text{child}(u)} \widetilde{p}_v = 1 - L_u \cdot \widetilde{p}_{\text{heavy}(u)}.$$
+Maintain this 1D affine map $\begin{pmatrix} -L_u & 1 \\ 0 & 1 \end{pmatrix}$ on a Static Top Tree (`全局平衡二叉树`) using `ZeroDivPair` for $L_u = \prod_{v \in \text{light}(u)} \widetilde{p}_v$. Since each leaf updates at most once as $k = 1 \dots N-1$, the entire sweep takes $O(N \log N)$ time!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### 1. Decoupling $w'_1 > W$ and $w'_1 < W$
+
+First run a $O(N)$ DFS to compute the initial minimax value $w_u$ of every vertex $u$, setting $W = w_1$. Notice that all leaf values $w_u = u$ are distinct. Consequently, at every internal vertex $u$, **at most one** child $v \in \text{child}(u)$ can have $w_v = w_u$.
+
+Specifically, at the root $1$ (odd depth, $\max$), let $v^*$ be the unique child of $1$ with $w_{v^*} = W$; all other children $v \neq v^*$ have $w_v < W$. To keep $w'_1 = W$ under the adversary's best choice of leaf modifications:
+
+1. No child of $1$ can achieve $w'_v > W$ (which means $w'_1 \le W$). Note that for $v^*$, since $v^*$ is at even depth ($\min$) and its children all have $w_c \ge W$, $v^*$ can **never** be raised above $W$ by its children with $w_c > W$ unless the unique child of $v^*$ with $w_c = W$ is raised above $W$. More generally, a leaf $u$ with $u < W$ can **never** be lowered to make a $\min$-ancestor $< W$ in a way that helps change $W$ downward; its only possible role is to be **raised** to $u + k > W$ to help make $w'_1 > W$.
+2. Symmetrically, a leaf $u$ with $u > W$ can only be **lowered** to $u - k < W$ to help make $w'_1 < W$.
+3. For the unique critical leaf $u^*$ with $u^* = W$: if $u^* \notin S$, then $w'_{u^*} = W$ is locked, so raising $w'_1 > W$ depends purely on leaves with $u < W$ and lowering $w'_1 < W$ depends purely on leaves with $u > W$. If $u^* \in S$ and $k \ge 1$, the player can move $w'_{u^*}$ either above $W$ or below $W$; by the minimax structure along the critical path of vertices with $w_v = W$, at least one of these two moves changes the root unless **both** raising fails (blocked by a $\min$-ancestor on the critical path) **and** lowering fails (blocked by a $\max$-ancestor on the critical path).
+
+Therefore, under the uniform probability distribution over $S \subseteq \text{Leaves}(T)$ (where each leaf belongs to $S$ independently with probability $2^{-1} \bmod 998244353$), let:
+
+- $P_k$: probability that the player **can** achieve $w'_1 > W$ using radius $k$ (where for a leaf $u$: if $u > W$, it is already $> W$ with probability $1$; if $u \le W$, it can become $> W$ iff $u \in S$ and $u + k > W$, which has probability $\frac{1}{2}$ if $k > W - u$ and $0$ otherwise).
+- $Q_k$: probability that the player **can** achieve $w'_1 < W$ using radius $k$ (where for a leaf $u$: if $u < W$, it is already $< W$ with probability $1$; if $u \ge W$, it can become $< W$ iff $u \in S$ and $u - k < W$, which has probability $\frac{1}{2}$ if $k > u - W$ and $0$ otherwise).
+
+Because $P_k$ only depends on the membership in $S$ of leaves with $u < W$ (plus $u^* = W$), and $Q_k$ only depends on the membership in $S$ of leaves with $u > W$ (plus $u^* = W$), the number of subsets $S$ with $c(S) > k$ (for $1 \le k \le N-1$) is simply:
+
+$$\text{ways}(c(S) > k) = 2^M \cdot (1 - P_k)(1 - Q_k) \pmod{998244353},$$
+
+with boundary values $\text{ways}(c(S) > 0) = 2^M$ (since at $k = 0$ no leaf changes, so $c(S) \ge 1$ for all $2^M$ subsets) and $\text{ways}(c(S) > N - 1) = 1$ (only $S = \emptyset$ has $c(\emptyset) = N$).
+
+#### 2. De Morgan Depth Complementation & Static Top Tree Sweep
+
+In the $P_k$ tree DP:
+- At odd depth ($\max$), $p_u = 1 - \prod_{v \in \text{child}(u)} (1 - p_v)$.
+- At even depth ($\min$), $p_u = \prod_{v \in \text{child}(u)} p_v \iff 1 - p_u = 1 - \prod_{v \in \text{child}(u)} p_v$.
+
+Define $\widetilde{p}_u = p_u$ if $\text{depth}(u)$ is odd, and $\widetilde{p}_u = 1 - p_u$ if $\text{depth}(u)$ is even. Then at **every** internal vertex $u$:
+
+$$\widetilde{p}_u = 1 - \prod_{v \in \text{child}(u)} \widetilde{p}_v = 1 - L_u \cdot \widetilde{p}_{\text{heavy}(u)}, \qquad \text{where } L_u = \prod_{v \in \text{light}(u)} \widetilde{p}_v.$$
+
+Similarly, in the $Q_k$ tree DP (where odd depth is $\max$, so $w'_u < W$ iff **all** children have $w'_v < W$, i.e., $q_u = \prod q_v$ at odd depth and $q_u = 1 - \prod(1 - q_v)$ at even depth), define $\widetilde{q}_u = 1 - q_u$ at odd depth and $\widetilde{q}_u = q_u$ at even depth, which again yields the **exact same recurrence**:
+
+$$\widetilde{q}_u = 1 - \prod_{v \in \text{child}(u)} \widetilde{q}_v.$$
+
+We can therefore merge both DPs onto the **same** Static Top Tree (`全局平衡二叉树`)! As $k$ increments from $1$ to $N - 1$:
+- At $k = 1$, leaf $u^* = W$ activates with probability $\frac{1}{2}$.
+- At $k = d$ ($d \ge 1$), the at most two leaves $u = W - d + 1$ (if $< W$ and is a leaf) and $u = W + d - 1$ (if $> W$ and is a leaf) change their leaf probability from $0$ (or $1$) to $\frac{1}{2}$.
+- Each leaf changes at most **once** during the entire sweep $k = 1 \dots N-1$, performing at most $N$ point updates on the Static Top Tree (`全局平衡二叉树`) using `ZeroDivPair` for $L_u$. At $k$, the number of subsets with $c(S) = k$ is $\text{ways}(c(S) > k - 1) - \text{ways}(c(S) > k)$.
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Tree $T$ of $N \le 2 \times 10^5$ vertices rooted at $1$, range $[L, R] \subseteq [1, N]$, and prime modulus $p = 998244353$.
+- **Postconditions (Output)**: Outputs $|\{S \subseteq \text{Leaves}(T) : c(S) = k\}| \bmod 998244353$ for each $k \in [L, R]$.
+- **Time & Space Complexity**: $O(N \log N)$ total time and $O(N)$ space.
+- **Loop / Algebraic Invariant**: After De Morgan complementation, every internal vertex $u$ has affine transfer matrix $M_u = \begin{pmatrix} -L_u & 1 \\ 0 & 1 \end{pmatrix}$ where $L_u = \prod_{v \in \text{light}(u)} \widetilde{p}_v$ is maintained via `ZeroDivPair`, and each leaf $u$ triggers at most one root-to-leaf path update at $k = |u - W| + 1$.
+- **Failure Modes & Edge Cases**: Without De Morgan depth complementation ($\widetilde{p}_u = 1 - p_u$ at even depths), $\min$ and $\max$ levels have alternating affine transitions; when a light child $v$ has $\widetilde{p}_v \equiv 0 \pmod p$, naive modular division by $0$ corrupts $L_u$ permanently unless wrapped in a `ZeroDivPair` (Failure Mode #10); boundary $k = N$ must account for $S = \emptyset$ where $w_1$ never changes.
+
+</details>
+
+---
+
+### Mastery 2 (`#145`) — Luogu P3348: [ZJOI2016] 大森林 (Great Forest)
+
+- **Source**: [Luogu P3348 — [ZJOI2016] 大森林](https://www.luogu.com.cn/problem/P3348)
+- **Prerequisite Tags**: Offline Sweep Across Trees, Virtual Auxiliary Nodes, Dynamic Tree / Top Tree Path Distance Queries
+
+#### Problem Statement & Exact Constraints
+
+You maintain a sequence of $N$ rooted trees $T_1, T_2, \dots, T_N$, each initially consisting of a single vertex $1$ (with its **growth point** set to $1$). Process $M$ operations of three types:
+
+- `0 l r`: In every tree $T_i$ for $l \le i \le r$, create a new vertex with the next sequential ID $c + 1$ and attach it as a child of the current growth point of $T_i$. (Note: this new vertex receives the **same** ID $c + 1$ across all trees; even trees outside $[l, r]$ advance the global vertex counter, though the vertex only exists in $T_l, \dots, T_r$).
+- `1 l r x`: In every tree $T_i$ for $l \le i \le r$, change the growth point of $T_i$ to vertex $x$ (it is guaranteed that vertex $x$ exists in $T_l, \dots, T_r$).
+- `2 x u v`: Query the tree distance (number of edges on the unique simple path) between vertex $u$ and vertex $v$ in tree $T_x$.
+
+- **Constraints**: $1 \le N \le 10^5$, $1 \le M \le 2 \times 10^5$. Time limit: $2.0\text{ s}$. Required complexity: $O((N + M) \log M)$ time and $O(N + M)$ space.
+
+#### Sample Trace ($N = 2, M = 4$)
+
+Suppose $N = 2$ trees $T_1, T_2$ (initially both have node $1$, growth point $1$):
+
+1. `0 1 2`: Node $2$ is added under growth point $1$ in $T_1, T_2$.
+2. `1 2 2 2`: In $T_2$, growth point changes to $2$ (in $T_1$, growth point stays $1$).
+3. `0 1 2`: Node $3$ is added under current growth point ($1$ in $T_1$, $2$ in $T_2$).
+4. Queries `2 1 2 3` and `2 2 2 3`:
+   - In $T_1$, edges are $(1,2)$ and $(1,3)$, so $\operatorname{dist}_{T_1}(2, 3) = 2$.
+   - In $T_2$, edges are $(1,2)$ and $(2,3)$, so $\operatorname{dist}_{T_2}(2, 3) = 1$.
+
+<details>
+<summary>Hint 1 — Diagnostic Signal & Combinatorial Model</summary>
+
+Notice that there are **no dependencies** between different trees $T_1, \dots, T_N$, and notice that if a `0 l r` operation adds a vertex $u$ to a subrange $[l, r]$, the distance between any two existing vertices in $T_i$ neither depends on whether $u$ exists nor changes when $u$ is added as a leaf! What happens if we pretend that `0 l r` adds vertex $u$ to **all** trees $1 \dots N$, and process the trees $T_1, T_2, \dots, T_N$ **offline** by sweeping the tree index $i$ from $1$ to $N$?
+
+</details>
+
+<details>
+<summary>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</summary>
+
+When we sweep the tree index $i$ from $1$ to $N$, a growth-point change `1 l r x` (occurring at chronological time $t$) activates at $i = l$ and deactivates at $i = r + 1$. How can we avoid moving all the individual leaves created between chronological time $t$ and the next growth-point change one by one when $i$ crosses $l$ or $r + 1$?
+
+</details>
+
+<details>
+<summary>Hint 3 — Coefficient Extraction & Complexity Contract</summary>
+
+Create a **zero-weight virtual auxiliary node $V_k$** for each `1 l r x` operation (and an initial virtual node $V_0$ attached to $1$). Every real vertex $u$ (of weight $1$) created by a `0` operation after the $k$-th `1` operation and before the $(k+1)$-th `1` operation is permanently attached as a child of the virtual node $V_k$! Now, when sweeping $i$ from $1 \dots N$:
+- At $i = l$, the $k$-th `1 l r x` operation simply detaches the **single virtual node $V_k$** from $V_{k-1}$ and attaches $V_k$ under real node $x$ (`cut` + `link` of the entire subtree $T_{V_k}$!).
+- At $i = r + 1$, it detaches $V_k$ from $x$ and re-attaches $V_k$ under $V_{k-1}$!
+Measuring weighted distance $\operatorname{dist}(u, v) = \operatorname{depth}_w(u) + \operatorname{depth}_w(v) - 2\operatorname{depth}_w(\operatorname{LCA}(u, v))$ (where real nodes have weight $1$ and virtual nodes $V_k$ have weight $0$) answers every query in $O(\log M)$ time!
+
+</details>
+
+<details>
+<summary>Complete Derivation & Solution</summary>
+
+#### 1. Offline Sweep and Virtual Growth-Point Nodes
+
+Observe two fundamental invariants:
+
+1. **Universal Creation**: A query `2 x u v` guarantees that $u$ and $v$ exist in $T_x$. Attaching a leaf $w$ during `0 l r` to trees outside $[l, r]$ never alters the path between any two vertices that actually exist in $T_x$, provided that any `1 l' r' w` operation only sets the growth point to $w$ within $[l', r'] \subseteq [l, r]$. Thus we can treat every `0` operation as active across **all** $i \in [1, N]$.
+2. **Virtual Batching Nodes**: Let the `1 l r x` operations be numbered $k = 1, 2, \dots, K$ in chronological order, and create a virtual node $V_k$ of **edge weight $0$** for each $k \in [0, K]$:
+   - Initially (for a tree where no `1` operations are active), $V_0$ is attached to real node $1$, and for each $k \ge 1$, $V_k$ is attached as a weight-$0$ child of $V_{k-1}$. Because the chain $V_0 - V_1 - \dots - V_K$ has total weight $0$, any real node attached to $V_k$ is effectively attached directly to the active growth point of the most recent active `1` operation $\le k$!
+   - Whenever a `0` operation creates a new real vertex $u$ (when the most recent `1` operation so far is $k$), we permanently link $u$ to $V_k$ with **vertex/edge weight $1$**.
+   - For the $k$-th `1 l r x` operation, we schedule two sweep events at tree index $i = l$ (cut $V_k$ from its current parent $V_{k-1}$ and link $V_k$ to $x$) and at tree index $i = r + 1$ (cut $V_k$ from $x$ and link $V_k$ back to $V_{k-1}$).
+
+#### 2. Weighted LCA Distance Query on Dynamic Tree
+
+Why can't we simply compute $\operatorname{dist}(u, v)$ by exposing the path $u \leftrightarrow v$ via `make_root(u)`? Because computing the LCA in a rooted tree via `access(u)` followed by `access(v)` (where the last splay-tree jump node $w$ during `access(v)` is $\operatorname{LCA}(u, v)$) keeps the root fixed at $1$, preserving parent-child orientation for `cut(V_k, parent(V_k))`!
+
+Specifically, assign weight $\text{val}[u] = 1$ to every real vertex $u$ and $\text{val}[V_k] = 0$ to every virtual vertex $V_k$, maintaining the path sum `sum[x]` on each auxiliary splay tree. Then the distance between real vertices $u$ and $v$ in $T_i$ is:
+
+$$\operatorname{dist}_{T_i}(u, v) = \operatorname{depth}_w(u) + \operatorname{depth}_w(v) - 2 \operatorname{depth}_w(\operatorname{LCA}(u, v))$$
+
+(counting edges between real vertices, so $\operatorname{depth}_w(u)$ is the sum of real vertices on the root-to-$u$ path, and subtracting $2 \operatorname{depth}_w(\operatorname{LCA}(u, v)) - 2 \cdot 1$ or equivalently assigning weight $1$ to the **parent edge** of each real vertex $u \ge 2$ and weight $0$ to the parent edge of $1$ and all $V_k$ makes $\operatorname{dist}(u, v) = \operatorname{depth}_w(u) + \operatorname{depth}_w(v) - 2\operatorname{depth}_w(\operatorname{LCA}(u, v))$ exact without any $+1/-1$ adjustment!).
+
+#### Algorithm Contract
+
+- **Input & Preconditions**: Integers $N \le 10^5, M \le 2 \times 10^5$ and $M$ operations of types `0 l r`, `1 l r x`, `2 x u v`; every `1 l r x` and `2 x u v` references vertices that exist in the specified trees.
+- **Postconditions (Output)**: Outputs the exact path length between $u$ and $v$ in $T_x$ for each type-2 query in chronological order.
+- **Time & Space Complexity**: $O((N + M) \log M)$ time and $O(N + M)$ space.
+- **Loop / Algebraic Invariant**: At sweep index $i \in [1, N]$, virtual node $V_k$ ($k \ge 1$) has parent $x_k$ if $i \in [l_k, r_k]$ and parent $V_{k-1}$ otherwise; because real vertices $u \ge 2$ carry edge-weight $1$ and virtual nodes $V_k$ carry edge-weight $0$, contracting all weight-$0$ edges produces a tree isomorphic to $T_i$.
+- **Failure Modes & Edge Cases**: Calling `make_root(u)` to query path distances destroys the fixed parent-child orientation rooted at $1$ required by `cut(V_k, parent(V_k))` during the sweep; always query $\operatorname{dist}(u, v) = \operatorname{depth}_w(u) + \operatorname{depth}_w(v) - 2\operatorname{depth}_w(\operatorname{LCA}(u, v))$ via `access(u)` and `access(v)` while keeping vertex $1$ as the permanent LCT root, and clamp $[l, r]$ of type-1 operations to the creation interval of $x$.
+
+</details>
+
+---
+
+## 22.7 Self-Assessment Checklist & Chapter Summary
+
+Before moving to Chapter 23, verify that you can answer and execute every item on this checklist from first principles:
+
+- [ ] **$\binom{N}{2}$ Subtree Knapsack vs. $\Theta(N^2 \log N)$ Unbalanced NTT**: Can you prove by LCA double counting why the naive nested loop takes $\binom{N}{2}$ operations ($O(NK)$ when truncated to degree $K$), and explain why bottom-up NTT without HLD still takes $\Theta(N^2 \log N)$ on a path or caterpillar?
+- [ ] **Heavy-Light `Rake` & 3-Way Weighted-Midpoint `Compress`**: Can you implement the `Rake` phase (merging light children via a degree-ordered min-heap) and the `Compress` phase (splitting heavy chains $[l, r]$ into $[l, m-1]$, $\{m\}$, and $[m+1, r]$ at the first index $m$ with $\sum_{i=l}^m w_i \ge \frac{1}{2} W_{[l,r]}$), and explain why naive index-midpoint halving ($m = \lfloor(l+r)/2\rfloor$) degrades to $O(N \log^3 N)$?
+- [ ] **Fourier-Domain $3c^2$ Matrix Product**: When multiplying two $c \times c$ polynomial matrices of total degree $D$, do you transform the $2c^2$ input entries once, perform $O(c^3 \cdot 2^k)$ pointwise scalar multiplications in $\mathbb{F}_p$, and inverse-transform the $c^2$ output entries ($3c^2$ NTTs instead of $3c^3$)?
+- [ ] **Failure Mode #10 (`ZeroDivPair` $(a, c) \equiv a \cdot 0^c$)**: In Dynamic DP on a Weight-Balanced Static Top Tree (`全局平衡二叉树`) with FWT or point evaluations, do you wrap every light-child product accumulator in a `ZeroDivPair` so that multiplying and dividing by $0 \pmod p$ increments/decrements $c$ without destroying the non-zero residue product $a \in \mathbb{F}_p^\times$?
+- [ ] **Subtree Frequency `mulT`**: When computing $\sum_{|S|=k} f(S)$ across all $k = 1 \dots N$, can you decompose $f(S)$ into vertex/edge indicators, build the directed subtree size histogram $\text{cnt}[1 \dots N-1]$, and evaluate $\sum_{s=k}^{N-1} \text{cnt}[s] \binom{s}{k}$ in a single $O(N \log N)$ reverse-indexed NTT convolution?
+
+::: {.callout-note collapse="true"}
+## Implementation Verification Footnote (Quarantined Research Template `R-67`)
+
+During the curriculum verification pass (`fps_research/CURRICULUM_ARCHITECTURE.md` §5), reference template `R-67` in `cohort3_wave_5b_tree_fps_transposition_compose_q.md` (HLD Tree DP divide-and-conquer) was flagged for splitting heavy chains at the unweighted index midpoint $m = \lfloor(l + r)/2\rfloor$, which degrades to $\Theta(N \log^3 N)$ when a single vertex on a heavy chain carries a large light-subtree polynomial degree. Section 22.2 replaces `R-67` with the verified 3-way weighted-midpoint `compress_solve` kernel (Theorem 22.3), guaranteeing strict $\le \lfloor W/2 \rfloor$ subtree weight halving and global $O(c^2 N \log^2 N)$ complexity.
+:::
+
+---
+
+### Where Next?
+
+Having mastered polynomial divide-and-conquer and dynamic algebraic structures on trees, we turn in the next chapter to the $q$-analogue world—where powers of $q$ track inversions, subspace dimensions over $\mathbb{F}_q$, and Ferrers diagram areas:
+
+- **Next Chapter**: [Chapter 23: q-Series, Gaussian Binomials, Pentagonal/Durfee Decompositions & q-Difference Equations](ch23-q-analogues-gaussian-binomials-q-lucas-macwilliams.qmd)
