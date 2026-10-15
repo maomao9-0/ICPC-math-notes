@@ -223,6 +223,7 @@ What happens when we pass to the larger ring of formal power series $K[[x]]$? Re
 **Theorem 1.1 (The Unit Theorem for $K[[x]]$).** *Let $K$ be any commutative ring. A formal power series $F(x) = \sum_{n=0}^{\infty} f_n x^n \in K[[x]]$ is a unit in $K[[x]]$ (i.e., there exists $G(x) = \sum_{n=0}^{\infty} g_n x^n \in K[[x]]$ such that $F(x)G(x) = 1$) if and only if its constant term $f_0 = [x^0]F(x)$ is a unit in the coefficient ring $K$ ($f_0 \in K^\times$). Moreover, when $f_0 \in K^\times$, the inverse $G(x) = F(x)^{-1}$ is unique.*
 
 *Step-by-Step Verbalized Proof*:
+
 1. **Necessity ($\implies$)**: Suppose $F(x)G(x) = 1$ in $K[[x]]$. Extract the coefficient of $x^0$ on both sides using the definition of the Cauchy product at $n = 0$:
    $$
    [x^0]\bigl(F(x)G(x)\bigr) = f_0 g_0 = [x^0]1 = 1_K.
@@ -410,6 +411,7 @@ where $\widetilde{A}(x) = \sum_{n=0}^{\infty} a_{n+v} x^n$ now has constant term
 
 - **Part A — The Valuation-Shift Trap (Truncating Before Shifting)**:
   Suppose you need $Q(x) \bmod x^N$, and you compute $A(x)$ and $B(x)$ to the target precision $\bmod\, x^N$ (arrays of length $N$, storing indices $0, 1, \dots, N-1$). When you divide both series by $x^v$ (shifting index $n+v \mapsto n$), the shifted series $\widetilde{A}(x) = x^{-v} A(x)$ and $\widetilde{B}(x) = x^{-v} B(x)$ only have known coefficients for $0 \le n < N - v$!
+
   - In exact modular arithmetic:
     $$
     A(x) \equiv B(x) \pmod{x^N} \quad \Longleftrightarrow \quad x^{-v} A(x) \equiv x^{-v} B(x) \pmod{x^{N - v}}.
@@ -420,9 +422,11 @@ where $\widetilde{A}(x) = \sum_{n=0}^{\infty} a_{n+v} x^n$ now has constant term
   $$
   Q(x) = \frac{B(x)}{A(x)} = \frac{1 + 5x^2}{1 - x + x^2} = (1 + 5x^2)(1 + x - x^3 + \dots) \equiv 1 + x + 5x^2 \pmod{x^3}.
   $$
+
   - *Buggy pipeline (truncate $\bmod\, x^3$ before shifting)*: Truncating $A, B \bmod x^3$ first drops the $x^3$ terms, giving $A_{\text{trunc}}(x) = x - x^2$ and $B_{\text{trunc}}(x) = x$. Shifting by $x^1$ gives $\widetilde{A}_{\text{trunc}}(x) = 1 - x \bmod x^2$ and $\widetilde{B}_{\text{trunc}}(x) = 1 \bmod x^2$. Zero-padding back to length $3$ and inverting computes $\frac{1}{1 - x} \equiv 1 + x + x^2 \pmod{x^3}$, producing $[x^2]Q = 1$ instead of the true $[x^2]Q = 5$!
 - **The Exact Remedy for Part A**:
   Whenever $\operatorname{val}(A) = v \ge 1$ and you require $Q(x) = B(x)/A(x) \bmod x^N$:
+
   1. Verify that $b_0 = b_1 = \dots = b_{v-1} = 0$ (so $\operatorname{val}(B) \ge v$) and $a_v = [x^v]A(x) \in K^\times$.
   2. Evaluate both $A(x)$ and $B(x)$ to precision **$\bmod\, x^{N + v}$** (indices $0$ through $N + v - 1$) *before* dividing by $x^v$.
   3. Form $\widetilde{A}[n] = A[n + v]$ and $\widetilde{B}[n] = B[n + v]$ for $0 \le n < N$, which are now exact $\bmod\, x^N$.
@@ -433,6 +437,7 @@ where $\widetilde{A}(x) = \sum_{n=0}^{\infty} a_{n+v} x^n$ now has constant term
   G_{k+1}(x) \equiv G_k(x)\bigl(2 - A(x) G_k(x)\bigr) \pmod{x^{2m}},
   $$
   implementations typically perform cyclic NTT convolutions of length $L = 4m$ (or $2m$ with cyclic wrap-around). Two silent buffer bugs occur if trailing coefficients are not zeroed:
+
   1. **Unclean Input Slice (`[2m, 4m)`)**: Passing the full polynomial $A(x)$ instead of its prefix $A(x) \bmod x^{2m}$ into the length-$4m$ DFT buffer leaks high-degree terms $a_{2m}, \dots, a_{4m-1}$ into the cyclic product.
   2. **Unclean Output Truncation (`[2m, 4m)`)**: After computing $G_{k+1}$ via inverse NTT of length $4m$, coefficients at indices $[2m, 4m)$ contain cyclic garbage from degree $[2m, 3m-2]$. If these positions are not explicitly zeroed out (`fill(G.begin() + 2 * m, G.end(), 0)`) before the next doubling step $2m \to 4m$, they corrupt the forward DFT of $G_{k+1}$ in the subsequent iteration!
 :::
@@ -485,6 +490,7 @@ Suppose a problem gives $m$ polynomials $P_1(x), P_2(x), \dots, P_m(x)$ whose de
 - **The Sequential Trap ($O(m S \log S)$)**: If you accumulate the product one factor at a time (`acc = acc * P[i]`), and each $P_i$ has degree $1$ ($m = S$), the $i$-th step multiplies a polynomial of degree $i-1$ by a polynomial of degree $1$. Using FFT/NTT on the accumulator costs $\sum_{i=1}^S O(i \log i) = O(S^2 \log S)$ (or $O(S^2)$ with naive multiplication)—a guaranteed Time Limit Exceeded when $S = 2 \times 10^5$!
 - **The Divide-and-Conquer / Min-Heap Remedy ($O(S \log^2 S)$)**:
   Instead of unbalanced sequential multiplication, always multiply polynomials of **comparable degree**:
+
   1. **Balanced Recursion (`prod(L, R)`)**: Split the range $[L, R]$ at $M = \lfloor(L+R)/2\rfloor$, recursively compute $P_{[L, M]}(x)$ and $P_{[M+1, R]}(x)$, and multiply them with a single FFT/NTT call. If all $P_i$ have roughly equal degrees, the recursion tree has depth $\lceil \log_2 m \rceil$, and the total degree of all polynomials at every single depth level of the tree is exactly $S$. Thus each level costs $\sum O(d_j \log d_j) = O(S \log S)$ time, giving $O(S \log S \log m) \subseteq O(S \log^2 S)$ total time.
   2. **Huffman / Degree-Ordered Min-Heap**: What if the input degrees $\deg(P_i)$ are wildly skewed (e.g., one polynomial of degree $S/2$ and $S/2$ polynomials of degree $1$)? Put all $m$ polynomials into a **min-priority queue ordered by $\deg(P)$**. Repeatedly pop the two smallest-degree polynomials $A(x)$ and $B(x)$, multiply them in $O((\deg A + \deg B)\log(\deg A + \deg B))$ time, and push $A(x)B(x)$ back into the heap. Every time a polynomial participates in a multiplication, the degree of the resulting merged polynomial is at least **double** the degree of the smaller factor, guaranteeing that each unit of degree participates in at most $O(\log S)$ merges for a worst-case bound of $O(S \log^2 S)$.
   3. **Frequency Grouping Optimization (Pre-Binomial Collapse)**: Before building a product tree over linear or sparse factors $\prod_{i=1}^m (1 + c x^{w_i})$, count the multiplicity $cnt[w]$ of each weight $w$. Any factor with $w = 1$ (or identical $w$) repeated $c$ times can be collapsed immediately into $(1 + x)^c = \sum_{k=0}^c \binom{c}{k} x^k$ in $O(c)$ time using precomputed factorials! (In Chapter 02 (§2.5) and Chapter 03 (§3.2), we will also see how $\ln / \exp$ collapses $\prod_{i=1}^m (1 + c_i x^{w_i}) \bmod x^N$ in $O(N \log N)$ when $p > N$).
@@ -502,6 +508,7 @@ Suppose a problem gives $m$ polynomials $P_1(x), P_2(x), \dots, P_m(x)$ whose de
 ## Failure Mode #1b: Degree-Bound Explosion & Missing Zero-Trim in D&C Product Trees
 
 When multiplying $k$ polynomials $P_1(x), \dots, P_k(x)$ modulo $x^N$ using a Divide-and-Conquer tree or Min-Heap:
+
 1. **Missing $\bmod x^N$ Cap**: If intermediate products are not truncated to degree $\min(\deg A + \deg B, N - 1)$ immediately after each convolution, a product of $k$ polynomials of degree $N - 1$ grows to degree $k(N - 1)$, degrading an $O(N \log^2 N)$ truncated product into $O(k N \log(kN))$.
 2. **Untrimmed High-Degree Zeros**: If an intermediate product has leading high-degree coefficients that cancel to $0 \pmod p$ (or if a factor is padded to a power-of-two NTT buffer size $2^{\lceil \log_2 d \rceil}$ and pushed back into the Min-Heap without stripping trailing high-degree zeros), the heap key `P.size()` overestimates the true algebraic degree $\deg(P)$, corrupting the Huffman merging order and inflating subsequent FFT sizes. Always call `P.resize(min((int)P.size(), N))` followed by stripping trailing high-degree zeros before re-inserting into the heap.
 :::
@@ -515,6 +522,7 @@ We now apply the algebraic and algorithmic tools of Chapter 01 across eight care
 ---
 
 ### Stepping Stone 1 (`#019`) — Redistribution
+
 - **Source**: [AtCoder Beginner Contest 178 — Problem D](https://atcoder.jp/contests/abc178/tasks/abc178_d)
 - **Prerequisites**: Formal geometric series $(1 - G(x))^{-1}$ (§1.3), coefficient extraction $[x^S]$ (§1.1).
 
@@ -526,6 +534,7 @@ Given an integer $S$ ($1 \le S \le 2000$), find the number of ordered sequences 
 
 Output the answer modulo $10^9 + 7$.
 *Target Complexity*: $O(S)$ time and $O(S)$ (or $O(1)$) space.
+
 - **Sample Trace ($S = 7$)**: The ordered tuples of integers $\ge 3$ summing to $7$ are $(7)$, $(3, 4)$, and $(4, 3)$, giving **3** valid sequences.
 
 <details>
@@ -546,13 +555,13 @@ A single block $a_i \ge 3$ has generating function $G(x) = x^3 + x^4 + x^5 + \do
 <summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
 
 Multiplying numerator and denominator by $1 - x$ gives $F(x) = \frac{x^3}{1 - x - x^3}$. You can extract $[x^S]F(x)$ in two ways, both in $O(S)$ time:
+
 1. Multiply both sides by $1 - x - x^3$ to get $(1 - x - x^3)F(x) = x^3$, which gives the linear recurrence $f_n = f_{n-1} + f_{n-3}$ for $n \ge 4$ with $f_3 = 1$.
 2. Alternatively, expand $G(x)^k = x^{3k}(1-x)^{-k}$ using the negative binomial series $[x^S]x^{3k}(1-x)^{-k} = \binom{S - 2k - 1}{k - 1}$ and sum over $1 \le k \le \lfloor S/3 \rfloor$.
 
 </details>
 
-<details>
-<summary><strong>Complete Derivation & Solution</strong></summary>
+:::: {.callout-note collapse="true" title="**Complete Derivation & Solution**"}
 
 #### 1. Combinatorial Specification as a Formal Geometric Series
 We are counting ordered $k$-tuples $(a_1, \dots, a_k)$ of integers $a_i \ge 3$ summing to $S$, summed over all lengths $k \ge 1$.
@@ -576,6 +585,7 @@ $$
 
 #### 2. Hand-Checkable Trace ($S \le 6$)
 Let us check the first few coefficients of $F(x) = x^3(1 - (x + x^3))^{-1}$:
+
 - For $S = 1, 2$: $\operatorname{val}(F) = 3$, so $f_1 = f_2 = 0$ (no sequence of integers $\ge 3$ can sum to $1$ or $2$).
 - For $S = 3$: $f_3 = 1$, corresponding to $(3)$.
 - For $S = 4$: $f_4 = 1$, corresponding to $(4)$.
@@ -621,17 +631,19 @@ $$
 $$
 
 #### 5. Algorithm Contract
+
 - **Input & Preconditions**: Integer $S$ ($1 \le S \le 2000$); prime modulus $p = 10^9 + 7$.
 - **Postconditions (Output)**: Returns $[x^S] \frac{x^3}{1 - x - x^3} \bmod (10^9 + 7)$.
 - **Time & Space Complexity**: $O(S)$ time and $O(S)$ space (or $O(1)$ auxiliary space using a 3-element rolling buffer for Method A).
 - **Loop / Algebraic Invariant**: After step $n$ ($3 \le n \le S$), $f_n = [x^n] x^3(1 - x - x^3)^{-1} \bmod p$ holds via the exact relation $(1 - x - x^3)F(x) = x^3$.
 - **Failure Modes & Edge Cases**: When $S < 3$, $\lfloor S/3 \rfloor = 0$ so the answer is $0$ (guard array bounds when initializing `f[3] = 1` if allocating size $S + 1$ for $S \in \{1, 2\}$).
 
-</details>
+::::
 
 ---
 
 ### Stepping Stone 2 (`#043`) — `#(subset sum = K)` with Add and Erase
+
 - **Source**: [AtCoder Beginner Contest 321 — Problem F](https://atcoder.jp/contests/abc321/tasks/abc321_f)
 - **Prerequisites**: Unit theorem in $K[[x]]/(x^{K+1})$ (§1.2), Reversible DP / sparse multiplication and division by $(1 + x^v)$ (§1.4).
 
@@ -643,6 +655,7 @@ You have an initially empty box of balls and an integer target $K$. You are give
 
 Balls with identical values are treated as **distinct** (labelled by their insertion event). After each query, output the number of subsets of balls currently in the box whose values sum to $K$, modulo $998244353$.
 *Target Complexity*: $O(K)$ time per query ($O(QK)$ total time) and $O(K)$ space.
+
 - **Sample Trace ($K = 4$, queries `+ 1`, `+ 3`, `+ 4`, `- 1`)**: After `+ 1, + 3, + 4`, the polynomial is $(1+x)(1+x^3)(1+x^4) \equiv 1 + x + x^3 + 2x^4 \pmod{x^5}$, giving $[x^4] = 2$ subsets ($\{1, 3\}$ and $\{4\}$); after `- 1`, dividing by $(1 + x)$ leaves $(1+x^3)(1+x^4) \equiv 1 + x^3 + x^4 \pmod{x^5}$, giving $[x^4] = 1$ subset ($\{4\}$).
 
 <details>
@@ -656,6 +669,7 @@ At any moment, if the box contains balls with values $v_1, v_2, \dots, v_m$, cho
 <summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
 
 The subset-sum generating function is $P(x) = \prod_{i=1}^m (1 + x^{v_i}) \bmod x^{K+1}$.
+
 - Query `+ v` multiplies $P(x)$ by $(1 + x^v) \bmod x^{K+1}$.
 - Query `- v` removes a factor $(1 + x^v)$, which is equivalent to **multiplying by $(1 + x^v)^{-1} \bmod x^{K+1}$** (i.e., dividing $P(x)$ by $1 + x^v$).
 Since $[x^0](1 + x^v) = 1 \in \mathbb{F}_{998244353}^\times$, $1 + x^v$ is a unit in $\mathbb{F}_{998244353}[[x]]/(x^{K+1})$, and multiplication is commutative, so we can divide out $(1 + x^v)$ regardless of when ball $v$ was added!
@@ -666,14 +680,14 @@ Since $[x^0](1 + x^v) = 1 \in \mathbb{F}_{998244353}^\times$, $1 + x^v$ is a uni
 <summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
 
 Maintain an array `dp[0..K]` initialized to `dp[0] = 1` and `dp[1..K] = 0`.
+
 - On `+ v`: loop $n$ **downward** from $K$ down to $v$, setting `dp[n] = (dp[n] + dp[n - v]) % MOD`.
 - On `- v`: loop $n$ **upward** from $v$ up to $K$, setting `dp[n] = (dp[n] - dp[n - v] + MOD) % MOD`.
 Output `dp[K]` after each query.
 
 </details>
 
-<details>
-<summary><strong>Complete Derivation & Solution</strong></summary>
+:::: {.callout-note collapse="true" title="**Complete Derivation & Solution**"}
 
 #### 1. Translating Dynamic Subset Sum to the Quotient Ring $\mathbb{F}_p[x]/(x^{K+1})$
 Let $p = 998244353$. For a single ball of value $v$, we either exclude it (contributing weight $0$, i.e., $1 x^0$) or include it (contributing weight $v$, i.e., $1 x^v$). Thus each ball of value $v$ corresponds to the binomial factor $(1 + x^v)$.
@@ -687,6 +701,7 @@ $$
 Initially $M = \emptyset$, so $P_\emptyset(x) = 1$.
 
 #### 2. Algebraic Reversibility of `+ v` and `- v`
+
 - **Inserting $v$ (`+ v`)**: $P_{\text{new}}(x) \equiv P_{\text{old}}(x)(1 + x^v) \pmod{x^{K+1}}$. Extracting $[x^n]$ for $0 \le n \le K$:
   $$
   p_{\text{new}, n} = p_{\text{old}, n} + p_{\text{old}, n - v} \quad (p_{\text{old}, j} := 0 \text{ for } j < 0).
@@ -712,17 +727,19 @@ for (int n = v; n <= K; ++n)
 ```
 
 #### 4. Algorithm Contract
+
 - **Input & Preconditions**: Target sum $K \le 5000$ and $Q \le 5000$ queries of the form `+ v` or `- v` ($1 \le v \le K$), where every `- v` is preceded by an unmatched `+ v`; modulus $p = 998244353$.
 - **Postconditions (Output)**: After each query $q$, outputs $\text{dp}[K] = [x^K] \prod_{v \in M_q} (1 + x^v) \bmod 998244353$.
 - **Time & Space Complexity**: $O(K)$ time per query ($O(QK)$ total time) and $O(K)$ space.
 - **Loop / Algebraic Invariant**: After query $q$, $\sum_{n=0}^K \text{dp}[n] x^n \equiv \prod_{v \in M_q} (1 + x^v) \pmod{x^{K+1}}$; inside `+ v`, the descending loop $n = K \dots v$ reads pre-transition $\text{dp}_{\text{old}}[n - v]$, whereas inside `- v`, the ascending loop $n = v \dots K$ reads already-updated quotient coefficients $\text{dp}_{\text{new}}[n - v]$.
 - **Failure Modes & Edge Cases**: Reversing the loop direction (ascending on `+ v` or descending on `- v`) multiplies by $(1 - x^v)^{-1}$ or $(1 - x^v)$ instead of $(1 + x^v)^{\pm 1}$; if $v > K$, $(1 + x^v) \equiv 1 \pmod{x^{K+1}}$, so the loop safely performs $0$ iterations.
 
-</details>
+::::
 
 ---
 
 ### Intermediate 1 (`#004`) — Coin (`fps_24_g`)
+
 - **Source**: [AtCoder `fps-24` Contest — Problem G (Coin)](https://atcoder.jp/contests/fps-24/tasks/fps_24_g)
 - **Prerequisites**: Unbounded knapsack / partition generating functions $(1 - x^j)^{-1}$ (§1.3), sliding-window Reversible DP (§1.4).
 
@@ -735,6 +752,7 @@ $$
 
 Order of coins does not matter (we are counting multisets of coins from $S_k$ summing to $N$). For every $k = 1, 2, \dots, M - L + 1$, compute the number of ways to form total value $N$ using only coins from $S_k$, modulo $998244353$.
 *Target Complexity*: $O((N + M)N)$ time and $O(N)$ space.
+
 - **Sample Trace ($N = 4, M = 3, L = 2$)**: For $k = 1$, $S_1 = \{1, 2\}$ has $[x^4]\frac{1}{(1-x)(1-x^2)} = 3$ multisets ($\{1,1,1,1\}, \{1,1,2\}, \{2,2\}$); for $k = 2$, $S_2 = \{2, 3\}$ has $[x^4]\frac{1}{(1-x^2)(1-x^3)} = 1$ multiset ($\{2,2\}$).
 
 <details>
@@ -767,8 +785,7 @@ Output `dp[N]` after each window $k$.
 
 </details>
 
-<details>
-<summary><strong>Complete Derivation & Solution</strong></summary>
+:::: {.callout-note collapse="true" title="**Complete Derivation & Solution**"}
 
 #### 1. Unbounded Coin-Change Generating Function
 For a fixed window $S_k = \{k, k+1, \dots, k+L-1\}$, choosing a multiset of coins summing to $N$ is equivalent to choosing a non-negative multiplicity $m_j \in \{0, 1, 2, \dots\}$ for each coin denomination $j \in S_k$ such that $\sum_{j=k}^{k+L-1} j \cdot m_j = N$.
@@ -795,27 +812,31 @@ F_{k+1}(x) = \left(\prod_{j=k+1}^{k+L} \frac{1}{1 - x^j}\right) = F_k(x) \cdot (
 $$
 
 Since both $1 - x^k$ and $1 - x^{k+L}$ have constant term $1 \in \mathbb{F}_p^\times$, they are units in $\mathbb{F}_p[[x]]/(x^{N+1})$ for all $k \ge 1$.
+
 - **Multiplying by $(1 - x^k)$** cancels the unbounded coin $k$ in $O(N)$ time (downward loop: `dp[n] = (dp[n] - dp[n - k]) mod p` for $n = N$ down to $k$).
 - **Dividing by $(1 - x^{k+L})$** inserts the unbounded coin $k + L$ in $O(N)$ time (upward loop: `dp[n] = (dp[n] + dp[n - (k + L)]) mod p` for $n = k + L$ up to $N$; note that if $k + L > N$, $1 - x^{k+L} \equiv 1 \pmod{x^{N+1}}$, so the loop does zero iterations!).
 
 #### 3. Algorithm Contract
+
 - **Input & Preconditions**: Integers $N, M, L$ ($1 \le N, M \le 5000, 1 \le L \le M$); prime modulus $p = 998244353$.
 - **Postconditions (Output)**: Sequence of answers $[x^N] F_k(x) \bmod 998244353$ for every window $k = 1, 2, \dots, M - L + 1$.
 - **Time & Space Complexity**: $O(LN)$ initialization plus $O((M - L)N)$ sliding transitions $= O(MN)$ total time; $O(N)$ space.
 - **Loop / Algebraic Invariant**: After window transition $k$, $\sum_{n=0}^N \text{dp}[n] x^n \equiv \prod_{j=k}^{k+L-1} (1 - x^j)^{-1} \pmod{x^{N+1}}$; multiplying by $(1 - x^k)$ uses a descending loop $n = N \dots k$, while dividing by $(1 - x^{k+L})$ uses an ascending loop $n = k + L \dots N$.
 - **Failure Modes & Edge Cases**: When $k > N$ or $k + L > N$, the corresponding factor $(1 - x^w) \equiv 1 \pmod{x^{N+1}}$, so the loop over $n \in [w, N]$ naturally executes $0$ iterations without out-of-bounds access.
 
-</details>
+::::
 
 ---
 
 ### Intermediate 2 (`#077`) — Candies
+
 - **Source**: [AtCoder Educational DP Contest — Problem M](https://atcoder.jp/contests/dp/tasks/dp_m)
 - **Prerequisites**: Bounded geometric polynomials $\frac{1 - x^{a+1}}{1 - x}$ (§1.3), $O(K)$ sparse polynomial multiplication and division (§1.4).
 
 #### Problem Statement & Exact Constraints
 There are $N$ children, numbered $1, 2, \dots, N$, and $K$ indistinguishable candies ($1 \le N \le 100$, $0 \le K \le 10^5$). Child $i$ must receive between $0$ and $a_i$ candies inclusive ($0 \le a_i \le K$). Find the number of ways to distribute all $K$ candies among the $N$ children so that no candies are left over, modulo $10^9 + 7$.
 *Target Complexity*: $O(NK)$ time and $O(K)$ space.
+
 - **Sample Trace ($N = 2, K = 3, a = (2, 2)$)**: The polynomial is $\frac{1-x^3}{1-x} \cdot \frac{1-x^3}{1-x} = (1+x+x^2)^2 = 1 + 2x + 3x^2 + 2x^3 + x^4$, so $[x^3] = 2$ ways: $(c_1, c_2) \in \{(1, 2), (2, 1)\}$.
 
 <details>
@@ -840,14 +861,14 @@ $$
 <summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
 
 To multiply the current DP polynomial $F(x) \bmod x^{K+1}$ by $\frac{1 - x^{a_i + 1}}{1 - x}$ in $O(K)$ time:
+
 1. First divide $F(x)$ by $(1 - x)$ in $O(K)$ time (upward prefix sum: `dp[n] = (dp[n] + dp[n - 1]) % MOD` for $n = 1 \dots K$).
 2. Then multiply by $(1 - x^{a_i + 1})$ in $O(K)$ time (downward sparse subtraction: `dp[n] = (dp[n] - dp[n - a_i - 1] + MOD) % MOD` for $n = K$ down to $a_i + 1$).
 Repeating this for all $N$ children gives $[x^K]F(x)$ in $O(NK)$ time!
 
 </details>
 
-<details>
-<summary><strong>Complete Derivation & Solution</strong></summary>
+:::: {.callout-note collapse="true" title="**Complete Derivation & Solution**"}
 
 #### 1. From Bounded Integer Compositions to Sparse Rational Factors
 A valid distribution is an ordered $N$-tuple $(c_1, \dots, c_N)$ with $c_i \in \{0, 1, \dots, a_i\}$ and $\sum_{i=1}^N c_i = K$. Since each child $i$ independently contributes $c_i \in \{0, 1, \dots, a_i\}$ candies, child $i$'s choice is encoded by the polynomial:
@@ -877,17 +898,19 @@ In standard DP tutorials, transitioning from child $i-1$ to child $i$ via slidin
 2. **Multiplication by $(1 - x^{a_i + 1})$ (Window Tail Subtraction)**: Computing $F_{\text{new}}(x) = (1 - x^{a_i + 1})H(x) \bmod x^{K+1}$ obeys $f_{\text{new}, n} = h_n - h_{n - a_i - 1}$ (downward loop $n = K$ down to $a_i + 1$).
 
 #### 3. Algorithm Contract
+
 - **Input & Preconditions**: Integers $N \le 100, K \le 10^5$, capacities $0 \le a_i \le K$; prime modulus $p = 10^9 + 7$.
 - **Postconditions (Output)**: Returns $[x^K] \prod_{i=1}^N \frac{1 - x^{a_i+1}}{1 - x} \bmod (10^9 + 7)$.
 - **Time & Space Complexity**: $O(NK)$ time and $O(K)$ space.
 - **Loop / Algebraic Invariant**: After processing child $i$, $\sum_{n=0}^K \text{dp}[n] x^n \equiv \prod_{j=1}^i \frac{1 - x^{a_j+1}}{1 - x} \pmod{x^{K+1}}$; within step $i$, the ascending pass divides by $(1 - x)$ and the subsequent descending pass multiplies by $(1 - x^{a_i+1})$.
 - **Failure Modes & Edge Cases**: When $K = 0$, the unique valid distribution is $(0, \dots, 0)$, giving $\text{dp}[0] = 1$; when $a_i = 0$, $(1 - x^{a_i+1})/(1 - x) = 1$, and the upward pass followed by the downward pass at $a_i + 1 = 1$ leaves $\text{dp}[0 \dots K]$ unchanged.
 
-</details>
+::::
 
 ---
 
 ### Advanced 1 (`#049`) — 注文の多い高橋商店 (Busy Takahashi Store)
+
 - **Source**: [AtCoder Regular Contest 028 — Problem D](https://atcoder.jp/contests/arc028/tasks/arc028_d)
 - **Prerequisites**: Bounded composition generating functions (§1.3), Reversible DP / leave-one-out polynomial precomputation (§1.4).
 
@@ -895,6 +918,7 @@ In standard DP tutorials, transitioning from child $i-1$ to child $i$ via slidin
 A store sells $N$ types of items, numbered $1, 2, \dots, N$. There are $a_i$ indistinguishable copies of item $i$ in stock ($1 \le N, M \le 2000$, $1 \le a_i \le M$). You are given $Q$ independent queries ($1 \le Q \le 5 \times 10^5$).
 In the $q$-th query, you are given two integers $(k_q, x_q)$ ($1 \le k_q \le N$, $0 \le x_q \le a_{k_q}$): find the number of ways to select a total of $M$ items from the store such that **item $k_q$ is selected exactly $x_q$ times**, modulo $10^9 + 7$.
 *Target Complexity*: $O(NM + Q)$ time and $O(NM)$ space.
+
 - **Sample Trace ($N = 3, M = 2, a = (1, 2, 1)$, query $k = 2, x = 1$)**: Removing item $2$ leaves items $1$ and $3$ with polynomial $F^{(-2)}(t) = (1+t)^2 = 1 + 2t + t^2$. To reach total $M = 2$ when item $2$ contributes $x = 1$, the remaining items must contribute $M - x = 1$, giving $[t^1]F^{(-2)}(t) = 2$ ways.
 
 <details>
@@ -926,8 +950,7 @@ If we precompute the coefficient table of $F^{(-k)}(x) \bmod x^{M+1}$ for every 
 
 </details>
 
-<details>
-<summary><strong>Complete Derivation & Solution</strong></summary>
+:::: {.callout-note collapse="true" title="**Complete Derivation & Solution**"}
 
 #### 1. Leave-One-Out Factorization in $\mathbb{F}_p[[x]]/(x^{M+1})$
 Let $p = 10^9 + 7$. As established in Problem `#077` (Candies), item $i$ with stock $a_i$ has generating function
@@ -952,6 +975,7 @@ $$
 
 #### 2. Sharing the Numerator $(1 - x)F_{\text{all}}(x)$ Across All $N$ Items
 Observe that the numerator $D(x) := (1 - x) F_{\text{all}}(x) \bmod x^{M+1}$ is **independent of $k$**!
+
 1. We first compute $F_{\text{all}}[0 \dots M]$ in $O(NM)$ time.
 2. We compute $D[0 \dots M]$ in $O(M)$ time via $D[0] = F_{\text{all}}[0]$ and $D[n] = (F_{\text{all}}[n] - F_{\text{all}}[n - 1]) \bmod p$ for $1 \le n \le M$.
 3. Then, for each $k \in \{1, \dots, N\}$, we compute the row $F^{(-k)}[0 \dots M] = \frac{D(x)}{1 - x^{a_k + 1}} \bmod x^{M+1}$ via the upward recurrence:
@@ -961,17 +985,19 @@ Observe that the numerator $D(x) := (1 - x) F_{\text{all}}(x) \bmod x^{M+1}$ is 
 4. Finally, for each of the $Q$ queries $(k_q, x_q)$, the number of valid selections is simply $F^{(-k_q)}[M - x_q]$ (or $0$ if $x_q > M$).
 
 #### 3. Algorithm Contract
+
 - **Input & Preconditions**: Integers $N, M \le 2000$, item stocks $1 \le a_i \le M$, and $Q \le 5 \times 10^5$ queries $(k_q, x_q)$ with $0 \le x_q \le a_{k_q}$; prime modulus $p = 10^9 + 7$.
 - **Postconditions (Output)**: For each query $(k_q, x_q)$, outputs $[x^{M - x_q}] F^{(-k_q)}(x) \bmod (10^9 + 7)$.
 - **Time & Space Complexity**: $O(NM + Q)$ time ($O(NM)$ precomputation and $O(1)$ per query) and $O(NM)$ space.
 - **Loop / Algebraic Invariant**: For every $k \in \{1, \dots, N\}$, $F^{(-k)}(x) \equiv D(x)(1 - x^{a_k+1})^{-1} \equiv \prod_{i \neq k} P_i(x) \pmod{x^{M+1}}$, where $D(x) \equiv (1 - x)F_{\text{all}}(x) \pmod{x^{M+1}}$.
 - **Failure Modes & Edge Cases**: If $x_q > M$, the remaining sum $M - x_q < 0$ is impossible so the answer is $0$; in `D[n] = (F_all[n] - F_all[n - 1] + p) % p`, always add $p$ before modulo to avoid negative remainders.
 
-</details>
+::::
 
 ---
 
 ### Advanced 2 (`#097`) — Nikita and Order Statistics
+
 - **Source**: [Codeforces Round 488 (Div. 1) — Problem E (993E)](https://codeforces.com/problemset/problem/993/E)
 - **Prerequisites**: Difference (cross-correlation) convolution via polynomial reversal $C^{\text{rev}}(x) = x^N C(x^{-1})$ (§1.1), fast polynomial multiplication over $\mathbb{Z}$ (64-bit precision FFT or 2-prime NTT).
 
@@ -979,6 +1005,7 @@ Observe that the numerator $D(x) := (1 - x) F_{\text{all}}(x) \bmod x^{M+1}$ is 
 You are given an array $a_1, a_2, \dots, a_N$ of $N$ integers and a threshold integer $X$ ($1 \le N \le 2 \times 10^5$, $-10^9 \le a_i, X \le 10^9$).
 For every integer $k = 0, 1, 2, \dots, N$, count the number of contiguous subarrays $a[l \dots r]$ ($1 \le l \le r \le N$) that contain **exactly $k$ elements strictly less than $X$**. Output the $N + 1$ exact counts (no modulus!).
 *Target Complexity*: $O(N \log N)$ time and $O(N)$ space.
+
 - **Sample Trace ($N = 3, X = 2, a = [1, 2, 1]$)**: The indicators $b_i = [a_i < 2]$ are $(1, 0, 1)$, so prefix sums are $(s_0, s_1, s_2, s_3) = (0, 1, 1, 2)$ with frequency array $(c_0, c_1, c_2, c_3) = (1, 2, 1, 0)$. The subarray counts for $k = 0, 1, 2, 3$ are $(1, 3, 2, 0)$.
 
 <details>
@@ -1012,8 +1039,7 @@ Notice that the maximum possible coefficient is $\binom{N+1}{2} \approx 2 \times
 
 </details>
 
-<details>
-<summary><strong>Complete Derivation & Solution</strong></summary>
+:::: {.callout-note collapse="true" title="**Complete Derivation & Solution**"}
 
 #### 1. Prefix-Sum Reduction to Frequency Histogram
 Define $b_i = 1$ if $a_i < X$ and $b_i = 0$ otherwise ($1 \le i \le N$), and form the prefix sums $s_0 = 0$, $s_r = \sum_{m=1}^{r} b_m$ for $1 \le r \le N$. Notice that $0 = s_0 \le s_1 \le \dots \le s_N \le N$.
@@ -1022,6 +1048,7 @@ A subarray $a[l \dots r]$ ($1 \le l \le r \le N$) corresponds bijectively to a p
 Let $c_v := \#\{ r \in \{0, 1, \dots, N\} : s_r = v \}$ be the number of prefix sums equal to $v$, for $0 \le v \le N$.
 
 #### 2. Separating $k = 0$ (Ordering Constraint Active) from $k \ge 1$ (Ordering Automatic)
+
 - **Case $k = 0$**: We need pairs $(i, j)$ with $0 \le i < j \le N$ and $s_j - s_i = 0$, i.e., $s_i = s_j = v$. Among the $c_v$ indices where $s_r = v$, any unordered pair of distinct indices gives a unique ordered pair $(i, j)$ with $i < j$:
   $$
   \text{ans}_0 = \sum_{v=0}^{N} \frac{c_v(c_v - 1)}{2}.
@@ -1046,17 +1073,19 @@ $$
 $$
 
 #### 4. Algorithm Contract
+
 - **Input & Preconditions**: Array $a_1, \dots, a_N$ ($1 \le N \le 2 \times 10^5$) and threshold $X$; exact integer output over $\mathbb{Z}$ (no modulus).
 - **Postconditions (Output)**: Exact subarray counts $\text{ans}_0, \text{ans}_1, \dots, \text{ans}_N \in [0, \binom{N+1}{2}]$.
 - **Time & Space Complexity**: $O(N \log N)$ time (one FFT / 2-prime NTT of size $2^{\lceil \log_2(2N+1) \rceil} \le 2^{19}$) and $O(N)$ space.
 - **Loop / Algebraic Invariant**: $C^{\text{rev}}(x) C(x) = \sum_{d=-N}^{N} \bigl(\sum_{v} c_v c_{v+d}\bigr) x^{N+d}$, so $[x^{N+k}](C^{\text{rev}} C)$ extracts the exact lag-$k$ auto-correlation for $1 \le k \le N$.
 - **Failure Modes & Edge Cases**: Reading $[x^N](C^{\text{rev}} C) = \sum c_v^2$ directly for $k = 0$ overcounts diagonal terms $i = j$ and unordered pairs $(i, j)$ vs. $(j, i)$ (use $\sum_{v=0}^N \binom{c_v}{2}$ instead); using a single 32-bit NTT prime $998244353$ overflows when $\text{ans}_0 = \binom{N+1}{2} \approx 2 \times 10^{10}$.
 
-</details>
+::::
 
 ---
 
 ### Mastery 1 (`#066`) — BBQ Hard
+
 - **Source**: [AtCoder Grand Contest 001 — Problem E](https://atcoder.jp/contests/agc001/tasks/agc001_e)
 - **Prerequisites**: Bivariate formal power series $K[[x, y]]$, Pascal lattice-path denominator $(1 - x - y)^{-1}$ (§1.3), difference/offset convolution via negative-exponent origin shift (§1.1).
 
@@ -1069,6 +1098,7 @@ S = \sum_{1 \le i < j \le N} \binom{A_i + A_j + B_i + B_j}{A_i + A_j} \pmod{10^9
 $$
 
 *Target Complexity*: $O\bigl(N + (\max A)(\max B)\bigr)$ time and $O\bigl((\max A)(\max B)\bigr)$ space.
+
 - **Sample Trace ($N = 2, (A_1, B_1) = (1, 1), (A_2, B_2) = (1, 2)$)**: The single pair $(1, 2)$ has $\binom{1+1+1+2}{1+1} = \binom{5}{2} = 10$ paths, which equals $\frac{1}{2}\bigl(q_{M+1, M+2} + q_{M+1, M+1} - \binom{4}{2} - \binom{6}{2}\bigr) = \frac{1}{2}(16 + 25 - 6 - 15) = 10$.
 
 <details>
@@ -1084,6 +1114,7 @@ What combinatorial object is counted by $\binom{X + Y}{X}$? It is the number of 
 
 For a single pair $(i, j)$, the displacement is $(\Delta x, \Delta y) = (A_i + A_j, B_i + B_j)$. Notice how $i$ and $j$ are coupled inside $\binom{(A_i + A_j) + (B_i + B_j)}{A_i + A_j}$!
 How do we decouple the starting point $i$ from the ending point $j$?
+
 - Write $\Delta x = A_j - (-A_i)$ and $\Delta y = B_j - (-B_i)$!
 - In generating function terms:
   $$
@@ -1100,6 +1131,7 @@ How do we decouple the starting point $i$ from the ending point $j$?
 <summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
 
 Since dividing by $1 - x - y$ means satisfying the 2D Pascal recurrence $\text{dp}[u][v] = \text{dp}[u-1][v] + \text{dp}[u][v-1] + \text{init}[u][v]$:
+
 1. Shift the origin by $(M, M) = (2000, 2000)$ so that every negative coordinate $(-A_i, -B_i)$ maps to a non-negative array index $(M - A_i, M - B_i) \in [0, 2M]^2$.
 2. For each $i = 1, \dots, N$, increment `dp[M - A[i]][M - B[i]] += 1`.
 3. Run the 2D upward division by $(1 - x - y)$ across the grid $u, v \in [0, 2M]$: `dp[u][v] += dp[u - 1][v] + dp[u][v - 1]`.
@@ -1107,8 +1139,7 @@ Since dividing by $1 - x - y$ means satisfying the 2D Pascal recurrence $\text{d
 
 </details>
 
-<details>
-<summary><strong>Complete Derivation & Solution</strong></summary>
+:::: {.callout-note collapse="true" title="**Complete Derivation & Solution**"}
 
 #### 1. Bivariate Formal Geometric Series in $\mathbb{F}_p[[x, y]]$
 In the bivariate formal power series ring $\mathbb{F}_p[[x, y]]$ ($p = 10^9 + 7$), a single northeast step on the integer grid is either a horizontal step $(+1, 0)$ represented by $x$ or a vertical step $(0, +1)$ represented by $y$, so one step has generating function $G(x, y) = x + y$.
@@ -1153,17 +1184,19 @@ S = \frac{1}{2} \left( \sum_{j=1}^{N} q_{M + A_j, M + B_j} - \sum_{j=1}^{N} \bin
 $$
 
 #### 4. Algorithm Contract
+
 - **Input & Preconditions**: $N \le 2 \times 10^5$ pairs $(A_i, B_i)$ with $1 \le A_i, B_i \le M = 2000$; prime modulus $p = 10^9 + 7$.
 - **Postconditions (Output)**: Returns $S = \sum_{1 \le i < j \le N} \binom{A_i + A_j + B_i + B_j}{A_i + A_j} \bmod (10^9 + 7)$.
 - **Time & Space Complexity**: $O(N + M^2)$ time and $O(M^2)$ space for the $(2M + 1) \times (2M + 1)$ grid.
 - **Loop / Algebraic Invariant**: After the 2D row-major sweep over $0 \le u, v \le 2M$, $q_{u, v} = [x^u y^v] \frac{P(x, y)}{1 - x - y} = \sum_{i=1}^N \binom{(u - M + A_i) + (v - M + B_i)}{u - M + A_i} \bmod p$.
 - **Failure Modes & Edge Cases**: Multiple items with identical $(A_i, B_i)$ must **add** $+1$ to $p_{M-A_i, M-B_i}$ (do not overwrite with `= 1`!); remember to subtract the $i = j$ diagonal terms $\binom{2A_j + 2B_j}{2A_j}$ before multiplying by $2^{-1} \bmod p$.
 
-</details>
+::::
 
 ---
 
 ### Mastery 2 (`#107`) — Red-White Fence
+
 - **Source**: [Codeforces Educational Round 75 — Problem F (1251F)](https://codeforces.com/problemset/problem/1251/F)
 - **Prerequisites**: Polynomial modelling of multiplicity constraints (§1.1), frequency grouping / binomial power collapse $(1 + 2x)^{c_1}(1 + x)^{2c_2}$ (§1.4), NTT convolution.
 
@@ -1178,6 +1211,7 @@ To build a valid fence:
 A fence built from $1$ red board of length $R$ and $m$ white boards has total perimeter $2(R + m + 1)$.
 You are given $Q$ queries ($1 \le Q \le 3 \times 10^5$), each specifying an integer perimeter $P_q$ ($2 \le P_q \le 1.2 \times 10^6$). For each query, output the number of distinct valid fences with perimeter $P_q$, modulo $998244353$.
 *Target Complexity*: $O\bigl(K N \log N + Q K\bigr)$ time and $O(K N)$ space.
+
 - **Sample Trace ($N = 2, K = 1, a = [1, 2], b = [3]$)**: Both white board lengths $1, 2 < 3$ have multiplicity $1$ ($c_1 = 2, c_2 = 0$), so $F_3(x) = (1 + 2x)^2 = 1 + 4x + 4x^2$, giving $1, 4, 4$ valid fences for $m = 0, 1, 2$ (perimeters $P = 8, 10, 12$).
 
 <details>
@@ -1185,6 +1219,7 @@ You are given $Q$ queries ($1 \le Q \le 3 \times 10^5$), each specifying an inte
 
 Notice first that $K \le 5$ is tiny! We can solve the problem independently for each of the $K$ red boards $R = b_j$ ($1 \le j \le K$) and sum the answers for each query $P_q$.
 Fix a red board of length $R$. For a white board length $v < R$:
+
 - Because the left side is **strictly increasing** in length, at most **one** board of length $v$ can be placed on the left.
 - Because the right side is **strictly decreasing** in length, at most **one** board of length $v$ can be placed on the right.
 - Once we decide for each distinct length $v < R$ whether $v$ appears on the left (0 or 1 times) and whether $v$ appears on the right (0 or 1 times), the sorting order on both sides is **uniquely determined**!
@@ -1195,6 +1230,7 @@ Fix a red board of length $R$. For a white board length $v < R$:
 <summary><strong>Hint 2 — Algebraic Setup & Reverse-Engineering Scratchpad</strong></summary>
 
 Fix $R = b_j$. Group all available white board lengths $v < R$ by their multiplicity $cnt[v]$ in the input array $a$:
+
 1. **Multiplicity $cnt[v] = 1$**: We only have $1$ copy of length $v$. We can either:
    - Use $0$ copies of $v$ ($1$ way: neither side),
    - Use $1$ copy of $v$ ($2$ ways: put it on the Left, or put it on the Right).
@@ -1211,6 +1247,7 @@ Fix $R = b_j$. Group all available white board lengths $v < R$ by their multipli
 <summary><strong>Hint 3 — Coefficient Extraction & Complexity Contract</strong></summary>
 
 For a fixed red board $R = b_j$, let:
+
 - $c_1 = \#\{ v < R : cnt[v] = 1 \}$ be the number of distinct lengths $< R$ appearing exactly once.
 - $c_2 = \#\{ v < R : cnt[v] \ge 2 \}$ be the number of distinct lengths $< R$ appearing at least twice.
 Then the generating function counting valid fences with red board $R$ and $m$ white boards is simply:
@@ -1221,11 +1258,11 @@ Expand $A(x) = (1 + 2x)^{c_1} = \sum_{i=0}^{c_1} \binom{c_1}{i} 2^i x^i$ and $B(
 
 </details>
 
-<details>
-<summary><strong>Complete Derivation & Solution</strong></summary>
+:::: {.callout-note collapse="true" title="**Complete Derivation & Solution**"}
 
 #### 1. Perimeter Formula & Bijection to Per-Length Placement Decisions
 Let us verify the perimeter of a fence consisting of one red board of length $R$ and $m$ white boards.
+
 - Each of the $m + 1$ boards has top width $1$ and bottom width $1$, contributing $2(m + 1)$ horizontal perimeter.
 - Since the board heights increase up to the tallest board $R$ (all white boards have length $< R$) and then decrease down from $R$, the sum of all vertical rises on the left equals $R$, and the sum of all vertical drops on the right equals $R$, contributing $2R$ vertical perimeter.
 - Thus a fence with red board $R$ and $m$ white boards has perimeter $P = 2(R + m + 1)$, which uniquely determines the required number of white boards $m$:
@@ -1263,17 +1300,19 @@ Multiplying these two polynomials of degree $\le N$ via a single NTT modulo $998
 
 #### 3. Answering the $Q$ Queries
 For each query perimeter $P_q$:
+
 - If $P_q$ is odd, the answer is $0$.
 - Otherwise, for each of the $K$ red boards $R = b_1, \dots, b_K$, compute $m_j = P_q / 2 - b_j - 1$; if $0 \le m_j \le \deg(F_{b_j})$, add $[x^{m_j}] F_{b_j}(x)$ to the query total modulo $998244353$.
 
 #### 4. Algorithm Contract
+
 - **Input & Preconditions**: $N \le 3 \times 10^5$ white boards $a_i$, $K \le 5$ distinct red boards $b_j$, and $Q \le 3 \times 10^5$ perimeter queries $P_q$; prime modulus $p = 998244353$.
 - **Postconditions (Output)**: For each query $P_q$, outputs $\sum_{j=1}^K [x^{P_q/2 - b_j - 1}] F_{b_j}(x) \bmod 998244353$ (or $0$ if $P_q$ is odd).
 - **Time & Space Complexity**: $O(K N \log N + QK)$ time ($K$ NTTs of degree $\le N$ plus $O(K)$ lookup per query) and $O(KN)$ space.
 - **Loop / Algebraic Invariant**: For each red board $R = b_j$, $F_R(x) = (1 + 2x)^{c_1(R)} (1 + x)^{2c_2(R)}$ has degree $c_1(R) + 2c_2(R) \le N$, and $[x^m]F_R(x)$ equals the exact number of valid fences with middle board $R$ and $m$ white boards.
 - **Failure Modes & Edge Cases**: Odd perimeters $P_q \bmod 2 \neq 0$ cannot be formed and must return $0$; also check both $m_j \ge 0$ and $m_j \le \deg(F_{b_j})$ before indexing into $F_{b_j}$.
 
-</details>
+::::
 
 ---
 
@@ -1306,4 +1345,3 @@ Before submitting any solution built on Chapter 01's ring operations, run throug
    - Dividing by $(1 + c x^w)$ (undoing a 0/1 factor) or dividing by $(1 - c x^w)$ (unbounded knapsack / geometric series): **upward loop** $n = w \dots N$.
    - Bounded multiplicity $1 + x + \dots + x^a = \frac{1 - x^{a+1}}{1 - x}$: multiply by $(1 - x^{a+1})$ (downward) and divide by $(1 - x)$ (upward prefix sum).
 5. **Product Tree Cap & Identical-Factor Grouping (`Failure Mode #15`, §1.4)**: When multiplying $m$ polynomials $\prod_{i=1}^m P_i(x) \bmod x^{N+1}$, did you group identical factors $(1 + c x^w)^{cnt}$ first (or defer to Chapter 03's $O(N \log N)$ $\ln/\exp$ transform when $p > N$), and did you cap every intermediate node in `prod_tree` to $\min(\deg, N)$?
-

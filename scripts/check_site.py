@@ -36,7 +36,9 @@ class Page(HTMLParser):
 
 
 def main():
-    sources = sorted(ROOT.glob('*.qmd')) + sorted(ROOT.glob('[0-9]*/*.qmd'))
+    sources = sorted(source for source in ROOT.rglob('*.qmd')
+                     if not any(part.startswith('.') or part == '_site'
+                                for part in source.relative_to(ROOT).parts))
     pages = {}
     errors = []
     for source in sources:

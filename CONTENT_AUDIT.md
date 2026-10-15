@@ -490,3 +490,11 @@ All 32 FPS pages and 5 site reference guides (`index.qmd`, `00-prerequisite-audi
   plan, and the repaired FPS callout; all integration checks passed.
 - This validates conflict integration, routes, rendering, and the existing math
   oracles; it does not replace a fresh editorial audit of every incoming chapter.
+
+## Formatting validation — 2026-10-15
+
+Audited all 62 pages for list parsing and dropdown containment. Replaced raw
+HTML dropdowns containing headings with fenced collapsible callouts, repaired
+four nested hint dropdowns in baseline chapter 08, and restored list boundaries
+throughout the FPS track. Validation and reproducible checks are recorded in
+[VALIDATION_FORMATTING.md](VALIDATION_FORMATTING.md).
