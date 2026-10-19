@@ -1,0 +1,1083 @@
+---
+title: "Chapter 8 — DAG Path Covers, Dilworth's Poset Duality, and Hall's Theorem Flow Elimination"
+subtitle: "From Split-Graph Chain Decompositions and Transitive Antichain Recovery to $O(N \\log N)$ Segment-Tree and $O(N 2^N)$ SOS-DP Flow Elimination"
+---
+
+## Prerequisites & Learning Objectives
+
+::: {.callout-note title="Prerequisites"}
+Before studying this chapter, you should be fluent in:
+
+- **Chapter 2 (Max-Flow Min-Cut Duality & Canonical Cut Extraction)**: Residual graph reachability $S_{\min} = \{v \in V : S \leadsto_{G_{f^*}} v\}$ and finite-capacity cut isolation.
+- **Chapter 5 & Chapter 6 (Bipartite Matching, König's Theorem, and Dulmage–Mendelsohn Decomposition)**: Hopcroft–Karp $O(E\sqrt{V})$ matching, König's minimum vertex cover extraction $C^* = (L \setminus S_{\min}) \cup (R \cap S_{\min})$, and essential/avoidable vertex classification.
+:::
+
+::: {.callout-tip title="Learning Objectives"}
+By the end of this chapter, you will be able to:
+
+1. **Compile DAG Path Covers into Bipartite Split Graphs**: Distinguish **Minimum Vertex-Disjoint Path Cover (MDPC)** on a raw DAG $G$ from **Minimum Overlapping Path Cover (Poset Chain Cover)** on its transitive closure $\text{TC}(G)$, and extend both to weighted costs and Greene–Kleitman $k$-chain partial covers via MCMF.
+2. **Prove and Apply the Transitivity Non-Overlap Lemma (`FM-08`)**: Explain algebraically why transitive closure prevents a minimum vertex cover $C^*$ of $G_{\text{split}}(\mathcal{P})$ from picking both $v_{\text{out}}$ and $v_{\text{in}}$ for the same poset element $v$, and extract explicit **Maximum (Weight) Antichains** via $A^* = \{v \in V : v_{\text{out}} \in S_{\min} \land v_{\text{in}} \notin S_{\min}\}$.
+3. **Derive Hall's Marriage Theorem and Ore's Defect Formula from Min-Cut**: Translate capacitated bipartite matching directly into the cut-defect optimization $\nu_{a,b}(G) = \sum_{u \in L} a_u - \max_{S \subseteq L} \big(\sum_{u \in S} a_u - \sum_{v \in N(S)} b_v\big)$.
+4. **Eliminate Explicit Flow Solvers via Hall's Theorem (`Direction B`)**: Collapse $2^{|L|}$ Hall subset checks into $O(N \log N)$ Segment Tree range queries (`ARC 076 F`, `POI 2009 LYZ`), $O(N)$ circular unrolling (`CF 981 F`), $O(N 2^N)$ Fast Zeta Transform / SOS DP (`ARC 106 E`), and $O(V + E)$ Hall–Kotzig leaf-peeling (`AGC 029 F`).
+:::
+
+---
+
+## 1. Motivation: From Chain Decompositions to $O(N \log N)$ Flow Elimination
+
+Chapters 5 through 7 developed **Direction A** of bipartite modelling: taking a non-graph problem (grid rooks, L-corner brick tilings, prime-sum conflicts), discovering a hidden bipartition $V = L \sqcup R$, and running Hopcroft–Karp or Dinic in $O(E\sqrt{V})$ time.
+
+In competitive programming at the ICPC World Finals and AtCoder Grand/Regular Contest level, two structural barriers break standard bipartite matching:
+
+1. **Directional Sequentiality (Trajectories & Posets)**: What if an agent does not merely pair one $u \in L$ with one $v \in R$, but traverses an arbitrarily long directed chain $v_1 \to v_2 \to \dots \to v_k$ in a Directed Acyclic Graph (DAG) or Partially Ordered Set (Poset)? How do we minimize the number of trajectories needed to visit every vertex, or dualize that trajectory cover into the largest subset of mutually incomparable objects (**Dilworth's Theorem**)?
+2. **Scale Explosion ($N, M \ge 2 \cdot 10^5$ or $D \ge 10^6$)**: What if the bipartite graph is easy to spot—say, $N = 2 \cdot 10^5$ people matching to $M = 2 \cdot 10^5$ chairs along contiguous intervals, or $N = 18$ workers matching to $D = 3.6 \cdot 10^6$ workdays—so that even constructing the edges or running $O(E\sqrt{V})$ Dinic exceeds the time and memory limits by three orders of magnitude?
+
+This chapter resolves both barriers through a unified algebraic lens:
+
+- In **Section 2**, we compile sequential chains on a DAG into a bipartite split graph $G_{\text{split}} = (V_{\text{out}} \sqcup V_{\text{in}}, E_{\text{split}})$ where every matched edge merges two chains and reduces the path count by $1$. We then prove the **Transitivity Non-Overlap Lemma**, showing how taking the transitive closure turns König's vertex cover into a constructive **Maximum Antichain** engine.
+- In **Sections 3 and 4**, we reverse the direction of reduction (**Direction B: Flow Elimination**). Instead of turning an algebraic problem into a flow network, we use **Hall's Marriage Theorem** and **Ore's Defect Formula** to convert a massive bipartite flow network back into a combinatorial optimization problem over subsets $S \subseteq L$, which we then crush using Segment Trees, Monotone Queues, and Sum-Over-Subsets (SOS) DP.
+
+---
+
+## 2. Minimum Disjoint DAG Path Cover vs. General Overlapping Path Cover (Dilworth's Theorem)
+
+### 2.1 Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+Reach for **DAG Path Covers** or **Poset Duality (Dilworth / Mirsky)** whenever a problem exhibits one of the following signatures:
+
+- **Sequential Reuse / Trajectory Stitching (`Min Chain / Path Cover`)**: You must cover all vertices (or treasures/tasks) of a directed acyclic process using the minimum number of agents, hands, pegs, or monotone trajectories.
+  - *Vertex-Disjoint Rule* (each vertex may be entered and exited by **at most one** trajectory) $\implies$ **Minimum Disjoint Path Cover (`MDPC`)** on the raw DAG $G$.
+  - *Vertex-Overlapping Rule* (trajectories may share intermediate vertices, or the underlying reachability relation is transitive) $\implies$ **Transitive Closure + Dilworth Chain Cover** on $\text{TC}(G)$.
+- **Pairwise Incomparable Selection (`Max Antichain`)**: Select the largest (or maximum-weight) subset $A \subseteq V$ such that no two selected elements satisfy $u \prec v$ (e.g., no chosen string is a substring of another in **`CF 590 E — Birthday`**, or no two shrines can reach each other in **`[CTSC2008] 祭祀`**).
+- **Why Naive Greedy Longest-Chain Peeling Fails**: It is tempting to repeatedly extract the longest directed path in a DAG and delete it. This fails catastrophically! Consider the 6-vertex DAG with spine $1 \to 2 \to 3 \to 4$ and two side branches $2 \to 5$ and $6 \to 3$:
+  - **Greedy Longest Path**: Picks the 4-vertex spine $1 \to 2 \to 3 \to 4$ first, leaving vertices $\{5\}$ and $\{6\}$ completely isolated. Greedy uses **$3$ paths**: $(1 \to 2 \to 3 \to 4)$, $(5)$, and $(6)$.
+  - **True Optimum**: Reroutes at the middle edge $2 \to 3$ to form **$2$ paths** of length $3$: $(1 \to 2 \to 5)$ and $(6 \to 3 \to 4)$, covering all $6$ vertices! Bipartite matching augmenting paths exist precisely to undo greedy edge commitments like $2 \to 3$.
+
+---
+
+### 2.2 Step 2 & Step 3: Algebraic Compilation of the Split Graph $G_{\text{split}}$
+
+#### 1. The Dual Quartet on a Finite Poset $\mathcal{P} = (V, \prec)$
+
+Before writing down indicator variables, always verify which of the four poset quantities the problem asks for—two of them require **zero flow** ($O(V + E)$ topological DP), while the other two require **bipartite matching**:
+
+| Primal Packing Problem | Dual Covering Problem | Exact Algorithmic Engine & Complexity |
+| :--- | :--- | :--- |
+| **Maximum Chain** (longest chain $c_1 \prec c_2 \prec \dots \prec c_L$, `height`) | **Minimum Antichain Partition** (**Mirsky's Theorem, 1971**) | **$O(V + E)$ Topological DP**: $dp[v] = 1 + \max_{u \prec v} dp[u]$ partitions $V$ into $L$ antichain level sets $A_k = \{v : dp[v] = k\}$. |
+| **Maximum Antichain** (largest pairwise incomparable $A \subseteq V$, `width`) | **Minimum Chain Cover** (**Dilworth's Theorem, 1950**) | **$O(E\sqrt{V})$ Bipartite Matching** on the **transitively closed** split graph $G_{\text{split}}(\text{TC}(G))$. |
+
+#### 2. Step 2: Intermediate Algebraic Representation of Disjoint Path Cover
+
+Let $G = (V, E)$ be a DAG with $|V| = N$. A vertex-disjoint path cover $\mathcal{P} = \{P_1, \dots, P_k\}$ partitions $V$ into $k$ directed paths. Let $x_{uv} \in \{0, 1\}$ indicate whether directed edge $(u \to v) \in E$ is traversed by one of the paths in $\mathcal{P}$.
+
+What algebraic constraints on $x_{uv}$ characterize a valid vertex-disjoint path cover?
+
+1. **Out-degree at most $1$**: Each vertex $u \in V$ has at most one successor in its path:
+
+   $$\sum_{v : (u, v) \in E} x_{uv} \le 1 \qquad \forall u \in V.$$
+
+2. **In-degree at most $1$**: Each vertex $v \in V$ has at most one predecessor in its path:
+
+   $$\sum_{u : (u, v) \in E} x_{uv} \le 1 \qquad \forall v \in V.$$
+
+3. **Cycle-Freeness via Acyclicity**: In a general directed graph, degree-$\le 1$ subgraphs can contain directed cycles. Because $G$ is a **DAG**, no directed cycles exist in $E$, so *every* edge subset $M = \{(u, v) \in E : x_{uv} = 1\}$ satisfying (1) and (2) is a disjoint union of directed paths!
+4. **Path Counting Identity**: Initially, when $M = \emptyset$ ($x_{uv} = 0$), every vertex $v \in V$ is a trivial path of length $0$, giving $N$ paths. Each selected edge $(u, v) \in M$ concatenates the path ending at $u$ with the path starting at $v$, reducing the total number of paths by exactly $1$:
+
+   $$\text{Number of Paths}(M) = |V| - \sum_{(u, v) \in E} x_{uv} = |V| - |M|.$$
+
+#### 3. Step 3: Mechanical Graph Compilation ($G_{\text{split}}$)
+
+Look at constraints (1) and (2): each edge variable $x_{uv} \in \{0, 1\}$ consumes at most $1$ unit of "exit capacity" at $u$ and at most $1$ unit of "entry capacity" at $v$. Since $u$ can simultaneously have an incoming path edge $(w \to u)$ and an outgoing path edge $(u \to v)$, we must decouple $u$'s role as a path *tail* from its role as a path *head*:
+
+- Split each vertex $v \in V$ into two bipartite nodes: an **outgoing port** $v_{\text{out}} \in V_{\text{out}}$ (left side $L$) and an **incoming port** $v_{\text{in}} \in V_{\text{in}}$ (right side $R$).
+- For every directed edge $(u \to v) \in E$, add a bipartite edge $(u_{\text{out}}, v_{\text{in}}) \in E_{\text{split}}$.
+- Constraints (1) and (2) state that $M \subseteq E_{\text{split}}$ is a **bipartite matching** in $G_{\text{split}}(G) = (V_{\text{out}} \sqcup V_{\text{in}}, E_{\text{split}})$! Minimizing $|V| - |M|$ maximizes $|M|$, yielding the fundamental formula:
+
+$$\boxed{\text{MDPC}(G) = |V| - \nu\big(G_{\text{split}}(G)\big).}$$
+
+- **Explicit Path Reconstruction**: After finding a maximum matching $M^*$ in $G_{\text{split}}(G)$, a vertex $v \in V$ is the **start of a path** iff its incoming port $v_{\text{in}} \in V_{\text{in}}$ is **unmatched**. From each unmatched $v_{\text{in}}$, repeatedly follow the unique matched partner $v_{\text{out}} \xrightarrow{M^*} w_{\text{in}}$ until reaching an unmatched outgoing port $z_{\text{out}}$.
+- **Weighted / Cost Extension**: Suppose starting a new path at $v$ costs $s_v$ and traversing $(u \to v)$ costs $c_{uv}$. Then choosing edge $(u \to v) \in M$ replaces the start cost $s_v$ at $v$ with the transition cost $c_{uv}$, changing the total cost by $c_{uv} - s_v$:
+
+  $$\text{Total Cost}(M) = \sum_{v \in V} s_v + \sum_{(u, v) \in M} (c_{uv} - s_v),$$
+
+  which compiles immediately to **Minimum-Weight Bipartite Matching (MCMF)** on $G_{\text{split}}(G)$!
+
+---
+
+### 2.3 Dilworth's Theorem, Overlapping Path Covers & The Transitivity Non-Overlap Lemma
+
+What if trajectories are allowed to **share vertices** (`Minimum Overlapping Path Cover`), or we want to find the **Maximum-Weight Antichain** of a poset $\mathcal{P} = (V, \prec)$ where each element $v \in V$ has positive weight $w_v > 0$?
+
+#### 1. Why Transitive Closure Eliminates Vertex Sharing (`Path Jumping`)
+
+Suppose two trajectories $P_1 = (a \to v \to b)$ and $P_2 = (c \to v \to d)$ share an intermediate vertex $v$. Because $P_1$ already covers $v$, $P_2$ does not need to physically step on $v$—it only uses $v$ as a stepping stone to get from $c$ to $d$. If we replace the raw DAG $G$ with its **transitive closure** $G^{\text{tc}} = \text{TC}(G)$ (adding a direct shortcut edge $u \to w$ whenever $u \leadsto_G w$ via a path of length $\ge 1$), then $P_2$ can jump directly across $v$ via the shortcut edge $c \to d \in E(G^{\text{tc}})$!
+
+By uncrossing shared vertices one by one, any collection of $k$ potentially overlapping paths covering $V$ in $G$ converts into $k$ **strictly vertex-disjoint** chains covering $V$ in $G^{\text{tc}}$, and vice versa (replacing each transitive jump $c \to d$ by its underlying path $c \leadsto d$ in $G$). Hence:
+
+$$\boxed{\text{MinOverlappingPathCover}(G) = \text{MDPC}\big(\text{TC}(G)\big) = |V| - \nu\Big(G_{\text{split}}\big(\text{TC}(G)\big)\Big).}$$
+
+#### 2. Resolving the Double-Cover Paradox: The Transitivity Non-Overlap Lemma
+
+Now let us connect $\text{MDPC}(\text{TC}(G))$ to **Dilworth's Theorem** and **Constructive Antichain Recovery**. In $G_{\text{split}}(\mathcal{P}) = (V_{\text{out}} \sqcup V_{\text{in}}, E_{\text{split}})$ where $(u_{\text{out}}, v_{\text{in}}) \in E_{\text{split}} \iff u \prec v$, assign weight $w_v > 0$ to both $v_{\text{out}} \in V_{\text{out}}$ and $v_{\text{in}} \in V_{\text{in}}$.
+
+By König's Theorem (Chapter 6), the maximum matching size (or minimum $s$-$t$ cut in the weighted split network) equals the minimum vertex cover $\tau_w\big(G_{\text{split}}(\mathcal{P})\big)$. Suppose $C^* \subseteq V_{\text{out}} \sqcup V_{\text{in}}$ is a minimum vertex cover of $G_{\text{split}}(\mathcal{P})$.
+
+Wait: each poset element $v \in V$ was split into **two** vertices $v_{\text{out}}$ and $v_{\text{in}}$! For $A^* \subseteq V$ to be a valid antichain in $\mathcal{P}$, we can only pick $v \in A^*$ if **neither** $v_{\text{out}}$ nor $v_{\text{in}}$ is needed to cover any comparability edge—that is, we must define:
+
+$$A^* := \big\{\, v \in V \;\big|\; v_{\text{out}} \notin C^* \;\land\; v_{\text{in}} \notin C^* \,\big\}.$$
+
+Why does $A^*$ have size $|V| - |C^*|$ (or weight $\sum_{v \in V} w_v - \tau_w(G_{\text{split}}(\mathcal{P}))$)? What if $C^*$ selects **both** $v_{\text{out}} \in C^*$ and $v_{\text{in}} \in C^*$ for some element $v \in V$, paying twice for $v$ while deleting only one element from $V$? The following fundamental lemma proves that **transitivity of $\prec$ makes double-covering impossible**!
+
+::: {.callout-important title="Lemma 2.1 (The Transitivity Non-Overlap Lemma)"}
+Let $\mathcal{P} = (V, \prec)$ be a **strict poset (irreflexive and transitive)**, and let $C^* \subseteq V_{\text{out}} \sqcup V_{\text{in}}$ be any minimal (or canonical minimum-cut) vertex cover of $G_{\text{split}}(\mathcal{P})$. Then **no element $v \in V$ has both $v_{\text{out}} \in C^*$ and $v_{\text{in}} \in C^*$**:
+
+$$v_{\text{out}} \in C^* \implies v_{\text{in}} \notin C^* \qquad \forall v \in V.$$
+
+Consequently, the sets $C^*_{\text{out}} = \{v \in V : v_{\text{out}} \in C^*\}$ and $C^*_{\text{in}} = \{v \in V : v_{\text{in}} \in C^*\}$ are **disjoint** subsets of $V$, and the complement
+
+$$\boxed{A^* = \big\{\, v \in V \;\big|\; v_{\text{out}} \notin C^* \;\land\; v_{\text{in}} \notin C^* \,\big\} = \big\{\, v \in V \;\big|\; v_{\text{out}} \in S_{\min} \;\land\; v_{\text{in}} \notin S_{\min} \,\big\}}$$
+
+is a **Maximum-Weight Antichain** of weight $\sum_{v \in A^*} w_v = \sum_{v \in V} w_v - \tau_w\big(G_{\text{split}}(\mathcal{P})\big)$ (and cardinality $|A^*| = |V| - \nu(G_{\text{split}}(\mathcal{P}))$ when $w_v = 1$).
+:::
+
+*Proof*: Suppose for contradiction that for some $v \in V$, both $v_{\text{out}} \in C^*$ and $v_{\text{in}} \in C^*$ (and in the canonical min-cut $C^* = (V_{\text{out}} \setminus S_{\min}) \cup (V_{\text{in}} \cap S_{\min})$ or any minimal cover, neither can be dropped without uncovering an edge):
+
+1. Because $v_{\text{out}} \in C^*$ is essential to the cover (or in the canonical min-cut $v_{\text{out}} \notin S_{\min}$), there exists at least one outgoing edge $(v_{\text{out}}, y_{\text{in}}) \in E_{\text{split}}$ ($v \prec y$) whose right endpoint is **not** in $C^*$: $y_{\text{in}} \notin C^*$ (in the canonical min-cut, $v_{\text{in}} \in S_{\min}$ means some $x_{\text{out}} \in S_{\min}$ has an $\infty$-edge $(x_{\text{out}}, v_{\text{in}})$ to $v_{\text{in}}$, so $x_{\text{out}} \notin C^*$).
+2. Symmetrically, because $v_{\text{in}} \in C^*$, there exists at least one incoming edge $(x_{\text{out}}, v_{\text{in}}) \in E_{\text{split}}$ ($x \prec v$) whose left endpoint is **not** in $C^*$: $x_{\text{out}} \notin C^*$.
+3. By **transitivity of the poset relation $\prec$**, $x \prec v$ and $v \prec y$ force $x \prec y$, which means the shortcut edge $(x_{\text{out}}, y_{\text{in}})$ **must exist** in $E_{\text{split}}(\mathcal{P})$!
+4. Yet $x_{\text{out}} \notin C^*$ and $y_{\text{in}} \notin C^*$, meaning the edge $(x_{\text{out}}, y_{\text{in}})$ has **neither** endpoint in $C^*$—contradicting that $C^*$ is a valid vertex cover! (In the canonical min-cut, $x_{\text{out}} \in S_{\min}$ and $(x_{\text{out}}, y_{\text{in}}) \in E_{\text{split}}$ with capacity $\infty$ forces $y_{\text{in}} \in S_{\min}$, so $y_{\text{in}} \in C^*$ for *every* $y \succ v$, meaning removing $v_{\text{out}}$ from $C^*$ leaves zero uncovered edges and strictly decreases the cut cost by $w_v > 0$!)
+
+Finally, for any two distinct elements $u, v \in A^*$, neither $u_{\text{out}}$ nor $v_{\text{in}}$ belongs to $C^*$. Since $C^*$ covers all edges of $G_{\text{split}}(\mathcal{P})$, $(u_{\text{out}}, v_{\text{in}}) \notin E_{\text{split}}(\mathcal{P})$, so $u \not\prec v$ and $v \not\prec u$. Thus $A^*$ is a valid antichain of weight $\sum_{v \in V} w_v - \sum_{v \in C^*_{\text{out}} \sqcup C^*_{\text{in}}} w_v = \sum_{v \in V} w_v - \tau_w\big(G_{\text{split}}(\mathcal{P})\big)$. Since every chain can contain at most one element of any antichain, no antichain can exceed the minimum chain cover weight, proving optimality. $\blacksquare$
+
+---
+
+### 2.4 Step 4: Broken-Gadget Counterexample `FM-08` (Missing Transitive Closure & `OR` vs. `AND` Bug)
+
+::: {.callout-warning title="Failure Mode FM-08: Omitting Transitive Closure & Using OR Instead of AND in Antichain Extraction"}
+Two fatal bugs account for over 90% of Wrong Answers on Dilworth and DAG path cover problems:
+
+1. **Bug 1 — Omitting Transitive Closure Before Matching (`X-Bottleneck Counterexample`)**:
+   Consider the 5-vertex X-shaped DAG $G$ with edges $1 \to 2$, $4 \to 2$, $2 \to 3$, and $2 \to 5$ (vertex $2$ is a central hub; there are **no** direct edges from $\{1, 4\}$ to $\{3, 5\}$).
+   - **True Overlapping Path Cover / Max Antichain**: $2$ chains ($1 \to 2 \to 3$ and $4 \to 2 \to 5$, sharing hub $2$), and the maximum antichain has size **$2$** (e.g., $\{1, 4\}$ or $\{3, 5\}$).
+   - **What Happens If You Forget $\text{TC}(G)$**: In the raw split graph $G_{\text{split}}(G)$, $E_{\text{split}} = \{(1_{\text{out}}, 2_{\text{in}}), (4_{\text{out}}, 2_{\text{in}}), (2_{\text{out}}, 3_{\text{in}}), (2_{\text{out}}, 5_{\text{in}})\}$. Because $2_{\text{in}}$ can match at most one of $\{1_{\text{out}}, 4_{\text{out}}\}$ and $2_{\text{out}}$ can match at most one of $\{3_{\text{in}}, 5_{\text{in}}\}$, the maximum matching size is $\nu = 2$, falsely reporting $5 - 2 = \mathbf{3}$ chains! Worse still, the minimum vertex cover of $G_{\text{split}}(G)$ is $C^* = \{2_{\text{out}}, 2_{\text{in}}\}$ (size $2$), which **violates Lemma 2.1** by picking both halves of vertex $2$, and outputs $A^* = V \setminus \{2\} = \{1, 3, 4, 5\}$ of size $4$ (not even an antichain, since $1 \leadsto 3$)!
+   - **How $\text{TC}(G)$ Fixes It**: Adding transitive shortcut edges $1 \to 3, 1 \to 5, 4 \to 3, 4 \to 5$ allows matching $(1_{\text{out}}, 2_{\text{in}})$, $(2_{\text{out}}, 3_{\text{in}})$, and the shortcut $(4_{\text{out}}, 5_{\text{in}})$, raising $\nu$ to $3$ ($5 - 3 = 2$ chains) and forcing $C^* = \{2_{\text{in}}, 3_{\text{in}}, 5_{\text{in}}\}$ so $A^* = \{1, 4\}$ has size $2$.
+
+2. **Bug 2 — Extracting $A^*$ with `OR` ($\notin C^*_{\text{out}} \lor \notin C^*_{\text{in}}$) Instead of `AND` (`H-06`)**:
+   On a simple 2-vertex chain $1 \to 2$, $M^* = \{(1_{\text{out}}, 2_{\text{in}})\}$ and $C^* = \{2_{\text{in}}\}$. Here $1_{\text{out}} \notin C^*, 1_{\text{in}} \notin C^*$ (both out), while for vertex $2$, $2_{\text{out}} \notin C^*$ is true even though $2_{\text{in}} \in C^*$! Using `OR` ($\neg C^*_{\text{out}} \lor \neg C^*_{\text{in}}$) selects $\{1, 2\}$ (comparable!), whereas `AND` ($\neg C^*_{\text{out}} \land \neg C^*_{\text{in}}$) selects the true antichain $\{1\}$.
+:::
+
+#### Reference Implementation Pattern: Constructive Dilworth Maximum Antichain (`CF 590 E`, `[CTSC2008] 祭祀`)
+
+```cpp
+// Given a transitively closed, irreflexive poset P on 0..N-1 (reach[u][v] == true iff u < v)
+// and residual reachability vis_S[] from Source S after running Dinic on S -> u_out -> v_in -> T:
+//   u_out = u (0 .. N-1), u_in = u + N (N .. 2N-1)
+vector<int> extract_max_antichain(int N, const vector<bool>& vis_S) {
+    vector<int> antichain;
+    for (int v = 0; v < N; ++v) {
+        // v_out not in C*  <==>  vis_S[v] == true
+        // v_in  not in C*  <==>  vis_S[v + N] == false
+        if (vis_S[v] && !vis_S[v + N]) {
+            antichain.push_back(v);
+        }
+    }
+    return antichain; // Guaranteed size == N - MaxFlow (or weight == Sum(w) - MinCut)
+}
+```
+
+---
+
+### 2.5 Extension: Partial $k$-Chain Covers, Greene–Kleitman Duality (1976) & MCMF Compilation
+
+What if a problem gives us a budget of **at most $k$ chains (or $k$ paths on a DAG)** where $k < \text{width}(\mathcal{P})$, and asks for the **maximum number (or maximum total weight) of vertices we can cover using at most $k$ chains**?
+
+::: {.callout-note title="Theorem 2.2 (Greene–Kleitman Theorem, 1976 — $k$-Dilworth Duality)"}
+In any finite poset $\mathcal{P} = (V, \prec)$ and for any integer $k \ge 1$, the maximum cardinality of a **$k$-chain family** (a subset $U \subseteq V$ that can be partitioned into at most $k$ chains) equals:
+
+$$\max_{\substack{C_1, \dots, C_k \text{ chains}}} \left|\bigcup_{i=1}^k C_i\right| = \min_{\substack{A_1 \sqcup \dots \sqcup A_q = V \\ \text{antichain partition}}} \sum_{j=1}^q \min\big(|A_j|, \; k\big) = \min_{U \subseteq V} \Big(|V \setminus U| + k \cdot \text{width}(\mathcal{P}[U])\Big).$$
+:::
+
+When each vertex $v \in V$ of a DAG $G = (V, E)$ offers a reward $w_v \ge 0$ upon its first visit by one of at most $k$ paths, we compile this directly to **Min-Cost Max-Flow (MCMF)** of flow value $k$:
+
+- Split each vertex $v \in V$ into $v_{\text{in}} \to v_{\text{out}}$ with:
+  - A **reward edge** $v_{\text{in}} \xrightarrow{\text{cap } 1, \text{ cost } -w_v} v_{\text{out}}$ (for vertex-disjoint paths).
+  - If paths are allowed to **overlap** (share vertices without collecting $w_v$ twice), add a parallel **bypass edge** $v_{\text{in}} \xrightarrow{\text{cap } \infty, \text{ cost } 0} v_{\text{out}}$.
+- Wire $S_{\text{sub}} \xrightarrow{\text{cap } \infty, \text{ cost } 0} v_{\text{in}}$, $v_{\text{out}} \xrightarrow{\text{cap } \infty, \text{ cost } 0} T$, and for each $(u \to v) \in E$, wire $u_{\text{out}} \xrightarrow{\text{cap } \infty, \text{ cost } 0} v_{\text{in}}$.
+- Throttle total trajectories to $\le k$ via $S \xrightarrow{\text{cap } k, \text{ cost } 0} S_{\text{sub}}$ and a slack bypass $S_{\text{sub}} \xrightarrow{\text{cap } \infty, \text{ cost } 0} T$. The negated min-cost of pushing $k$ units from $S$ to $T$ is the exact Greene–Kleitman maximum $k$-chain weight!
+
+
+---
+
+## 3. Hall's Marriage Theorem, Ore's Defect Formula, and Supply–Demand Hall
+
+### 3.1 Step 1: Non-Graph Diagnostic Signal (When to Eliminate Flow via Hall's Theorem)
+
+When a bipartite matching or capacitated supply–demand problem has **$N, M \ge 2 \cdot 10^5$** (or $D \sim 3.6 \cdot 10^6$ days in **`ARC 106 E`**), explicit Dinic or Hopcroft–Karp requires $O(E\sqrt{V})$ time and **TLEs**! Reach for **Hall's Marriage Theorem** or **Ore's Defect Formula** (`Direction B: Flow Elimination`) whenever:
+
+1. **Geometric Neighbourhood Convexity**: Each $u \in L$ connects to a contiguous interval $[l_u, r_u] \subseteq R$ (`POI 2009 LYZ-Ice Skates`), a prefix–suffix union $[1, l_u] \cup [r_u, M]$ (`ARC 076 F — Exhausted?`), or a circular arc of radius $d$ (`CF 981 F — Round Marriage`).
+2. **Extreme Cardinality Asymmetry ($|L| \le 18, |R| \ge 10^5$, or vice versa)**: One side of the bipartite graph has $\le 20$ vertices (`CF 1009 G` with $|\Sigma| = 6$, `ARC 106 E` with $N \le 18$), allowing $O(N 2^N)$ Sum-Over-Subsets (SOS) DP over all $2^{|L|}$ subsets $S \subseteq L$.
+3. **Hyperedge-to-Vertex Tree Realization (`AGC 029 F`)**: Given $N - 1$ subsets $E_1, \dots, E_{N-1} \subseteq \{1, \dots, N\}$, choosing one representative endpoint $u_i \in E_i$ per hyperedge to form a spanning tree is equivalent to Hall's condition $\left|\bigcup_{i \in S} E_i\right| \ge |S| + 1$ for all $\emptyset \neq S \subseteq \{1, \dots, N-1\}$.
+
+---
+
+### 3.2 Step 2: Deriving Ore's Defect Formula & Supply–Demand Hall from König / Min-Cut
+
+Let $G = (L \sqcup R, E)$ be a bipartite graph where each left vertex $u \in L$ has supply $a_u \ge 0$ and each right vertex $v \in R$ has demand capacity $b_v \ge 0$ (in unweighted matching, $a_u = b_v = 1$). Consider the standard $S$-$T$ flow network $\mathcal{N}$ with capacities:
+
+$$c(S, u) = a_u \quad (\forall u \in L), \qquad c(u, v) = \infty \quad (\forall (u, v) \in E), \qquad c(v, T) = b_v \quad (\forall v \in R).$$
+
+Let $(V_S, V_T)$ be any finite-capacity $S$-$T$ cut, with $S_L := L \cap V_S$ and $S_R := R \cap V_S$.
+
+- **Infinite-Edge Constraint**: For the cut capacity $\text{cap}(V_S, V_T)$ to be finite, no edge $(u, v) \in E$ with $u \in S_L$ and $v \in R \setminus S_R$ may be severed. Thus every neighbor of $S_L$ must also lie in $S_R$:
+
+  $$N(S_L) \subseteq S_R, \qquad \text{where } N(S_L) := \bigcup_{u \in S_L} N(u).$$
+
+- **Optimal Right-Side Choice**: For any fixed subset $S_L \subseteq L$, the cut severs $S \to u$ for $u \in L \setminus S_L$ and $v \to T$ for $v \in S_R$. Since $b_v \ge 0$, minimizing $\sum_{v \in S_R} b_v$ over all $S_R \supseteq N(S_L)$ sets $S_R = N(S_L)$ exactly!
+- **Cut Capacity as Supply Minus Defect**: Substituting $S_R = N(S_L)$ into the cut capacity gives:
+
+  $$\text{Cut}(S_L) = \sum_{u \in L \setminus S_L} a_u + \sum_{v \in N(S_L)} b_v = \sum_{u \in L} a_u - \underbrace{\left(\sum_{u \in S_L} a_u - \sum_{v \in N(S_L)} b_v\right)}_{\text{Defect } \text{def}(S_L)}.$$
+
+Minimizing $\text{Cut}(S_L)$ over all $S_L \subseteq L$ maximizes the defect $\text{def}(S_L)$. By the Max-Flow Min-Cut Theorem (and König's Theorem when $a_u = b_v = 1$), we immediately obtain the three fundamental pillars of Hall–Ore Duality:
+
+::: {.callout-important title="Theorem 3.1 (Ore's Defect Formula, Hall's Marriage Theorem & Complement Zeta Identity)"}
+For any bipartite graph $G = (L \sqcup R, E)$ with supplies $a_u \ge 0$ ($u \in L$) and capacities $b_v \ge 0$ ($v \in R$):
+
+1. **Ore's Defect Formula (1955)**: The maximum $a$-$b$ flow (or maximum matching $\nu(G)$ when $a_u = b_v = 1$) equals total supply minus the maximum subset defect:
+
+   $$\boxed{\nu_{a, b}(G) = \sum_{u \in L} a_u - \max_{S \subseteq L} \left(\sum_{u \in S} a_u - \sum_{v \in N(S)} b_v\right), \qquad \nu(G) = |L| - \max_{S \subseteq L} \big(|S| - |N(S)|\big).}$$
+
+   *(Note: Choosing $S = \emptyset$ always yields $\text{def}(\emptyset) = 0$, so the maximum defect is always $\ge 0$.)*
+
+2. **Hall's Marriage Theorem (1935) / Supply–Demand Feasibility**: A matching saturating all left supplies $\sum_{u \in L} a_u$ exists if and only if $\max_{S \subseteq L} \text{def}(S) \le 0$, i.e.:
+
+   $$\boxed{\forall S \subseteq L, \qquad \sum_{v \in N(S)} b_v \ge \sum_{u \in S} a_u.}$$
+
+3. **Set-Complement Rewrite for Fast Zeta Transform (`ARC 106 E`, `CF 1009 G`)**: A right vertex $v \in R$ does **not** belong to $N(S)$ if and only if its entire neighborhood $N(v)$ lies inside the complement $L \setminus S$. Defining the upward subset-sum $g[T] := \sum_{v \in R : N(v) \subseteq T} b_v$ for each mask $T \subseteq L$, we have:
+
+   $$\boxed{\sum_{v \in N(S)} b_v = \sum_{v \in R} b_v - g[L \setminus S], \qquad \text{where } g[T] = \sum_{M \subseteq T} \left(\sum_{v \in R : N(v) = M} b_v\right).}$$
+:::
+
+---
+
+## 4. Direction B: Eliminating Flow via Hall's Theorem + Segment Trees / Bitmasks (`ARC 076 F`, `CF 981 F`, `ARC 106 E`, `AGC 029 F`)
+
+Theorem 3.1 replaces a graph flow algorithm with a maximization over $2^{|L|}$ subsets $S \subseteq L$. When $|L| \le 20$, we evaluate all $2^{|L|}$ subsets directly via SOS DP (`Section 4.3`). But what when $|L|, |R| = 2 \cdot 10^5$? How can we maximize $\text{def}(S)$ over $2^{200,000}$ subsets in $O(N \log N)$ time?
+
+### 4.1 Step 3 & Step 4: The Connected-Component Additivity Lemma (Feasibility vs. Exact Defect Trap!)
+
+Suppose every left item $u \in L$ connects to a **contiguous interval** $N(u) = [l_u, r_u] \subseteq R$ (where $R = \{1, 2, \dots, M\}$). Instead of iterating over subsets $S \subseteq L$, reverse the viewpoint and iterate over candidate right-side footprints $I \subseteq R$:
+
+- For any fixed target footprint $I \subseteq R$, which subset $S \subseteq L$ satisfies $N(S) \subseteq I$ and maximizes $\sum_{u \in S} a_u$? Since $a_u \ge 0$, we should greedily include **every** $u \in L$ whose interval $[l_u, r_u]$ falls completely inside $I$! This is the **maximal saturation set**:
+
+  $$S^*(I) := \big\{\, u \in L \;\big|\; [l_u, r_u] \subseteq I \,\big\}.$$
+
+- Defining the footprint defect $\text{def}(I) := \sum_{u \in S^*(I)} a_u - \sum_{v \in I} b_v$, Ore's Defect Formula becomes $\max_{S \subseteq L} \text{def}(S) = \max_{I \subseteq R} \text{def}(I)$.
+
+Now decompose an arbitrary subset $I \subseteq R$ into its maximal contiguous interval components $I = I_1 \sqcup I_2 \sqcup \dots \sqcup I_k$, separated by at least one gap element $g \notin I$ between $I_j$ and $I_{j+1}$.
+
+::: {.callout-important title="Lemma 4.1 (Connected-Component Additivity of Interval Defect)"}
+If every $u \in L$ has a contiguous interval neighborhood $[l_u, r_u] \subseteq R$, then for any subset $I = I_1 \sqcup I_2 \sqcup \dots \sqcup I_k$ decomposed into maximal contiguous intervals separated by gaps:
+
+1. No interval $[l_u, r_u]$ can bridge across a gap $g \notin I$, so $[l_u, r_u] \subseteq I \iff \exists! j \in \{1, \dots, k\}$ such that $[l_u, r_u] \subseteq I_j$.
+2. Therefore, $S^*(I) = \bigsqcup_{j=1}^k S^*(I_j)$, and the footprint defect is **strictly additive** across connected components:
+
+   $$\boxed{\text{def}(I_1 \sqcup I_2 \sqcup \dots \sqcup I_k) = \sum_{j=1}^k \text{def}(I_j), \qquad \text{where } \text{def}([l, r]) = \sum_{u : l \le l_u \le r_u \le r} a_u - \sum_{v=l}^r b_v.}$$
+:::
+
+::: {.callout-caution title="Critical Distinction: Feasibility Testing (<= 0) vs. Exact Maximum Defect (> 0)"}
+From the additivity identity $\text{def}(I_1 \sqcup \dots \sqcup I_k) = \sum_{j=1}^k \text{def}(I_j)$, two **sharply different** algorithmic rules follow depending on whether you are testing *feasibility* or computing the *exact maximum defect*:
+
+1. **Rule A — Feasibility Testing ($\max_I \text{def}(I) \le 0$, e.g., `POI 2009 LYZ`, `CF 981 F` Binary Search)**:
+   A sum of numbers is $\le 0$ for all combinations if and only if **every individual summand is $\le 0$**! Therefore:
+
+   $$\forall I \subseteq R, \; \text{def}(I) \le 0 \quad \iff \quad \forall \text{ single contiguous interval } [l, r] \subseteq R, \; \text{def}([l, r]) \le 0.$$
+
+   Checking the $O(M^2)$ single intervals $[l, r]$ with a Segment Tree or Monotone Queue is **100% necessary and sufficient** for Hall feasibility!
+
+2. **Rule B — Exact Maximum Defect ($\max_I \text{def}(I) > 0$) on Interior Intervals**:
+   When the graph is **not** fully matchable ($\max_{[l,r]} \text{def}([l, r]) > 0$) and you need the exact maximum matching size $\nu(G) = \sum a_u - \max_I \text{def}(I)$, **maximizing over single intervals $[l, r]$ is FALSE** if two disjoint intervals $I_1 = [l_1, r_1]$ and $I_2 = [l_2, r_2]$ ($l_2 \ge r_1 + 2$) both have positive defect!
+   - **Broken Toy Counterexample**: Let $R = \{1, 2, 3\}$ with $b_1 = b_2 = b_3 = 1$. Let $L$ have $2$ items with interval $[1, 1]$ and $2$ items with interval $[3, 3]$ ($\sum a_u = 4$).
+     - Single intervals give: $\text{def}([1, 1]) = 2 - 1 = 1$, $\text{def}([3, 3]) = 2 - 1 = 1$, $\text{def}([1, 3]) = 4 - 3 = 1$, and all other single intervals have defect $\le 0$. Thus $\max_{[l, r]} \text{def}([l, r]) = 1$, which falsely predicts $\nu(G) = 4 - 1 = \mathbf{3}$!
+     - In reality, the disconnected footprint $I = [1, 1] \sqcup [3, 3] = \{1, 3\}$ has $\text{def}(\{1, 3\}) = \text{def}([1, 1]) + \text{def}([3, 3]) = 1 + 1 = \mathbf{2}$, giving the true matching size $\nu(G) = 4 - 2 = \mathbf{2}$.
+   - **Fix for Interior Intervals**: To compute $\max_I \text{def}(I)$ when $N(u) = [l_u, r_u]$, accumulate positive-defect disjoint intervals separated by $\ge 1$ gap via DP:
+
+     $$dp[r] = \max\Big(dp[r - 1], \;\max_{1 \le l \le r} \big(dp[l - 2] + \text{def}([l, r])\big)\Big).$$
+
+3. **Rule C — Why Prefix–Suffix Unions (`ARC 076 F`, $N(u) = [1, L_u] \cup [R_u, M]$) Need Only ONE Pair $(L, R)$**:
+   In **`ARC 076 F — Exhausted?`**, each person $u$ connects to a prefix union suffix $N(u) = [1, L_u] \cup [R_u, M]$, which means its **complement** $\overline{N(u)} = (L_u, R_u)$ is a single open interval! For any $I \subseteq R$, $N(u) \subseteq I \iff I^c \subseteq (L_u, R_u)$. Replacing $I^c$ by its contiguous bounding hull $[\min I^c, \max I^c] = (L, R)$ only **enlarges** $I^c$ (shrinking $|I|$ and increasing the defect!) while preserving $I^c \subseteq (L_u, R_u)$ for every saturated $u$. Thus the worst-case footprint $I$ is **always** a single prefix–suffix union $[1, L] \cup [R, M]$ ($0 \le L < R \le M + 1$), so a single Lazy Segment Tree sweep over $(L, R)$ computes the exact positive defect!
+:::
+
+---
+
+### 4.2 Five Canonical Hall Flow-Elimination Engines
+
+#### Engine 1: Dynamic Point-Shift Interval Hall $\leftrightarrow$ Maximum Subarray Sum (`POI 2009 LYZ-Ice Skates`, `#058` / `S2`)
+
+Suppose skaters of foot size $i \in \{1, \dots, N - d\}$ have demand $a_i$ and can wear any skate size in $[i, i + d]$, where each skate size $j \in \{1, \dots, N\}$ has supply $k$. For any contiguous interval of foot sizes $[l, r]$, their union of allowed skate sizes is $[l, r + d]$, which has total capacity $(r - l + 1 + d) \cdot k$. By Lemma 4.1 (Rule A), Hall feasibility holds iff for all $1 \le l \le r \le N - d$:
+
+$$\sum_{i=l}^r a_i \le (r - l + 1 + d) \cdot k \quad \iff \quad \sum_{i=l}^r (a_i - k) \le d \cdot k.$$
+
+Maintain the array $c_i := a_i - k$ in a Segment Tree supporting point updates and **Maximum Contiguous Subarray Sum** (`max_sub`). All skaters can be matched iff `tree[1].max_sub <= d * k` in $O(\log N)$ time per query!
+
+#### Engine 2: Prefix–Suffix Hall Defect via 2D Dominance Sweep + Lazy Segment Tree (`ARC 076 F — Exhausted?`)
+
+Given $N$ people with allowed chairs $N(i) = [1, L_i] \cup [R_i, M]$ ($N, M \le 2 \cdot 10^5$), by Rule C above, every non-trivial candidate footprint has the form $I = [1, L] \cup [R, M]$ with $0 \le L < R \le M + 1$ and size $|I| = L + (M - R + 1)$. Person $i$ is forced into $S^*(I)$ iff $L_i \le L$ and $R_i \ge R$. Thus Ore's Defect Formula gives:
+
+$$\text{Min Unseated People} = \max\Big(0, \; N - M, \; \max_{0 \le L < R \le M + 1} \big(\#\big\{i : L_i \le L \;\land\; R_i \ge R\big\} - L - (M - R + 1)\big)\Big).$$
+
+Sort people by $L_i$ ascending and sweep $L$ from $0$ to $M$. Maintain a Lazy Segment Tree over $R \in [1, M + 1]$ initialized with $T[R] = R - M - 1$. Whenever a person with $(L_i, R_i)$ is activated at $L = L_i$, add $+1$ to the range $R \in [1, R_i]$; then query $\max_{R \in [L + 1, M + 1]} T[R] - L$ in $O((N + M) \log M)$ total time!
+
+#### Engine 3: Circular Hall Unrolling (`CF 981 F — Round Marriage`)
+
+Given $N \le 2 \cdot 10^5$ brides at sorted positions $a_1 \le \dots \le a_N$ and $N$ grooms at sorted positions $b_1 \le \dots \le b_N$ on a circle of circumference $L$, binary search the maximum matching distance $D \in [0, L / 2]$.
+
+To eliminate wrap-around on the circle, **unroll** the arrays: copy $a$ twice to length $2N$ ($a_{i+N} = a_i + L$, shifted by $+L$) and copy $b$ four times to length $4N$ ($b_{j+kN} = b_j + kL$). Each bride $i \in [1, 2N]$ then connects to a contiguous interval of grooms $[l_i, r_i] \subseteq [1, 4N]$ computable by two pointers. By Lemma 4.1 (Rule A), distance $D$ is feasible iff every contiguous bride interval $[i, j]$ ($1 \le i \le j < i + N$) satisfies:
+
+$$r_j - l_i + 1 \ge j - i + 1 \quad \iff \quad (r_j - j) \ge (l_i - i) \qquad \forall 1 \le i \le j < i + N,$$
+
+which is verified in **$O(N)$ linear time** per binary search step by maintaining the running prefix maximum of $(l_i - i)$!
+
+#### Engine 4: Capacitated Small-Side SOS DP (`ARC 106 E`) vs. Primal Flow-State DP (`CF 1519 F`)
+
+- **When $|L| \le 18$ and $|R| \ge 10^6$ (`ARC 106 E — Medals`, `#062`)**: Apply Theorem 3.1(3). Group the millions of right vertices $v \in R$ by their exact $N$-bit neighborhood mask $M_v \in [0, 2^N)$, accumulate $g[T] = \sum_{M \subseteq T} \text{cnt}[M]$ via the $O(N 2^N)$ **Fast Zeta Transform (SOS DP)**, and check $|R| - g[L \setminus S] \ge K|S|$ for all $S \subseteq L$.
+- **When $N, M \le 6$ and $a_i, b_j \le 4$ (`CF 1519 F — Chests and Keys`)**: If we must pay costs on edges to satisfy Hall's condition across *all* $2^6 = 64$ subsets simultaneously, tracking the boolean satisfaction mask of $64$ subsets would take $2^{64}$ states (impossible!). Instead, **flip back from Dual (Hall) to Primal (Flow)**: track the remaining supply tuple $(rem_1, \dots, rem_6) \in [0, 4]^6$ across the $M \le 6$ locks, which has at most $5^6 = 15,625$ states!
+
+#### Engine 5: Constructive Hall Tree Realization (`AGC 029 F`) & Hall–Kotzig Leaf-Peeling
+
+Given $N - 1$ vertex subsets $E_1, \dots, E_{N-1} \subseteq \{1, \dots, N\}$ (`AGC 029 F — Construction of a tree`), when can we choose one edge $e_i \subseteq E_i$ per subset to form a tree on $\{1, \dots, N\}$?
+
+1. **Rooted Parent–Child Orientation**: Root the target tree at vertex $r = 1$. In any rooted tree, every non-root vertex $v \in \{2, \dots, N\}$ has a unique parent edge, establishing a **bijection (perfect matching)** $M$ between the $N - 1$ hyperedges $\{E_1, \dots, E_{N-1}\}$ and the $N - 1$ non-root vertices $V \setminus \{1\}$ such that $M(E_i) \in E_i$.
+2. **Connectivity via Alternating BFS**: Run Hopcroft–Karp to find a perfect matching $M$ between $\{E_1, \dots, E_{N-1}\}$ and $V \setminus \{1\}$ (if none exists, output `-1`). However, a perfect matching alone could form a disconnected cycle (e.g., $E_1 = \{2, 3\}, E_2 = \{2, 3\}$ matched to $2$ and $3$, isolated from root $1$!). To orient edges away from root $1$ without cycles, run a **BFS starting from $r = 1$**: whenever vertex $u$ is visited, for every unvisited hyperedge $E_i$ containing $u$, set $u$ as the parent endpoint of $E_i$, and push its matched child vertex $v = M(E_i)$ into the BFS queue!
+3. **Why One Matching Suffices**: If the BFS visits all $N$ vertices, we have constructed a valid tree! If the BFS stalls after visiting $V_{\text{vis}} \subsetneq V$ and $E_{\text{vis}} \subsetneq \{E_1, \dots, E_{N-1}\}$ ($|V_{\text{vis}}| = |E_{\text{vis}}| + 1$), then the unvisited hyperedges $S = \mathcal{E} \setminus E_{\text{vis}}$ contain **zero** vertices in $V_{\text{vis}}$, so $\bigcup_{E_i \in S} E_i \subseteq V \setminus V_{\text{vis}}$ has size $N - |V_{\text{vis}}| = (N - 1) - |E_{\text{vis}}| = |S| < |S| + 1$, proving that **no** valid tree exists for *any* matching!
+
+```cpp
+// Constructive Hall Tree Realization (AGC 029 F) after finding perfect matching
+// match_v[i] in {1 .. N-1} (non-root vertices) for each hyperedge i in {0 .. N-2}.
+// inc_edges[u] lists all hyperedges i containing vertex u (0-indexed, root = 0).
+vector<pair<int, int>> reconstruct_hall_tree(int N, const vector<int>& match_v,
+                                             const vector<vector<int>>& inc_edges) {
+    vector<bool> vis_v(N, false), vis_e(N - 1, false);
+    vector<pair<int, int>> tree_edges(N - 1);
+    queue<int> q;
+    vis_v[0] = true;
+    q.push(0);
+    int visited_count = 1;
+    while (!q.empty()) {
+        int u = q.front();
+        q.pop();
+        for (int e_idx : inc_edges[u]) {
+            if (!vis_e[e_idx]) {
+                vis_e[e_idx] = true;
+                int v = match_v[e_idx]; // Unique matched child vertex of hyperedge e_idx
+                tree_edges[e_idx] = {u, v};
+                if (!vis_v[v]) {
+                    vis_v[v] = true;
+                    ++visited_count;
+                    q.push(v);
+                }
+            }
+        }
+    }
+    return visited_count == N ? tree_edges : vector<pair<int, int>>{};
+}
+```
+
+---
+
+## 5. Black-Box Contract & Recognition Table
+
+| Problem Signature / Objective | Intermediate Algebraic Model | Target Graph / Flow-Elimination Engine | Time Complexity |
+| :--- | :--- | :--- | :--- |
+| **DAG Disjoint Path Cover (`MDPC`)** (each vertex in $\le 1$ path) | $\min \big(|V| - \sum x_{uv}\big)$ s.t. $\text{outdeg}_M, \text{indeg}_M \le 1$ | Raw split graph $G_{\text{split}}(G) = (V_{\text{out}} \sqcup V_{\text{in}}, E)$; Hopcroft–Karp | $O(E\sqrt{V})$ |
+| **DAG Overlapping Path Cover / Max (Weighted) Antichain** | Dilworth Duality + Lemma 2.1: $\sum w_v - \tau_w(G_{\text{split}}(\text{TC}))$ | First run **Transitive Closure** $\text{TC}(G)$, then Dinic on $G_{\text{split}}(\text{TC}(G))$; $A^* = \{v : v_{\text{out}} \in S_{\min} \land v_{\text{in}} \notin S_{\min}\}$ | $O(V^3/w + V^2\sqrt{V})$ |
+| **2D Grid Right-Down Chain Cover** ($N, M \le 1000$, weights $a_{i,j}$) | Poset $(r_1 \le r_2 \land c_1 \le c_2) \iff$ Antichain is strictly Up-Right | **2D Grid DP** over incomparable Bottom-Left / Up-Right paths (Zero Flow!) | $O(NM)$ |
+| **Partial $k$-Path / $k$-Chain Cover** (Greene–Kleitman Duality) | $\max_{|\mathcal{C}| \le k} \sum_{v \in \bigcup \mathcal{C}} w_v$ | Split $v_{\text{in}} \xrightarrow{1, -w_v} v_{\text{out}}$ (plus $\infty, 0$ bypass if overlapping), $k$-flow MCMF | $O(k \cdot E \log V)$ |
+| **Dynamic Contiguous Interval Hall Feasibility** (`POI 2009 LYZ`) | $\forall [l, r], \sum_{i=l}^r (a_i - k) \le d \cdot k$ (Lemma 4.1 Rule A) | **Segment Tree** maintaining Maximum Contiguous Subarray Sum | $O((N + Q) \log N)$ |
+| **Prefix–Suffix Interval Defect** (`ARC 076 F`, $N(i) = [1, L_i] \cup [R_i, M]$) | Complement $(L_i, R_i)$ is contiguous $\implies$ single pair $(L, R)$ suffices (Rule C) | **Sweep-Line + Lazy Segment Tree** over $0 \le L < R \le M + 1$ | $O((N + M) \log M)$ |
+| **Circular Distance Matching** (`CF 981 F`, $N \le 2 \cdot 10^5$ on ring $L$) | Unroll $a$ to $2N$, $b$ to $4N$; check $(r_j - j) \ge (l_i - i)$ | **Binary Search + $O(N)$ Two-Pointer & Prefix-Max Sweep** | $O(N \log L)$ |
+| **Asymmetric Small-Side Matching** ($|L| \le 18, |R| \ge 10^5$) | Complement identity $|N(S)| = |R| - g[L \setminus S]$ (Theorem 3.1(3)) | **Fast Zeta Transform (SOS DP)** in $O(|L| 2^{|L|})$ (`CF 1009 G`, `ARC 106 E`) | $O(|L| 2^{|L|} \log D)$ |
+| **Hyperedge Tree Realization** (`AGC 029 F`) | $\forall \emptyset \neq S, |\bigcup_{i \in S} E_i| \ge |S| + 1$ | Match $\mathcal{E} \leftrightarrow V \setminus \{1\}$ via Hopcroft–Karp + **Alternating BFS** from root $1$ | $O(\sum |E_i| \sqrt{N})$ |
+
+
+---
+
+## 6. Curated 4-Tier Practice Ladder
+
+Every problem in this ladder is compiled through our mandatory **4-Step "Zero Magic Gadgets" Pipeline** (Diagnostic Signal $\to$ Intermediate Algebraic Model $\to$ Mechanical Compilation $\to$ Toy Trace & Failure-Mode Guard).
+
+### Problem `#057` — [SCOI2010] 部落战争 (Tribal War) & Minimum DAG Path Cover
+
+- **Canonical Slot**: `Ch 08 — Stepping Stone 1 (SS-1)` | **Judge URL**: [Luogu P2172](https://www.luogu.com.cn/problem/P2172) *(Companion: [Luogu P2764 — 最小路径覆盖问题](https://www.luogu.com.cn/problem/P2764))*
+- **Constraints**: $M, N \le 50$ ($M$ rows, $N$ columns), jump parameters $1 \le R, C \le 50$, Time Limit $1.0\text{ s}$.
+- **Problem Statement**: You are given an $M \times N$ grid where `.` denotes an enemy base that must be conquered and `x` denotes an impassable lake. Each army starts at any `.` cell and makes a sequence of jumps. Every jump must move **strictly downward** ($\Delta r > 0$) using one of the four knight-like displacement vectors $(+R, +C)$, $(+R, -C)$, $(+C, +R)$, or $(+C, -R)$. Each `.` cell must be visited by **exact/at least one** army, and **no two armies may ever step on the same `.` cell**. Find the minimum number of armies required to conquer all `.` cells.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Is This a DAG and Not a General Graph?"}
+Notice that every valid jump strictly increases the row coordinate ($\Delta r \in \{+R, +C\} > 0$). Because an army can never return to a previous or same row, the directed movement graph $G = (V, E)$ on the `.` cells is a **Directed Acyclic Graph (DAG)**!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Translating Disjoint Trajectories to Node Degrees"}
+Since no two armies may share a `.` cell, the trajectories partition the `.` cells into **vertex-disjoint directed paths**. How does choosing a jump edge $(u \to v)$ affect the total number of armies needed?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Bipartite Split Graph Compilation"}
+Split each `.` cell $u$ into an outgoing port $u_{\text{out}} \in L$ and an incoming port $u_{\text{in}} \in R$. Wire $(u_{\text{out}}, v_{\text{in}})$ for every valid downward jump $u \to v$ between two `.` cells, and compute $(\text{number of '.' cells}) - \text{MaxMatching}(L, R)$.
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #057 (Luogu P2172 & P2764)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+In general knight-move grid problems (Chapter 7), moves can go in all $8$ directions, requiring a parity coloring. Here, moves only go **strictly downward** ($\Delta r > 0$), which immediately guarantees **acyclicity (DAG)**. Furthermore, the rule "every `.` cell is visited, and no two armies share a `.` cell" asks for the **Minimum Vertex-Disjoint Path Cover (`MDPC`)** of this DAG.
+
+#### Step 2: Intermediate Algebraic Representation
+Let $V$ be the set of all `.` cells ($|V| = K \le 2500$), and let $E$ be the set of valid downward jumps $(u \to v)$ between `.` cells. Let $x_{uv} \in \{0, 1\}$ indicate whether an army jumps directly from $u$ to $v$. Because at most one army leaves $u$ and at most one army enters $v$:
+
+$$\sum_{v : (u, v) \in E} x_{uv} \le 1 \quad (\forall u \in V), \qquad \sum_{u : (u, v) \in E} x_{uv} \le 1 \quad (\forall v \in V).$$
+
+Starting from $K$ armies of length $0$ (one per `.` cell), each selected jump $x_{uv} = 1$ merges the army ending at $u$ with the army starting at $v$, reducing the army count by $1$:
+
+$$\min \text{Armies} = K - \max_{x} \sum_{(u, v) \in E} x_{uv}.$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+- Create bipartite graph $G_{\text{split}} = (V_{\text{out}} \sqcup V_{\text{in}}, E_{\text{split}})$ with $|V_{\text{out}}| = |V_{\text{in}}| = K$.
+- For each `.` cell $u = (r, c)$, iterate over the displacement vectors $(\Delta r, \Delta c) \in \{(R, C), (R, -C), (C, R), (C, -R)\}$. If $v = (r + \Delta r, c + \Delta c)$ is in bounds and is also `.`, add edge $(u_{\text{out}}, v_{\text{in}})$.
+- Run Hopcroft–Karp / Dinic on $G_{\text{split}}$ and return $K - \nu(G_{\text{split}})$.
+- *(Path Reconstruction for `Luogu P2764`)*: Track `next_v[u]` $= v$ if $(u_{\text{out}}, v_{\text{in}}) \in M^*$ and `has_prev[v] = true`. Every $u$ with `!has_prev[u]` is the start of a path; walk `u = next_v[u]` to print each trajectory.
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+- **Toy Trace**: Suppose $3 \times 3$ grid with $R = 1, C = 1$, and `.` cells at $u_1 = (1, 2)$, $u_2 = (2, 1)$, $u_3 = (2, 3)$, $u_4 = (3, 2)$. The jumps are $u_1 \to u_2$, $u_1 \to u_3$, $u_2 \to u_4$, $u_3 \to u_4$. In $G_{\text{split}}$, we can match $(u_{1,\text{out}}, u_{2,\text{in}})$ and $(u_{2,\text{out}}, u_{4,\text{in}})$, giving $\nu = 2$ (since $u_1$ cannot match to both $u_2$ and $u_3$, and $u_4$ cannot receive from both $u_2$ and $u_3$). Thus $K - \nu = 4 - 2 = 2$ armies: $(u_1 \to u_2 \to u_4)$ and $(u_3)$.
+- **Failure-Mode Guard**: When $R = C$, the $4$ displacement vectors $(R, \pm C)$ and $(C, \pm R)$ contain duplicates! Always deduplicate the move vector list (e.g., via `sort` + `unique`) before adding edges. Complexity: $O(K\sqrt{K}) \le 2500 \times 50 \approx 1.25 \cdot 10^5$ operations.
+
+```cpp
+// Core Graph Compilation for #057 [SCOI2010] Tribal War
+int solve_tribal_war(int M, int N, int R, int C, const vector<string>& grid) {
+    vector<pair<int, int>> dirs = {{R, C}, {R, -C}, {C, R}, {C, -R}};
+    sort(dirs.begin(), dirs.end());
+    dirs.erase(unique(dirs.begin(), dirs.end()), dirs.end());
+
+    vector<vector<int>> id(M, vector<int>(N, -1));
+    int K = 0;
+    for (int r = 0; r < M; ++r)
+        for (int c = 0; c < N; ++c)
+            if (grid[r][c] == '.') id[r][c] = K++;
+
+    int S = 2 * K, T = 2 * K + 1;
+    Dinic dinic(2 * K + 2, S, T);
+    for (int u = 0; u < K; ++u) {
+        dinic.add_edge(S, u, 1);
+        dinic.add_edge(u + K, T, 1);
+    }
+    for (int r = 0; r < M; ++r) {
+        for (int c = 0; c < N; ++c) {
+            if (id[r][c] == -1) continue;
+            for (auto [dr, dc] : dirs) {
+                int nr = r + dr, nc = c + dc;
+                if (nr >= 0 && nr < M && nc >= 0 && nc < N && id[nr][nc] != -1) {
+                    dinic.add_edge(id[r][c], id[nr][nc] + K, 1);
+                }
+            }
+        }
+    }
+    return K - dinic.max_flow();
+}
+```
+::::
+
+---
+
+### Problem `#058` — 魔术球问题 (Magic Ball — Incremental DAG Path Cover) & Dynamic Interval Hall (`POI 2009 LYZ`)
+
+- **Canonical Slot**: `Ch 08 — Stepping Stone 2 (SS-2)` | **Judge URL**: [Luogu P2765](https://www.luogu.com.cn/problem/P2765) *(Companion: [POI 2009 / Luogu P3488 — LYZ-Ice Skates](https://www.luogu.com.cn/problem/P3488))*
+- **Constraints**: $1 \le N \le 55$ pegs (for `P2765`, $M \le 1600$ balls); for companion `P3488`, $N, M \le 2 \cdot 10^5$, Time Limit $1.0\text{ s}$.
+- **Problem Statement**: You have $N \le 55$ pegs. You place numbered balls $1, 2, 3, \dots, M$ sequentially onto the pegs. A ball $v$ can either be placed on an empty peg, or placed on top of an existing ball $u$ ($u < v$) if and only if $u + v$ is a **perfect square** ($u + v = k^2$). Find the maximum number of balls $M$ that can be placed on the $N$ pegs, and print the sequence of balls on each peg.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Representing Each Peg as a DAG Path"}
+Because balls are placed in increasing order $1, 2, \dots, M$, a ball $v$ can only sit directly on top of a smaller ball $u < v$ with $u + v = k^2$. Thus the sequence of balls on a single peg is a directed path in the DAG $G_M$ with vertices $\{1, \dots, M\}$ and edges $u \to v \iff (u < v \land u + v = k^2)$!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Incremental Residual Augmentation"}
+We want the largest $M$ such that $\text{MDPC}(G_M) = M - \nu(G_{\text{split}}(G_M)) \le N$. Instead of binary searching $M$ and rebuilding the graph from scratch, what happens to the residual network when we insert ball $v = 1, 2, 3, \dots$ one by one?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Stopping Condition & Peg Trajectory Recovery"}
+When inserting ball $v$, add $S \to v_{\text{out}}$, $v_{\text{in}} \to T$, and $u_{\text{out}} \to v_{\text{in}}$ for all $1 \le u < v$ with $u + v = k^2$, then run `dinic.max_flow()` on the **existing** residual network! If $\Delta\text{flow} = 1$, the required peg count stays unchanged; if $\Delta\text{flow} = 0$, the required peg count increases by $1$. Stop as soon as $v - \text{total\_flow} == N + 1$ (so $M = v - 1$).
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #058 (Luogu P2765 & Companion P3488)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+Each peg holds a strictly increasing chain $u_1 < u_2 < \dots < u_len$ where consecutive elements sum to a square, and each ball $1 \dots M$ sits on **exactly one** peg. Thus $M$ balls fit on $N$ pegs iff the DAG $G_M$ has **Minimum Disjoint Path Cover $\text{MDPC}(G_M) \le N$**. Because adding vertex $v$ only adds incoming DAG edges from $u < v$, $\text{MDPC}(G_v) = v - \nu(G_{\text{split}}(G_v))$ is **monotonically non-decreasing** in $v$ (incrementing by either $0$ or $+1$ at each step)!
+
+#### Step 2: Intermediate Algebraic Representation
+For each $v = 1, 2, \dots$, let $\nu_v$ be the maximum matching size in $G_{\text{split}}(G_v)$. The minimum number of pegs needed for $\{1, \dots, v\}$ is $P(v) = v - \nu_v$. We seek $M = \max \{v : v - \nu_v \le N\}$.
+*(Note: By Hall/Dilworth structure on square-sum graphs, the exact threshold turns out to be $M(N) = \lfloor (N + 1)^2 / 2 \rfloor - 1 \le 1567$ for $N = 55$, so incremental Dinic finishes in $< 5\text{ ms}$!)*
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+- Pre-allocate Dinic with $S = 0, T = 1$, and dynamic node pairs $v_{\text{out}} = 2v$, $v_{\text{in}} = 2v + 1$ up to $v_{\max} = 1600$.
+- For $v = 1, 2, \dots$:
+  - Add $S \xrightarrow{1} 2v$, $2v + 1 \xrightarrow{1} T$, and $2u \xrightarrow{1} 2v + 1$ for every $1 \le u < v$ where $u + v = k^2$.
+  - Augment the existing residual flow: `flow += dinic.max_flow()`.
+  - If $v - \text{flow} > N$, Roll back / ignore vertex $v$, set $M = v - 1$, and reconstruct the $N$ paths from $\{1, \dots, M\}$.
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+- **Toy Trace ($N = 2$ pegs)**:
+  - $v = 1$: no $u < 1$, $\nu_1 = 0 \implies 1 - 0 = 1$ peg (`[1]`).
+  - $v = 2$: $1+2=3 \neq k^2$, $\nu_2 = 0 \implies 2 - 0 = 2$ pegs (`[1]`, `[2]`).
+  - $v = 3$: $1+3=4=2^2 \implies$ match $(1_{\text{out}}, 3_{\text{in}})$, $\nu_3 = 1 \implies 3 - 1 = 2$ pegs (`[1, 3]`, `[2]`).
+  - $v = 4$: no $u \in \{1, 2, 3\}$ gives a new augmenting path ($1+4=5, 2+4=6, 3+4=7$), so $\nu_4 = 1 \implies 4 - 1 = 3 > 2$ pegs! Stop and output $M = 3$.
+- **Failure-Mode Guard**: When $v = M + 1$ triggers the stop condition $v - \text{flow} == N + 1$, vertex $v$ has zero matched edges, so when reconstructing the $N$ paths, simply restrict your loop to $u \in \{1, \dots, M\}$ so you do not print $v = M + 1$ as an $(N+1)$-th peg!
+
+```cpp
+// Core Incremental DAG Path Cover for #058 (Luogu P2765 Magic Ball)
+void solve_magic_ball(int N) {
+    const int MAXV = 1605;
+    int S = 0, T = 1;
+    Dinic dinic(2 * MAXV + 2, S, T);
+    int flow = 0, M = 0;
+    for (int v = 1; v < MAXV; ++v) {
+        dinic.add_edge(S, 2 * v, 1);
+        dinic.add_edge(2 * v + 1, T, 1);
+        for (int k = 2; k * k < 2 * v; ++k) {
+            int u = k * k - v;
+            if (u >= 1 && u < v) {
+                dinic.add_edge(2 * u, 2 * v + 1, 1);
+            }
+        }
+        flow += dinic.max_flow();
+        if (v - flow > N) { M = v - 1; break; }
+    }
+    vector<int> nxt(M + 1, 0), has_prev(M + 1, 0);
+    for (int u = 1; u <= M; ++u) {
+        for (const auto& e : dinic.adj[2 * u]) {
+            if (e.to > 2 * u + 1 && e.to <= 2 * M + 1 && e.cap == 0) {
+                int v = (e.to - 1) / 2;
+                nxt[u] = v;
+                has_prev[v] = 1;
+            }
+        }
+    }
+    // Print M and the N peg trajectories starting from u in [1..M] with !has_prev[u]
+}
+```
+::::
+
+---
+
+### Problem `#059` — [TJOI2015] 组合数学 (Treasure Grid Weighted Dilworth)
+
+- **Canonical Slot**: `Ch 08 — Intermediate 1 (Int-1)` | **Judge URL**: [Luogu P3974](https://www.luogu.com.cn/problem/P3974)
+- **Constraints**: $T \le 50$ test cases, $1 \le N, M \le 1000$, cell treasure counts $0 \le a_{i,j} \le 10^6$, Time Limit $1.0\text{ s}$.
+- **Problem Statement**: You are given an $N \times M$ grid where cell $(i, j)$ contains $a_{i,j}$ treasures. In each pass, you start at the top-left corner $(1, 1)$ and walk to the bottom-right corner $(N, M)$ moving only **Right** $(i, j+1)$ or **Down** $(i+1, j)$. Whenever you step on a cell $(i, j)$ that still has treasures, you may pick up **at most $1$** treasure from that cell during that pass. Find the minimum number of passes required to collect all treasures in the grid.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Flow on $10^6$ Vertices TLEs & The Poset Viewpoint"}
+With $N, M = 1000$, the grid has $N M = 10^6$ cells and $T = 50$ test cases—explicit Min-Flow or MCMF will TLE! Instead, view each cell $(i, j)$ as an element of a poset with multiplicity $a_{i,j}$, where $(i_1, j_1) \preceq (i_2, j_2) \iff (i_1 \le i_2 \land j_1 \le j_2)$. What is a Right-Down path in this poset?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Applying Weighted Dilworth's Theorem"}
+A Right-Down path is a **chain** in the 2D coordinate dominance poset! By **Weighted Dilworth's Theorem**, the minimum number of chains needed to cover all cell multiplicities $a_{i,j}$ equals the **Maximum-Weight Antichain** of the poset. What does an antichain look like geometrically on an $N \times M$ grid?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Strict Up-Right / Bottom-Left Antichain DP"}
+Two cells $(i_1, j_1)$ and $(i_2, j_2)$ are incomparable iff one lies strictly **down-and-left** (or **up-and-right**) of the other: $(i_1 > i_2 \land j_1 < j_2)$. Sweep $i = 1 \dots N$ and $j = M \dots 1$ with:
+
+$$dp[i][j] = \max\big(dp[i - 1][j], \; dp[i][j + 1], \; dp[i - 1][j + 1] + a_{i,j}\big).$$
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #059 (Luogu P3974)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+$N, M \le 1000$ ($10^6$ vertices) immediately rules out any graph flow algorithm. However, the trajectories are monotone **Right-Down chains** on $\mathbb{Z}^2$, where $(r_1, c_1)$ can reach $(r_2, c_2)$ iff $r_1 \le r_2$ and $c_1 \le c_2$. Since coordinate dominance is already **reflexive, antisymmetric, and transitive**, the grid is a poset $\mathcal{P}$, and covering node weights $a_{i,j}$ with the minimum number of chains is the exact dual of **Maximum-Weight Antichain** (Weighted Dilworth's Theorem)!
+
+#### Step 2: Intermediate Algebraic Representation
+Replace each cell $(i, j)$ of weight $a_{i,j}$ with a chain of $a_{i,j}$ unit clones (or apply weighted Dilworth directly). Any antichain $A \subseteq \{1, \dots, N\} \times \{1, \dots, M\}$ can be ordered by strictly increasing row indices $i_1 < i_2 < \dots < i_k$, which forces strictly **decreasing** column indices $j_1 > j_2 > \dots > j_k$:
+
+$$\text{Min Passes} = \max_{\substack{1 \le i_1 < i_2 < \dots < i_k \le N \\ M \ge j_1 > j_2 > \dots > j_k \ge 1}} \sum_{t=1}^k a_{i_t, j_t}.$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Compilation to 2D DP)
+Let $dp[i][j]$ be the maximum weight of an antichain contained in the top-right subgrid $[1 \dots i] \times [j \dots M]$:
+
+- **Skip cell $(i, j)$**: Transition from $dp[i - 1][j]$ (move down without picking) or $dp[i][j + 1]$ (move left without picking).
+- **Pick cell $(i, j)$**: Every previously picked cell $(i', j')$ in the top-right subgrid must satisfy $i' \le i - 1$ and $j' \ge j + 1$, so its best sum is $dp[i - 1][j + 1] + a_{i,j}$.
+
+Combining both cases gives the $O(NM)$ recurrence:
+
+$$dp[i][j] = \max\Big(\max\big(dp[i - 1][j], \; dp[i][j + 1]\big), \; dp[i - 1][j + 1] + a_{i,j}\Big).$$
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+- **Toy Trace**: Consider the $2 \times 2$ grid $a = \begin{pmatrix} 1 & 5 \\ 4 & 2 \end{pmatrix}$.
+  - $(1, 2)$ and $(2, 1)$ are incomparable ($1 < 2$ and $2 > 1$), forming an antichain of weight $a_{1,2} + a_{2,1} = 5 + 4 = 9$.
+  - No single chain can visit both $(1, 2)$ and $(2, 1)$, so at least $9$ passes are needed, while $(1, 1) \to \dots \to (2, 2)$ easily absorbs $a_{1,1} = 1$ and $a_{2,2} = 2$ along those $9$ passes! Our DP computes $dp[1][2] = 5$, and $dp[2][1] = \max(dp[1][1], dp[2][2], dp[1][2] + 4) = \max(1, 2, 5 + 4) = 9$.
+- **Failure-Mode Guard**: Never add $+a_{i,j}$ to $dp[i-1][j]$ or $dp[i][j+1]$! Cells $(i-1, j)$ and $(i, j)$ lie in the **same column** ($j = j$) and are comparable! Only the strict diagonal predecessor $(i - 1, j + 1)$ is incomparable with $(i, j)$.
+
+```cpp
+// O(N * M) Weighted Dilworth Antichain DP for #059 [TJOI2015] Treasure Grid
+long long solve_treasure_grid(int N, int M, const vector<vector<long long>>& a) {
+    vector<vector<long long>> dp(N + 2, vector<long long>(M + 2, 0));
+    for (int i = 1; i <= N; ++i) {
+        for (int j = M; j >= 1; --j) {
+            dp[i][j] = max({dp[i - 1][j], dp[i][j + 1], dp[i - 1][j + 1] + a[i][j]});
+        }
+    }
+    return dp[N][1];
+}
+```
+::::
+
+---
+
+### Problem `#060` — CF 1009 G: Allowed Letters (Lexicographically Smallest Matching via Bitmask Hall)
+
+- **Canonical Slot**: `Ch 08 — Intermediate 2 (Int-2)` | **Judge URL**: [Codeforces 1009G](https://codeforces.com/problemset/problem/1009/G)
+- **Constraints**: String length $1 \le N \le 10^5$, alphabet $\Sigma = \{\text{'a'}, \text{'b'}, \text{'c'}, \text{'d'}, \text{'e'}, \text{'f'}\}$ ($|\Sigma| = 6$), Time Limit $2.0\text{ s}$.
+- **Problem Statement**: You are given a string $S$ of length $N \le 10^5$ consisting of letters `'a'` through `'f'`. You may rearrange the characters of $S$ in any order, subject to $m$ positional restrictions: at index $i \in \{1, \dots, N\}$, only a subset of characters $M_i \subseteq \{0, \dots, 5\}$ is allowed (if no restriction is given for index $i$, all $6$ letters are allowed, so $M_i = 63$). Output the **lexicographically smallest** valid string, or `Impossible` if no valid rearrangement exists.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Standard Lexicographical Greedy + Feasibility Oracle"}
+To construct the lexicographically smallest string, iterate through positions $i = 1, 2, \dots, N$ from left to right. At position $i$, try placing the smallest allowed character $c \in \{0, \dots, 5\}$ ($c \in M_i$ and $\text{char\_cnt}[c] > 0$) such that the **remaining** $N - i$ characters can still be matched to the **remaining** $N - i$ positions!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Compressing $10^5$ Positions into $|\Sigma| = 6$ Character Subsets via Hall"}
+Running Dinic at every position $i = 1 \dots 10^5$ would take $O(N^2)$ and TLE! Instead, look at the bipartite graph between the $6$ character types (total supply $\text{char\_cnt}[0 \dots 5]$) and the $2^6 = 64$ position-mask types (supply $\text{mask\_cnt}[0 \dots 63]$). What does **Hall's Marriage Theorem** say when applied to subsets $A \subseteq \{0, \dots, 5\}$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Complement / Subset Inequality Across All $2^6 = 64$ Masks"}
+For any subset of positions whose allowed masks $m$ fall **entirely inside** a character subset $A \subseteq \{0, \dots, 5\}$ ($m \subseteq A$), those positions can *only* receive characters from $A$! By Hall's Theorem (Theorem 3.1), a valid completion exists iff for all $64$ masks $A \in [0, 64)$:
+
+$$f[A] := \sum_{m \subseteq A} \text{mask\_cnt}[m] \le \sum_{c \in A} \text{char\_cnt}[c].$$
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #060 (CF 1009 G)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+We have $N = 10^5$ positions on the left and $|\Sigma| = 6$ character types on the right. The extreme asymmetry ($6$ vs. $10^5$) is the textbook diagnostic signal for **Bitmask Hall Flow Elimination**: checking all $2^6 = 64$ subsets of $\Sigma$ takes $64$ operations per query, completely eliminating any flow network!
+
+#### Step 2: Intermediate Algebraic Representation
+At any point during the left-to-right sweep, let $\text{char\_cnt}[c]$ be the remaining supply of letter $c \in \{0, \dots, 5\}$, and let $\text{mask\_cnt}[m]$ be the number of remaining positions $j > i$ with allowed mask $M_j = m$.
+Applying Hall's Theorem (Theorem 3.1(3)) to every subset of characters $A \subseteq \Sigma$: the positions that can **only** be matched to characters in $A$ are precisely those with $M_j \subseteq A$. Their total count cannot exceed the available supply of characters in $A$:
+
+$$\forall A \in [0, 64), \qquad f[A] := \sum_{m \subseteq A} \text{mask\_cnt}[m] \;\le\; \text{char\_sum}[A] := \sum_{c \in A} \text{char\_cnt}[c].$$
+
+*(Equivalently, $\sum_{c \in \bar{A}} \text{char\_cnt}[c] \le \sum_{m \cap \bar{A} \neq \emptyset} \text{mask\_cnt}[m]$ since total remaining characters equal total remaining positions!)*
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Compilation)
+1. Count initial frequencies $\text{char\_cnt}[0 \dots 5]$ and $\text{mask\_cnt}[0 \dots 63]$, and initialize $f[A] = \sum_{m \subseteq A} \text{mask\_cnt}[m]$ for $A \in [0, 64)$.
+2. For each position $i = 1, \dots, N$:
+   - First remove position $i$ from the remaining pool: decrement $f[A]$ for all $A$ with $(M_i \ \& \ A) == M_i$.
+   - Try $c = 0, 1, \dots, 5$ in increasing order: if $((M_i \gg c) \ \& \ 1)$ and $\text{char\_cnt}[c] > 0$, tentatively decrement $\text{char\_cnt}[c]$ and check if $f[A] \le \text{char\_sum}[A]$ holds for all $A \in [0, 64)$ (equivalently, whether every $A$ containing bit $c$ had slack $\text{char\_sum}[A] - f[A] \ge 1$ before decrementing $\text{char\_cnt}[c]$!).
+   - If valid, append `'a' + c` to the answer and move to $i + 1$; otherwise restore $\text{char\_cnt}[c]$. If no $c$ works, output `Impossible`.
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+- **Toy Trace**: $S = \text{"ab"}$, Position 1 allows $\{\text{'a'}, \text{'b'}\} (m = 3)$, Position 2 allows $\{\text{'a'}\} (m = 1)$.
+  - At $i = 1$, removing $M_1 = 3$ leaves Position 2 with $M_2 = 1$, so $f[\{a\}] = 1$.
+  - If we try $c = \text{'a'}$ at $i = 1$, remaining $\text{char\_cnt}[\text{'a'}]$ drops to $0$, violating $f[\{a\}] = 1 \le \text{char\_sum}[\{a\}] = 0$!
+  - So $i = 1$ skips `'a'` and picks `'b'`, leaving `'a'` for Position 2 (`"ba"`).
+- **Failure-Mode Guard**: Do not forget to check if the initial state at $i = 1$ has any valid character $c$; if the loop over $c \in \{0 \dots 5\}$ finds no match at $i = 1$ (or any $i$), return `"Impossible"` immediately. Complexity: $O(N \cdot |\Sigma| 2^{|\Sigma|}) \approx 3.8 \cdot 10^7$ bitwise operations ($\sim 40\text{ ms}$).
+
+```cpp
+// O(N * 6 * 64) Bitmask Hall Lexicographical Greedy for #060 (CF 1009 G)
+string solve_allowed_letters(const string& s, const vector<int>& mask_at) {
+    int N = s.size();
+    array<int, 6> char_cnt{};
+    for (char ch : s) char_cnt[ch - 'a']++;
+
+    array<int, 64> f{};
+    for (int m : mask_at) {
+        for (int A = 0; A < 64; ++A)
+            if ((A & m) == m) f[A]++;
+    }
+    string ans;
+    ans.reserve(N);
+    for (int i = 0; i < N; ++i) {
+        int m = mask_at[i];
+        for (int A = 0; A < 64; ++A)
+            if ((A & m) == m) f[A]--;
+
+        int chosen = -1;
+        for (int c = 0; c < 6; ++c) {
+            if (!((m >> c) & 1) || char_cnt[c] == 0) continue;
+            char_cnt[c]--;
+            bool ok = true;
+            for (int A = 0; A < 64; ++A) {
+                int char_sum = 0;
+                for (int b = 0; b < 6; ++b)
+                    if ((A >> b) & 1) char_sum += char_cnt[b];
+                if (f[A] > char_sum) { ok = false; break; }
+            }
+            if (ok) { chosen = c; break; }
+            char_cnt[c]++;
+        }
+        if (chosen == -1) return "Impossible";
+        ans.push_back(char('a' + chosen));
+    }
+    return ans;
+}
+```
+::::
+
+
+---
+
+### Problem `#061` — [CTSC2008] 祭祀 (Sacrifice — Three-Part Constructive Dilworth Antichain)
+
+- **Canonical Slot**: `Ch 08 — Advanced 1 (Adv-1)` | **Judge URL**: [Luogu P4298](https://www.luogu.com.cn/problem/P4298)
+- **Constraints**: $1 \le N \le 100$ vertices, $1 \le M \le 1000$ directed edges (DAG), Time Limit $1.0\text{ s}$.
+- **Problem Statement**: Given a directed acyclic graph $G = (V, E)$ with $N \le 100$ river shrines:
+  1. Find the maximum number $K$ of shrines that can be selected simultaneously such that **no directed path exists between any two selected shrines**.
+  2. Output a binary string of length $N$ representing **one explicit valid selection** of size $K$.
+  3. Output a second binary string of length $N$ where the $u$-th bit is `1` iff shrine $u$ **can belong to at least one** valid selection of size $K$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Subproblem (1): Why You Must Run Floyd–Warshall First (`FM-08`)"}
+"No directed path exists between any two selected shrines" means no $u$ can reach $v$ via a path of any length $\ge 1$. Before building the bipartite split graph $G_{\text{split}}$, you **must** compute the transitive closure $\text{reach}[u][v]$ via Floyd–Warshall! Then $K = N - \nu\big(G_{\text{split}}(\text{TC}(G))\big)$.
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Subproblem (2): Constructive Antichain via the Transitivity Non-Overlap Lemma"}
+By **Lemma 2.1 (The Transitivity Non-Overlap Lemma)**, in the canonical minimum vertex cover $C^* = (V_{\text{out}} \setminus S_{\min}) \cup (V_{\text{in}} \cap S_{\min})$ of $G_{\text{split}}(\text{TC}(G))$, no shrine $u$ has both $u_{\text{out}} \in C^*$ and $u_{\text{in}} \in C^*$. Thus $A^* = \{u \in V : u_{\text{out}} \in S_{\min} \land u_{\text{in}} \notin S_{\min}\}$ is guaranteed to be a valid antichain of size exactly $K$!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Subproblem (3): Testing If Shrine $u$ Can Belong to *Some* Maximum Antichain"}
+If we force shrine $u$ into our antichain, which other shrines are immediately forbidden? Every shrine $w$ that is **comparable** with $u$ ($\text{reach}[u][w] \lor \text{reach}[w][u] \lor w == u$) must be deleted! Delete $u$ and all shrines comparable to $u$, and recompute the maximum antichain size $K_{-u}$ on the remaining induced poset: $u$ can belong to a size-$K$ antichain iff $1 + K_{-u} == K$!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #061 (Luogu P4298 [CTSC2008] 祭祀)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+This is the definitive benchmark problem for **Constructive Dilworth's Theorem**: it asks not only for the poset width $K$ (Subproblem 1), but also for an explicit Maximum Antichain (Subproblem 2) and the union of all Maximum Antichains (Subproblem 3). With $N \le 100$, $O(N^3)$ transitive closure and $N$ forced-inclusion matching checks run well within $0.05\text{ s}$.
+
+#### Step 2: Intermediate Algebraic Representation
+Let $u \prec v \iff (u \neq v \land u \leadsto_G v)$.
+
+- **Subproblem 1**: $K = \text{width}(\mathcal{P}) = N - \nu\big(G_{\text{split}}(\mathcal{P})\big)$.
+- **Subproblem 2**: By Lemma 2.1, $A^* = \{u \in V : u_{\text{out}} \in S_{\min} \land u_{\text{in}} \notin S_{\min}\}$ satisfies $|A^*| = N - |C^*| = K$.
+- **Subproblem 3**: For each $u \in V$, let $V_u := \{w \in V : w \neq u \land w \not\prec u \land u \not\prec w\}$ be the subset of elements incomparable to $u$. Then $u$ lies in some maximum antichain iff $\text{width}(\mathcal{P}[V_u]) = K - 1$, i.e., $|V_u| - \nu\big(G_{\text{split}}(\mathcal{P}[V_u])\big) = K - 1$.
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+1. Initialize `reach[u][v]` from the input edges and run $O(N^3)$ Floyd–Warshall (`if (reach[i][k] && reach[k][j]) reach[i][j] = 1`).
+2. Build $G_{\text{split}}(\mathcal{P})$ on $2N$ vertices ($u_{\text{out}} = u$, $u_{\text{in}} = u + N$) with edges $(u, v + N)$ whenever `reach[u][v] == 1`. Run Dinic to obtain $K = N - \text{MaxFlow}$ and residual BFS array `vis_S[]`.
+3. For Subproblem 2, output bit `1` for $u$ iff `vis_S[u] && !vis_S[u + N]`.
+4. For Subproblem 3, for each $u \in \{0, \dots, N-1\}$, mark `alive[w] = (w != u && !reach[u][w] && !reach[w][u])`, run matching on the induced subgraph of `alive` vertices, and check if `(|V_u| - flow_u) == K - 1`.
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+- **Toy Trace**: Consider the 4-vertex diamond $0 \to 1 \to 3$, $0 \to 2 \to 3$.
+  - Transitive closure adds $0 \to 3$.
+  - Maximum matching in $G_{\text{split}}$ matches $(0_{\text{out}}, 1_{\text{in}})$ and $(2_{\text{out}}, 3_{\text{in}})$, so $\nu = 2$ and $K = 4 - 2 = 2$.
+  - Residual BFS from $S$ reaches $1_{\text{out}}, 2_{\text{out}}, 3_{\text{out}}, 3_{\text{in}}$, so $u_{\text{out}} \in S_{\min} \land u_{\text{in}} \notin S_{\min}$ selects $A^* = \{1, 2\}$ (size $2$).
+  - For Subproblem 3, forcing $u = 0$ removes $\{0, 1, 2, 3\}$ ($|V_0| = 0 \neq K - 1$), so only $\{1, 2\}$ can belong to a size-$2$ antichain.
+- **Failure-Mode Guard (`FM-08`)**: Never set `reach[u][u] = 1` on the diagonal! Poset comparability $u \prec v$ must be **strictly irreflexive** ($u \neq v$), otherwise $(u_{\text{out}}, u_{\text{in}})$ adds self-loop edges that corrupt the matching!
+
+```cpp
+// Complete 3-Part Solver for #061 [CTSC2008] Sacrifice (Luogu P4298)
+void solve_sacrifice(int N, vector<vector<int>> reach) {
+    for (int i = 0; i < N; ++i) reach[i][i] = 0;
+    for (int k = 0; k < N; ++k)
+        for (int i = 0; i < N; ++i)
+            if (reach[i][k])
+                for (int j = 0; j < N; ++j)
+                    reach[i][j] |= reach[k][j];
+
+    auto build_and_solve = [&](const vector<bool>& alive, vector<bool>& vis_S) {
+        int S = 2 * N, T = 2 * N + 1, cnt_alive = 0;
+        Dinic dinic(2 * N + 2, S, T);
+        for (int u = 0; u < N; ++u) {
+            if (!alive[u]) continue;
+            ++cnt_alive;
+            dinic.add_edge(S, u, 1);
+            dinic.add_edge(u + N, T, 1);
+            for (int v = 0; v < N; ++v)
+                if (alive[v] && reach[u][v])
+                    dinic.add_edge(u, v + N, 1); // Inf or 1 (both valid since unit side caps)
+        }
+        int width = cnt_alive - dinic.max_flow();
+        vis_S = dinic.get_S_min(); // Residual BFS from S with c_f > 0
+        return width;
+    };
+
+    vector<bool> all_alive(N, true), vis_S;
+    int K = build_and_solve(all_alive, vis_S);
+    string part2(N, '0'), part3(N, '0');
+    for (int u = 0; u < N; ++u)
+        if (vis_S[u] && !vis_S[u + N]) part2[u] = '1';
+
+    for (int u = 0; u < N; ++u) {
+        vector<bool> alive_u(N, false), dummy_vis;
+        for (int w = 0; w < N; ++w)
+            if (w != u && !reach[u][w] && !reach[w][u]) alive_u[w] = true;
+        if (build_and_solve(alive_u, dummy_vis) == K - 1) part3[u] = '1';
+    }
+    // Print K, part2, part3
+}
+```
+::::
+
+---
+
+### Problem `#062` — AtCoder ARC 106 E: Medals (Binary Search + SOS DP Hall Elimination)
+
+- **Canonical Slot**: `Ch 08 — Advanced 2 (Adv-2)` | **Judge URL**: [AtCoder ARC 106 E](https://atcoder.jp/contests/arc106/tasks/arc106_e) *(Companions: [ARC 076 F — Exhausted?](https://atcoder.jp/contests/arc076/tasks/arc076_f) & [CF 981 F — Round Marriage](https://codeforces.com/problemset/problem/981/F))*
+- **Constraints**: $1 \le N \le 18$ employees, $1 \le K \le 10^5$ medals per employee, shift lengths $1 \le A_i \le 10^5$, Time Limit $2.5\text{ s}$.
+- **Problem Statement**: $N \le 18$ employees each need $K \le 10^5$ medals. Employee $i$ works for $A_i$ consecutive days, then rests for $A_i$ consecutive days, then works for $A_i$ days, and so on (so on day $t \ge 1$, employee $i$ is at work iff $\lfloor (t - 1) / A_i \rfloor$ is even). On each day, you may award **at most $1$ medal** to one employee who is at work that day. Find the minimum number of days $D$ required so that all $N$ employees can receive $K$ medals each.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Upper Bound on $D$ & Binary Search Monotonicity"}
+Because each employee works at least half of all days (specifically, out of every $2 A_i$ days they work $A_i$ days), within $D_{\max} = 2 N K \le 3.6 \cdot 10^6$ days, at least $N K$ work-days exist even if we served employees one by one! Moreover, if $D$ days suffice, then $D + 1$ days also suffice—so we can **binary search on $D \in [N K, 2 N K]$**!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Hall's Marriage Theorem on $N \le 18$ Employees vs. $D$ Days"}
+For a candidate deadline $D$, we have a bipartite supply–demand graph between $L = \{0, \dots, N-1\}$ (each needing $K$ medals) and $R = \{1, \dots, D\}$ (each day supplying $1$ medal). By **Hall's Theorem** (Theorem 3.1(2)), a valid assignment exists iff for every subset $S \subseteq L$ ($2^N$ subsets), the number of days in $[1, D]$ where **at least one** employee in $S$ works is $\ge K \cdot |S|$.
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Counting Disjoint Days via Complement Fast Zeta Transform (SOS DP)"}
+For each day $t \in [1, 2NK]$, precompute the $N$-bit mask `mask[t]` of employees working on day $t$. Inside the binary search for $D$, how many days $t \in [1, D]$ have `mask[t]` intersecting $S$ ($\text{mask}[t] \cap S \neq \emptyset$)? By Theorem 3.1(3), it equals $D$ minus the number of days where $\text{mask}[t] \subseteq L \setminus S$, which is computed for all $2^N$ masks simultaneously in $O(N 2^N)$ via **SOS DP (Fast Zeta Transform)**!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #062 (ARC 106 E)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+$N \le 18$ on the left and $D \le 3.6 \cdot 10^6$ on the right: explicit Dinic on $3.6 \cdot 10^6$ vertices is impossible, while $2^{18} = 262,144$ is tiny! This is the canonical trigger for **Engine 4 (`Section 4.2`): Binary Search + Complement SOS DP Hall Elimination**.
+
+#### Step 2: Intermediate Algebraic Representation
+Let $m_t \in [0, 2^N)$ be the bitmask of employees working on day $t \in \{1, \dots, D\}$. For any subset $S \subseteq \{0, \dots, N-1\}$, the neighborhood size $|N(S)|$ in $[1, D]$ is:
+
+$$|N(S)| = \#\big\{t \in [1, D] : m_t \cap S \neq \emptyset\big\} = D - \#\big\{t \in [1, D] : m_t \subseteq \bar{S}\big\} = D - g[\bar{S}],$$
+
+where $\bar{S} = (2^N - 1) \oplus S$ and $g[T] := \sum_{M \subseteq T} \text{cnt}_D[M]$ is the upward subset-sum of frequency array $\text{cnt}_D[M] = \#\{t \in [1, D] : m_t = M\}$. By Hall's Theorem, $D$ is feasible iff:
+
+$$\forall S \in [1, 2^N), \qquad D - g\big[(2^N - 1) \oplus S\big] \ge K \cdot \text{popcount}(S).$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Compilation)
+1. Precompute `mask[t]` for $t = 1, \dots, 2NK$ **once** outside the binary search in $O(N \cdot NK)$ time by toggling bit $i$ every $A_i$ days (avoiding slow `%` division in the inner loop!).
+2. Binary search $D \in [NK, 2NK]$ ($\approx 22$ iterations):
+   - Zero-fill $g[0 \dots 2^N - 1]$, and for $t = 1 \dots D$, increment $g[\text{mask}[t]]$.
+   - Run Fast Zeta Transform: for $i = 0 \dots N-1$, for $T = 0 \dots 2^N - 1$, if $(T \gg i) \ \& \ 1$, do $g[T] += g[T \oplus (1 \ll i)]$.
+   - Check $D - g[(2^N - 1) \oplus S] \ge K \cdot \text{popcount}(S)$ for all $S$.
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+- **Toy Trace**: $N = 2, K = 1, A = [1, 2]$.
+  - Day 1: both work ($m_1 = 3$). Day 2: only emp 1 ($A_1=2$) works ($m_2 = 2$).
+  - At $D = 2$: $\text{cnt}[3] = 1, \text{cnt}[2] = 1$. For $S = \{0, 1\} = 3$, $\bar{S} = 0$, $g[0] = 0 \implies 2 - 0 \ge 2$ (OK). For $S = \{0\} = 1$, $\bar{S} = 2$, $g[2] = \text{cnt}[0] + \text{cnt}[2] = 1 \implies 2 - 1 = 1 \ge 1$ (OK). So $D = 2$ is feasible!
+- **Failure-Mode Guard**: Never recompute `mask[t]` using `(t - 1) / A[i] % 2` inside the binary search! Precomputing `mask[1 .. 2NK]` before the binary search cuts the runtime from TLE ($> 3\text{ s}$) to $250\text{ ms}$. Complexity: $O(N^2 K + N 2^N \log(NK))$.
+
+```cpp
+// O(N^2 K + N 2^N log(NK)) SOS DP Hall Solver for #062 (ARC 106 E — Medals)
+int solve_medals(int N, int K, const vector<int>& A) {
+    int MAXD = 2 * N * K;
+    vector<int> mask(MAXD + 1, 0);
+    for (int i = 0; i < N; ++i) {
+        for (int start = 1; start <= MAXD; start += 2 * A[i]) {
+            int end_day = min(MAXD, start + A[i] - 1);
+            for (int t = start; t <= end_day; ++t) mask[t] |= (1 << i);
+        }
+    }
+    int full_mask = (1 << N) - 1;
+    vector<int> g(1 << N);
+    auto check = [&](int D) {
+        fill(g.begin(), g.end(), 0);
+        for (int t = 1; t <= D; ++t) g[mask[t]]++;
+        for (int i = 0; i < N; ++i)
+            for (int T = 0; T <= full_mask; ++T)
+                if ((T >> i) & 1) g[T] += g[T ^ (1 << i)];
+        for (int S = 1; S <= full_mask; ++S)
+            if (D - g[full_mask ^ S] < K * __builtin_popcount(S)) return false;
+        return true;
+    };
+    int lo = N * K, hi = MAXD;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (check(mid)) hi = mid;
+        else lo = mid + 1;
+    }
+    return lo;
+}
+```
+::::
+
+---
+
+### Problem `#063` — CF 590 E: Birthday (Aho–Corasick Fail-Tree Compression + Dilworth Antichain)
+
+- **Canonical Slot**: `Ch 08 — Mastery 1 (Mas-1)` | **Judge URL**: [Codeforces 590E](https://codeforces.com/problemset/problem/590/E)
+- **Constraints**: $1 \le N \le 750$ binary strings over `'a'`, `'b'`, total length $\sum_{i=1}^N |S_i| \le 10^7$, Time Limit $3.0\text{ s}$, Memory Limit $512\text{ MB}$.
+- **Problem Statement**: You are given $N \le 750$ distinct ribbons (strings of `'a'` and `'b'`) of total length up to $10^7$. Select the maximum possible number of ribbons such that **no selected ribbon is a contiguous substring of another selected ribbon**, and print the $1$-based indices of the chosen ribbons.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Poset Formulation & Why Naive Substring Graph Building TLEs"}
+Define the strict substring poset $i \prec j \iff (i \neq j \land S_i \text{ is a substring of } S_j)$. We want a **Maximum Antichain** of $(V, \prec)$, which takes $O(N^3 / 64 + N^{2.5})$ once we have the poset! However, if we walk the Aho–Corasick automaton along $S_j$ and traverse all fail-links at every prefix of $S_j$, we could visit $O(N)$ matched substrings per character, taking $O(N \sum |S_j|) \approx 7.5 \cdot 10^9$ operations (TLE)!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Compressing the Aho–Corasick Fail-Tree to Immediate Ancestors"}
+Because we will compute the **transitive closure** on the $N \times N$ graph anyway (via Floyd–Warshall), at each prefix node $u$ of string $S_j$, we do **not** need to add edges from $j$ to *all* pattern strings on $u$'s fail-chain! We only need to add a single directed edge from $j$ to the **longest proper substring pattern** ending at $u$!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Path-Compressed `nearest_pat[u]` + Bitset Floyd–Warshall + Lemma 2.1"}
+During the Aho–Corasick BFS, maintain `nearest_pat[u]` = the pattern ID at node $u$ if $u$ is a pattern terminal, else `nearest_pat[fail[u]]`. Then for each string $S_j$ and each prefix node $u$ of $S_j$, add edge $j \to \text{nearest\_pat}[u]$ (or $\text{nearest\_pat}[\text{fail}[u]]$ at the final node of $S_j$ so $j$ doesn't add a self-loop $j \to j$). Finally, close transitively with `std::bitset<750>` and extract $A^* = \{i : i_{\text{out}} \in S_{\min} \land i_{\text{in}} \notin S_{\min}\}$!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #063 (CF 590 E — Birthday)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+"No selected string is a substring of another" is **Maximum Antichain in the Substring Poset**. The twin challenges are:
+
+1. Compressing $O(\sum |S_i|) = 10^7$ Aho–Corasick substring relationships into an $N \times N$ ($750 \times 750$) DAG using **only $O(1)$ work per character** by delegating transitivity to the $O(N^3 / w)$ bitset Floyd–Warshall phase!
+2. Extracting the explicit antichain via **Lemma 2.1 (`vis_S[u] && !vis_S[u + N]`)**.
+
+#### Step 2: Intermediate Algebraic Representation
+For any prefix node $u$ of string $S_j$, let $p(u)$ be the longest pattern $S_i$ ($i \neq j$) that is a suffix of the prefix represented by $u$. Any shorter pattern $S_k$ that is also a suffix of $u$ is necessarily a suffix (hence substring) of $S_i$! Thus:
+
+$$S_k \preceq_{\text{suffix}} u \iff S_k \preceq_{\text{suffix}} S_i \preceq_{\text{suffix}} u.$$
+
+Adding only the single Hasse-like edge $j \to i$ at each prefix of $S_j$ preserves the exact same **transitive closure** $\text{TC}(G)$ on $\{1, \dots, N\}$!
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Compilation)
+
+1. Insert all $N$ strings into a flat-array Aho–Corasick trie (`ch[MAXL][2]`, `term_id[MAXL]`).
+2. In the BFS computing `fail[u]`, propagate `nearest_pat[u] = term_id[u] ? term_id[u] : nearest_pat[fail[u]]`.
+3. Walk each string $S_j$ in the trie: at each node $u$ along $S_j$, let `p = (u == end_node[j]) ? nearest_pat[fail[u]] : nearest_pat[u]`. If `p != 0`, set `reach[j][p] = 1`.
+4. Run $O(N^3 / 64)$ `std::bitset<750>` Floyd–Warshall on `reach`, run Hopcroft–Karp / Dinic on $G_{\text{split}}(\text{reach})$, and extract $A^* = \{i : \text{vis\_S}[i] \land \neg\text{vis\_S}[i + N]\}$.
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+
+- **Toy Trace**: $S_1 = \text{"a"}$, $S_2 = \text{"ab"}$, $S_3 = \text{"bab"}$.
+  - Walking $S_3 = \text{"bab"}$: at prefix `"ba"`, `nearest_pat` is $S_1 (\text{"a"})$, adding $3 \to 1$. At full string `"bab"`, `nearest_pat[fail["bab"]]` is $S_2 (\text{"ab"})$, adding $3 \to 2$. Walking $S_2 = \text{"ab"}$ adds $2 \to 1$.
+  - Notice that even if `"bab"` hadn't directly touched $S_1$, $3 \to 2$ and $2 \to 1$ close transitively to $3 \to 1$!
+- **Failure-Mode Guard**: With $\sum |S_i| = 10^7$ and a $512\text{ MB}$ limit, never use `std::vector` per trie node! Use flat 32-bit `int` arrays `ch[MAXL][2]`, `fail[MAXL]`, and `nearest_pat[MAXL]` ($\approx 160\text{ MB}$ total).
+
+```cpp
+// Core Aho-Corasick Hasse Compression + Bitset Dilworth for #063 (CF 590 E)
+// Assumes flat static arrays ch[MAXL][2], fail_link[MAXL], nearest_pat[MAXL]
+void build_substring_poset_and_solve(int N, const vector<string>& S) {
+    // 1. Insert strings S[0..N-1] (1-indexed pattern IDs 1..N) into trie ...
+    // 2. BFS fail_link[u] and set:
+    //    if (!nearest_pat[u]) nearest_pat[u] = nearest_pat[fail_link[u]];
+    // 3. For each string j in 1..N, walk u along S[j-1]:
+    //    int p = (step == len - 1) ? nearest_pat[fail_link[u]] : nearest_pat[u];
+    //    if (p) reach[j - 1].set(p - 1);
+    // 4. Bitset Floyd-Warshall:
+    //    for (int k = 0; k < N; ++k)
+    //        for (int i = 0; i < N; ++i)
+    //            if (reach[i].test(k)) reach[i] |= reach[k];
+    // 5. Run Dinic on G_split(reach) and call extract_max_antichain(N, vis_S)!
+}
+```
+::::
+
+---
+
+### Problem `#064` — CF 1089 B: Guests (Tutte's 2-for-1 Twin Gadget & General Graph Blossom Matching)
+
+- **Canonical Slot**: `Ch 08 — Mastery 2 (Mas-2)` | **Judge URL**: [Codeforces 1089B](https://codeforces.com/problemset/problem/1089/B)
+- **Constraints**: $T$ test cases, $1 \le N, M \le 150$ ($N$ guests, $M$ bedrooms), $\sum (N + M) \le 600$, Time Limit $2.0\text{ s}$.
+- **Problem Statement**: A hotel has $N \le 150$ guests and $M \le 150$ two-bed bedrooms. You are given the bipartite preference matrix between guests and bedrooms. Two guests can be paired into a bedroom $r$ if and only if **both** guests like bedroom $r$ (each bedroom can hold at most one pair of guests, and each guest can be assigned to at most one bedroom). Maximize the total number of **guest pairs** formed.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Bipartite Flow Cannot Enforce '2 Guests or 0 Guests'"}
+If we simply give each bedroom $r$ a sink capacity of $c(r, T) = 2$ in a bipartite flow network, the max-flow solver will happily send **$1$ unit of flow** into bedroom $r$ (assigning a single unpaired guest to $r$) and count it toward the total flow! We need bedroom $r$ to contribute $+1$ to the objective **only when $2$ guests** are matched to it, and **$0$ net gain** when $0$ or $1$ guest is matched to it!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Tutte's 2-for-1 Twin Gadget (`r_1 — r_2` Internal Edge)"}
+Split each bedroom $r \in \{1, \dots, M\}$ into **two** bed vertices $r_1$ and $r_2$, and connect them with an **internal edge $(r_1, r_2)$**! Connect every guest $g$ who likes room $r$ to **both** $r_1$ and $r_2$. Now analyze how many matched edges are Incident to $\{r_1, r_2\}$ in any maximum matching of this general graph!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Counting the Net Matching Gain & Edmonds' Blossom Algorithm"}
+In the general graph on $N + 2M$ vertices:
+
+- If **$0$ guests** match to $\{r_1, r_2\}$, the internal edge $(r_1, r_2)$ matches with itself: **$1$ matched edge**.
+- If **$1$ guest** $g$ matches to $r_1$, then $(r_1, r_2)$ is broken and $r_2$ is left unmatched: still **$1$ matched edge** ($0$ net gain!).
+- If **$2$ guests** $g_a, g_b$ match to $r_1$ and $r_2$, we get **$2$ matched edges** ($+1$ net gain over the baseline!).
+
+Therefore, $\text{MaxGeneralMatching}(G) - M$ equals the **exact** maximum number of guest pairs!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #064 (CF 1089 B — Guests)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+At first sight, "guests and bedrooms" looks bipartite. However, the objective pairs **two guests $g_a, g_b \in L$** through a shared bedroom $r \in R$. This is a **capacitated parity / 2-for-1 packing problem** ($N, M \le 150$), which crosses the boundary from Bipartite Matching into **General Graph Matching (Edmonds' Blossom Algorithm)** via **Tutte's Twin-Clique Gadget**.
+
+#### Step 2: Intermediate Algebraic Representation
+For each bedroom $r \in \{1, \dots, M\}$, let $k_r \in \{0, 1, 2\}$ be the number of guests assigned to room $r$. We want to maximize $\sum_{r=1}^M \lfloor k_r / 2 \rfloor$.
+Notice the algebraic identity for $k_r \in \{0, 1, 2\}$:
+
+$$1 + \left\lfloor \frac{k_r}{2} \right\rfloor = \begin{cases} 1 & \text{if } k_r = 0, \\ 1 & \text{if } k_r = 1, \\ 2 & \text{if } k_r = 2. \end{cases}$$
+
+How can a vertex pair $\{r_1, r_2\}$ contribute $1$ to the matching size when $k_r \in \{0, 1\}$ and $2$ when $k_r = 2$? By placing an edge $(r_1, r_2)$ between them! When $k_r = 0$, $(r_1, r_2)$ is matched ($+1$); when $k_r = 1$, one guest matches to $r_1$ and $(r_1, r_2)$ is unmatched ($+1$); when $k_r = 2$, two guests match to $r_1$ and $r_2$ ($+2$). Summing over all $M$ bedrooms yields:
+
+$$\nu(G_{\text{twin}}) = \sum_{r=1}^M \left(1 + \left\lfloor \frac{k_r}{2} \right\rfloor\right) = M + \sum_{r=1}^M \left\lfloor \frac{k_r}{2} \right\rfloor \implies \max \text{Pairs} = \nu(G_{\text{twin}}) - M.$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+- Create a general undirected graph $G_{\text{twin}}$ with $V = N + 2M \le 450$ vertices:
+  - Guests are $0, \dots, N - 1$.
+  - Bedroom $r \in \{0, \dots, M - 1\}$ has twin vertices $r_1 = N + 2r$ and $r_2 = N + 2r + 1$, connected by internal edge $(r_1, r_2)$.
+  - If guest $g$ likes bedroom $r$, add undirected edges $(g, r_1)$ and $(g, r_2)$.
+- Run **Edmonds' Blossom Algorithm** in $O(V^3)$ time to compute $\nu(G_{\text{twin}})$, and output $\nu(G_{\text{twin}}) - M$.
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+- **Toy Trace**: $N = 3$ guests $\{g_1, g_2, g_3\}$, $M = 2$ rooms $\{r, s\}$. $g_1, g_2$ like $r$; $g_3$ likes $s$.
+  - In Room $r$: $g_1$ matches $r_1$, $g_2$ matches $r_2$ ($2$ edges).
+  - In Room $s$: even if $g_3$ matches $s_1$ (or $(s_1, s_2)$ stays matched), Room $s$ contributes only $1$ edge!
+  - Total matching $\nu(G_{\text{twin}}) = 2 + 1 = 3$, and $\nu - M = 3 - 2 = \mathbf{1}$ guest pair.
+- **Failure-Mode Guard**: Notice that $(g, r_1, r_2)$ forms a **3-cycle (odd cycle / blossom)**! Running a bipartite matching solver on $G_{\text{twin}}$ is completely invalid—you **must** contract odd cycles via Edmonds' Blossom algorithm (or compute $\text{rank}(A_{\text{Tutte}}) / 2 - M$ modulo $998244353$).
+
+```cpp
+// Graph Compilation for #064 (CF 1089 B — Guests) using Blossom Solver
+int solve_guests(int N, int M, const vector<string>& likes) {
+    int V = N + 2 * M;
+    BlossomMatcher blossom(V); // Standard O(V^3) Edmonds Blossom template
+    for (int r = 0; r < M; ++r) {
+        int r1 = N + 2 * r, r2 = N + 2 * r + 1;
+        blossom.add_edge(r1, r2); // Internal twin edge (baseline +1 per room)
+        for (int g = 0; g < N; ++g) {
+            if (likes[g][r] == '1') {
+                blossom.add_edge(g, r1);
+                blossom.add_edge(g, r2);
+            }
+        }
+    }
+    return blossom.max_matching() - M;
+}
+```
+::::
+
+---
+
+## 7. Chapter 8 Verification Checklist, Failure Mode Summary & Blind Checkpoint `CP-II`
+
+### 7.1 Pre-Submission Verification Checklist (`FM-08` & Hall Guards)
+
+Before submitting any DAG Path Cover, Poset Antichain, or Hall Flow-Elimination solution, run through these five structural checks:
+
+1. **Disjoint vs. Overlapping Path Cover (`FM-08` Part 1)**: Can two paths share an intermediate vertex? If **yes** (or if you are finding an antichain of a reachability poset), did you compute the **Transitive Closure** $\text{TC}(G)$ (with zero diagonal `reach[u][u] = 0`) *before* building $G_{\text{split}}$?
+2. **`AND` vs. `OR` in Constructive Antichain Recovery (`FM-08` Part 2 / `H-06`)**: When extracting a Maximum Antichain from the residual reachability set $S_{\min}$ of $G_{\text{split}}(\text{TC}(G))$, did you require **both** $v_{\text{out}} \notin C^*$ and $v_{\text{in}} \notin C^*$, i.e., `vis_S[v_out] && !vis_S[v_in]`?
+3. **Feasibility ($\le 0$) vs. Positive Defect ($> 0$) on Contiguous Intervals (Lemma 4.1)**:
+   - If testing **feasibility** ($\text{def}(I) \le 0$), checking single intervals $[l, r]$ is 100% exact (`POI 2009 LYZ`, `CF 981 F`).
+   - If computing **positive maximum defect** ($\nu(G) < \sum a_u$) for interior intervals $N(u) = [l_u, r_u]$, did you use multi-interval DP $dp[r] = \max(dp[r-1], \max_l (dp[l-2] + \text{def}([l, r])))$ instead of a single interval? (For prefix–suffix unions $[1, L_u] \cup [R_u, M]$ in `ARC 076 F`, the complement $(L_u, R_u)$ is contiguous, so a single $(L, R)$ query in a Lazy Segment Tree is exact!)
+4. **Complement Direction in SOS DP (`ARC 106 E`, `CF 1009 G`)**: In Theorem 3.1(3), $|N(S)| = |R| - g[L \setminus S]$ where $g[T] = \sum_{M \subseteq T} \text{cnt}[M]$ sums over **subsets** of $T = L \setminus S$ (not supersets!).
+5. **Cycles vs. Trees in Hyperedge Realization (`AGC 029 F`)**: Finding a perfect matching between $N - 1$ hyperedges and $V \setminus \{1\}$ is necessary but **not sufficient** for tree connectivity; did you run the alternating BFS from root $1$ (`u -> incident e -> match_v[e]`) and verify `visited_count == N`?
+
+---
+
+### 7.2 Part II Mastery: Two-Stage Blind Diagnostic Checkpoint (`CP-II`: `#201`–`#208`)
+
+In a real contest, problems do not come labeled with chapter numbers. Test your Part II recognition reflexes on these **8 scrambled problem statements** (5 genuine flow/matching/Hall problems from Chapters 5–8 + 3 non-flow decoys):
+
+- **`#201` (`CP-II-1`)**: Given $N \le 2 \cdot 10^5$ brides and $N$ grooms on a circle of circumference $L$, minimize the maximum circular distance between matched pairs.
+- **`#202` (`CP-II-2`)**: Given a tree $T = (V, E)$ with vertex weights $w_v > 0$ ($N \le 2 \cdot 10^5$), select a maximum-weight independent set of vertices.
+- **`#203` (`CP-II-3`)**: Given a DAG with $N \le 200$ vertices where each vertex $v$ must be visited by at least $1$ and at most $c_v$ paths, minimize the number of paths needed to cover all vertices.
+- **`#204` (`CP-II-4`)**: Given $N \le 3000$ integers $a_1, \dots, a_N$, select the maximum-size subset such that no two selected integers satisfy $a_i + a_j = 2^k$ for any integer $k \ge 1$.
+- **`#205` (`CP-II-5`)**: Given $N \le 500$ intervals $[l_i, r_i]$ with weights $w_i > 0$, select a subset of **pairwise overlapping** intervals of maximum total weight.
+- **`#206` (`CP-II-6`)**: Two players play on an $N \times M$ grid ($N, M \le 100$) where a token starts at $(r_0, c_0)$ and moves to an orthogonal neighbor $(r', c')$ with strictly larger value $A_{r', c'} > A_{r, c}$. Determine if the first player has a winning strategy.
+- **`#207` (`CP-II-7`)**: Given an $N \times M$ board ($N, M \le 50$) where lasers can be placed on `.` cells and shoot until hitting `#` walls (passing harmlessly through `x` pits), place the maximum number of mutually non-attacking lasers **and** output all `.` cells that *must* contain a laser in every optimal placement.
+- **`#208` (`CP-II-8`)**: Given a bipartite graph $G = (L \sqcup R, E)$ ($|L|, |R| \le 500$) with vertex weights $w_v > 0$, find a minimum-weight subset of vertices covering every edge, and output the subset.
+
+:::: {.callout-tip collapse="true" title="Stage 2: Diagnostic Resolution & Decoy Elimination Key (Click to Reveal)"}
+| ID | Verdict | Target Paradigm & Diagnostic Explanation |
+| :---: | :---: | :--- |
+| **`#201`** | **Genuine (`Ch 08.4`)** | **`CF 981 F — Round Marriage`**: Unroll the circle ($2N$ brides, $4N$ grooms), binary search distance $D$, and check contiguous intervals $(r_j - j) \ge (l_i - i)$ in $O(N)$ via Lemma 4.1! |
+| **`#202`** | **DECOY (Tree DP)** | **Tree MWIS**: Although every tree is bipartite, $N = 2 \cdot 10^5$ is solved in $O(N)$ time via `dp[u][0/1]` Tree DP, not Dinic! |
+| **`#203`** | **Genuine (`Ch 04 + Ch 08`)** | **Capacitated DAG Path Cover via Bounded Min-Flow**: Split $v_{\text{in}} \xrightarrow{[1, c_v]} v_{\text{out}}$ and run Bounded $s$-$t$ Min-Flow (`Chapter 4`). |
+| **`#204`** | **Genuine (`Ch 07 + Ch 05`)** | **2-Adic Valuation Bipartite Conflict**: Write $a_i = 2^{v_2(a_i)} m_i$ ($m_i$ odd). If $a_i + a_j = 2^k$ ($a_i \neq a_j$), then $v_2(a_i) = v_2(a_j) = t < k - 1$ and $m_i + m_j = 2^{k-t} \equiv 0 \pmod 4$, so one odd part is $\equiv 1 \pmod 4$ ($L$) and the other is $\equiv 3 \pmod 4$ ($R$)! |
+| **`#205`** | **DECOY (Helly's Property)** | **Pairwise Intersecting Intervals**: By Helly's Theorem on $\mathbb{R}$, a family of intervals is pairwise intersecting iff they all share a common point $x^* \in \mathbb{R}$! Sweep endpoints in $O(N \log N)$. |
+| **`#206`** | **DECOY (DAG Game DP)** | **Strictly Increasing Grid Moves**: Because $A_{r', c'} > A_{r, c}$ is a strict DAG (not an undirected bipartite matching walk game!), win/loss is computed in $O(NM)$ topological DP (`win[u] |= !win[v]`), not Dulmage–Mendelsohn! |
+| **`#207`** | **Genuine (`Ch 06 + Ch 07`)** | **Obstacle-Split Strips + DM Essential Edges**: Split rows/cols only at hard `#` walls (`Ch 07`), find max matching $M^*$, and run Tarjan SCC on $G_{f^*}$ (`Ch 06`) to find essential matched edges $(u, v) \in M^*$ with $\text{scc}(u) \neq \text{scc}(v)$! |
+| **`#208`** | **Genuine (`Ch 06`)** | **Weighted König Minimum Vertex Cover**: Construct $S \xrightarrow{w_u} u \xrightarrow{\infty} v \xrightarrow{w_v} T$ and extract $C^* = (L \setminus S_{\min}) \cup (R \cap S_{\min})$. |
+::::
+
+---
+
+## 8. Chapter Revision Summary & Multilingual Bibliography
+
+### Key Takeaways
+
+- **DAG Disjoint vs. Overlapping Path Covers**: On a DAG $G = (V, E)$, $\text{MDPC}(G) = |V| - \nu(G_{\text{split}}(G))$. Allowing paths to share vertices is equivalent to taking the **transitive closure** $\text{TC}(G)$ first.
+- **Dilworth's Theorem & The Transitivity Non-Overlap Lemma**: On a strict poset $\mathcal{P} = (V, \prec)$, no element $v \in V$ has both $v_{\text{out}} \in C^*$ and $v_{\text{in}} \in C^*$. Thus $A^* = \{v \in V : v_{\text{out}} \in S_{\min} \land v_{\text{in}} \notin S_{\min}\}$ constructively recovers a Maximum (Weight) Antichain.
+- **Hall–Ore Duality & Flow Elimination**: By Min-Cut duality, $\nu_{a,b}(G) = \sum_{u \in L} a_u - \max_{S \subseteq L} \big(\sum_{u \in S} a_u - \sum_{v \in N(S)} b_v\big)$. When neighborhoods are contiguous intervals or $|L| \le 18$, Segment Trees and SOS DP completely eliminate explicit flow solvers.
+
+### Multilingual Bibliography & Classic References
+
+- **`[EN]`** R. P. Dilworth (1950), *"A Decomposition Theorem for Partially Ordered Sets"*, Annals of Mathematics 51(1), 161–166; O. Ore (1955), *"Graphs and Matching Theorems"*, Duke Mathematical Journal 22(4), 625–639; C. Greene & D. J. Kleitman (1976), *"The Structure of Sperner $k$-Families"*, Journal of Combinatorial Theory, Series A 20(1), 41–68.
+- **`[ZH]`** 胡伯涛 (Amber, 2007), 《最小割模型在信息学竞赛中的应用》 (*Applications of Minimum Cut Models in Olympiad in Informatics*); 国家集训队论文与《网络流 24 题》 (`Luogu P2764` 最小路径覆盖, `Luogu P2765` 魔术球问题, `[CTSC2008] 祭祀`).
+- **`[JA]`** AtCoder Typical & Grand Contest Editorial Treatises on Hall Flow Elimination (`ARC 076 F — Exhausted?`, `ARC 106 E — Medals`, `AGC 029 F — Construction of a tree`) by `rng_58`, `maspypy`, and `noshi91`.

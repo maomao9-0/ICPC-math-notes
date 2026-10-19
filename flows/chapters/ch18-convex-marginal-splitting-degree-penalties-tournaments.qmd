@@ -1,0 +1,1780 @@
+---
+title: "Chapter 18 — Separable Convex Costs, Marginal Edge Splitting & Tournament Triples"
+---
+
+## Prerequisites & Learning Objectives
+
+**Prerequisites:** Chapter 17 (*Min-Cost Flow Optimality, Johnson Potentials & Successive Shortest Paths*). You should be fluent in the Residual Negative-Cycle Optimality Theorem (Theorem 17.2), Reduced-Cost Complementary Slackness (Theorem 17.3), Primal-Dual Successive Shortest Paths (SSP) with Johnson node potentials, and DAG / Fixed-Hop initialization for negative initial arc costs.
+
+::: {.callout-note title="Learning Objectives"}
+By the end of this chapter, you will be able to:
+
+1. **Compile Separable Convex Costs into Linear Parallel Arcs (`凸费用拆边`):** Transform any integer-valued flow variable $f_e \in \{0, 1, \dots, U_e\}$ governed by a discrete convex cost function $\Phi_e(f_e)$ into a bundle of parallel unit-capacity arcs with marginal costs $\Delta \Phi_e(k) = \Phi_e(k) - \Phi_e(k-1)$, and prove via the Negative-Cycle Optimality Theorem why any min-cost flow automatically activates these arcs in exact prefix order $1, 2, \dots, f_e$.
+2. **Bundle Piecewise-Linear Convex Brackets & $\ell_1$ Deviations:** Collapse $U_e$ unit-capacity marginal arcs into $K \ll U_e$ constant-slope interval arcs of capacity $T_k - T_{k-1}$ for piecewise-linear tax/wage brackets (`[SDOI2011] 工作安排`) and 2-arc V-shaped $\ell_1$ target penalties $\alpha(f_0 - f)_+ + \beta(f - f_0)_+$.
+3. **Decouple Two-Variable Quadratic Ledgers (`[JSOI2009] 球队收益`):** Eliminate coupled variables such as wins and losses ($w_i + l_i = G_i$) by pre-assuming a baseline outcome (all undecided games are losses) and deriving the unified single-variable convex marginal cost $\Delta(w_i) = C_i(2w_i + 1) - D_i(2l_i - 1)$ with second difference $2(C_i + D_i) \ge 0$.
+4. **Linearize Tournament 3-Cycles via Landau's Theorem (`[WC2007] 剪刀石头布`):** Prove the exact double-counting identity $\#(\text{3-Cycles}) = \binom{N}{3} - \sum_{u=1}^N \binom{w_u}{2}$ and compile 3-cycle maximization into degree-convex min-cost flow with marginal costs $0, 1, 2, \dots, N-2$.
+5. **Scale to Large Capacities & Large Horizon Graphs:** Apply Edmonds–Karp $2^k$ capacity bit-scaling ($O(E \log U (E + V \log V))$) when $U \le 10^9$ forbids explicit unit-arc expansion, and Dynamic Lazy Edge Insertion (`动态加边`, `[NOI2012] 美食节`) when $M \times P$ marginal slots are too numerous to pre-allocate.
+6. **Diagnose and Prevent Non-Convex Splitting Failures (`FM-18` $\leftrightarrow$ `H-20`):** Prove why applying marginal edge splitting to a concave bulk-discount or fixed-charge function causes SSP to route flow through later, cheaper increments before earlier, expensive ones.
+:::
+
+---
+
+## 1. Separable Convex Cost Functions $\Phi_e(f_e)$ & Marginal Increment Splitting (`凸费用拆边`)
+
+In standard Min-Cost Max-Flow (Chapter 17), the total cost is strictly linear in the arc flows: $\sum_{e \in E} c_e f_e$. Yet competitive programming problems frequently penalize congestion, workload imbalance, or pairwise collisions with **non-linear** objective functions:
+
+- Quadratic congestion or latency: $\Phi_e(f_e) = a_e f_e^2 + b_e f_e$.
+- Pairwise conflict / transitive triple counting: $\Phi_v(\deg^+(v)) = \binom{\deg^+(v)}{2} = \frac{1}{2}\deg^+(v)(\deg^+(v) - 1)$.
+- V-shaped $\ell_1$ target tracking: $\Phi_e(f_e) = c_e |f_e - f_e^{(0)}|$ or asymmetric shortage/surplus penalties $\alpha_e \max(0, f_e^{(0)} - f_e) + \beta_e \max(0, f_e - f_e^{(0)})$.
+- Progressive tax or overtime wage brackets: piecewise-linear functions with increasing slopes across thresholds $0 = T_0 < T_1 < \dots < T_K = U_e$.
+
+Whenever the objective function is **separable** across edges (or vertex degrees) and **convex** on the integer lattice, we can compile the non-linear optimization problem directly into a standard linear MCMF instance without changing the solver at all.
+
+### 1.1 The 4-Step Compilation for Convex Edge Costs
+
+Let us apply the **4-Step English-to-Graph Compilation Protocol** to a generic non-linear edge cost $\Phi_e(f_e)$ defined on integer flows $f_e \in \{0, 1, \dots, U_e\}$.
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+You are optimizing an assignment, routing, or degree-constrained selection problem where the cost of using a resource $f$ times grows **faster than linearly**—each additional unit of load on the same vertex or edge hurts at least as much as the previous unit. Typical English phrases include *"the $k$-th item processed by machine $i$ takes $t_{i,k}$ time with $t_{i,1} \le t_{i,2} \le \dots$"*, *"total dissatisfaction is proportional to the square of the number of tasks assigned"*, or *"maximize the number of cyclic triples (rock-paper-scissors relationships)"*. Naive greedy assignment fails because early routing choices lock in high marginal penalties for subsequent items, while dynamic programming fails because the state space must track the load vector across all $N$ vertices simultaneously ($O(U^N)$).
+
+#### Step 2: Intermediate Algebraic Representation (Marginal Differences)
+
+Without Loss of Generality, normalize $\Phi_e(0) = 0$ (if $\Phi_e(0) \neq 0$, factor the constant $\Phi_e(0)$ into a global base cost offset $\text{BaseCost}$ and replace $\Phi_e(f)$ by $\Phi_e(f) - \Phi_e(0)$). For each integer step $k \in \{1, 2, \dots, U_e\}$, define the **$k$-th first forward difference (marginal cost)**:
+
+$$
+\Delta \Phi_e(k) \;:=\; \Phi_e(k) - \Phi_e(k - 1).
+$$
+
+By telescoping, for any integer flow $f_e \in \{0, 1, \dots, U_e\}$, the non-linear cost is the exact prefix sum of its first $f_e$ marginal increments:
+
+$$
+\Phi_e(f_e) \;=\; \Phi_e(0) + \sum_{k=1}^{f_e} \bigl(\Phi_e(k) - \Phi_e(k-1)\bigr) \;=\; \sum_{k=1}^{f_e} \Delta \Phi_e(k).
+$$
+
+Now introduce $U_e$ binary indicator variables $x_{e,1}, x_{e,2}, \dots, x_{e,U_e} \in \{0, 1\}$, where $x_{e,k} = 1$ means that the $k$-th unit of flow on edge $e$ is active. If we can enforce the **prefix activation invariant**
+
+$$
+x_{e,1} \ge x_{e,2} \ge \dots \ge x_{e,U_e} \quad \text{and} \quad f_e = \sum_{k=1}^{U_e} x_{e,k},
+$$
+
+then the non-linear term $\Phi_e(f_e)$ becomes the purely **linear** sum $\sum_{k=1}^{U_e} \Delta \Phi_e(k) \, x_{e,k}$.
+
+#### Step 3: Mechanical Graph Compilation (Parallel Marginal Arc Bundle)
+
+In a minimum-cost flow network, we do **not** need explicit constraint gadgets to enforce $x_{e,1} \ge x_{e,2} \ge \dots \ge x_{e,U_e}$ provided the marginal costs are non-decreasing! We simply replace the single non-linear edge $e = (u \to v)$ of capacity $U_e$ with a bundle of $U_e$ parallel directed arcs $e_1, e_2, \dots, e_{U_e}$ from $u$ to $v$:
+
+$$
+e_k = (u \to v), \qquad \text{cap}(e_k) = 1, \qquad \text{cost}(e_k) = \Delta \Phi_e(k) \qquad (k = 1, 2, \dots, U_e).
+$$
+
+```{mermaid}
+flowchart LR
+    subgraph Original["Original Non-Linear Edge"]
+        direction LR
+        u1((u)) -->|"f in {0..U}, cost = Phi(f)"| v1((v))
+    end
+    subgraph Compiled["Compiled Parallel Marginal Bundle (U Arcs)"]
+        direction LR
+        u2((u)) -->|"e_1: cap = 1, cost = Delta Phi(1)"| v2((v))
+        u2 -->|"e_2: cap = 1, cost = Delta Phi(2)"| v2
+        u2 -.->|"..."| v2
+        u2 -->|"e_U: cap = 1, cost = Delta Phi(U)"| v2
+    end
+    Original ==>|"Delta^2 Phi(k) >= 0"| Compiled
+```
+
+Why does the solver never cheat by picking $x_{e,2} = 1$ while leaving $x_{e,1} = 0$? We now prove that discrete convexity makes prefix activation an automatic consequence of residual negative-cycle optimality.
+
+::: {.callout-important title="Theorem 18.1 (Convex Marginal Edge Splitting Invariant / Hazard H-20)"}
+Let $\Phi_e : \{0, 1, \dots, U_e\} \to \mathbb{R}$ with $\Phi_e(0) = 0$ be **discretely convex** on the integer lattice, meaning its second difference is non-negative everywhere:
+
+$$
+\Delta^2 \Phi_e(k) \;:=\; \Delta \Phi_e(k+1) - \Delta \Phi_e(k) \;=\; \Phi_e(k+1) - 2\Phi_e(k) + \Phi_e(k-1) \;\ge\; 0 \qquad \forall\, 1 \le k < U_e,
+$$
+
+or equivalently, the marginal costs are monotonically non-decreasing:
+
+$$
+\Delta \Phi_e(1) \;\le\; \Delta \Phi_e(2) \;\le\; \dots \;\le\; \Delta \Phi_e(U_e).
+$$
+
+If edge $e = (u \to v)$ is replaced by $U_e$ parallel unit-capacity arcs $e_1, \dots, e_{U_e}$ with linear costs $\text{cost}(e_k) = \Delta \Phi_e(k)$, then for every total flow value $f_e = \sum_{k=1}^{U_e} f(e_k) \in \{0, 1, \dots, U_e\}$:
+
+1. **Exact Cost Representation:** The minimum linear cost of routing $f_e$ units across the parallel bundle $\{e_1, \dots, e_{U_e}\}$ is achieved by saturating the exact prefix $f(e_1) = f(e_2) = \dots = f(e_{f_e}) = 1$ and $f(e_{f_e+1}) = \dots = f(e_{U_e}) = 0$, yielding linear cost $\sum_{k=1}^{f_e} \Delta \Phi_e(k) = \Phi_e(f_e)$.
+2. **Automatic Prefix Ordering under SSP:** If the marginal costs are strictly increasing ($\Delta \Phi_e(1) < \Delta \Phi_e(2) < \dots < \Delta \Phi_e(U_e)$), *every* optimal integer min-cost flow in the expanded network satisfies $f(e_1) \ge f(e_2) \ge \dots \ge f(e_{U_e})$. If weak inequalities hold ($\Delta \Phi_e(k) = \Delta \Phi_e(k+1)$), any optimal integer flow achieves the exact same cost $\Phi_e(f_e)$ regardless of which tied arcs within the equal-cost plateau are chosen.
+:::
+
+**Proof.** Suppose an integer flow $f$ routes a total of $f_e = \sum_{k=1}^{U_e} f(e_k)$ units from $u$ to $v$ across the bundle, and suppose for some indices $1 \le k_1 < k_2 \le U_e$ the flow violates prefix order: $f(e_{k_1}) = 0$ while $f(e_{k_2}) = 1$.
+
+Examine the residual network $G_f$:
+
+- Because $f(e_{k_1}) = 0 < 1 = \text{cap}(e_{k_1})$, the **forward arc** $e_{k_1} = (u \to v)$ is residual with capacity $1$ and cost $+\Delta \Phi_e(k_1)$.
+- Because $f(e_{k_2}) = 1 > 0$, the **reverse arc** $\text{rev}(e_{k_2}) = (v \to u)$ is residual with capacity $1$ and cost $-\Delta \Phi_e(k_2)$.
+
+Together, $e_{k_1}$ and $\text{rev}(e_{k_2})$ form a directed $2$-cycle $C = (u \xrightarrow{e_{k_1}} v \xrightarrow{\text{rev}(e_{k_2})} u)$ in $G_f$ of residual cost
+
+$$
+\text{cost}(C) \;=\; \Delta \Phi_e(k_1) - \Delta \Phi_e(k_2).
+$$
+
+Since $k_1 < k_2$ and $\Phi_e$ is discretely convex, $\Delta \Phi_e(k_1) \le \Delta \Phi_e(k_2)$, so $\text{cost}(C) \le 0$:
+
+- If $\Delta \Phi_e(k_1) < \Delta \Phi_e(k_2)$, then $\text{cost}(C) < 0$ is a **strictly negative-cost residual cycle**. By the Negative-Cycle Optimality Theorem (Chapter 17, Theorem 17.2), $f$ cannot be a minimum-cost flow! Pushing $1$ unit around $C$ sets $f(e_{k_1}) \gets 1$ and $f(e_{k_2}) \gets 0$ without altering the net flow at any vertex, strictly decreasing the objective by $\Delta \Phi_e(k_2) - \Delta \Phi_e(k_1) > 0$.
+- If $\Delta \Phi_e(k_1) = \Delta \Phi_e(k_2)$, then $\text{cost}(C) = 0$; swapping $f(e_{k_1}) \gets 1, f(e_{k_2}) \gets 0$ leaves the objective value unchanged and equal to $\sum_{k=1}^{f_e} \Delta \Phi_e(k) = \Phi_e(f_e)$.
+
+Furthermore, during Primal-Dual SSP (Algorithm 17.1), all unsold parallel arcs $e_k$ with $f(e_k) = 0$ share the same endpoints $(u, v)$, so their reduced costs are $\text{cost}^\pi(e_k) = \Delta \Phi_e(k) + \pi(u) - \pi(v)$. Whenever Dijkstra relaxes arcs out of $u$, the smallest unsold index $k$ minimizes $\text{cost}^\pi(e_k)$ and is always selected first. $\blacksquare$
+
+---
+
+### 1.2 Standard Separable Convex Cost Catalog & Piecewise-Linear Interval Bundling
+
+Rather than re-deriving finite differences from scratch during a contest, keep the following four canonical compilation patterns at your fingertips.
+
+#### Pattern 1: Quadratic Congestion Cost $\Phi(f) = a f^2 + b f + c$ ($a > 0$)
+
+Factor $c = \Phi(0)$ into $\text{BaseCost}$. For the $k$-th unit ($k \ge 1$):
+
+$$
+\Delta \Phi(k) \;=\; \bigl(a k^2 + b k\bigr) - \bigl(a(k-1)^2 + b(k-1)\bigr) \;=\; a(2k - 1) + b.
+$$
+
+- **Second difference:** $\Delta^2 \Phi(k) = \Delta \Phi(k+1) - \Delta \Phi(k) = 2a > 0$ (strictly convex).
+- **Special Case ($a = 1, b = 0, c = 0$, i.e., $\Phi(f) = f^2$):** Since $f^2 = 1 + 3 + 5 + \dots + (2f - 1)$, the $U$ unit-capacity parallel arcs have odd-integer costs $1, 3, 5, \dots, 2U - 1$.
+
+#### Pattern 2: Binomial Pair-Counting $\Phi(f) = \binom{f}{2}$ with Pre-Existing Load $w_0$
+
+Suppose a vertex or bin already holds $w_0 \ge 0$ fixed items before optimization begins, and receives $f \in \{0, 1, \dots, U\}$ additional items. The total number of unordered pairs in the bin is $\binom{w_0 + f}{2}$. Factoring $\binom{w_0}{2}$ into $\text{BaseCost}$, the variable cost is $\Phi(f) = \binom{w_0 + f}{2} - \binom{w_0}{2}$. For the $k$-th additional item ($k \ge 1$):
+
+$$
+\Delta \Phi(k) \;=\; \binom{w_0 + k}{2} - \binom{w_0 + k - 1}{2} \;=\; w_0 + k - 1.
+$$
+
+- **Combinatorial Meaning:** When the $k$-th new item enters the bin, there are already $w_0 + k - 1$ items inside; the newcomer forms exactly $w_0 + k - 1$ new pairs with those existing occupants!
+- **Special Case ($w_0 = 0$):** The marginal costs for $k = 1, 2, 3, \dots, U$ are $0, 1, 2, \dots, U - 1$. Notice that the **first** item costs $0$ (a single item forms $\binom{1}{2} = 0$ pairs).
+
+#### Pattern 3: Piecewise-Linear Convex Brackets (`[SDOI2011] 工作安排` Interval Bundling)
+
+Suppose $U \le 10^6$, so creating $U$ unit-capacity arcs per vertex would blow up the graph size, **but** the marginal cost $\Delta \Phi(k)$ is a step function that stays constant across $K \ll U$ contiguous intervals (e.g., tax brackets or overtime wage tiers $0 = T_0 < T_1 < T_2 < \dots < T_K = U$):
+
+$$
+\Delta \Phi(k) \;=\; c_m \qquad \text{for all } k \in \{T_{m-1} + 1, \dots, T_m\}, \qquad \text{with } c_1 < c_2 < \dots < c_K.
+$$
+
+Because the $T_m - T_{m-1}$ unit arcs inside the $m$-th bracket all have the exact same endpoints $(u, v)$ and identical cost $c_m$, we **bundle** them into a single directed arc!
+
+$$
+e^{(m)} = (u \to v), \qquad \text{cap}\bigl(e^{(m)}\bigr) = T_m - T_{m-1}, \qquad \text{cost}\bigl(e^{(m)}\bigr) = c_m \qquad (m = 1, 2, \dots, K).
+$$
+
+This reduces the arc count from $O(U)$ to $O(K)$ while preserving exact equivalence with Theorem 18.1: since $c_1 < c_2 < \dots < c_K$, SSP completely saturates bracket $m$ (all $T_m - T_{m-1}$ units) before routing a single unit through bracket $m+1$.
+
+#### Pattern 4: V-Shaped $\ell_1$ Target Deviation $\Phi(f) = \alpha(f_0 - f)_+ + \beta(f - f_0)_+$
+
+Suppose flow $f \in [0, U]$ on edge $e = (u \to v)$ has an ideal target $f_0 \in [0, U]$. Falling short ($f < f_0$) incurs $\alpha \ge 0$ per unit of shortage; exceeding $f_0$ ($f > f_0$) incurs $\beta \ge 0$ per unit of surplus (the symmetric case $\Phi(f) = c|f - f_0|$ has $\alpha = \beta = c$).
+
+Let us compute the marginal cost across the threshold $f_0$:
+
+- For $1 \le k \le f_0$ (reducing the shortage from $f_0 - k + 1$ to $f_0 - k$): $\Delta \Phi(k) = -\alpha$.
+- For $f_0 < k \le U$ (increasing the surplus from $k - 1 - f_0$ to $k - f_0$): $\Delta \Phi(k) = +\beta$.
+
+Since $-\alpha \le +\beta$ whenever $\alpha + \beta \ge 0$, $\Phi(f)$ is piecewise-linear and convex with $K = 2$ constant-slope brackets! Applying **Pattern 3 (Interval Bundling)** and factoring $\Phi(0) = \alpha f_0$ into $\text{BaseCost}$, we compile $\Phi(f)$ into **just two parallel arcs**:
+
+1. **Below-Target Arc $e_{\le}$:** $(u \to v)$ with $\text{cap}(e_{\le}) = f_0$ and $\text{cost}(e_{\le}) = -\alpha$.
+2. **Above-Target Arc $e_{>}$:** $(u \to v)$ with $\text{cap}(e_{>}) = U - f_0$ and $\text{cost}(e_{>}) = +\beta$.
+
+*Alternative Non-Negative Re-Orientation:* If you want to avoid the negative initial cost $-\alpha$ on $e_{\le}$, pre-send $f_0$ units of flow along $e_{\le}$ (adjusting the demand balances $b(u) \gets b(u) - f_0$, $b(v) \gets b(v) + f_0$ and cancelling $\alpha f_0 - \alpha f_0 = 0$ from $\text{BaseCost}$). In the residual graph, the saturated arc $e_{\le}$ flips into a **reverse shortage arc** $(v \to u)$ of capacity $f_0$ and non-negative cost $+\alpha$, alongside the **forward surplus arc** $(u \to v)$ of capacity $U - f_0$ and non-negative cost $+\beta$!
+
+| Convex Function $\Phi(f)$ on $f \in \{0, \dots, U\}$ | Base Offset $\Phi(0)$ | Marginal Cost $\Delta \Phi(k)$ for $k$-th Unit | Compiled Parallel Arc Bundle on $(u \to v)$ |
+| :--- | :--- | :--- | :--- |
+| **Quadratic** $a f^2 + b f + c$ ($a > 0$) | $c$ | $a(2k - 1) + b$ | $U$ unit arcs: $\text{cap}=1, \text{cost}=a(2k-1)+b$ |
+| **Pure Square** $f^2$ | $0$ | $2k - 1 \in \{1, 3, 5, \dots\}$ | $U$ unit arcs: $\text{cap}=1, \text{cost}=2k-1$ |
+| **Binomial Pairs** $\binom{w_0 + f}{2}$ | $\binom{w_0}{2}$ | $w_0 + k - 1$ | $U$ unit arcs: $\text{cap}=1, \text{cost}=w_0 + k - 1$ |
+| **Piecewise-Linear Brackets** $[T_{m-1}, T_m]$ at slope $c_m$ ($c_1 < \dots < c_K$) | $\Phi(0)$ | $c_m$ for $k \in (T_{m-1}, T_m]$ | $K$ bundled arcs: $\text{cap}=T_m - T_{m-1}, \text{cost}=c_m$ |
+| **V-Shaped $\ell_1$ Penalty** $\alpha(f_0 - f)_+ + \beta(f - f_0)_+$ | $\alpha f_0$ | $-\alpha$ ($k \le f_0$), $+\beta$ ($k > f_0$) | $2$ bundled arcs: $(\text{cap}=f_0, \text{cost}=-\alpha)$ and $(\text{cap}=U-f_0, \text{cost}=+\beta)$ |
+
+---
+
+### 1.3 Step 4: Hand-Checkable Toy Trace & Broken-Gadget Counterexample (`FM-18` $\leftrightarrow$ `H-20`)
+
+Let us trace a concrete 2-path routing example under both a **convex** cost function and a **concave** (bulk-discount) cost function to see why convexity is an unbreakable contract.
+
+#### Toy Trace A: Valid Convex Splitting ($\Phi(f) = f^2$)
+
+Suppose we must send $F = 2$ units of flow from $S$ to $T$ across two parallel links $A$ and $B$, each with capacity $U = 2$:
+
+- Link $A$ has convex congestion cost $\Phi_A(f_A) = f_A^2$, so $\Delta \Phi_A(1) = 1$ and $\Delta \Phi_A(2) = 3$.
+- Link $B$ has convex congestion cost $\Phi_B(f_B) = f_B^2 + 1 f_B$, so $\Delta \Phi_B(1) = 2$ and $\Delta \Phi_B(2) = 4$.
+
+Compiling both links gives $4$ unit-capacity arcs from $S$ to $T$:
+
+$$
+A_1: (\text{cap}=1, \text{cost}=1), \quad B_1: (\text{cap}=1, \text{cost}=2), \quad A_2: (\text{cap}=1, \text{cost}=3), \quad B_2: (\text{cap}=1, \text{cost}=4).
+$$
+
+- **Augmentation 1:** SSP selects the minimum-cost arc $A_1$ ($\text{cost}=1$), setting $f_A = 1, f_B = 0$ and total cost $1 = 1^2 + 0$.
+- **Augmentation 2:** The remaining residual arcs from $S$ to $T$ have costs $\{2, 3, 4\}$. SSP selects $B_1$ ($\text{cost}=2$) rather than $A_2$ ($\text{cost}=3$), setting $f_A = 1, f_B = 1$ and total cost $1 + 2 = 3 = \Phi_A(1) + \Phi_B(1)$ (which beats routing both units on $A$ for $\Phi_A(2) = 4$).
+
+::: {.callout-warning title="Broken-Gadget Counterexample FM-18 (↔ Hazard H-20): The Concave Bulk-Discount / Fixed-Charge Trap"}
+**What happens if you apply marginal edge splitting to a concave (economies-of-scale) cost function?**
+
+Suppose a courier link $e = (S \to T)$ of capacity $U = 2$ charges a fixed setup fee plus a cheap per-unit rate, or offers a bulk discount:
+
+$$
+\Phi(0) = 0, \qquad \Phi(1) = 10, \qquad \Phi(2) = 12.
+$$
+
+The marginal increments are:
+
+$$
+\Delta \Phi(1) = \Phi(1) - \Phi(0) = 10, \qquad \Delta \Phi(2) = \Phi(2) - \Phi(1) = 2.
+$$
+
+Here $\Delta^2 \Phi(1) = \Delta \Phi(2) - \Delta \Phi(1) = 2 - 10 = -8 < 0$, violating discrete convexity!
+
+If a solver naively compiles $e$ into two parallel unit-capacity arcs $e_1 = (\text{cap}=1, \text{cost}=10)$ and $e_2 = (\text{cap}=1, \text{cost}=2)$ and asks for the minimum cost to send $F = 1$ unit from $S$ to $T$:
+
+1. **What SSP Does:** Dijkstra inspects the two parallel arcs $e_1$ (cost $10$) and $e_2$ (cost $2$). It greedily routes the $1$ unit of flow through $e_2$, leaving $f(e_1) = 0$ and $f(e_2) = 1$!
+2. **The Corrupt Result:** The solver reports a minimum cost of **$2$** for sending $1$ unit of flow, whereas the true cost is $\Phi(1) = \mathbf{10}$. In physical terms, the solver bought the "second item at 80% off" without ever buying the first item!
+3. **Why It Cannot Be Fixed in Polynomial Time:** Minimum-cost flow with **concave** or **fixed-charge** edge costs ($\Phi(f) = K \cdot [f > 0] + c \cdot f$) is **strongly NP-hard** (it directly generalizes the Minimum Steiner Tree and Capacitated Facility Location problems via fixed setup costs). Whenever $N$ or the number of concave edges is small ($K \le 15$), you must branch on $2^K$ binary decisions or use DP; you can never split a concave edge into independent parallel linear arcs.
+:::
+
+---
+
+## 2. Win–Loss Substitution & Coupled Quadratic Ledgers (`[JSOI2009] 球队收益`)
+
+In many tournament and resource-allocation problems, the objective function appears to depend on **two coupled variables** per entity. The archetype is **`[JSOI2009] 球队收益 / 球队预算` (Team Revenue, Luogu P4307)**:
+
+- There are $N$ teams in a league. Each team $i$ currently has $w_i^{(0)}$ wins and $l_i^{(0)}$ losses, and is scheduled to play in $\text{rem}_i$ additional undecided matches (out of $M$ total remaining matches across the league).
+- At the end of the season, if team $i$ finishes with $w_i$ total wins and $l_i$ total losses, the league management pays team $i$ an expenditure of
+
+$$
+\text{Cost}_i(w_i, l_i) \;=\; C_i w_i^2 + D_i l_i^2,
+$$
+
+where $C_i, D_i \ge 0$ are given per-team coefficients. We want to decide the winner of each of the $M$ remaining matches to minimize total league expenditure $\sum_{i=1}^N (C_i w_i^2 + D_i l_i^2)$.
+
+At first glance, each match $m = \{u, v\}$ affects four quantities: if $u$ wins, $w_u$ increases by $1$ and $l_v$ increases by $1$; if $v$ wins, $w_v$ increases by $1$ and $l_u$ increases by $1$. Because standard flow networks cannot simultaneously route "win flow" to $u$ and "loss flow" to $v$ on the same single unit of match supply, how do we decouple $w_i$ and $l_i$?
+
+### 2.1 The Conservation Invariant $w_i + l_i = G_i$
+
+The key structural observation is that **the total number of games played by team $i$ is a fixed constant** independent of match outcomes! Let $G_i$ denote the total end-of-season games for team $i$:
+
+$$
+G_i \;:=\; w_i^{(0)} + l_i^{(0)} + \text{rem}_i.
+$$
+
+Regardless of which matches team $i$ wins or loses, its final win count $w_i$ and final loss count $l_i$ obey the exact linear conservation law:
+
+$$
+w_i + l_i \;=\; G_i \qquad \Longleftrightarrow \qquad l_i \;=\; G_i - w_i.
+$$
+
+More concretely, let $x_i \in \{0, 1, \dots, \text{rem}_i\}$ denote the number of **additional wins** team $i$ earns among its $\text{rem}_i$ remaining games, and let $L_i := l_i^{(0)} + \text{rem}_i$ denote the number of losses team $i$ would have if it **lost every single remaining game**. Then:
+
+$$
+w_i \;=\; w_i^{(0)} + x_i, \qquad l_i \;=\; L_i - x_i.
+$$
+
+### 2.2 Pre-Assuming Losses & Deriving the Coupled Marginal Cost
+
+Substitute $w_i = w_i^{(0)} + x_i$ and $l_i = L_i - x_i$ into team $i$'s cost ledger to obtain a single-variable function $\Phi_i(x_i)$:
+
+$$
+\Phi_i(x_i) \;=\; C_i\bigl(w_i^{(0)} + x_i\bigr)^2 + D_i\bigl(L_i - x_i\bigr)^2.
+$$
+
+1. **Step 1 (Baseline Ledger at $x_i = 0$ — Pre-Assume All Remaining Games Are Losses):**
+   When $x_i = 0$ for all teams, the baseline cost is
+
+   $$
+   \text{BaseCost} \;=\; \sum_{i=1}^N \Phi_i(0) \;=\; \sum_{i=1}^N \Bigl(C_i \bigl(w_i^{(0)}\bigr)^2 + D_i L_i^2\Bigr).
+   $$
+
+2. **Step 2 (Marginal Cost of the $k$-th Additional Win, $k = 1, 2, \dots, \text{rem}_i$):**
+   When team $i$ wins its $k$-th remaining match, its win–loss record transitions from $(w, l) = (w_i^{(0)} + k - 1,\; L_i - k + 1)$ to $(w + 1,\; l - 1)$. Using the algebraic identities $(w + 1)^2 - w^2 = 2w + 1$ and $(l - 1)^2 - l^2 = -(2l - 1)$, the marginal change in team $i$'s cost is:
+
+   $$
+   \begin{aligned}
+   \Delta \Phi_i(k) \;&=\; \Phi_i(k) - \Phi_i(k - 1) \\
+   &=\; C_i \Bigl((w + 1)^2 - w^2\Bigr) + D_i \Bigl((l - 1)^2 - l^2\Bigr) \\
+   &=\; C_i (2w + 1) - D_i (2l - 1) \\
+   &=\; C_i \bigl(2(w_i^{(0)} + k - 1) + 1\bigr) - D_i \bigl(2(L_i - k + 1) - 1\bigr).
+   \end{aligned}
+   $$
+
+3. **Step 3 (Verifying Discrete Convexity):**
+   Let us check the second difference $\Delta^2 \Phi_i(k) = \Delta \Phi_i(k + 1) - \Delta \Phi_i(k)$ as $k$ increases by $1$ (so $w$ increases by $1$ and $l$ decreases by $1$):
+
+   $$
+   \Delta^2 \Phi_i(k) \;=\; \Delta \Phi_i(k+1) - \Delta \Phi_i(k) \;=\; 2C_i - (-2D_i) \;=\; 2(C_i + D_i) \;\ge\; 0.
+   $$
+
+   Because $C_i, D_i \ge 0$, the marginal sequence $\Delta \Phi_i(1) \le \Delta \Phi_i(2) \le \dots \le \Delta \Phi_i(\text{rem}_i)$ is **guaranteed to be monotonically non-decreasing**! Even though the loss term $-D_i(2l - 1)$ can make early marginal costs $\Delta \Phi_i(k)$ **negative** (when trading a loss for a win reduces the heavy $D_i l^2$ penalty more than it increases $C_i w^2$), as $k$ grows, $w$ grows and $l$ shrinks, so $\Delta \Phi_i(k)$ strictly increases by $2(C_i + D_i)$ at each step.
+
+4. **Step 4 (Eliminating Negative Initial Costs via Fixed-Hop DAG Potentials):**
+   Every augmenting path in the compiled network has length $3$:
+
+   $$
+   S \;\xrightarrow{\text{cost } 0}\; \text{Match}_m \;\xrightarrow{\text{cost } 0}\; \text{Team}_i \;\xrightarrow{\text{cost } \Delta \Phi_i(k)}\; T.
+   $$
+
+   Because the initial graph is a 3-layer DAG, we can initialize exact Johnson potentials in $O(N + M)$ time without SPFA (Chapter 17, Section 3.3):
+
+   $$
+   \pi(S) = 0, \qquad \pi(\text{Match}_m) = 0, \qquad \pi(\text{Team}_i) = 0, \qquad \pi(T) = \min\Bigl(0,\; \min_{1 \le i \le N} \Delta \Phi_i(1)\Bigr),
+   $$
+
+   or equivalently add a fixed-hop shift $+K_{\text{shift}}$ to every $\text{Team}_i \to T$ arc and subtract $M \cdot K_{\text{shift}}$ from the final answer.
+
+### 2.3 Hand-Checkable 3-Team Trace of Win–Loss Substitution
+
+Suppose $N = 3$ teams have current records $w^{(0)} = (1, 0, 0)$, $l^{(0)} = (0, 1, 0)$, cost weights $C = (2, 1, 1)$, $D = (1, 2, 1)$, and $M = 2$ remaining games: Game 1 between $\{1, 2\}$ and Game 2 between $\{2, 3\}$.
+
+- **Remaining game counts:** $\text{rem} = (1, 2, 1)$.
+- **Pre-assumed loss counts $L_i = l_i^{(0)} + \text{rem}_i$:**
+  $L_1 = 0 + 1 = 1$, $L_2 = 1 + 2 = 3$, $L_3 = 0 + 1 = 1$.
+- **Base Cost $\text{BaseCost} = \sum (C_i (w_i^{(0)})^2 + D_i L_i^2)$:**
+  - Team 1: $2(1^2) + 1(1^2) = 3$.
+  - Team 2: $1(0^2) + 2(3^2) = 18$.
+  - Team 3: $1(0^2) + 1(1^2) = 1$.
+  - Total $\text{BaseCost} = 3 + 18 + 1 = 22$.
+- **Marginal Win Arcs $\text{Team}_i \to T$ via $\Delta \Phi_i(k) = C_i(2w + 1) - D_i(2l - 1)$:**
+  - **Team 1** ($\text{rem}_1 = 1$): $k = 1$ has $(w, l) = (1, 1) \implies \Delta \Phi_1(1) = 2(3) - 1(1) = +5$.
+  - **Team 2** ($\text{rem}_2 = 2$):
+    - $k = 1$ has $(w, l) = (0, 3) \implies \Delta \Phi_2(1) = 1(1) - 2(5) = -9$.
+    - $k = 2$ has $(w, l) = (1, 2) \implies \Delta \Phi_2(2) = 1(3) - 2(3) = -3$.
+    (Check second difference: $-3 - (-9) = +6 = 2(C_2 + D_2) = 2(1 + 2)$.)
+  - **Team 3** ($\text{rem}_3 = 1$): $k = 1$ has $(w, l) = (0, 1) \implies \Delta \Phi_3(1) = 1(1) - 1(1) = 0$.
+- **Optimal Routing of the $M = 2$ Match Units:**
+  - Game 1 ($\{1, 2\}$): Compares $\Delta \Phi_1(1) = +5$ vs $\Delta \Phi_2(1) = -9$. Team 2 wins Game 1 (using arc $k=1$ of Team 2, cost $-9$).
+  - Game 2 ($\{2, 3\}$): Compares Team 2's next marginal arc $\Delta \Phi_2(2) = -3$ vs $\Delta \Phi_3(1) = 0$. Team 2 also wins Game 2 (using arc $k=2$ of Team 2, cost $-3$).
+- **Final Minimum Cost:** $\text{BaseCost} + (-9) + (-3) = 22 - 12 = 10$.
+  *Verification:* Final records are Team 1: $(1, 1)$ cost $2(1)+1(1)=3$; Team 2: $(2, 1)$ cost $1(4)+2(1)=6$; Team 3: $(0, 1)$ cost $1(0)+1(1)=1$. Sum $= 3 + 6 + 1 = 10$. Exact match!
+
+---
+
+## 3. Landau's Tournament Theorem & Maximizing Directed 3-Cycles (`[WC2007] 剪刀石头布`)
+
+A **tournament** on $N$ players is a complete undirected graph $K_N$ in which every edge $\{u, v\}$ is assigned one of two orientations: either $u \to v$ ($u$ beats $v$) or $v \to u$ ($v$ beats $u$). In **`[WC2007] 剪刀石头布` (Rock-Paper-Scissors, Luogu P4249)** and **Codeforces 1264 E (Beautiful League)**, some match outcomes are already fixed while the remaining matches are undecided. We must orient every undecided match to **maximize the number of directed 3-cycles** (unordered triples $\{u, v, w\}$ that form a rock-paper-scissors loop $u \to v \to w \to u$ or $u \to w \to v \to u$).
+
+### 3.1 Why Naive Direct Counting Fails—and How Complementary Counting Rescues It
+
+If we try to count directed 3-cycles directly using indicator variables $y_{uv} \in \{0, 1\}$ ($y_{uv} = 1 \iff u \to v$, with $y_{uv} + y_{vu} = 1$), the condition that $\{u, v, w\}$ forms a directed 3-cycle is the **cubic** polynomial
+
+$$
+y_{uv} y_{vw} y_{wu} + y_{uw} y_{wv} y_{vu} \;\in\; \{0, 1\}.
+$$
+
+Maximizing a sum of $O(N^3)$ cubic products over $O(N^2)$ variables cannot be modeled directly as a flow or cut problem: a single edge orientation $y_{uv}$ participates in $N - 2$ different triples simultaneously, and its contribution to triple $\{u, v, w\}$ depends on the joint state of $y_{vw}$ and $y_{wu}$.
+
+The breakthrough—originally due to Kendall and Babington Smith (1940) and popularized in competitive programming by `[WC2007] 剪刀石头布`—is to count the **complement**: which 3-player subsets $\{u, v, w\}$ **fail** to form a directed 3-cycle?
+
+```{mermaid}
+flowchart LR
+    subgraph Cyclic["Directed 3-Cycle: Out-Degrees (1, 1, 1)"]
+        direction TB
+        u1((u)) --> v1((v))
+        v1 --> w1((w))
+        w1 --> u1
+    end
+    subgraph Transitive["Transitive Triple: Out-Degrees (2, 1, 0)"]
+        direction TB
+        u2((u: deg+ = 2)) --> v2((v: deg+ = 1))
+        u2 --> w2((w: deg+ = 0))
+        v2 --> w2
+    end
+```
+
+::: {.callout-important title="Theorem 18.2 (Complementary Triple Identity / Landau's 3-Cycle Formula)"}
+In any tournament $T = (V, E)$ on $N$ vertices where vertex $u \in V$ has total out-degree (win count) $w_u = \deg^+(u)$, the number of unordered 3-vertex subsets $\{u, v, w\}$ that form a directed 3-cycle is given by the exact identity:
+
+$$
+\#(\text{3-Cycles}) \;=\; \binom{N}{3} \;-\; \sum_{u=1}^N \binom{w_u}{2}.
+$$
+
+Consequently, **maximizing** the number of directed 3-cycles in a partially completed tournament is equivalent to **minimizing** the separable degree-convex sum $\sum_{u=1}^N \binom{w_u}{2}$.
+:::
+
+**Proof (By Double Counting Internal Out-Neighbor Pairs).** Consider any unordered 3-vertex subset $\tau = \{u, v, w\} \subseteq V$. Up to isomorphism, there are only two possible induced orientations on $\tau$:
+
+1. **Directed 3-Cycle:** Each vertex beats one member of $\tau$ and loses to the other. The internal out-degrees within $\tau$ are $(1, 1, 1)$. Thus, the number of pairs of vertices inside $\tau$ beaten by the same member of $\tau$ is
+
+   $$
+   \binom{1}{2} + \binom{1}{2} + \binom{1}{2} \;=\; 0 + 0 + 0 \;=\; 0.
+   $$
+
+2. **Transitive Triple:** One dominant vertex beats both of the other vertices in $\tau$, and one of those two beats the third. The internal out-degrees within $\tau$ are $(2, 1, 0)$. Thus, the number of pairs of vertices inside $\tau$ beaten by the same member of $\tau$ is
+
+   $$
+   \binom{2}{2} + \binom{1}{2} + \binom{0}{2} \;=\; 1 + 0 + 0 \;=\; 1.
+   $$
+
+Now let us count the set of **dominated configurations** $\mathcal{D} = \bigl\{(u, \{v, w\}) : u \to v \text{ and } u \to w\bigr\}$ in two ways:
+
+- **Grouped by the 3-subset $\tau = \{u, v, w\}$:** Every transitive triple $\tau$ contributes **exactly $1$** element to $\mathcal{D}$ (corresponding to its unique dominant vertex of internal out-degree $2$), while every directed 3-cycle $\tau$ contributes **$0$** elements to $\mathcal{D}$. Therefore, $|\mathcal{D}| = \#(\text{Transitive Triples})$.
+- **Grouped by the dominant vertex $u \in V$:** A fixed vertex $u$ with out-degree $w_u$ beats $w_u$ opponents in total. Any unordered pair $\{v, w\}$ chosen from those $w_u$ beaten opponents forms a dominated configuration $(u, \{v, w\}) \in \mathcal{D}$. Therefore, vertex $u$ contributes exactly $\binom{w_u}{2}$ elements to $\mathcal{D}$, so $|\mathcal{D}| = \sum_{u=1}^N \binom{w_u}{2}$.
+
+Since every 3-subset of $V$ is either a directed 3-cycle or a transitive triple, subtracting $|\mathcal{D}|$ from the total number of 3-subsets $\binom{N}{3}$ yields
+
+$$
+\#(\text{3-Cycles}) \;=\; \binom{N}{3} - \#(\text{Transitive Triples}) \;=\; \binom{N}{3} - \sum_{u=1}^N \binom{w_u}{2}. \qquad \blacksquare
+$$
+
+### 3.2 Mechanical Graph Compilation for Tournament 3-Cycle Maximization
+
+Suppose player $u$ already has $w_u^{(0)}$ fixed wins from decided matches, and there are $M$ undecided matches $m_1, \dots, m_M$ remaining. Let $x_u \in \{0, 1, \dots, \text{rem}_u\}$ be the number of undecided matches that player $u$ wins, so $w_u = w_u^{(0)} + x_u$.
+
+By **Pattern 2 (Binomial Pair-Counting with Pre-Existing Load)** from Section 1.2:
+
+- At $x_u = 0$, player $u$ already generates $\binom{w_u^{(0)}}{2}$ transitive triples among their fixed wins. Thus $\text{BaseTransitive} = \sum_{u=1}^N \binom{w_u^{(0)}}{2}$.
+- When player $u$ wins their $k$-th undecided match ($k = 1, 2, \dots, \text{rem}_u$), their total win count rises from $w_u^{(0)} + k - 1$ to $w_u^{(0)} + k$, creating
+
+  $$
+  \Delta \Phi_u(k) \;=\; \binom{w_u^{(0)} + k}{2} - \binom{w_u^{(0)} + k - 1}{2} \;=\; w_u^{(0)} + k - 1
+  $$
+
+  new transitive triples!
+
+Because $\Delta^2 \Phi_u(k) = (w_u^{(0)} + k) - (w_u^{(0)} + k - 1) = 1 > 0$, this marginal sequence is strictly increasing and non-negative. We compile the tournament into a 3-layer MCMF network:
+
+1. **Source to Undecided Matches:** For each undecided match $m = \{u, v\}$ ($1 \le m \le M$), add arc $S \to \text{Match}_m$ with $\text{cap} = 1, \text{cost} = 0$.
+2. **Match to Candidate Winners:** For each undecided match $m = \{u, v\}$, add two arcs $\text{Match}_m \to \text{Player}_u$ and $\text{Match}_m \to \text{Player}_v$, each with $\text{cap} = 1, \text{cost} = 0$. (Whoever receives the $1$ unit of flow from $\text{Match}_m$ wins that match!)
+3. **Player to Sink (Convex Marginal Bundle):** For each player $u \in \{1, \dots, N\}$ and each $k \in \{1, 2, \dots, \text{rem}_u\}$, add a parallel unit-capacity arc
+
+   $$
+   e_{u,k} = (\text{Player}_u \to T), \qquad \text{cap}(e_{u,k}) = 1, \qquad \text{cost}(e_{u,k}) = w_u^{(0)} + k - 1.
+   $$
+
+4. **Result Extraction:** Run Primal-Dual SSP to route all $M$ match units from $S$ to $T$. Because all initial arc costs are in $\{0, 1, \dots, N-2\} \ge 0$, initial Johnson potentials are $\pi \equiv 0$ (no SPFA needed!). If $\text{MinCost}$ is the minimum cost returned by MCMF, the maximum number of directed 3-cycles is:
+
+   $$
+   \max \#(\text{3-Cycles}) \;=\; \binom{N}{3} \;-\; \sum_{u=1}^N \binom{w_u^{(0)}}{2} \;-\; \text{MinCost}.
+   $$
+
+   To reconstruct the tournament matrix, inspect the two outgoing arcs from each $\text{Match}_m$: if $\text{Match}_m \to \text{Player}_u$ carries flow $1$, orient $u \to v$; otherwise orient $v \to u$.
+
+::: {.callout-tip title="Space-Saving Variant: Implicit Complete-Graph Degree Elimination"}
+When **no** matches are pre-decided (or when we only care about the win sequence $(w_1, \dots, w_N)$ rather than explicit match nodes), Landau's Theorem (1953) states that a sequence $(w_1, \dots, w_N)$ is realizable as the out-degree sequence of a tournament if and only if $\sum_{u \in S} w_u \ge \binom{|S|}{2}$ for all $S \subseteq V$, with equality at $S = V$. However, when arbitrary specific edges of $K_N$ are pre-fixed (`[WC2007] 剪刀石头布`, $N \le 100$), $M \le \binom{100}{2} = 4950$ is small enough that explicitly building the $M$ match vertices is fast ($V \le 5052$, $E \le 20000$, runtime $< 15\text{ ms}$ with Primal-Dual Dijkstra) and immediately gives the constructive edge orientations!
+:::
+
+### 3.3 Hand-Checkable 4-Player Tournament Trace & The Two Classic Pitfalls
+
+Let $N = 4$ players $\{1, 2, 3, 4\}$, so there are $\binom{4}{3} = 4$ triples and $\binom{4}{2} = 6$ total matches. Suppose $4$ matches are already decided:
+
+$$
+1 \to 2, \qquad 1 \to 3, \qquad 2 \to 3, \qquad 3 \to 4,
+$$
+
+and $M = 2$ matches are undecided: $m_1 = \{1, 4\}$ and $m_2 = \{2, 4\}$.
+
+- **Step 1 (Count Pre-Existing Wins $w_u^{(0)}$ and Remaining Matches $\text{rem}_u$):**
+  - Player 1: beats $\{2, 3\} \implies w_1^{(0)} = 2$, undecided $\{1, 4\} \implies \text{rem}_1 = 1$.
+  - Player 2: beats $\{3\} \implies w_2^{(0)} = 1$, undecided $\{2, 4\} \implies \text{rem}_2 = 1$.
+  - Player 3: beats $\{4\} \implies w_3^{(0)} = 1$, undecided $\emptyset \implies \text{rem}_3 = 0$.
+  - Player 4: beats $\emptyset \implies w_4^{(0)} = 0$, undecided $\{1, 4\}, \{2, 4\} \implies \text{rem}_4 = 2$.
+- **Step 2 (Compute Baseline Transitive Triples $\text{BaseTransitive} = \sum \binom{w_u^{(0)}}{2}$):**
+  $\binom{2}{2} + \binom{1}{2} + \binom{1}{2} + \binom{0}{2} = 1 + 0 + 0 + 0 = 1$ (specifically, the already-decided transitive triple $\{1, 2, 3\}$ where $1$ beats both $2$ and $3$).
+- **Step 3 (Build Marginal Arcs $\text{Player}_u \to T$ with cost $w_u^{(0)} + k - 1$):**
+  - Player 1 ($w_1^{(0)} = 2, \text{rem}_1 = 1$): $k = 1$ has cost $2 + 1 - 1 = \mathbf{2}$.
+  - Player 2 ($w_2^{(0)} = 1, \text{rem}_2 = 1$): $k = 1$ has cost $1 + 1 - 1 = \mathbf{1}$.
+  - Player 4 ($w_4^{(0)} = 0, \text{rem}_4 = 2$): $k = 1$ has cost $0 + 1 - 1 = \mathbf{0}$; $k = 2$ has cost $0 + 2 - 1 = \mathbf{1}$.
+- **Step 4 (Route $M = 2$ Match Units via SSP):**
+  - For $m_1 = \{1, 4\}$: Player 1's marginal win costs $2$, while Player 4's first marginal win ($k=1$) costs $0$. Route $m_1 \to \text{Player}_4 \to T$ at cost $0$ (so **$4 \to 1$**).
+  - For $m_2 = \{2, 4\}$: Player 2's marginal win ($k=1$) costs $1$, and Player 4's second marginal win ($k=2$) also costs $1$ (tie!).
+    - *Case A ($4 \to 2$, using Player 4's $k=2$ arc of cost $1$):* Total $\text{MinCost} = 0 + 1 = 1$. Final win counts: $w = (2, 1, 1, 2)$, transitive triples $= 1 + 1 = 2$, so $\#(\text{3-Cycles}) = \binom{4}{3} - 2 = \mathbf{2}$ (namely $1 \to 3 \to 4 \to 1$ and $2 \to 3 \to 4 \to 2$).
+    - *Case B ($2 \to 4$, using Player 2's $k=1$ arc of cost $1$):* Total $\text{MinCost} = 0 + 1 = 1$. Final win counts: $w = (2, 2, 1, 1)$, transitive triples $= 1 + 1 = 2$, so $\#(\text{3-Cycles}) = \mathbf{2}$ (namely $1 \to 3 \to 4 \to 1$ and $1 \to 2 \to 4 \to 1$).
+
+::: {.callout-caution title="Two Classic Implementation Pitfalls in Tournament 3-Cycle MCMF"}
+1. **Pitfall 1 — Forgetting the Pre-Existing Win Offset $w_u^{(0)}$:**
+   If you initialize every player's marginal arc costs at $0, 1, 2, \dots, \text{rem}_u - 1$ instead of $w_u^{(0)}, w_u^{(0)} + 1, \dots, w_u^{(0)} + \text{rem}_u - 1$ (and instead route fixed wins through the network only after building the arcs), you will get the same result *only if* you also send $w_u^{(0)}$ mandatory units of flow through $\text{Player}_u \to T$. If you neither pre-saturate $w_u^{(0)}$ units nor shift the marginal costs by $+w_u^{(0)}$, then in the 4-player trace above, Player 1's win against Player 4 would falsely appear to cost $0$ instead of $2$! Shifting the marginal cost by $w_u^{(0)}$ and adding $\sum \binom{w_u^{(0)}}{2}$ to the baseline is cleaner and avoids routing $O(N^2)$ already-decided games through the flow solver.
+2. **Pitfall 2 — Starting Marginal Costs at $1$ Instead of $0$:**
+   Because $\binom{1}{2} - \binom{0}{2} = 0$, the **very first win** of a player with $w_u^{(0)} = 0$ creates **zero** transitive triples! A common off-by-one bug is setting the $k$-th arc cost to $w_u^{(0)} + k$ instead of $w_u^{(0)} + k - 1$, which shifts every arc's cost by $+1$. (In a fixed-flow tournament where exactly $M$ undecided games are routed, a uniform $+1$ shift on all $\text{Player}_u \to T$ arcs adds a constant $+M$ to $\text{MinCost}$, which will corrupt the final answer $\#(\text{3-Cycles}) = \binom{N}{3} - \text{BaseTransitive} - \text{MinCost}$ by $-M$!)
+:::
+
+---
+
+## 4. Large-Capacity Convex Cost Flows via Capacity Scaling ($2^k$ Bit-Scaling) & Dynamic Lazy Edge Insertion (`动态加边`)
+
+Everything in Sections 1–3 relied on expanding a convex edge $e$ of capacity $U_e$ into $U_e$ parallel unit-capacity arcs (or $K$ piecewise-linear brackets). What happens when that expansion hits a computational wall? There are two distinct scaling bottlenecks in competitive programming, and each has a dedicated algorithmic cure:
+
+1. **Bottleneck A — Huge Edge Capacities ($U \le 10^9$):** You cannot create $10^9$ parallel unit arcs (`MLE`), nor can you push $1$ unit of flow per augmentation (`TLE`). **Cure:** *Edmonds–Karp $2^k$ Capacity Bit-Scaling* ($O(E \log U (E + V \log V))$).
+2. **Bottleneck B — Huge Horizon of Potential Marginal Slots ($M \times P \le 10^5$ slots across $N$ clients, giving $N \times M \times P \approx 10^7$ arcs), while Total Flow $F = \sum p_i \le 800$ is Small:** Only $F$ out of the $M \times P$ marginal slots will ever be used! **Cure:** *Dynamic Lazy Edge Insertion (`动态加边`, `[NOI2012] 美食节`)*.
+
+---
+
+### 4.1 Weakly Polynomial Capacity Bit-Scaling ($2^k$ Scaling for $U \le 10^9$)
+
+Suppose we have a directed network $G = (V, E)$ where edge capacities $u_e \le 10^9$ are huge, and each edge $e$ has either a linear cost $c_e$ or a separable discrete convex cost $\Phi_e(f_e)$. Why does standard Successive Shortest Paths (Algorithm 17.1) fail here? Because SSP augments along minimum-cost paths whose bottleneck capacity can be $1$ at every step, requiring up to $O(V \cdot U) = 10^9$ augmentations even on a 4-vertex Zadeh/Edmonds–Karp bad graph!
+
+#### Paradigm 1: Binary Bit-Doubling for Large-Capacity Linear & Piecewise-Linear Convex Flows
+
+When a convex function $\Phi_e(f_e)$ is piecewise-linear with $K$ constant-slope brackets $[T_{m-1}, T_m]$, Section 1.2 already collapses each edge into $K$ standard linear arcs of capacity $u_a = T_m - T_{m-1} \le 10^9$ and linear cost $c_a$. Thus the problem reduces to solving **Min-Cost Circulation / Flow with capacities $u_a \le 10^9$ and linear costs $c_a$** in polynomial time in $\log_2 U$.
+
+Let $B = \lfloor \log_2 U_{\max} \rfloor$ be the highest bit of any arc capacity. The **Bit-Doubling Capacity Scaling Algorithm** builds the optimal circulation from the most significant bit $k = B$ down to the least significant bit $k = 0$. At phase $k$, each arc $a \in E$ has scaled integer capacity
+
+$$
+u_a^{(k)} \;:=\; \bigl\lfloor u_a / 2^k \bigr\rfloor \;=\; (u_a \gg k).
+$$
+
+Notice the recursive bit relation between phase $k+1$ and phase $k$:
+
+$$
+u_a^{(k)} \;=\; 2 \, u_a^{(k+1)} \;+\; \text{bit}_k(u_a), \qquad \text{where } \text{bit}_k(u_a) = (u_a \gg k) \,\&\, 1 \in \{0, 1\}.
+$$
+
+::: {.callout-important title="Algorithm 18.1 (Edmonds–Karp Binary Capacity Bit-Scaling for Large-Capacity MCMF)"}
+**Input:** Directed network $G = (V, E)$ with integer capacities $u_a \in [0, U_{\max}]$ and costs $c_a$. (To solve $S$-$T$ Min-Cost Max-Flow, add a feedback arc $T \to S$ with capacity $\infty = \sum_{a} u_a$ and cost $-M_\infty$, where $M_\infty > |V| \max |c_a|$.)
+**State Maintained Across Phases:** A valid integer circulation $f^{(k)}$ and Johnson node potentials $\pi : V \to \mathbb{Z}$ satisfying Reduced-Cost Optimality ($c_{uv}^\pi = c_{uv} + \pi(u) - \pi(v) \ge 0$ for every residual arc of $G_{f^{(k)}}$).
+
+1. **Base Initialization (Before Phase $B$):** Set $f_a \gets 0$ for all $a \in E$ and $\pi(v) \gets 0$ for all $v \in V$ (or compute initial potentials if initial negative-cost zero-capacity arcs exist; in the bit-scaling transition below, all capacities start at $u_a^{(B+1)} = 0$, so $G_f$ has **zero residual arcs** and $\pi \equiv 0$ is vacuously optimal even if $c_a < 0$!).
+2. **Outer Loop over Bit Scales $k = B, B-1, \dots, 0$:**
+   a. **Flow Doubling Step:** Double the current flow and all residual capacities on existing arcs:
+
+      $$
+      f_a \;\gets\; 2 f_a \qquad \forall\, a \in E.
+      $$
+
+      *Key Invariant:* Doubling every capacity and flow value multiplies every residual capacity by $2$, creating **zero new residual arcs**. Hence every residual arc still satisfies $c_{uv}^\pi \ge 0$ with the unchanged potentials $\pi$!
+   b. **Unlock the $k$-th Capacity Bit (One Arc at a Time):** For each original arc $a = (u \to v) \in E$ whose $k$-th capacity bit is $\text{bit}_k(u_a) = 1$:
+      - Increment the capacity of $a$ by $1$ unit.
+      - **Case 1 ($c_{uv}^\pi \ge 0$ or $a$ already had residual capacity $> 0$):** Adding $1$ unit of capacity to $(u \to v)$ preserves $c_{uv}^\pi \ge 0$ on all residual arcs. Do nothing!
+      - **Case 2 ($a$ was previously saturated with $0$ residual capacity, and $c_{uv}^\pi < 0$):** Unlocking $1$ unit of capacity on $(u \to v)$ exposes a new forward residual arc with **negative reduced cost** $c_{uv}^\pi < 0$, violating optimality! To repair this in a single augmentation:
+        1. Run **Dijkstra** from $v$ in the current residual network (excluding the newly unlocked unit on $a$, so all residual arcs have non-negative reduced cost $c^\pi \ge 0$) to compute shortest-path distances $d(\cdot)$ from $v$.
+        2. Update Johnson potentials $\pi(x) \gets \pi(x) + d(x)$ for all $x$ reachable from $v$.
+        3. If $u$ is reachable from $v$ and the cycle reduced cost satisfies $c_{uv} + \pi(u) - \pi(v) < 0$ (where the updated $\pi(u) - \pi(v)$ equals the shortest path cost from $v$ to $u$), push **$1$ unit of flow** around the negative cycle $u \xrightarrow{a} v \leadsto u$ (saturating the new unit on $a$ and augmenting $1$ unit along the shortest path from $v$ to $u$).
+        4. After this single augmentation (or if $c_{uv} + \pi(u) - \pi(v) \ge 0$ after updating $\pi$), all residual arcs in $G_f$ once again satisfy $c^\pi \ge 0$!
+:::
+
+**Complexity Analysis of Algorithm 18.1:** There are $B + 1 = \lfloor \log_2 U_{\max} \rfloor + 1$ bit phases. Within each phase $k$, we inspect $|E|$ arcs, and each arc with $\text{bit}_k(u_a) = 1$ triggers **at most one** single-unit Dijkstra execution! Therefore, the total number of Dijkstra calls across the entire algorithm is at most $O(E \log U_{\max})$, giving a worst-case strongly predictable runtime of
+
+$$
+O\bigl(E \log U_{\max} \cdot (E + V \log V)\bigr).
+$$
+
+Even better: because all capacities start at $0$ before bit $B$, Algorithm 18.1 **automatically handles arbitrary negative arc costs and negative cycles without SPFA**!
+
+#### Paradigm 2: $\Delta$-Step Marginal Scaling for Smooth Quadratic / Convex Costs $\Phi_e(f_e)$
+
+What if $\Phi_e(f_e) = a_e f_e^2 + b_e f_e$ is strictly quadratic and $U_e \le 10^9$, so there are $10^9$ distinct slopes? Instead of unlocking bits of a fixed linear capacity, we run **$\Delta$-Step Convex Marginal Scaling** for $\Delta = 2^B, 2^{B-1}, \dots, 2^0$:
+
+- At step size $\Delta$, we restrict flow changes to integer multiples of $\Delta$. In the $\Delta$-residual graph $G_f(\Delta)$:
+  - A forward step of $+\Delta$ on $e = (u \to v)$ (valid if $f_e + \Delta \le u_e$) has cost $\text{cost}_f^+(e; \Delta) = \frac{\Phi_e(f_e + \Delta) - \Phi_e(f_e)}{\Delta} = a_e(2 f_e + \Delta) + b_e$.
+  - A backward step of $-\Delta$ on $\text{rev}(e) = (v \to u)$ (valid if $f_e - \Delta \ge 0$) has cost $\text{cost}_f^-(e; \Delta) = \frac{\Phi_e(f_e - \Delta) - \Phi_e(f_e)}{\Delta} = -a_e(2 f_e - \Delta) - b_e$.
+- Notice that when transitioning from scale $2\Delta$ to scale $\Delta$, the forward $\Delta$-marginal cost decreases by $a_e \Delta$ and the backward $\Delta$-marginal cost also decreases by $a_e \Delta$, which can create a bounded number of negative reduced-cost arcs. By pre-saturating any $\Delta$-arc with $c^\pi(e; \Delta) < 0$ and routing the resulting node excesses/deficits via $\Delta$-unit Dijkstra shortest paths (Ahuja–Magnanti–Orlin, Theorem 14.5), each scale phase $\Delta$ performs at most $O(E)$ augmentations of size $\Delta$, solving smooth quadratic MCMF with $U \le 10^9$ in $O(E \log U (E + V \log V))$ time!
+
+---
+
+### 4.2 Dynamic Lazy Edge Insertion (`动态加边`, `[NOI2012] 美食节`)
+
+Now consider **Bottleneck B**, exemplified by **`[NOI2012] 美食节` (Food Festival, Luogu P2050)** (the large-scale version of `[SCOI2007] 修车`, Luogu P2053):
+
+- There are $N \le 40$ dish types (with demands $p_1, \dots, p_N$ summing to $P = \sum_{i=1}^N p_i \le 800$) and $M \le 100$ chefs. Chef $j$ takes $t_{i,j}$ time to cook one portion of dish $i$.
+- Suppose chef $j$ ends up cooking $k_j$ dishes in total, ordered $d_1, d_2, \dots, d_{k_j}$. The dish cooked **last** ($d_{k_j}$, at reverse position $k = 1$ from the end) only makes its own customer wait $1 \cdot t_{d_{k_j}, j}$. The dish cooked **second-to-last** (reverse position $k = 2$ from the end) delays both itself and the last dish, contributing $2 \cdot t_{d_{k_j-1}, j}$ to total waiting time! In general, the dish placed at **reverse position $k \in \{1, 2, \dots, P\}$** from the end of chef $j$'s schedule contributes linearly:
+
+  $$
+  \Delta \text{Wait}(i, j, k) \;=\; k \cdot t_{i,j}.
+  $$
+
+If we pre-build all $P = 800$ reverse-position vertices $(j, k)$ for all $M = 100$ chefs, the graph has $M \times P = 80{,}000$ chef-slot vertices and $N \times M \times P = 40 \times 80{,}000 = 3.2 \times 10^6$ edges. Running $P = 800$ iterations of SPFA or Dijkstra on $3.2 \times 10^6$ edges will easily `TLE`!
+
+```{mermaid}
+flowchart LR
+    S((S)) -->|"cap = p_i, cost = 0"| D1["Dish i"]
+    D1 -->|"cost = 1 * t_{i,j}"| C1["Chef (j, k=1)"]
+    D1 -->|"cost = 2 * t_{i,j}"| C2["Chef (j, k=2)"]
+    D1 -.->|"Spawned lazily ONLY after (j, k=2) is saturated!"| C3["Chef (j, k=3)"]
+    C1 -->|"cap = 1, cost = 0"| T((T))
+    C2 -->|"cap = 1, cost = 0"| T
+    C3 -.->|"cap = 1, cost = 0"| T
+```
+
+#### Why Lazy Edge Insertion Is 100% Exact
+
+Look at the marginal cost $\Delta \text{Wait}(i, j, k) = k \cdot t_{i,j}$ for any fixed chef $j$ and any dish $i$: since $t_{i,j} > 0$, we have
+
+$$
+1 \cdot t_{i,j} \;<\; 2 \cdot t_{i,j} \;<\; 3 \cdot t_{i,j} \;<\; \dots \;<\; P \cdot t_{i,j} \qquad \text{simultaneously for ALL dishes } i \in \{1, \dots, N\}!
+$$
+
+Therefore, before slot $(j, k)$ is saturated (carrying $1$ unit of flow to $T$), **no shortest augmenting path from $S$ to $T$ can ever prefer slot $(j, k+1)$ over slot $(j, k)$**: for whichever dish $i$ enters chef $j$, routing through $(j, k) \to T$ has strictly smaller cost $k \cdot t_{i,j} < (k+1) \cdot t_{i,j}$ than routing through $(j, k+1) \to T$!
+
+::: {.callout-important title="Algorithm 18.2 (Dynamic Lazy Edge Insertion / 动态加边 Protocol)"}
+1. **Initial Sparse Graph ($k = 1$ Only):** Create the source $S$, sink $T$, the $N$ dish vertices $\text{Dish}_1, \dots, \text{Dish}_N$ (with arcs $S \to \text{Dish}_i$ of capacity $p_i$, cost $0$), and **only the first slot vertex $(j, 1)$** for each chef $j \in \{1, \dots, M\}$ (with arc $(j, 1) \to T$ of capacity $1$, cost $0$, and $N$ incoming arcs $\text{Dish}_i \to (j, 1)$ of capacity $1$, cost $1 \cdot t_{i,j}$).
+   *Initial size:* $N + M + 2 \le 142$ vertices and $N \cdot M + N + M \le 4{,}140$ arcs!
+2. **Augment-and-Spawn Loop ($P$ Iterations):** In each of the $P = \sum p_i$ unit augmentations:
+   a. Run shortest paths (Primal-Dual Dijkstra or SPFA) to find a minimum-cost augmenting path $P_{\text{aug}}$ from $S$ to $T$, and augment $1$ unit of flow along $P_{\text{aug}}$.
+   b. Look at the **last internal vertex** on $P_{\text{aug}}$ immediately before $T$: it must be some chef slot $(j_\star, k_\star)$ whose arc $(j_\star, k_\star) \to T$ just became saturated!
+   c. If $k_\star$ was the highest allocated slot for chef $j_\star$ (and $k_\star < P$), **dynamically allocate** a single new vertex $v_{\text{new}} = (j_\star, k_\star + 1)$:
+      - Add arc $v_{\text{new}} \to T$ with $\text{cap} = 1, \text{cost} = 0$.
+      - For each dish $i \in \{1, \dots, N\}$, add arc $\text{Dish}_i \to v_{\text{new}}$ with $\text{cap} = 1, \text{cost} = (k_\star + 1) \cdot t_{i, j_\star}$.
+      - **Crucial Potential Initialization for Primal-Dual Dijkstra:** Because $v_{\text{new}}$ has zero incoming residual arcs from $T$ (its only outgoing arc $v_{\text{new}} \to T$ is unsaturated with cost $0$) and incoming arcs from $\text{Dish}_i$, what Johnson potential $\pi(v_{\text{new}})$ maintains $c^\pi \ge 0$ on all new arcs without re-running SPFA?
+        We need $\text{cost}^\pi(\text{Dish}_i \to v_{\text{new}}) = (k_\star + 1) t_{i, j_\star} + \pi(\text{Dish}_i) - \pi(v_{\text{new}}) \ge 0$ for all $i$, and $\text{cost}^\pi(v_{\text{new}} \to T) = 0 + \pi(v_{\text{new}}) - \pi(T) \ge 0$. Simply set
+
+        $$
+        \pi(v_{\text{new}}) \;\gets\; \pi(T)
+        $$
+
+        (or $\min_{i : \text{cap}_f(\text{Dish}_i \to v_{\text{new}}) > 0} \bigl\{\pi(\text{Dish}_i) + (k_\star + 1) t_{i, j_\star}\bigr\}$)! Since slot $(j_\star, k_\star)$ was already valid in the graph before saturation, $\pi(\text{Dish}_i) + k_\star t_{i, j_\star} \ge \pi(j_\star, k_\star) \ge \pi(T)$, and since $t_{i, j_\star} \ge 0$, setting $\pi(v_{\text{new}}) = \pi(T)$ guarantees $\text{cost}^\pi(v_{\text{new}} \to T) = 0$ and $\text{cost}^\pi(\text{Dish}_i \to v_{\text{new}}) \ge t_{i, j_\star} \ge 0$ immediately!
+:::
+
+**Complexity Impact:** Over $P = 800$ augmentations, we spawn at most $P = 800$ new chef-slot vertices in total! At the end of the algorithm, the graph has at most $N + M + P + 2 \le 942$ vertices and $N(M + P) \le 36{,}000$ arcs—a **$90\times$ reduction** in graph size that turns a $3$-second `TLE` into a $25\text{ ms}$ `AC`.
+
+---
+
+## 5. The 4-Step Convex Marginal Compilation Protocol
+
+Before tackling the 8-problem difficulty ladder, let us consolidate the **4-Step Convex Marginal Compilation Protocol** into an actionable reference table and a clean C++ gadget builder that plugs directly into the Chapter 17 Primal-Dual SSP solver.
+
+| Problem Archetype | Diagnostic Signal in English Statement | Algebraic Reformulation | Marginal Cost $\Delta \Phi(k)$ ($k = 1 \dots U$) | Graph Gadget & Potential Setup |
+| :--- | :--- | :--- | :--- | :--- |
+| **Quadratic Edge / Degree Cost** (`CF 863F`, `CF 1187G`) | Cost grows as $a f^2 + b f$ with load/congestion $f$ | $\Phi(f) = \sum_{k=1}^f \Delta \Phi(k)$ | $a(2k - 1) + b$ ($\Delta^2 = 2a > 0$) | $U$ parallel unit arcs of cost $a(2k-1)+b$; $\pi \equiv 0$ if $a + b \ge 0$ |
+| **Coupled Win–Loss Ledger** (`[JSOI2009] 球队收益`) | Team $i$ pays $C_i w_i^2 + D_i l_i^2$ after $\text{rem}_i$ games | Pre-assume losses: $L_i = l_i^{(0)} + \text{rem}_i$; $w_i = w_i^{(0)} + k, l_i = L_i - k$ | $C_i(2w + 1) - D_i(2l - 1)$ ($\Delta^2 = 2(C_i + D_i) \ge 0$) | $\text{rem}_i$ unit arcs $\text{Team}_i \to T$; 3-layer DAG potential $\pi(T) = \min(0, \min \Delta \Phi_i(1))$ |
+| **Tournament 3-Cycle Maximization** (`[WC2007]`, `CF 1264E`) | Orient undecided edges of $K_N$ to maximize cyclic triples | $\max \bigl[\binom{N}{3} - \sum_u \binom{w_u}{2}\bigr] \iff \min \sum_u \binom{w_u}{2}$ | $w_u^{(0)} + k - 1$ ($\Delta^2 = 1 > 0$) | $\text{rem}_u$ unit arcs $\text{Player}_u \to T$ of cost $w_u^{(0)} + k - 1 \ge 0$; $\pi \equiv 0$ |
+| **Piecewise-Linear Tax / Wage Brackets** (`[SDOI2011] 工作安排`) | $K \le 6$ workload thresholds $T_m$ with increasing unit rates $c_m$ | Constant marginal slope $c_m$ on $(T_{m-1}, T_m]$ | $c_m$ on bracket $m$ ($c_1 < \dots < c_K$) | Bundle into $K$ arcs of capacity $T_m - T_{m-1}$ and cost $c_m$ |
+| **Reverse-Position Queue Waiting** (`[NOI2012] 美食节`) | $M$ machines, $P$ items; $k$-th from last on machine $j$ delays $k$ items | $\text{Wait} = \sum_{j, k} k \cdot t_{i_{j,k}, j}$ | $k \cdot t_{i, j}$ for slot $(j, k)$ | Spawn slot $(j, k+1)$ lazily only after $(j, k) \to T$ is saturated; $\pi(j, k+1) = \pi(T)$ |
+| **Endpoint vs Transit Parity Split** (`[SDOI2012] 交换棋子`) | Adjacent swaps with cell participation limit $m_v$; transit uses $2$, endpoints use $1$ | $2 f_{\text{transit}} + [v \text{ is source/sink}] \le m_v$ | Split $v_{\text{in}} \to v_{\text{mid}} \to v_{\text{out}}$ | Capacities $\lfloor m_v / 2 \rfloor$, bumped to $\lfloor (m_v + 1) / 2 \rfloor$ on out-arc of source or in-arc of sink |
+
+### 5.1 Reusable C++ Convex Marginal Gadget Builder
+
+The following C++ helper extends `PrimalDualMCMF` (Chapter 17) with one-line builders for quadratic bundles, binomial tournament bundles, piecewise-linear bracket bundles, and V-shaped $\ell_1$ deviation penalties. All reference implementations in Section 6 invoke `ConvexMCMF` directly (except `#143A` and `#144B`, which modify the core scaling and dynamic-node engine):
+
+```cpp
+// Convex Marginal Edge Builders on top of PrimalDualMCMF (Chapter 17)
+struct ConvexMCMF {
+    struct Edge {
+        int to, rev;
+        long long cap, cost;
+    };
+    int n;
+    vector<vector<Edge>> adj;
+    vector<long long> pi, dist;
+    vector<int> pv_v, pv_e;
+
+    ConvexMCMF(int n) : n(n), adj(n), pi(n, 0), dist(n), pv_v(n), pv_e(n) {}
+
+    int add_edge(int u, int v, long long cap, long long cost) {
+        int id = (int)adj[u].size();
+        adj[u].push_back({v, (int)adj[v].size(), cap, cost});
+        adj[v].push_back({u, id, 0, -cost});
+        return id;
+    }
+
+    // Pattern 1: Phi(f) = a * f^2 + b * f for f in {0, ..., U} (requires a >= 0)
+    void add_quadratic_bundle(int u, int v, int U, long long a, long long b) {
+        for (int k = 1; k <= U; ++k) add_edge(u, v, 1, a * (2LL * k - 1) + b);
+    }
+
+    // Pattern 2: Phi(f) = C(w0 + f, 2) - C(w0, 2) for f in {0, ..., U}
+    void add_binomial_bundle(int u, int v, int U, int w0 = 0) {
+        for (int k = 1; k <= U; ++k) add_edge(u, v, 1, w0 + k - 1);
+    }
+
+    // Pattern 3: Piecewise-linear brackets 0 = T[0] < T[1] < ... < T[K] with slopes c[0] < ... < c[K-1]
+    void add_bracket_bundle(int u, int v, const vector<long long>& T, const vector<long long>& c) {
+        for (size_t m = 0; m < c.size(); ++m) add_edge(u, v, T[m + 1] - T[m], c[m]);
+    }
+
+    // Pattern 4: V-shaped target penalty alpha * max(0, f0 - f) + beta * max(0, f - f0)
+    long long add_v_penalty_bundle(int u, int v, long long f0, long long U,
+                                   long long alpha, long long beta) {
+        if (f0 > 0) add_edge(u, v, f0, -alpha);
+        if (U > f0) add_edge(u, v, U - f0, beta);
+        return alpha * f0;
+    }
+
+    bool dijkstra(int s, int t) {
+        const long long INF = 4e18;
+        fill(dist.begin(), dist.end(), INF);
+        priority_queue<pair<long long, int>, vector<pair<long long, int>>, greater<>> pq;
+        dist[s] = 0;
+        pq.push({0, s});
+        while (!pq.empty()) {
+            auto [d, u] = pq.top();
+            pq.pop();
+            if (d != dist[u]) continue;
+            for (int i = 0; i < (int)adj[u].size(); ++i) {
+                const auto& e = adj[u][i];
+                if (e.cap > 0) {
+                    long long nd = d + e.cost + pi[u] - pi[e.to];
+                    if (nd < dist[e.to]) {
+                        dist[e.to] = nd;
+                        pv_v[e.to] = u;
+                        pv_e[e.to] = i;
+                        pq.push({nd, e.to});
+                    }
+                }
+            }
+        }
+        if (dist[t] == INF) return false;
+        for (int i = 0; i < n; ++i) if (dist[i] < INF) pi[i] += min(dist[i], dist[t]);
+        return true;
+    }
+
+    pair<long long, long long> solve(int s, int t) {
+        long long flow = 0, cost = 0;
+        while (dijkstra(s, t)) {
+            long long push = 4e18;
+            for (int v = t; v != s; v = pv_v[v]) push = min(push, adj[pv_v[v]][pv_e[v]].cap);
+            for (int v = t; v != s; v = pv_v[v]) {
+                auto& e = adj[pv_v[v]][pv_e[v]];
+                e.cap -= push;
+                adj[v][e.rev].cap += push;
+            }
+            flow += push;
+            cost += push * pi[t];
+        }
+        return {flow, cost};
+    }
+};
+```
+
+---
+
+## 6. Worked Examples & Full 8-Problem Difficulty Ladder (`#137`–`#144`)
+
+We now apply the 4-Step Compilation Protocol across eight carefully graduated contest problems (`#137` through `#144`), spanning tournament 3-cycle maximization, token-swapping parity splits, coupled quadratic win–loss ledgers, degree-squared bipartite bounds, multi-period inventory ordering with piecewise-linear overtime brackets, large-capacity $2^k$ bit-scaling, and convex potential slope parameterization.
+
+---
+
+### Problem `#137` (`SS-1`): Luogu P4249 [WC2007] — 剪刀石头布 (Rock-Paper-Scissors)
+
+- **Judge / URL:** [Luogu P4249](https://www.luogu.com.cn/problem/P4249) (`[WC2007] 剪刀石头布`)
+- **Constraints:** $N \le 100$ players; an $N \times N$ matrix $A$ where $A_{u,v} = 1$ means $u$ beats $v$, $A_{u,v} = 0$ means $u$ loses to $v$, and $A_{u,v} = 2$ means the match $\{u, v\}$ is not yet decided ($A_{u,u} = 0$). Time limit $1.0\text{ s}$.
+- **Task:** Orient every undecided match ($A_{u,v} = 2 \to \{0, 1\}$ with $A_{u,v} + A_{v,u} = 1$) to **maximize the number of directed 3-cycles** $\{u, v, w\}$, and output both the maximum 3-cycle count and the completed $N \times N$ tournament matrix.
+
+#### 4-Step Compilation
+
+1. **Step 1 (Diagnostic Signal):** We must orient undirected edges of $K_N$ ($N \le 100$) to maximize cyclic triples. Direct 3-cycle counting is cubic in the edge variables, but Theorem 18.2 reduces it to minimizing the separable degree-convex sum $\sum_{u=1}^N \binom{w_u}{2}$.
+2. **Step 2 (Algebraic Model):** For each player $u \in \{1, \dots, N\}$, let $w_u^{(0)} = \sum_{v \neq u} [A_{u,v} = 1]$ be their fixed wins and $\text{rem}_u = \sum_{v \neq u} [A_{u,v} = 2]$ be their undecided matches. Letting $x_u \in \{0, \dots, \text{rem}_u\}$ be the undecided matches won by $u$, we minimize
+
+   $$
+   \sum_{u=1}^N \binom{w_u^{(0)} + x_u}{2} \;=\; \sum_{u=1}^N \binom{w_u^{(0)}}{2} + \sum_{u=1}^N \sum_{k=1}^{x_u} \bigl(w_u^{(0)} + k - 1\bigr).
+   $$
+
+3. **Step 3 (Graph Construction):**
+   - For each undecided pair $m = \{u, v\}$ with $u < v$ and $A_{u,v} = 2$: add arc $S \to m$ ($\text{cap}=1, \text{cost}=0$), arc $m \to u$ ($\text{cap}=1, \text{cost}=0$), and arc $m \to v$ ($\text{cap}=1, \text{cost}=0$). Remember the edge index of $m \to u$ so we can read off whether $u$ beat $v$ after flow terminates.
+   - For each player $u \in \{1, \dots, N\}$ and $k \in \{1, \dots, \text{rem}_u\}$: add arc $u \to T$ ($\text{cap}=1, \text{cost}=w_u^{(0)} + k - 1$).
+4. **Step 4 (Edge Cases & Verification):** All arc costs are in $[0, N-2] \ge 0$, so Primal-Dual Dijkstra runs with initial potentials $\pi \equiv 0$. After routing all $M$ undecided matches, if the arc $m \to u$ has remaining residual capacity $0$, set $A_{u,v} = 1, A_{v,u} = 0$; otherwise set $A_{u,v} = 0, A_{v,u} = 1$.
+
+:::: {.callout-tip collapse="true" title="Hint 1 (#137) — Complementary Counting"}
+Instead of counting 3-subsets $\{u, v, w\}$ that form a directed cycle, count 3-subsets that *fail* to form a cycle. What do the internal out-degrees of a non-cyclic 3-player tournament look like?
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 (#137) — Marginal Transitive Triples per Win"}
+A 3-subset fails to be a 3-cycle if and only if one player beats both of the other two. Thus player $u$ with $w_u$ total wins is the dominant vertex of exactly $\binom{w_u}{2}$ non-cyclic triples. If player $u$ already has $w_u$ wins and wins one more match, how many *new* non-cyclic triples are created?
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 (#137) — Reconstructing the Adjacency Matrix"}
+Create a node for each undecided pair $\{u, v\}$ with $u < v$ and $A_{u,v} = 2$. Send $1$ unit of flow from $S$ to this match node, and connect it to both player $u$ and player $v$ with capacity $1$ and cost $0$. Store the index of the forward edge $\text{Match}_{\{u,v\}} \to u$ in the adjacency list; when MCMF finishes, that edge has residual capacity $0$ if and only if $u$ defeated $v$.
+::::
+
+:::: {.callout-note collapse="true" title="Reference Implementation (#137 — Luogu P4249 [WC2007] 剪刀石头布)"}
+```cpp
+void solve_wc2007_rps() {
+    int n;
+    if (!(cin >> n)) return;
+
+    vector<vector<int>> A(n, vector<int>(n));
+    vector<int> w0(n, 0), rem(n, 0);
+    struct Undecided { int u, v, match_node, edge_idx_u; };
+    vector<Undecided> matches;
+
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            cin >> A[i][j];
+            if (i != j) {
+                if (A[i][j] == 1) w0[i]++;
+                else if (A[i][j] == 2) {
+                    rem[i]++;
+                    if (i < j) matches.push_back({i, j, -1, -1});
+                }
+            }
+        }
+    }
+
+    int M = (int)matches.size();
+    int S = 0, T = n + M + 1;
+    ConvexMCMF mcmf(T + 1);
+
+    for (int m = 0; m < M; ++m) {
+        int m_node = n + 1 + m;
+        matches[m].match_node = m_node;
+        mcmf.add_edge(S, m_node, 1, 0);
+        matches[m].edge_idx_u = mcmf.add_edge(m_node, matches[m].u + 1, 1, 0);
+        mcmf.add_edge(m_node, matches[m].v + 1, 1, 0);
+    }
+
+    long long base_transitive = 0;
+    for (int i = 0; i < n; ++i) {
+        base_transitive += 1LL * w0[i] * (w0[i] - 1) / 2;
+        mcmf.add_binomial_bundle(i + 1, T, rem[i], w0[i]);
+    }
+
+    auto [flow, min_cost] = mcmf.solve(S, T);
+    long long total_triples = 1LL * n * (n - 1) * (n - 2) / 6;
+    long long max_cycles = total_triples - base_transitive - min_cost;
+
+    for (const auto& m : matches) {
+        if (mcmf.adj[m.match_node][m.edge_idx_u].cap == 0) {
+            A[m.u][m.v] = 1; A[m.v][m.u] = 0;
+        } else {
+            A[m.u][m.v] = 0; A[m.v][m.u] = 1;
+        }
+    }
+
+    cout << max_cycles << "\n";
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) cout << A[i][j] << (j + 1 == n ? "" : " ");
+        cout << "\n";
+    }
+}
+```
+::::
+
+---
+
+### Problem `#138` (`SS-2`): Codeforces 1264 E — Beautiful League
+
+- **Judge / URL:** [Codeforces 1264E](https://codeforces.com/problemset/problem/1264/E)
+- **Constraints:** $N \le 50$ teams, $M \le \binom{N}{2}$ already-decided directed edges $u_i \to v_i$. Time limit $1.0\text{ s}$.
+- **Task:** Orient all remaining $\binom{N}{2} - M$ undirected edges of $K_N$ to maximize the number of "beautiful triples" $(a, b, c)$ forming a directed 3-cycle, and print the $N \times N$ binary adjacency matrix (`0`/`1` string per row).
+
+#### 4-Step Compilation
+
+1. **Step 1 (Diagnostic Signal):** Identical mathematical core to `#137` (`[WC2007] 剪刀石头布`) with $N \le 50$, except the input is given as an edge list of $M$ decided matches and the output need only print the $N \times N$ binary matrix without the count.
+2. **Step 2 (Algebraic Model):** Minimize $\sum_{u=1}^N \binom{w_u}{2}$ where $w_u = w_u^{(0)} + x_u$.
+3. **Step 3 (Graph Construction):** Initialize an $N \times N$ status matrix `state[u][v] = 2` (for $u \neq v$). For each of the $M$ input edges $(u, v)$, set `state[u][v] = 1`, `state[v][u] = 0`, and increment $w_u^{(0)}$. Collect all pairs $u < v$ with `state[u][v] == 2` as match vertices, and add unit-capacity marginal arcs $u \to T$ with costs $w_u^{(0)}, w_u^{(0)} + 1, \dots, w_u^{(0)} + \text{rem}_u - 1$.
+4. **Step 4 (Complexity & Verification):** With $N = 50$, there are at most $\binom{50}{2} = 1225$ match nodes and $1225$ unit augmentations. Primal-Dual Dijkstra completes in $< 10\text{ ms}$.
+
+:::: {.callout-tip collapse="true" title="Hint 1 (#138) — Converting Beautiful Triples to Out-Degrees"}
+A triple $\{a, b, c\}$ is *not* beautiful if and only if one of the three teams defeats both of the others. Express the number of non-beautiful triples strictly in terms of the final out-degrees $w_1, \dots, w_N$.
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 (#138) — Convex Marginal Splitting"}
+Since $\binom{w_u}{2} = 0 + 1 + 2 + \dots + (w_u - 1)$, the $d$-th total win of team $u$ ($1$-indexed) adds $d - 1$ non-beautiful triples. Because $0 < 1 < 2 < \dots < N - 2$, parallel unit-capacity edges from team $u$ to the sink $T$ will automatically be saturated in increasing order of cost.
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 (#138) — Handling Pre-Decided Matches"}
+If team $u$ already won $w_u^{(0)}$ matches from the input, its undecided win edges to $T$ should start at cost $w_u^{(0)}$ and go up to $w_u^{(0)} + \text{rem}_u - 1$.
+::::
+
+:::: {.callout-note collapse="true" title="Reference Implementation (#138 — Codeforces 1264E Beautiful League)"}
+```cpp
+void solve_cf1264e() {
+    int n, m;
+    if (!(cin >> n >> m)) return;
+
+    vector<vector<int>> ans(n, vector<int>(n, 2));
+    for (int i = 0; i < n; ++i) ans[i][i] = 0;
+    vector<int> w0(n, 0);
+
+    for (int i = 0; i < m; ++i) {
+        int u, v;
+        cin >> u >> v;
+        --u; --v;
+        ans[u][v] = 1;
+        ans[v][u] = 0;
+        w0[u]++;
+    }
+
+    struct Match { int u, v, node, e_u; };
+    vector<Match> undecided;
+    vector<int> rem(n, 0);
+    for (int i = 0; i < n; ++i) {
+        for (int j = i + 1; j < n; ++j) {
+            if (ans[i][j] == 2) {
+                undecided.push_back({i, j, -1, -1});
+                rem[i]++;
+                rem[j]++;
+            }
+        }
+    }
+
+    int U = (int)undecided.size();
+    int S = 0, T = n + U + 1;
+    ConvexMCMF mcmf(T + 1);
+
+    for (int k = 0; k < U; ++k) {
+        int m_node = n + 1 + k;
+        undecided[k].node = m_node;
+        mcmf.add_edge(S, m_node, 1, 0);
+        undecided[k].e_u = mcmf.add_edge(m_node, undecided[k].u + 1, 1, 0);
+        mcmf.add_edge(m_node, undecided[k].v + 1, 1, 0);
+    }
+
+    for (int i = 0; i < n; ++i) {
+        mcmf.add_binomial_bundle(i + 1, T, rem[i], w0[i]);
+    }
+
+    mcmf.solve(S, T);
+
+    for (const auto& mt : undecided) {
+        if (mcmf.adj[mt.node][mt.e_u].cap == 0) {
+            ans[mt.u][mt.v] = 1; ans[mt.v][mt.u] = 0;
+        } else {
+            ans[mt.u][mt.v] = 0; ans[mt.v][mt.u] = 1;
+        }
+    }
+
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) cout << ans[i][j];
+        cout << "\n";
+    }
+}
+```
+::::
+
+---
+
+### Problem `#139` (`Int-1`): Luogu P3159 [SDOI2012] — 交换棋子 (Swapping Chess Pieces)
+
+- **Judge / URL:** [Luogu P3159](https://www.luogu.com.cn/problem/P3159) (`[SDOI2012] 交换棋子`)
+- **Constraints:** $R, C \le 20$ ($R \times C \le 400$ cells). Given an initial grid $A \in \{0, 1\}^{R \times C}$ (`1` = black piece, `0` = white piece), a target grid $B \in \{0, 1\}^{R \times C}$, and a swap limit grid $M \in \mathbb{Z}_{\ge 0}^{R \times C}$. In one operation, you may swap the pieces on any two **8-directionally adjacent** cells $(r_1, c_1)$ and $(r_2, c_2)$ (horizontal, vertical, or diagonal), which consumes $1$ swap from $m_{r_1, c_1}$ and $1$ swap from $m_{r_2, c_2}$.
+- **Task:** Find the minimum total number of adjacent swaps needed to transform $A$ into $B$ without exceeding any cell's swap limit $m_{r,c}$, or output `-1` if impossible.
+
+#### 4-Step Compilation
+
+1. **Step 1 (Diagnostic Signal):** We are moving identical black tokens (`1`s) from their initial positions in $A$ to their target positions in $B$ along shortest paths on an 8-connected grid ($R, C \le 20$), subject to vertex-level participation capacities $m_{r,c}$. Why isn't this a trivial vertex-capacitated flow? Because **an intermediate transit cell on a token's path participates in TWO swaps** (one swap when the token enters the cell, and a second swap when the token leaves the cell!), whereas the **starting cell** and **ending cell** of the path each participate in only **ONE swap**!
+2. **Step 2 (Intermediate Algebraic & Parity Model):**
+   First, observe that if a cell $v = (r, c)$ starts with a black piece and also ends with a black piece ($A_v = 1$ and $B_v = 1$), its black piece can remain stationary (or if another black piece passes through $v$ by swapping with $v$'s black piece and then swapping onward, that is algebraically identical to the moving piece passing through $v$ using $2$ swaps at $v$). Thus:
+   - Cells with $A_v = 1, B_v = 0$ are **net sources** (they must emit $1$ unit of flow, using $1$ outgoing swap at $v$).
+   - Cells with $A_v = 0, B_v = 1$ are **net sinks** (they must absorb $1$ unit of flow, using $1$ incoming swap at $v$).
+   - Every unit of flow that **transits** through $v$ (both entering $v$ and leaving $v$) consumes $1$ incoming swap and $1$ outgoing swap ($2$ swaps total at $v$).
+
+   Let $f_{\text{in}}(v)$ and $f_{\text{out}}(v)$ denote the number of tokens that enter $v$ from neighbors and leave $v$ to neighbors, respectively. Flow conservation at $v$ requires:
+   - If $A_v = 1, B_v = 0$ (source): $f_{\text{out}}(v) - f_{\text{in}}(v) = 1$, and total swaps used at $v$ is $f_{\text{in}}(v) + f_{\text{out}}(v) = 2 f_{\text{in}}(v) + 1 \le m_v$.
+   - If $A_v = 0, B_v = 1$ (sink): $f_{\text{in}}(v) - f_{\text{out}}(v) = 1$, and total swaps used at $v$ is $f_{\text{in}}(v) + f_{\text{out}}(v) = 2 f_{\text{out}}(v) + 1 \le m_v$.
+   - If $A_v = B_v$ (neutral): $f_{\text{in}}(v) = f_{\text{out}}(v)$, and total swaps used at $v$ is $2 f_{\text{in}}(v) \le m_v$.
+
+3. **Step 3 (Mechanical Graph Compilation via 3-Node Split $v_{\text{in}} \to v_{\text{mid}} \to v_{\text{out}}$):**
+   Split every cell $v = (r, c)$ into three vertices $v_{\text{in}}$, $v_{\text{mid}}$, and $v_{\text{out}}$:
+
+   $$
+   \begin{aligned}
+   \text{cap}(v_{\text{in}} \to v_{\text{mid}}) \;&=\; \begin{cases} \lfloor (m_v + 1) / 2 \rfloor & \text{if } A_v = 0 \text{ and } B_v = 1 \text{ (sink)}, \\ \lfloor m_v / 2 \rfloor & \text{otherwise}, \end{cases} \qquad \text{cost} = 0, \\
+   \text{cap}(v_{\text{mid}} \to v_{\text{out}}) \;&=\; \begin{cases} \lfloor (m_v + 1) / 2 \rfloor & \text{if } A_v = 1 \text{ and } B_v = 0 \text{ (source)}, \\ \lfloor m_v / 2 \rfloor & \text{otherwise}, \end{cases} \qquad \text{cost} = 0.
+   \end{aligned}
+   $$
+
+   - If $A_v = 1, B_v = 0$: add source injection $S \to v_{\text{mid}}$ with $\text{cap} = 1, \text{cost} = 0$.
+   - If $A_v = 0, B_v = 1$: add sink absorption $v_{\text{mid}} \to T$ with $\text{cap} = 1, \text{cost} = 0$.
+   - For every 8-directional neighbor $u$ of $v$: add transit arc $v_{\text{out}} \to u_{\text{in}}$ with $\text{cap} = \infty, \text{cost} = 1$ (representing $1$ swap between adjacent cells $v$ and $u$).
+
+```{mermaid}
+flowchart LR
+    S((S)) -->|"If A=1, B=0: cap=1, cost=0"| vmid["v_mid"]
+    vin["v_in"] -->|"cap = floor((m_v + [A=0,B=1]) / 2), cost = 0"| vmid
+    vmid -->|"cap = floor((m_v + [A=1,B=0]) / 2), cost = 0"| vout["v_out"]
+    vmid -->|"If A=0, B=1: cap=1, cost=0"| T((T))
+    vout -->|"8-dir neighbor u: cap=INF, cost=1"| uin["u_in"]
+```
+
+4. **Step 4 (Verification of the Parity Split):**
+   Suppose $v$ is a net source ($A_v = 1, B_v = 0$) with $m_v = 3$. Then $\text{cap}(v_{\text{in}} \to v_{\text{mid}}) = \lfloor 3/2 \rfloor = 1$ and $\text{cap}(v_{\text{mid}} \to v_{\text{out}}) = \lfloor 4/2 \rfloor = 2$. Once $S \to v_{\text{mid}}$ injects $1$ unit of flow (which must exit via $v_{\text{mid}} \to v_{\text{out}}$), at most $1$ additional transit unit can pass through $v_{\text{in}} \to v_{\text{mid}} \to v_{\text{out}}$, for a maximum of $1 + 2(1) = 3 = m_v$ swaps! What if $m_v = 0$ on a source cell? Then $\text{cap}(v_{\text{mid}} \to v_{\text{out}}) = \lfloor 1/2 \rfloor = 0$, correctly blocking the source piece from ever moving!
+
+:::: {.callout-tip collapse="true" title="Hint 1 (#139) — Why Do Transit Cells Cost 2 Swaps from $m_{r,c}$?"}
+Trace a single black piece moving along a path $v_0 \to v_1 \to v_2 \to v_3$. How many swaps involve $v_0$? How many involve $v_3$? And how many swaps involve the intermediate cells $v_1$ and $v_2$?
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 (#139) — What About Cells Where $A_{r,c} = 1$ and $B_{r,c} = 1$?"}
+If cell $v$ both starts and ends with `1`, does its piece need to move? What if another black piece needs to pass through $v$? Swapping the incoming black piece with $v$'s black piece, and then moving $v$'s black piece onward, uses $2$ swaps at $v$ and leaves a black piece at $v$—identical to a single flow unit transiting through $v$!
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 (#139) — The 3-Node Split $v_{\text{in}} \to v_{\text{mid}} \to v_{\text{out}}$"}
+Inject source flow (`1 -> 0`) directly into $v_{\text{mid}}$ and extract sink flow (`0 -> 1`) directly from $v_{\text{mid}}$. Then every transit unit passes through both $v_{\text{in}} \to v_{\text{mid}}$ and $v_{\text{mid}} \to v_{\text{out}}$, while a source unit only passes through $v_{\text{mid}} \to v_{\text{out}}$ and a sink unit only passes through $v_{\text{in}} \to v_{\text{mid}}$. Set the capacities of those two internal edges to $\lfloor m_v / 2 \rfloor$, adding $+1$ to the half that carries the odd endpoint swap when $m_v$ is odd!
+::::
+
+:::: {.callout-note collapse="true" title="Reference Implementation (#139 — Luogu P3159 [SDOI2012] 交换棋子)"}
+```cpp
+void solve_sdoi2012_chess_swap() {
+    int R, C;
+    if (!(cin >> R >> C)) return;
+
+    vector<string> A(R), B(R), M_str(R);
+    for (int r = 0; r < R; ++r) cin >> A[r];
+    for (int r = 0; r < R; ++r) cin >> B[r];
+    for (int r = 0; r < R; ++r) cin >> M_str[r];
+
+    int cntA = 0, cntB = 0;
+    for (int r = 0; r < R; ++r) {
+        for (int c = 0; c < C; ++c) {
+            cntA += (A[r][c] == '1');
+            cntB += (B[r][c] == '1');
+        }
+    }
+    if (cntA != cntB) {
+        cout << -1 << "\n";
+        return;
+    }
+
+    int N_cells = R * C;
+    int S = 3 * N_cells, T = 3 * N_cells + 1;
+    ConvexMCMF mcmf(T + 1);
+
+    auto v_in  = [&](int r, int c) { return 3 * (r * C + c); };
+    auto v_mid = [&](int r, int c) { return 3 * (r * C + c) + 1; };
+    auto v_out = [&](int r, int c) { return 3 * (r * C + c) + 2; };
+
+    int need_flow = 0;
+    const int dr[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    const int dc[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+
+    for (int r = 0; r < R; ++r) {
+        for (int c = 0; c < C; ++c) {
+            int m = M_str[r][c] - '0';
+            int a = A[r][c] - '0';
+            int b = B[r][c] - '0';
+
+            if (a == 1 && b == 0) {
+                need_flow++;
+                mcmf.add_edge(S, v_mid(r, c), 1, 0);
+                mcmf.add_edge(v_in(r, c), v_mid(r, c), m / 2, 0);
+                mcmf.add_edge(v_mid(r, c), v_out(r, c), (m + 1) / 2, 0);
+            } else if (a == 0 && b == 1) {
+                mcmf.add_edge(v_mid(r, c), T, 1, 0);
+                mcmf.add_edge(v_in(r, c), v_mid(r, c), (m + 1) / 2, 0);
+                mcmf.add_edge(v_mid(r, c), v_out(r, c), m / 2, 0);
+            } else {
+                mcmf.add_edge(v_in(r, c), v_mid(r, c), m / 2, 0);
+                mcmf.add_edge(v_mid(r, c), v_out(r, c), m / 2, 0);
+            }
+
+            for (int d = 0; d < 8; ++d) {
+                int nr = r + dr[d], nc = c + dc[d];
+                if (nr >= 0 && nr < R && nc >= 0 && nc < C) {
+                    mcmf.add_edge(v_out(r, c), v_in(nr, nc), 1e9, 1);
+                }
+            }
+        }
+    }
+
+    auto [flow, cost] = mcmf.solve(S, T);
+    cout << (flow == need_flow ? cost : -1LL) << "\n";
+}
+```
+::::
+
+---
+
+### Problem `#140` (`Int-2`): Luogu P4307 [JSOI2009] — 球队收益 / 球队预算 (Team Revenue)
+
+- **Judge / URL:** [Luogu P4307](https://www.luogu.com.cn/problem/P4307) (`[JSOI2009] 球队收益 / 球队预算`)
+- **Constraints:** $N \le 5000$ teams, $M \le 1000$ remaining matches. Each team $i$ has initial wins $w_i^{(0)}$, initial losses $l_i^{(0)}$, and non-negative cost coefficients $C_i, D_i$. Time limit $1.0\text{ s}$.
+- **Task:** Decide the winner of each of the $M$ remaining matches to minimize total league expenditure $\sum_{i=1}^N (C_i w_i^2 + D_i l_i^2)$.
+
+#### 4-Step Compilation
+
+1. **Step 1 (Diagnostic Signal):** Two-variable quadratic cost $C_i w_i^2 + D_i l_i^2$ per team with fixed total games $w_i + l_i = G_i$. Directly matches Section 2 (**Win–Loss Substitution**).
+2. **Step 2 (Algebraic Model):** Pre-assume all $\text{rem}_i$ remaining games for team $i$ are losses: $L_i = l_i^{(0)} + \text{rem}_i$ and $\text{BaseCost} = \sum_{i=1}^N \bigl(C_i (w_i^{(0)})^2 + D_i L_i^2\bigr)$. Winning the $k$-th game ($k = 1, \dots, \text{rem}_i$) transitions $(w, l) = (w_i^{(0)} + k - 1,\; L_i - k + 1) \to (w+1, l-1)$ with marginal cost
+
+   $$
+   \Delta \Phi_i(k) \;=\; C_i(2w + 1) - D_i(2l - 1).
+   $$
+
+3. **Step 3 (Graph Construction & Potential Initialization):**
+   - For each match $m = \{u, v\}$ ($1 \le m \le M$): add $S \to \text{Match}_m$ ($\text{cap}=1, \text{cost}=0$) and arcs $\text{Match}_m \to \text{Team}_u, \text{Match}_m \to \text{Team}_v$ ($\text{cap}=1, \text{cost}=0$).
+   - For each team $i$ and $k \in \{1, \dots, \text{rem}_i\}$: add arc $\text{Team}_i \to T$ ($\text{cap}=1, \text{cost}=\Delta \Phi_i(k)$).
+   - Because $\Delta \Phi_i(k)$ can be negative when $D_i(2l - 1) > C_i(2w + 1)$, set the initial 3-layer DAG potential $\pi(T) = \min\bigl(0LL,\; \min_{i : \text{rem}_i > 0} \Delta \Phi_i(1)\bigr)$ and $\pi(v) = 0$ for all $v \neq T$.
+4. **Step 4 (Complexity):** Only $M \le 1000$ units of flow are routed, and only $2M \le 2000$ marginal arcs $\text{Team}_i \to T$ are ever created across all teams! Thus Primal-Dual Dijkstra runs $1000$ times on a graph with $\le 6002$ vertices and $\le 5000$ arcs, finishing in $< 20\text{ ms}$.
+
+:::: {.callout-tip collapse="true" title="Hint 1 (#140) — Decoupling Wins and Losses"}
+Notice that $w_i + l_i$ is already determined before any remaining match is played! What is $l_i$ if team $i$ loses *all* $\text{rem}_i$ of its remaining matches?
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 (#140) — Marginal Cost of Converting One Loss into One Win"}
+Suppose team $i$ currently has $w$ wins and $l$ losses. If we change the outcome of one of team $i$'s matches from a loss to a win, $(w, l)$ becomes $(w+1, l-1)$. Expand $C_i(w+1)^2 + D_i(l-1)^2 - (C_i w^2 + D_i l^2)$ and check that this increment increases by $2(C_i + D_i) \ge 0$ for each subsequent win.
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 (#140) — Fast Dijkstra Initialization with Negative Marginals"}
+Because all negative-cost arcs enter the sink $T$ directly from $\text{Team}_i$, the initial network is a DAG of depth $3$. Setting $\pi(T) = \min(0, \min_i \Delta \Phi_i(1))$ and $\pi = 0$ everywhere else makes every initial reduced cost non-negative in $O(N)$ time without SPFA!
+::::
+
+:::: {.callout-note collapse="true" title="Reference Implementation (#140 — Luogu P4307 [JSOI2009] 球队收益)"}
+```cpp
+void solve_jsoi2009_team_revenue() {
+    int n, m;
+    if (!(cin >> n >> m)) return;
+
+    vector<long long> w0(n), l0(n), C(n), D(n);
+    for (int i = 0; i < n; ++i) cin >> w0[i] >> l0[i] >> C[i] >> D[i];
+
+    vector<pair<int, int>> matches(m);
+    vector<int> rem(n, 0);
+    for (int j = 0; j < m; ++j) {
+        int u, v;
+        cin >> u >> v;
+        --u; --v;
+        matches[j] = {u, v};
+        rem[u]++;
+        rem[v]++;
+    }
+
+    int S = 0, T = n + m + 1;
+    ConvexMCMF mcmf(T + 1);
+
+    for (int j = 0; j < m; ++j) {
+        int m_node = n + 1 + j;
+        mcmf.add_edge(S, m_node, 1, 0);
+        mcmf.add_edge(m_node, matches[j].first + 1, 1, 0);
+        mcmf.add_edge(m_node, matches[j].second + 1, 1, 0);
+    }
+
+    long long base_cost = 0, min_delta = 0;
+    for (int i = 0; i < n; ++i) {
+        long long L = l0[i] + rem[i];
+        base_cost += C[i] * w0[i] * w0[i] + D[i] * L * L;
+        for (int k = 1; k <= rem[i]; ++k) {
+            long long w = w0[i] + k - 1;
+            long long l = L - k + 1;
+            long long delta = C[i] * (2 * w + 1) - D[i] * (2 * l - 1);
+            mcmf.add_edge(i + 1, T, 1, delta);
+            min_delta = min(min_delta, delta);
+        }
+    }
+
+    // 3-layer DAG potential initialization: makes all initial reduced costs >= 0
+    mcmf.pi[T] = min_delta;
+    cout << base_cost + mcmf.solve(S, T).second << "\n";
+}
+```
+::::
+
+---
+
+### Problem `#141` (`Adv-1`): Codeforces 863 F — Almost Permutation
+
+- **Judge / URL:** [Codeforces 863F](https://codeforces.com/problemset/problem/863/F)
+- **Constraints:** $N \le 50$, $Q \le 100$ constraints. Array elements $a_1, \dots, a_N \in \{1, \dots, N\}$ initially satisfy $1 \le a_i \le N$. Each query is either `1 l r v` ($\forall i \in [l, r],\; a_i \ge v$) or `2 l r v` ($\forall i \in [l, r],\; a_i \le v$). Time limit $1.0\text{ s}$.
+- **Task:** Assign each $a_i \in \{1, \dots, N\}$ satisfying all $Q$ constraints to minimize the sum of squared frequencies $\sum_{v=1}^N \text{cnt}(v)^2$, where $\text{cnt}(v) = \sum_{i=1}^N [a_i = v]$, or print `-1` if no valid array exists.
+
+#### 4-Step Compilation
+
+1. **Step 1 (Diagnostic Signal):** Each position $i \in \{1, \dots, N\}$ must choose one value $v$ from its allowed interval $[L_i, R_i]$, and the objective $\sum_{v=1}^N \text{cnt}(v)^2$ is the sum of squares of the in-degrees of the value vertices $v$.
+2. **Step 2 (Algebraic Model):** Intersect all $Q$ bounds for each position $i$:
+
+   $$
+   L_i = \max\bigl(1,\; \max_{(1, l, r, v) : l \le i \le r} v\bigr), \qquad R_i = \min\bigl(N,\; \min_{(2, l, r, v) : l \le i \le r} v\bigr).
+   $$
+
+   If $L_i > R_i$ for any $i$, output `-1` immediately. Otherwise, since $\text{cnt}(v)^2 = \sum_{k=1}^{\text{cnt}(v)} (2k - 1)$, the $k$-th occurrence of value $v$ incurs marginal cost $2k - 1$.
+3. **Step 3 (Graph Construction):**
+   - Source $S \to \text{Pos}_i$ ($\text{cap}=1, \text{cost}=0$) for $i = 1, \dots, N$.
+   - $\text{Pos}_i \to \text{Val}_v$ ($\text{cap}=1, \text{cost}=0$) for each $v \in [L_i, R_i]$.
+   - $\text{Val}_v \to T$: $N$ parallel unit-capacity arcs with costs $1, 3, 5, \dots, 2N - 1$ for $k = 1, \dots, N$.
+4. **Step 4 (Verification):** All costs are positive odd integers $2k - 1 \ge 1$. Route $N$ units from $S$ to $T$; if maximum flow $< N$ (which only happens if $L_i > R_i$), output `-1`, else output $\text{MinCost}$.
+
+:::: {.callout-tip collapse="true" title="Hint 1 (#141) — Simplifying the $Q$ Range Constraints"}
+Since each constraint applies a lower or upper bound to individual elements $a_i$ independently, you can maintain `L[i]` and `R[i]` for each index $i \in \{1, \dots, N\}$ by taking `L[i] = max(L[i], v)` on type-1 queries and `R[i] = min(R[i], v)` on type-2 queries.
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 (#141) — Expanding $\text{cnt}(v)^2$ into Odd Marginal Costs"}
+Use the identity $c^2 = 1 + 3 + 5 + \dots + (2c - 1)$. How much does the $k$-th element assigned to value $v$ increase $\text{cnt}(v)^2$?
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 (#141) — Bipartite Assignment + Convex Sink Bundle"}
+Build a bipartite graph with $N$ position nodes on the left and $N$ value nodes on the right. Connect each value node $v$ to the sink $T$ with $N$ parallel edges of capacity $1$ and costs $1, 3, 5, \dots, 2N - 1$.
+::::
+
+:::: {.callout-note collapse="true" title="Reference Implementation (#141 — Codeforces 863F Almost Permutation)"}
+```cpp
+// Uses ConvexMCMF from Section 5.1
+void solve_cf863f() {
+    int n, q;
+    if (!(cin >> n >> q)) return;
+
+    vector<int> L(n + 1, 1), R(n + 1, n);
+    for (int k = 0; k < q; ++k) {
+        int type, l, r, v;
+        cin >> type >> l >> r >> v;
+        for (int i = l; i <= r; ++i) {
+            if (type == 1) L[i] = max(L[i], v);
+            else R[i] = min(R[i], v);
+        }
+    }
+
+    for (int i = 1; i <= n; ++i) {
+        if (L[i] > R[i]) {
+            cout << -1 << "\n";
+            return;
+        }
+    }
+
+    int S = 0, T = 2 * n + 1;
+    ConvexMCMF mcmf(T + 1);
+
+    for (int i = 1; i <= n; ++i) {
+        mcmf.add_edge(S, i, 1, 0);
+        for (int v = L[i]; v <= R[i]; ++v) mcmf.add_edge(i, n + v, 1, 0);
+    }
+    for (int v = 1; v <= n; ++v) {
+        mcmf.add_quadratic_bundle(n + v, T, n, 1, 0); // cnt(v)^2 = sum (2k - 1)
+    }
+
+    auto [flow, cost] = mcmf.solve(S, T);
+    cout << (flow == n ? cost : -1) << "\n";
+}
+```
+::::
+
+---
+
+### Problem `#142` (`Adv-2`): Luogu P2517 [HAOI2010] — 订购 (Order) & Luogu P2488 [SDOI2011] — 工作安排 (Work Arrangement)
+
+- **Judge / URL:** [Luogu P2517](https://www.luogu.com.cn/problem/P2517) (`[HAOI2010] 订购`) & [Luogu P2488](https://www.luogu.com.cn/problem/P2488) (`[SDOI2011] 工作安排`)
+- **Constraints:**
+  - **Part A (`[HAOI2010] 订购`):** $N \le 50$ months; month $i$ has customer demand $U_i \le 10^4$, unit purchasing cost $d_i$, warehouse storage fee $m$ per unit carried over from month $i$ to month $i+1$, and warehouse capacity $S_{\text{cap}} \le 10^4$. Minimize total purchasing and storage cost.
+  - **Part B (`[SDOI2011] 工作安排`):** $M \le 250$ employees and $N \le 250$ product types (demands $C_j$). Each employee $i$ has $K_i + 1 \le 6$ piecewise-linear anger/wage brackets defined by thresholds $0 = T_{i,0} < T_{i,1} < \dots < T_{i,K_i} < T_{i,K_i+1} = \infty$ and strictly increasing per-unit anger slopes $W_{i,1} < W_{i,2} < \dots < W_{i,K_i+1}$. Minimize total anger across all employees.
+
+#### 4-Step Compilation
+
+1. **Step 1 (Diagnostic Signal):**
+   - In `[HAOI2010] 订购`, each month $i$ is a time-indexed conservation node: goods ordered in month $i$ at cost $d_i$ can either satisfy month $i$'s demand $U_i$ immediately or be carried over to month $i+1$ along a capacity-$S_{\text{cap}}$ inventory edge of cost $m$.
+   - In `[SDOI2011] 工作安排`, an employee's anger is a piecewise-linear convex function of their total workload $f_i = \sum_j f_{i,j}$, with up to $6$ constant-slope brackets $[T_{i,k-1}, T_{i,k}]$.
+2. **Step 2 (Algebraic Model & Interval Bundling):**
+   - For `[HAOI2010] 订购`: let $x_i \ge 0$ be the amount ordered in month $i$ and $I_i \in [0, S_{\text{cap}}]$ be the inventory carried from month $i$ to month $i+1$. Flow conservation at month $i$ is $x_i + I_{i-1} = U_i + I_i$, minimizing $\sum_{i=1}^N d_i x_i + \sum_{i=1}^{N-1} m I_i$.
+   - For `[SDOI2011] 工作安排`: instead of creating $\sum C_j \le 2.5 \times 10^5$ unit-capacity arcs per employee, apply **Pattern 3 (Interval Bundling)** from Section 1.2! Bundle the $k$-th bracket of employee $i$ into a single arc $S \to \text{Emp}_i$ of capacity $T_{i,k} - T_{i,k-1}$ and cost $W_{i,k}$ (with capacity $\infty$ on the last bracket $k = K_i + 1$).
+3. **Step 3 (Graph Construction):**
+   - `[HAOI2010] 订购`: For $i = 1, \dots, N$, add ordering arc $S \to \text{Month}_i$ ($\text{cap}=\infty, \text{cost}=d_i$), demand arc $\text{Month}_i \to T$ ($\text{cap}=U_i, \text{cost}=0$), and (for $i < N$) carryover arc $\text{Month}_i \to \text{Month}_{i+1}$ ($\text{cap}=S_{\text{cap}}, \text{cost}=m$).
+   - `[SDOI2011] 工作安排`: Add $K_i + 1$ bundled bracket arcs $S \to \text{Emp}_i$ ($\text{cap}=T_{i,k} - T_{i,k-1}, \text{cost}=W_{i,k}$), capability arcs $\text{Emp}_i \to \text{Prod}_j$ ($\text{cap}=\infty, \text{cost}=0$ if employee $i$ can make product $j$), and demand arcs $\text{Prod}_j \to T$ ($\text{cap}=C_j, \text{cost}=0$).
+4. **Step 4 (Verification):** Both graphs have strictly non-negative initial edge costs ($d_i, m \ge 0$ and $W_{i,1} < \dots < W_{i,K_i+1}$ with $W_{i,1} \ge 0$), so Primal-Dual Dijkstra runs with $\pi \equiv 0$ in $< 15\text{ ms}$.
+
+:::: {.callout-tip collapse="true" title="Hint 1 (#142) — Time-Expanded Inventory Carryover (`[HAOI2010] 订购`)"}
+Model each month $i \in \{1, \dots, N\}$ as a vertex. Purchasing in month $i$ is an edge $S \to i$ of capacity $\infty$ and cost $d_i$; satisfying demand in month $i$ is an edge $i \to T$ of capacity $U_i$ and cost $0$. How do you represent storing up to $S_{\text{cap}}$ units from month $i$ to month $i+1$ at unit cost $m$?
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 (#142) — Bundling Piecewise-Linear Wage Brackets (`[SDOI2011] 工作安排`)"}
+If an employee's marginal anger is $W_{i,1}$ for the first $T_{i,1}$ items, $W_{i,2}$ for the next $T_{i,2} - T_{i,1}$ items, and so on with $W_{i,1} < W_{i,2} < \dots$, you do *not* need unit-capacity edges! Just add $K_i + 1$ parallel edges from $S$ to $\text{Emp}_i$, where the $k$-th edge has capacity $T_{i,k} - T_{i,k-1}$ and cost $W_{i,k}$.
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 (#142) — Watch Out for 64-Bit Overflow"}
+In `[SDOI2011] 工作安排`, total product demand $\sum C_j$ can reach $2.5 \times 10^5$ and anger slopes $W_{i,k}$ can reach $10^5$, so total minimum anger can exceed $2^{31} - 1$. Accumulate total cost in `long long`.
+::::
+
+:::: {.callout-note collapse="true" title="Reference Implementation (#142A — Luogu P2517 [HAOI2010] 订购)"}
+```cpp
+// Uses ConvexMCMF from Section 5.1
+void solve_haoi2010_order() {
+    const long long INF = 1e15;
+    int n;
+    long long m_fee, S_cap;
+    if (!(cin >> n >> m_fee >> S_cap)) return;
+
+    vector<long long> U(n + 1), d(n + 1);
+    for (int i = 1; i <= n; ++i) cin >> U[i];
+    for (int i = 1; i <= n; ++i) cin >> d[i];
+
+    int S = 0, T = n + 1;
+    ConvexMCMF mcmf(T + 1);
+
+    for (int i = 1; i <= n; ++i) {
+        mcmf.add_edge(S, i, INF, d[i]);
+        mcmf.add_edge(i, T, U[i], 0);
+        if (i < n) mcmf.add_edge(i, i + 1, S_cap, m_fee);
+    }
+
+    cout << mcmf.solve(S, T).second << "\n";
+}
+```
+::::
+
+:::: {.callout-note collapse="true" title="Reference Implementation (#142B — Luogu P2488 [SDOI2011] 工作安排)"}
+```cpp
+// Uses ConvexMCMF from Section 5.1
+void solve_sdoi2011_work() {
+    const long long INF = 1e15;
+    int M, N;
+    if (!(cin >> M >> N)) return;
+
+    int S = 0, T = M + N + 1;
+    ConvexMCMF mcmf(T + 1);
+
+    for (int j = 1; j <= N; ++j) {
+        long long C_j;
+        cin >> C_j;
+        mcmf.add_edge(M + j, T, C_j, 0);
+    }
+
+    for (int i = 1; i <= M; ++i) {
+        for (int j = 1; j <= N; ++j) {
+            int can_make;
+            cin >> can_make;
+            if (can_make) mcmf.add_edge(i, M + j, INF, 0);
+        }
+    }
+
+    for (int i = 1; i <= M; ++i) {
+        int K;
+        cin >> K;
+        vector<long long> thresh(K + 2, 0), slope(K + 1, 0);
+        for (int k = 1; k <= K; ++k) cin >> thresh[k];
+        thresh[K + 1] = INF;
+        for (int k = 0; k <= K; ++k) cin >> slope[k];
+
+        // Pattern 3: Bundle each constant-slope interval [thresh[k], thresh[k+1]] into 1 arc
+        mcmf.add_bracket_bundle(S, i, thresh, slope);
+    }
+
+    cout << mcmf.solve(S, T).second << "\n";
+}
+```
+::::
+
+---
+
+### Problem `#143` (`Mas-1`): Piecewise-Linear Large-Capacity Convex Cost Flow ($2^k$ Bit-Scaling) & AtCoder AGC 034 D — Manhattan Max Matching
+
+- **Judge / URL:** [AtCoder AGC 034D](https://atcoder.jp/contests/agc034/tasks/agc034_d) (*Manhattan Max Matching*) & Large-Capacity Piecewise-Linear Convex MCMF (`Algorithm 18.1`)
+- **Constraints:**
+  - **Part A (Large-Capacity Piecewise-Linear Convex Cost Flow via $2^k$ Bit-Scaling):** Directed network with $V \le 400$, $E \le 1500$ piecewise-linear convex edges with capacities $U_e \le 10^9$ and costs $\le 10^9$.
+  - **Part B (`AtCoder AGC 034D — Manhattan Max Matching`):** $N \le 1000$ red points $(R X_i, R Y_i)$ with multiplicity $R C_i \le 10$ and $N \le 1000$ blue points $(B X_j, B Y_j)$ with multiplicity $B C_j \le 10$ ($\sum R C_i = \sum B C_j \le 10^4$). Pair all red and blue tokens to **maximize** the sum of Manhattan distances $|R X_i - B X_j| + |R Y_i - B Y_j|$.
+
+#### 4-Step Compilation
+
+1. **Step 1 (Diagnostic Signal):**
+   - In Part A, $U_e \le 10^9$ makes standard unit-step SSP `TLE`, requiring **Algorithm 18.1 (Edmonds–Karp Binary Capacity Bit-Scaling)**.
+   - In Part B (`AGC 034D`), building all $N^2 = 10^6$ red-to-blue bipartite edges gives a dense graph that is too slow for $10^4$ flow units. However, the $\ell_1$ Manhattan distance $|x_1 - x_2| + |y_1 - y_2|$ is the maximum of four linear sign combinations:
+
+     $$
+     |x_1 - x_2| + |y_1 - y_2| \;=\; \max_{s_x, s_y \in \{-1, +1\}} \Bigl[\bigl(s_x x_1 + s_y y_1\bigr) + \bigl(-s_x x_2 - s_y y_2\bigr)\Bigr].
+     $$
+
+2. **Step 2 (Algebraic Model & 4-Sign Hub Factorization):**
+   Introduce **4 intermediate sign-hub vertices** $H_0, H_1, H_2, H_3$ corresponding to $(s_x, s_y) \in \{(+1, +1), (+1, -1), (-1, +1), (-1, -1)\}$. Every red point $i$ connects to each hub $H_b$ with cost $-(s_x R X_i + s_y R Y_i)$, and each hub $H_b$ connects to every blue point $j$ with cost $-(-s_x B X_j - s_y B Y_j)$! Because we minimize negated cost (which maximizes the sum), the shortest path from Red $i$ to Blue $j$ through $\{H_0, H_1, H_2, H_3\}$ automatically picks the sign pair $(s_x, s_y)$ achieving the maximum $= |R X_i - B X_j| + |R Y_i - B Y_j|$!
+3. **Step 3 (Graph Construction):**
+   - For Part A (`Algorithm 18.1`): bundle each piecewise-linear convex edge into linear bracket arcs, add feedback arc $T \to S$ of capacity $\sum u_a$ and cost $-M_\infty$, and run bit-scaling from $k = \lfloor \log_2 U_{\max} \rfloor$ down to $0$.
+   - For Part B (`AGC 034D`): $2N + 6$ vertices ($S$, $T$, $N$ Red, $N$ Blue, $4$ Hubs) and only $10N \approx 10^4$ edges! Initialize DAG potentials in $O(N)$ time along the 4-layer DAG $S \to \text{Red}_i \to H_b \to \text{Blue}_j \to T$ and run Primal-Dual Dijkstra.
+4. **Step 4 (Verification):** In `AGC 034D`, since a path could theoretically bounce $\text{Red}_1 \to H_b \to \text{Red}_2$ in the residual graph after augmentations, the 4-hub graph has $O(N)$ vertices and $O(N)$ edges, so $O(F \cdot N \log N)$ with $F \le 10^4, N \le 1000$ takes $\approx 40\text{ ms}$.
+
+:::: {.callout-tip collapse="true" title="Hint 1 (#143) — Binary Bit-Scaling Invariant (`Algorithm 18.1`)"}
+When you double all arc capacities and flows ($f_a \gets 2 f_a, u_a \gets 2 u_a$), no new residual arcs appear, so $c_{uv}^\pi \ge 0$ continues to hold everywhere. A violation can only occur when you add $+1$ to the capacity of a currently saturated arc $(u \to v)$ whose reduced cost $c_{uv}^\pi$ is negative!
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 (#143) — Repairing a Single-Bit Violation via Dijkstra"}
+When unlocking $+1$ capacity on $(u \to v)$ exposes $c_{uv}^\pi < 0$, run Dijkstra from $v$ to $u$ in the *existing* residual graph (before adding the new capacity unit), update $\pi(x) \gets \pi(x) + \text{dist}(x)$, and if $\text{dist}(u) + c_{uv} + \pi_{\text{old}}(u) - \pi_{\text{old}}(v) < 0$, push $1$ unit along $u \to v \leadsto u$.
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 (#143) — Expanding $|x_1 - x_2| + |y_1 - y_2|$ via 4 Hub Nodes (`AGC 034D`)"}
+Use $|A| + |B| = \max(A+B, A-B, -A+B, -A-B)$. Create 4 hub vertices in the middle of the bipartite graph; connect every Red node to all 4 hubs and all 4 hubs to every Blue node, slashing the edge count from $N^2 = 10^6$ to $8N = 8000$!
+::::
+
+:::: {.callout-note collapse="true" title="Reference Implementation (#143A — 2^k Capacity Bit-Scaling for Large-Capacity Convex MCMF)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 4e18;
+
+// Edmonds-Karp 2^k Binary Capacity Bit-Scaling (Algorithm 18.1)
+// Handles arbitrary capacities U <= 10^9 and negative costs/cycles in O(E log U (E + V log V))
+struct BitScalingMCMF {
+    struct InternalEdge {
+        int to, rev;
+        long long cap, cost;
+    };
+    struct InputArc {
+        int u, v, idx;
+        long long full_cap, cost;
+    };
+
+    int n;
+    vector<vector<InternalEdge>> adj;
+    vector<InputArc> arcs;
+    vector<long long> pi, dist;
+    vector<int> pv_v, pv_e;
+
+    BitScalingMCMF(int n) : n(n), adj(n), pi(n, 0), dist(n), pv_v(n), pv_e(n) {}
+
+    int add_arc(int u, int v, long long cap, long long cost) {
+        int idx = (int)adj[u].size();
+        adj[u].push_back({v, (int)adj[v].size(), 0, cost});
+        adj[v].push_back({u, idx, 0, -cost});
+        arcs.push_back({u, v, idx, cap, cost});
+        return (int)arcs.size() - 1;
+    }
+
+    void dijkstra(int src) {
+        fill(dist.begin(), dist.end(), INF);
+        priority_queue<pair<long long, int>, vector<pair<long long, int>>, greater<>> pq;
+        dist[src] = 0;
+        pq.push({0, src});
+        while (!pq.empty()) {
+            auto [d, u] = pq.top();
+            pq.pop();
+            if (d != dist[u]) continue;
+            for (int i = 0; i < (int)adj[u].size(); ++i) {
+                const auto& e = adj[u][i];
+                if (e.cap > 0) {
+                    long long nd = d + e.cost + pi[u] - pi[e.to];
+                    if (nd < dist[e.to]) {
+                        dist[e.to] = nd;
+                        pv_v[e.to] = u;
+                        pv_e[e.to] = i;
+                        pq.push({nd, e.to});
+                    }
+                }
+            }
+        }
+        long long max_d = 0;
+        for (int i = 0; i < n; ++i) if (dist[i] < INF) max_d = max(max_d, dist[i]);
+        for (int i = 0; i < n; ++i) {
+            pi[i] += (dist[i] < INF ? dist[i] : max_d);
+        }
+    }
+
+    // Adds +1 unit of capacity to adj[u][idx] while maintaining c^pi >= 0
+    void unlock_one_unit(int u, int idx) {
+        auto& e = adj[u][idx];
+        int v = e.to;
+        if (e.cap > 0 || e.cost + pi[u] - pi[v] >= 0) {
+            e.cap += 1;
+            return;
+        }
+        dijkstra(v);
+        if (dist[u] < INF && e.cost + pi[u] - pi[v] < 0) {
+            // Augment 1 unit around the negative cycle u -> v ~> u
+            adj[v][e.rev].cap += 1;
+            for (int cur = u; cur != v; cur = pv_v[cur]) {
+                int p = pv_v[cur], ei = pv_e[cur];
+                adj[p][ei].cap -= 1;
+                adj[cur][adj[p][ei].rev].cap += 1;
+            }
+        } else {
+            e.cap += 1;
+        }
+    }
+
+    pair<long long, long long> solve_st(int s, int t) {
+        long long max_cap = 0, sum_cap = 0, max_cost = 1;
+        for (const auto& a : arcs) {
+            max_cap = max(max_cap, a.full_cap);
+            sum_cap += a.full_cap;
+            max_cost = max(max_cost, abs(a.cost));
+        }
+        if (sum_cap == 0) return {0, 0};
+        long long M_inf = 1LL * (n + 1) * max_cost + 1;
+        int fb_id = add_arc(t, s, sum_cap, -M_inf);
+        max_cap = max(max_cap, sum_cap);
+
+        int B = 63 - __builtin_clzll(max_cap);
+        for (int bit = B; bit >= 0; --bit) {
+            for (int u = 0; u < n; ++u) {
+                for (auto& e : adj[u]) e.cap <<= 1;
+            }
+            for (const auto& a : arcs) {
+                if ((a.full_cap >> bit) & 1LL) {
+                    unlock_one_unit(a.u, a.idx);
+                }
+            }
+        }
+
+        const auto& fb = arcs[fb_id];
+        long long total_flow = adj[fb.v][adj[fb.u][fb.idx].rev].cap;
+        long long total_cost = 0;
+        for (int i = 0; i < (int)arcs.size() - 1; ++i) {
+            const auto& a = arcs[i];
+            long long f = adj[a.v][adj[a.u][a.idx].rev].cap;
+            total_cost += f * a.cost;
+        }
+        return {total_flow, total_cost};
+    }
+};
+```
+::::
+
+:::: {.callout-note collapse="true" title="Reference Implementation (#143B — AtCoder AGC 034D Manhattan Max Matching)"}
+```cpp
+// Uses ConvexMCMF from Section 5.1
+void solve_agc034d() {
+    const long long INF = 1e18;
+    int n;
+    if (!(cin >> n)) return;
+
+    int S = 0, T = 2 * n + 5;
+    int H0 = 2 * n + 1; // 4 Sign-Hubs: H0..H3
+    ConvexMCMF mcmf(T + 1);
+
+    const long long sx[4] = {1, 1, -1, -1};
+    const long long sy[4] = {1, -1, 1, -1};
+
+    vector<long long> min_hub(4, INF);
+
+    for (int i = 1; i <= n; ++i) {
+        long long x, y;
+        int c;
+        cin >> x >> y >> c;
+        mcmf.add_edge(S, i, c, 0);
+        for (int b = 0; b < 4; ++b) {
+            long long w = -(sx[b] * x + sy[b] * y);
+            mcmf.add_edge(i, H0 + b, c, w);
+            min_hub[b] = min(min_hub[b], w);
+        }
+    }
+
+    vector<long long> min_blue(n + 1, INF);
+    long long min_T = INF;
+
+    for (int j = 1; j <= n; ++j) {
+        long long x, y;
+        int c;
+        cin >> x >> y >> c;
+        for (int b = 0; b < 4; ++b) {
+            long long w = sx[b] * x + sy[b] * y;
+            mcmf.add_edge(H0 + b, n + j, c, w);
+            min_blue[j] = min(min_blue[j], min_hub[b] + w);
+        }
+        mcmf.add_edge(n + j, T, c, 0);
+        min_T = min(min_T, min_blue[j]);
+    }
+
+    // Exact 4-layer DAG potentials in O(N) without SPFA
+    mcmf.pi[S] = 0;
+    for (int i = 1; i <= n; ++i) mcmf.pi[i] = 0;
+    for (int b = 0; b < 4; ++b) mcmf.pi[H0 + b] = min_hub[b];
+    for (int j = 1; j <= n; ++j) mcmf.pi[n + j] = min_blue[j];
+    mcmf.pi[T] = min_T;
+
+    cout << -mcmf.solve(S, T).second << "\n";
+}
+```
+::::
+
+---
+
+### Problem `#144` (`Mas-2`): Convex Slope-Function Parameterization (`AtCoder Practice2 E — MinCostFlow` & `Luogu P2050 [NOI2012] 美食节`)
+
+- **Judge / URL:** [AtCoder Library Practice Contest E](https://atcoder.jp/contests/practice2/tasks/practice2_e) (`MinCostFlow`) & [Luogu P2050](https://www.luogu.com.cn/problem/P2050) (`[NOI2012] 美食节`)
+- **Constraints:**
+  - **Part A (`AtCoder Practice2 E — MinCostFlow`):** Given an $N \times N$ non-negative grid $A_{r,c} \in [0, 10^9]$ ($N \le 50$) and a cap $K \le N$. Choose **any** number of cells (not fixed!) such that at most $K$ cells are chosen in each row and at most $K$ cells are chosen in each column, maximizing the sum of chosen $A_{r,c}$, and output both the maximum sum and the $N \times N$ selection grid.
+  - **Part B (`Luogu P2050 [NOI2012] 美食节`):** $N \le 40$ dishes (demands $p_i$, $\sum p_i = P \le 800$), $M \le 100$ chefs, cooking time matrix $t_{i,j} \le 1000$. Minimize total waiting time across all $P$ dishes via **Algorithm 18.2 (`动态加边`)**.
+
+#### 4-Step Compilation
+
+1. **Step 1 (Diagnostic Signal):**
+   - In `AtCoder Practice2 E`, the total number of chosen cells $F \in [0, N K]$ is **not fixed** (if all $A_{r,c} > 0$, we want to push as much flow as possible, or we can add a zero-reward bypass edge $\text{Row}_r \to T$ of capacity $K$ and cost $0$ so the total flow is fixed at $N K$!). Furthermore, by **Theorem 17.5 (Convexity of the Minimum-Cost Flow Value Function $C(F)$)**, as flow $F$ increases from $0$ to $N K$, the per-unit path cost $\pi(T) - \pi(S)$ is monotonically non-decreasing (`ACL`'s `mcf_graph::slope(s, t)` returns the complete piecewise-linear convex hull of $(F, C(F))$!).
+   - In `[NOI2012] 美食节`, $N \times M \times P = 3.2 \times 10^6$ edges is too dense to pre-allocate, requiring **Algorithm 18.2 (Dynamic Lazy Edge Insertion)**.
+2. **Step 2 (Algebraic Model & Fixed-Hop Cost Shift for `Practice2 E`):**
+   Let $M_{\max} = \max_{r,c} A_{r,c} = 10^9$. Every chosen cell $(r, c)$ traverses $S \to \text{Row}_r \to \text{Col}_c \to T$ at cost $M_{\max} - A_{r,c} \ge 0$, while an unchosen slot on $\text{Row}_r$ traverses the bypass arc $\text{Row}_r \to T$ at cost $M_{\max} \ge 0$. Then **every unit of the $N K$ flow** incurs a $+M_{\max}$ baseline shift, so $\text{MaxSum} = N K \cdot M_{\max} - \text{MinCost}(N K)$, and all edge costs are $\ge 0$!
+3. **Step 3 (Graph Construction for `[NOI2012] 美食节`):**
+   Start with only slot $(j, 1)$ for each chef $j \in \{1, \dots, M\}$. After each unit augmentation $S \to \text{Dish}_i \to (j_\star, k_\star) \to T$, immediately allocate vertex $(j_\star, k_\star + 1)$ with potential $\pi(j_\star, k_\star + 1) = \pi(T)$, arc $(j_\star, k_\star + 1) \to T$ ($\text{cap}=1, \text{cost}=0$), and $N$ arcs $\text{Dish}_i \to (j_\star, k_\star + 1)$ ($\text{cap}=1, \text{cost}=(k_\star + 1) t_{i, j_\star}$).
+4. **Step 4 (Verification):** Both runs maintain exact non-negative reduced costs at every step and finish in $< 30\text{ ms}$.
+
+:::: {.callout-tip collapse="true" title="Hint 1 (#144) — Turning Variable-Size Selection into Fixed-Flow Non-Negative MCMF (`Practice2 E`)"}
+Instead of stopping when the shortest augmenting path cost becomes positive, shift every cell reward $-A_{r,c}$ by $+M_{\max}$ ($M_{\max} = 10^9$) to make all cell edges have cost $M_{\max} - A_{r,c} \ge 0$, and add a direct bypass edge $\text{Row}_r \to T$ of capacity $K$ and cost $M_{\max}$. Now you always push exactly $N \cdot K$ units of flow!
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 (#144) — Lazy Chef Slot Spawning (`[NOI2012] 美食节`)"}
+When you augment $1$ unit of flow from $S$ to $T$, look at `pv_v[T]`—that is the exact chef slot node $u$ that was just used! Maintain `chef_id[u]` and `tier_k[u]` for each slot node so you can immediately spawn `(chef_id[u], tier_k[u] + 1)`.
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 (#144) — Keeping Johnson Potentials Valid When Spawning a New Vertex"}
+When you dynamically add vertex $v_{\text{new}} = (j_\star, k_\star + 1)$ during Primal-Dual Dijkstra, set `pi[v_new] = pi[T]`. Why does every new edge $\text{Dish}_i \to v_{\text{new}}$ automatically have non-negative reduced cost? Because $\pi(\text{Dish}_i) + k_\star t_{i, j_\star} \ge \pi(j_\star, k_\star) \ge \pi(T)$ held before the augmentation!
+::::
+
+:::: {.callout-note collapse="true" title="Reference Implementation (#144A — AtCoder Practice2 E MinCostFlow)"}
+```cpp
+// Uses ConvexMCMF from Section 5.1
+void solve_acl_practice2_e() {
+    const long long BIG = 1e9;
+    int n, K;
+    if (!(cin >> n >> K)) return;
+
+    int S = 0, T = 2 * n + 1;
+    ConvexMCMF mcmf(T + 1);
+
+    vector<vector<int>> edge_id(n, vector<int>(n));
+    for (int r = 0; r < n; ++r) {
+        mcmf.add_edge(S, r + 1, K, 0);
+        mcmf.add_edge(r + 1, T, K, BIG); // Bypass: leave slot unused at cost BIG
+        for (int c = 0; c < n; ++c) {
+            long long a;
+            cin >> a;
+            edge_id[r][c] = mcmf.add_edge(r + 1, n + 1 + c, 1, BIG - a);
+        }
+    }
+    for (int c = 0; c < n; ++c) mcmf.add_edge(n + 1 + c, T, K, 0);
+
+    long long min_cost = mcmf.solve(S, T).second;
+    cout << 1LL * n * K * BIG - min_cost << "\n";
+
+    for (int r = 0; r < n; ++r) {
+        string row(n, '.');
+        for (int c = 0; c < n; ++c) {
+            if (mcmf.adj[r + 1][edge_id[r][c]].cap == 0) row[c] = 'X';
+        }
+        cout << row << "\n";
+    }
+}
+```
+::::
+
+:::: {.callout-note collapse="true" title="Reference Implementation (#144B — Luogu P2050 [NOI2012] 美食节 via Dynamic Lazy Edge Insertion)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 1e18;
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n, m;
+    if (!(cin >> n >> m)) return 0;
+
+    vector<int> p(n + 1);
+    int P = 0;
+    for (int i = 1; i <= n; ++i) {
+        cin >> p[i];
+        P += p[i];
+    }
+
+    vector<vector<long long>> t_cook(n + 1, vector<long long>(m + 1));
+    for (int i = 1; i <= n; ++i) {
+        for (int j = 1; j <= m; ++j) {
+            cin >> t_cook[i][j];
+        }
+    }
+
+    struct Edge {
+        int to, rev, cap;
+        long long cost;
+    };
+
+    int max_nodes = n + m + P + 5;
+    vector<vector<Edge>> adj(max_nodes);
+    vector<long long> pi(max_nodes, 0), dist(max_nodes);
+    vector<int> pv_v(max_nodes), pv_e(max_nodes);
+    vector<int> chef_of(max_nodes, 0), tier_of(max_nodes, 0);
+
+    auto add_edge = [&](int u, int v, int cap, long long cost) {
+        adj[u].push_back({v, (int)adj[v].size(), cap, cost});
+        adj[v].push_back({u, (int)adj[u].size() - 1, 0, -cost});
+    };
+
+    int S = 0, T = 1;
+    int cur_nodes = 2 + n; // 2..n+1 are Dish nodes
+
+    for (int i = 1; i <= n; ++i) {
+        add_edge(S, 1 + i, p[i], 0);
+    }
+
+    auto spawn_slot = [&](int j, int k) {
+        int u = cur_nodes++;
+        chef_of[u] = j;
+        tier_of[u] = k;
+        pi[u] = pi[T]; // Preserves c^pi >= 0 on all new arcs!
+        add_edge(u, T, 1, 0);
+        for (int i = 1; i <= n; ++i) {
+            add_edge(1 + i, u, 1, 1LL * k * t_cook[i][j]);
+        }
+    };
+
+    // Initially spawn ONLY tier k = 1 for each chef j = 1..m
+    for (int j = 1; j <= m; ++j) {
+        spawn_slot(j, 1);
+    }
+
+    long long total_wait = 0;
+    for (int step = 0; step < P; ++step) {
+        fill(dist.begin(), dist.begin() + cur_nodes, INF);
+        priority_queue<pair<long long, int>, vector<pair<long long, int>>, greater<>> pq;
+        dist[S] = 0;
+        pq.push({0, S});
+
+        while (!pq.empty()) {
+            auto [d, u] = pq.top();
+            pq.pop();
+            if (d != dist[u]) continue;
+            for (int i = 0; i < (int)adj[u].size(); ++i) {
+                const auto& e = adj[u][i];
+                if (e.cap > 0) {
+                    long long nd = d + e.cost + pi[u] - pi[e.to];
+                    if (nd < dist[e.to]) {
+                        dist[e.to] = nd;
+                        pv_v[e.to] = u;
+                        pv_e[e.to] = i;
+                        pq.push({nd, e.to});
+                    }
+                }
+            }
+        }
+
+        for (int i = 0; i < cur_nodes; ++i) {
+            if (dist[i] < INF) pi[i] += dist[i];
+        }
+
+        for (int v = T; v != S; v = pv_v[v]) {
+            auto& e = adj[pv_v[v]][pv_e[v]];
+            e.cap -= 1;
+            adj[v][e.rev].cap += 1;
+        }
+        total_wait += pi[T];
+
+        // The vertex immediately preceding T on the augmenting path is the newly saturated chef slot!
+        int used_slot = pv_v[T];
+        int j = chef_of[used_slot];
+        int k = tier_of[used_slot];
+        if (k < P) {
+            spawn_slot(j, k + 1);
+        }
+    }
+
+    cout << total_wait << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+## 7. Pre-Submission Checklist (`FM-18` Audit)
+
+Before submitting any convex-cost or tournament flow solution in a live contest, run through this 6-point verification audit:
+
+::: {.callout-important title="Pre-Submission Audit Checklist for Convex Edge Splitting & Tournament Flows"}
+1. **Second-Difference Convexity Check (`FM-18` $\leftrightarrow$ `H-20`):**
+   Did you verify $\Delta^2 \Phi_e(k) = \Delta \Phi_e(k+1) - \Delta \Phi_e(k) \ge 0$ for *every* $k \in \{1, \dots, U_e - 1\}$? If $\Delta \Phi_e(k)$ ever decreases (concave bulk discount or fixed setup fee), SSP will illegally route flow through the later, cheaper arc before the first arc!
+2. **Base Cost Offset $\Phi_e(0)$:**
+   Does your objective have a non-zero value at $f_e = 0$ (such as $\binom{w_u^{(0)}}{2}$ in tournament 3-cycles, $C_i (w_i^{(0)})^2 + D_i (l_i^{(0)} + \text{rem}_i)^2$ in `[JSOI2009] 球队收益`, or $\alpha f_0$ in V-shaped target penalties)? Make sure you accumulate $\sum_e \Phi_e(0)$ into `base_cost` before running MCMF!
+3. **1-Indexed Marginal Difference Indexing:**
+   For the $k$-th unit of additional flow ($k = 1, 2, \dots, U$), did you compute $\Phi(k) - \Phi(k-1)$ (giving $2k-1$ for $f^2$ and $w_0 + k - 1$ for $\binom{w_0 + f}{2}$) rather than $\Phi(k+1) - \Phi(k)$? An off-by-one shift changes every marginal cost by $+2a$ or $+1$ and corrupts the final answer by $+F \cdot \text{shift}$.
+4. **Negative Initial Marginal Costs (`H-19`):**
+   When decoupling two-variable costs (`[JSOI2009] 球队收益`) or V-shaped target penalties ($\alpha(f_0 - f)_+$), the early marginal arcs can have **negative** costs even though the sequence is convex! Initialize Johnson potentials $\pi$ via topological DP on the initial DAG (or Fixed-Hop $+K_{\text{shift}}$) before calling Dijkstra.
+5. **Interval Bundling vs Unit-Arc Explosion:**
+   If $U \le 10^6$ with $K \le 6$ piecewise-linear brackets (`[SDOI2011] 工作安排`), did you bundle each constant-slope bracket $[T_{m-1}, T_m]$ into **one** arc of capacity $T_m - T_{m-1}$ instead of $U$ unit arcs?
+6. **Lazy Slot Allocation (`动态加边`) Potential Invariant:**
+   When dynamically spawning a new chef/machine tier node $v_{\text{new}} = (j, k+1)$ mid-run (`[NOI2012] 美食节`), did you set `pi[v_new] = pi[T]` before the next Dijkstra iteration? Leaving `pi[v_new] = 0` when `pi[T] > 0` creates a fake negative reduced cost on $v_{\text{new}} \to T$!
+:::
+
+---
+
+## 8. Chapter Summary, Quarantined Templates & Bridge to Chapter 19
+
+### 8.1 Quarantined Template Problems
+
+In accordance with our anti-boilerplate curriculum policy, the following pure-template convex edge-splitting exercises are quarantined here with one-line compilation summaries rather than occupying main ladder slots:
+
+| Quarantined Problem | Judge ID | One-Line Compilation to Chapter 18 Archetype |
+| :--- | :--- | :--- |
+| `[SCOI2007] 修车` (Car Repair) | [Luogu P2053](https://www.luogu.com.cn/problem/P2053) | Small-scale ($N \le 60, M \le 9$) static version of `#144B` (`[NOI2012] 美食节`): reverse-position marginal wait costs $k \cdot t_{i,j}$ without needing lazy edge insertion. |
+| `[WC2007] 石头剪刀布` (BZOJ 1070 / LOJ) | LOJ #2226 | Duplicate judge mirror of `#137` (`Luogu P4249`) and `#144B`. |
+| `Codeforces 1187 G — Gang Up` | [CF 1187G](https://codeforces.com/problemset/problem/1187/G) | Time-expanded layered graph ($T \le N + K \le 100$) where each transition edge $(u, t) \to (v, t+1)$ has quadratic congestion cost $c \cdot t + d \cdot f^2$, compiled into $K$ unit arcs of costs $c + d(2k-1)$. |
+| `[ZJOI2010] 网络扩容` (Network Expansion) | [Luogu P2604](https://www.luogu.com.cn/problem/P2604) | Two-stage piecewise-linear bracket on every edge: bracket 1 has capacity $u_e$ and cost $0$; bracket 2 has capacity $\infty$ and expansion cost $w_e$. |
+
+### 8.2 Bridge to Chapter 19
+
+Throughout Chapter 18, every non-linear objective $\sum_e \Phi_e(f_e)$ was **separable across single edges or single vertices**, allowing us to compile each $\Phi_e(f_e)$ locally into a bundle of parallel arcs. What happens when the constraints or objective functions couple **contiguous intervals** $a_l + a_{l+1} + \dots + a_r \ge C_{l,r}$ across a linear sequence of variables?
+
+In **Chapter 19 (*Consecutive Finite Differences ($E_i - E_{i-1}$), Interval Matrix Duals & Cyclic Circulations*)**, we will discover a remarkable algebraic transformation: taking the **consecutive finite difference** $E_t - E_{t-1}$ of a system of prefix/interval equations turns dense interval coverage matrices into **column-sparse $(+1, -1)$ incidence matrices**—where every decision variable has exactly one $+1$ entry (flow exit) and one $-1$ entry (flow entry), compiling seemingly intractable interval DP and cyclic scheduling problems (`[NOI2008] 志愿者招募`, `CF 1662J`, `CF 1288F`) directly into minimum-cost circulations!
+
+---
+
+## Multilingual Bibliography & Further Reading
+
+- **`[EN]` Ahuja, R. K., Magnanti, T. L., & Orlin, J. B. (1993).** *Network Flows: Theory, Algorithms, and Applications*, Chapter 14 (*Convex Cost Flows*). Prentice Hall. (The definitive textbook treatment of separable convex marginal linearization and $\Delta$-step capacity scaling.)
+- **`[EN]` Minoux, M. (1986).** *Solving integer minimum cost flows with separable convex cost objective polynomially.* Mathematical Programming Study, 26, 237–239. (Introduces weakly polynomial capacity scaling for separable integer convex flows.)
+- **`[EN]` Kendall, M. G., & Babington Smith, B. (1940).** *On the method of paired comparisons.* Biometrika, 31(3/4), 324–345; and **Landau, H. G. (1953).** *On dominance relations and the structure of animal societies: III. The condition for a score structure.* Bulletin of Mathematical Biophysics, 15(2), 143–148. (Establishes the complementary transitive-triple formula $\#(\text{3-Cycles}) = \binom{N}{3} - \sum \binom{w_u}{2}$ and tournament score-sequence majorization.)
+- **`[ZH]` 胡伯涛 (Amber / Hu Botao, 2007).** 《最小割模型在信息学竞赛中的应用》 & WC2007 讲义 (*[WC2007] 剪刀石头布*命题报告). (Pioneered tournament 3-cycle maximization via binomial marginal edge splitting in Chinese competitive programming.)
+- **`[ZH]` 陈立杰 (WJMZBMR) & NOI2012 命题组 (2012).** 《NOI2012 美食节 命题报告与动态加边费用流》. (Standardized the `动态加边` / Dynamic Lazy Edge Insertion technique for reverse-position waiting time graphs.)
+- **`[JA]` AtCoder Library (`ac-library`) Documentation & `noshi91` / `maspy` Flow Notes.** `atcoder::mcf_graph::slope(s, t)` and piecewise-linear convex potential parameterization in `AtCoder Practice2 E` and `AGC 034 D`.

@@ -1,0 +1,1822 @@
+---
+title: "Chapter 20 — Min-Cost Cycle Covers, Dynamic Lazy Scheduling, Resource Reuse & Rank/Manhattan Hubs"
+---
+
+## Prerequisites & Learning Objectives
+
+### Prerequisites
+
+Before studying this chapter, make sure you are comfortable with:
+
+- **Chapter 05 & Chapter 08 (Bipartite Matching & DAG Path Covers)**: Splitting each vertex $v \in V$ of a directed graph into an outgoing port $v_{\text{out}}$ and an incoming port $v_{\text{in}}$ so that an unweighted matching of size $M$ partitions a DAG into $N - M$ vertex-disjoint directed paths.
+- **Chapter 17 (Min-Cost Max-Flow Foundations & Potentials)**: Running the Successive Shortest Path (SSP) algorithm with Johnson potentials $\pi_v$ ($\tilde{c}(u, v) = c(u, v) + \pi_u - \pi_v \ge 0$), initializing potentials via topological DP on DAGs, and reversing saturated forward arcs $(u, v)$ into backward residual arcs $(v, u)$ of cost $-c(u, v)$.
+- **Chapter 18 & Chapter 19 (Convex Marginal Arcs & Equation-Difference Compilation)**: Encoding discrete convex functions via parallel unit-capacity arcs of non-decreasing marginal cost $\Delta g(k) = g(k) - g(k-1)$, and compiling flow balance equations via demand substitution $f(e) = L(e) + y_e$ or consecutive equation differencing $\Delta E_t = E_t - E_{t-1}$.
+
+### Learning Objectives
+
+By the end of this chapter, you will be able to:
+
+1. **Apply the Unifying Spine of Bipartite Supply–Demand Splitting (`拆点供需`) and Transition Kernel Factorization**: Recognize when an entity simultaneously acts as a producer of outgoing state and a consumer of incoming state, decouple it into $(i_{\text{out}} \in \mathcal{S}, i_{\text{in}} \in \mathcal{D})$, and factor dense $O(N^2)$ transition kernels $K(i, j) = \min_{h \in \mathcal{H}}\big(\alpha(i, h) + \beta(h, j)\big)$ through compact intermediate hub layers $\mathcal{H}$.
+2. **Compile Min-Cost Cycle Covers and Precedence-Locked Path Covers**: Model degree-$1$ cycle covers on toroidal grids (**[TJOI2013] Cyclic Grid `循环格`, `#153`**), convert cycle covers into $K$-path covers via reset/starter hubs $H_{\text{start}}$, and precompute restricted Floyd–Warshall metric closures $d^{(\le \max(u,v))}(u, v)$ when vertices must be unlocked in strict index order (**[ZJOI2011] Rescuing Pikachu `营救皮卡丘`, `#157`**).
+3. **Decouple Time-Delayed Resource Refurbishment and $K$-Slot Caching**: Prove why a single vertex per day fails (**Failure Mode `FM-20a`**) in **[Luogu P1251] Napkin Plan (`餐巾计划问题`, `#155`)**, derive the exact algebraic equivalence between lower-bound demand substitution and the Bipartite Dirty/Clean Split $(d_t \in \mathcal{S}, c_t \in \mathcal{D})$, and compile offline weighted caching (**Codeforces 802 C — Heidi and Library, `#158`**).
+4. **Master Reverse Queue-Position Factorization and Dynamic Lazy Node Spawning (`动态加点`)**: Transform the total waiting time on heterogeneous parallel machines into $\sum_{r=1}^k r \cdot t_{k-r+1}$ where $r$ indexes slots **backward from the end of each chef's queue** (**[SCOI2007] Car Repair `修车`, `#154`**; **Failure Mode `FM-20b`**), prove the **Frontier Slot Dominance Theorem**, and shrink $3.2 \times 10^6$ static edges to $\le 36,000$ active edges via on-demand lazy vertex spawning (**[NOI2012] Food Festival `美食节`, `#156`**).
+5. **Construct Non-Graph Order-Statistic Rank Hubs and 4-Sign Manhattan Hubs**: Solve **[AtCoder AGC 031 E — Snuke the Phantom Thief](https://atcoder.jp/contests/agc031/tasks/agc031_e) (`#159`)** by translating 2D half-plane count constraints into monotone rank-slot intervals $[L_r, R_r] \times [D_r, U_r]$ proved exact by the **Monotone Interval Uncrossing Theorem**, and solve **[AtCoder AGC 034 D — Manhattan Max Matching](https://atcoder.jp/contests/agc034/tasks/agc034_d) (`#160`)** in $O(N \log N)$ per augmentation by factoring $|x_i - x_j| + |y_i - y_j|$ through $2^2 = 4$ global sign hubs $H_{\pm, \pm}$.
+
+---
+
+## 1. Unifying Spine: Bipartite Supply–Demand Splitting (`拆点供需`) & Transition Kernel Factorization
+
+### 1.1 The Two Structural Bottlenecks of Multi-Agent, Dynamic, and Geometric MCMF
+
+In Chapters 17 through 19, the flow conservation structure was visible on a single timeline or graph: a token entered at $S$, moved chronologically from $t$ to $t+1$ (or hopped across an interval chord $l_i \to r_i + 1$), and exited at $T$. As we move into upper-division olympiad and Grandmaster contest problems, two fundamental modelling barriers appear:
+
+1. **The Coupled-Role Self-Loop Barrier (Why Single-Vertex Conservation Short-Circuits)**:
+   In many problems, each entity $i \in \{1, \dots, N\}$ must *both* **satisfy a mandatory incoming demand** and **generate an outgoing supply** that transitions to a different entity $j$:
+   - On a directed graph or torus grid, every cell $i$ must be **entered** exactly once (`in-degree = 1`) and **exited** exactly once (`out-degree = 1`).
+   - In a daily napkin laundering schedule, day $t$ must **consume** $r_t$ clean napkins in the morning and **release** $r_t$ dirty napkins in the evening.
+   - In a $K$-slot library cache, request $t$ must **receive** book $a_t$ in an active cache slot and then **release** that cache slot to either hold $a_t$ until its next request $t'$ or fetch a different book.
+   If we represent entity $i$ by a single flow vertex, any supply injected into $i$ immediately exits through $i$'s own demand arc to $T$ at cost $0$—short-circuiting the actual transition between $i$ and $j$!
+
+2. **The Dense / Non-Linear Transition Kernel Barrier ($O(N^2)$ or $O(N^2 M)$ Edge Explosion)**:
+   Even after splitting entities into supply and demand ports, connecting every supply port $i_{\text{out}} \in \mathcal{S}$ directly to every compatible demand port $j_{\text{in}} \in \mathcal{D}$ with transition cost $K(i, j)$ often either:
+   - Depends on **how many other items** are assigned to the same machine (in parallel machine scheduling, where a job's delay depends on the queue behind it),
+   - Couples 2D prefix/suffix counts across all chosen items (`AGC 031 E`), or
+   - Creates $O(N^2)$ dense edges with absolute-value cost $K(i, j) = -(|x_i - x_j| + |y_i - y_j|)$ (`AGC 034 D`).
+
+### 1.2 The Two-Part Unification Principle of Chapter 20
+
+Every model in this chapter is governed by a single two-stage algebraic compilation framework:
+
+::: {.callout-important title="The Chapter 20 Unification Spine: Supply–Demand Splitting & Kernel Factorization"}
+1. **Part I — Bipartite Supply–Demand Decoupling (`拆点供需`)**:
+   Whenever entity $i \in \{1, \dots, N\}$ has a mandatory throughput $r_i$ (e.g., $r_i = 1$ for cycle/path covers, $r_i = \text{daily demand}$ for inventory refurbishment) that transforms an incoming "ready" state into an outgoing "used/departing" state, we split $i$ into two **unlinked** ports in a bipartite supply–demand graph:
+   - **Outgoing Supply Port $i_{\text{out}} \in \mathcal{S}$**: Fed directly from the source via $S \xrightarrow{\text{cap } r_i, \text{cost } 0} i_{\text{out}}$, representing the $r_i$ units of outgoing state generated by $i$.
+   - **Incoming Demand Port $i_{\text{in}} \in \mathcal{D}$**: Draining directly into the sink via $i_{\text{in}} \xrightarrow{\text{cap } r_i, \text{cost } 0} T$, representing the $r_i$ units of incoming state required by $i$.
+   Crucially, there is **no forward edge $i_{\text{out}} \to i_{\text{in}}$** (unless a self-loop is a legal paid transition). Because the sink cut has capacity $\sum_{i=1}^N r_i$, any flow of volume $\sum_{i=1}^N r_i$ from $S$ to $T$ must saturate every demand port $j_{\text{in}} \to T$ using flow routed across valid cross-transitions $i_{\text{out}} \to j_{\text{in}}$ (or external start/purchase arcs $S \to j_{\text{in}}$).
+
+2. **Part II — Transition Kernel Factorization Through Intermediate Hubs ($\mathcal{S} \to \mathcal{H} \to \mathcal{D}$)**:
+   Whenever the effective transition cost $K(i, j)$ between supply $i \in \mathcal{S}$ and demand/target $j \in \mathcal{D}$ can be expressed as an infimum (or supremum for max-cost flow) over an intermediate index set $\mathcal{H}$:
+   $$\boxed{K(i, j) = \min_{h \in \mathcal{H}} \Big(\alpha(i, h) + \beta(h, j)\Big),}$$
+   we replace the direct $\mathcal{S} \times \mathcal{D}$ transition layer by a layer of **intermediate hubs $h \in \mathcal{H}$** with directed arcs $i_{\text{out}} \xrightarrow{\alpha(i, h)} h \xrightarrow{\beta(h, j)} j_{\text{in}}$. In any min-cost flow, a unit of flow routed from $i_{\text{out}}$ to $j_{\text{in}}$ automatically chooses the optimal hub $h^* \in \mathcal{H}$ achieving $\min_{h \in \mathcal{H}} (\alpha(i, h) + \beta(h, j)) = K(i, j)$!
+:::
+
+### 1.3 Master Classification of Chapter 20 Models Under the Spine
+
+The table below shows how all four sections and all eight ladder problems (`#153`–`#160`) instantiate this exact spine:
+
+| Section & Flagship Archetype | Supply Port $\mathcal{S}$ ($S \to i_{\text{out}}$) | Demand Port $\mathcal{D}$ ($j_{\text{in}} \to T$) | Intermediate Hub / Factorization Kernel $\mathcal{H}$ | Graph Sparsification / Structural Payoff |
+| :--- | :--- | :--- | :--- | :--- |
+| **§2: Cycle & Path Covers** (`#153`, `#157`) | Departure port $u_{\text{out}}$ (`cap 1`) | Arrival port $v_{\text{in}}$ (`cap 1`) | Direct transitions $u_{\text{out}} \xrightarrow{w_{uv}} v_{\text{in}}$ $\oplus$ Fleet Starter Hub $S \xrightarrow{K} H_{\text{start}} \xrightarrow{A_v} v_{\text{in}}$ | Exact cycle cover on general digraphs; exact $\le K$-path cover on DAGs (`#157`). |
+| **§3: Delayed Resource Reuse & Caching** (`#155`, `#158`) | Evening Dirty Supply $d_t$ (`cap` $r_t$) | Morning Clean Demand $c_t$ (`cap` $r_t$) | Dirty holdover chain $d_t \xrightarrow{0} d_{t+1}$ + Laundry jumps $d_t \xrightarrow{f} c_{t+m}$, $d_t \xrightarrow{s} c_{t+n}$ + Fresh $S \xrightarrow{p} c_t$ | Decouples consumption from generation (`FM-20a`); only $O(N)$ arcs instead of $O(N^2)$ pairs! |
+| **§4: Reverse Queue Slots & Lazy Spawning** (`#154`, `#156`) | Dish / Car Supply $i$ (`cap` $p_i$) |Sink $T$ (`cap` $\sum p_i$) | **Reverse Queue-Position Hubs** $h = (j, r)$: $\alpha\big(i, (j, r)\big) = r \cdot T_{i,j}$, $\beta\big((j, r), T\big) = 0$ (`cap 1`) | Multipliers $r \in \{1..k_j\}$ become static constants (`FM-20b`); lazy spawning keeps $\le P + M$ hubs active! |
+| **§5.1: 2D Order-Statistic Rank Hubs** (`#159` `AGC 031 E`) | $X$-Rank Slot $X_r$ (`cap 1`, $r \in \{1..k\}$) | $Y$-Rank Slot $Y_q$ (`cap 1`, $q \in \{1..k\}$) | **Split Jewel Hubs** $i_{\text{in}} \xrightarrow{1, -v_i} i_{\text{out}}$ gated by $[L_r, R_r]$ and $[D_q, U_q]$ | Glues two laminar/transversal matroids $\mathcal{M}_X \cap \mathcal{M}_Y$ in series; uncrossed by Theorem 5.1. |
+| **§5.2: 4-Sign Manhattan Hubs** (`#160` `AGC 034 D`) | Red Pile $R_i$ (`cap` $c_i$) | Blue Pile $B_j$ (`cap` $d_j$) | **4 Sign Hubs $H_{s_1, s_2}$** ($s_1, s_2 \in \{\pm 1\}$): $\alpha = -(s_1 x_i + s_2 y_i)$, $\beta = s_1 x'_j + s_2 y'_j$ | Compresses $N^2 = 10^6$ bipartite edges into $8N = 8,000$ hub edges! |
+
+---
+
+## 2. Min-Cost Cycle Covers & Degree-Constrained Path Covers (`循环格`, `星际竞速` & `营救皮卡丘`)
+
+### 2.1 Step 1 — Non-Graph Diagnostic Signal (Recognition)
+
+How do you recognize that a routing, grid arrow-flipping, or multi-vehicle scheduling problem is a Bipartite Cycle Cover or Bounded-Fleet Path Cover?
+
+- **Surface Clues**:
+  1. *"Modify/select edges in a directed graph (or grid where every cell points to a neighbor) at minimum cost so that every vertex has in-degree $1$ and out-degree $1$ (so every cell lies on a cycle)."* (**[TJOI2013] Cyclic Grid `循环格`, `#153`**)
+  2. *"Visit every vertex of a DAG (or precedence-ordered metric space) exactly once using at most $K$ agents (or arbitrary teleports of cost $A_v$), minimizing total travel + teleport cost."* (**[SDOI2010] Star Racing `星际竞速`**, **[ZJOI2011] Rescuing Pikachu `营救皮卡丘`, `#157`**)
+- **Why TSP / Subset DP Fails**:
+  The Travelling Salesperson Problem (requiring a *single* cycle of length $N$ on a general graph) is NP-hard and requires $O(2^N N^2)$ Held–Karp DP, which fails for $N \ge 25$. However, whenever:
+  - **Regime A (Cycle Cover)**: The problem allows *any* partition of the $N$ vertices into vertex-disjoint directed cycles ($C_1 \sqcup C_2 \sqcup \dots \sqcup C_m = V$), OR
+  - **Regime B (DAG Path Cover)**: The underlying transition graph is a **Directed Acyclic Graph (DAG)** (where directed cycles are topologically impossible, so any degree-$\le 1$ subgraph automatically decomposes into open directed paths!),
+  the global connectivity constraint disappears, and the problem reduces to a polynomial-time $O(N)$ Bipartite Matching / Min-Cost Flow problem!
+
+### 2.2 Step 2 — Intermediate Algebraic Representation & The Component-Merging Invariant
+
+Let $G = (V, E)$ be a directed graph on $N = |V|$ vertices with edge costs $c(u, v)$, and let $x_{u,v} \in \{0, 1\}$ indicate whether directed arc $(u, v) \in E$ is selected.
+
+#### Case 1: Exact Vertex-Disjoint Directed Cycle Cover
+
+A subset of directed edges $F = \{(u, v) \in E : x_{u,v} = 1\}$ is a vertex-disjoint union of directed cycles covering all of $V$ if and only if every vertex $u \in V$ has out-degree $1$ and every vertex $v \in V$ has in-degree $1$:
+
+$$\sum_{v : (u, v) \in E} x_{u,v} = 1 \quad (\forall u \in V), \qquad \sum_{u : (u, v) \in E} x_{u,v} = 1 \quad (\forall v \in V), \qquad x_{u,v} \in \{0, 1\}.$$
+
+Notice the algebraic structure: every variable $x_{u,v}$ appears with coefficient $+1$ in exactly one row of the first group (indexed by $u \in V_{\text{out}}$) and $+1$ in exactly one row of the second group (indexed by $v \in V_{\text{in}}$). This is the exact node-arc incidence system of a **Minimum-Cost Bipartite Perfect Matching** between $V_{\text{out}}$ and $V_{\text{in}}$!
+
+#### Case 2: DAG Path Cover & The Component-Merging Invariant
+
+Now suppose $G = (V, E)$ is a **DAG**, and we want to cover all $N$ vertices with vertex-disjoint directed paths. In any collection of vertex-disjoint paths covering $V$:
+
+- Every vertex $u \in V$ is exited by at most one path edge: $\sum_{v : (u, v) \in E} x_{u,v} \le 1$.
+- Every vertex $v \in V$ is entered by at most one path edge: $\sum_{u : (u, v) \in E} x_{u,v} \le 1$.
+- Introduce binary slack indicator $s_v \in \{0, 1\}$ for each $v \in V$, where $s_v = 1$ if and only if vertex $v$ has in-degree $0$—that is, **$v$ is the starting vertex (head) of a new path**! Then every vertex $v \in V$ satisfies the exact arrival conservation equation:
+
+$$\boxed{s_v + \sum_{u : (u, v) \in E} x_{u,v} = 1 \qquad (\forall v \in V).}$$
+
+Summing this equation over all $v \in V$ yields the fundamental **Component-Merging Invariant**:
+
+$$\underbrace{\sum_{v \in V} s_v}_{\text{Total Number of Paths } P} + \underbrace{\sum_{(u,v) \in E} x_{u,v}}_{\text{Total Internal Edges Used } M_{\text{used}}} = N \quad \Longleftrightarrow \quad P = N - \sum_{(u,v) \in E} x_{u,v}.$$
+
+In words: we start with $N$ isolated $1$-vertex paths; each chosen DAG edge $x_{u,v} = 1$ merges the path ending at $u$ with the path starting at $v$, reducing the total number of paths $P = \sum_{v \in V} s_v$ by exactly $1$.
+
+- **Unbounded Fleet with Teleportation Start Costs (`[SDOI2010] 星际竞速`)**: Starting a path at $v$ ($s_v = 1$) costs $A_v$, and traversing edge $(u, v)$ ($x_{u,v} = 1$) costs $w_{u,v}$. We minimize $\sum_{v \in V} A_v s_v + \sum_{(u,v) \in E} w_{u,v} x_{u,v}$ subject to $s_v + \sum_u x_{u,v} = 1$ and $\sum_v x_{u,v} \le 1$.
+- **Bounded Fleet of $\le K$ Vehicles (`ICPC WF 2015 Catering` / `[ZJOI2011] 营救皮卡丘`)**: If at most $K$ vehicles are available at a central depot $0$, then the total number of path starts is bounded by:
+
+$$\sum_{v \in V} s_v \le K \quad \Longleftrightarrow \quad \sum_{(u,v) \in E} x_{u,v} \ge N - K.$$
+
+### 2.3 Step 3 — Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+Split each vertex $v \in \{1, \dots, N\}$ into an outgoing supply port $v_{\text{out}} \in \mathcal{S}$ and an incoming demand port $v_{\text{in}} \in \mathcal{D}$:
+
+```{mermaid}
+flowchart LR
+    S(["Source S"]) -->|"cap K, cost 0"| H["Starter Hub H_start"]
+    H -->|"cap 1, cost start_v"| Vin["v_in (Demand Port)"]
+    S -->|"cap 1, cost 0"| Uout["u_out (Supply Port)"]
+    Uout -->|"cap 1, cost c(u,v)"| Vin
+    Vin -->|"cap 1, cost 0"| T(["Sink T"])
+```
+
+| Model Variant | Supply Side ($\mathcal{S}$) | Transition / Hub Layer ($\mathcal{S} \to \mathcal{D}$) | Demand Side ($\mathcal{D}$) & Target Flow |
+| :--- | :--- | :--- | :--- |
+| **1. Exact Directed Cycle Cover** (`#153`) | $S \xrightarrow{\text{cap } 1, \text{cost } 0} u_{\text{out}}$ ($\forall u \in V$) | $u_{\text{out}} \xrightarrow{\text{cap } 1, \text{cost } c(u,v)} v_{\text{in}}$ for $(u, v) \in E$ | $v_{\text{in}} \xrightarrow{\text{cap } 1, \text{cost } 0} T$; require exact flow $F = N$. |
+| **2. Unbounded-Fleet DAG Path Cover with Teleport Cost $A_v$** (`星际竞速`) | $S \xrightarrow{\text{cap } 1, \text{cost } 0} u_{\text{out}}$ ($\forall u \in V$) | • DAG edges: $u_{\text{out}} \xrightarrow{\text{cap } 1, \text{cost } w_{uv}} v_{\text{in}}$<br>• Teleport starts ($s_v = 1$): $S \xrightarrow{\text{cap } 1, \text{cost } A_v} v_{\text{in}}$ | $v_{\text{in}} \xrightarrow{\text{cap } 1, \text{cost } 0} T$; require exact flow $F = N$. |
+| **3. Bounded-Fleet ($\le K$) DAG Path Cover** (`#157` `营救皮卡丘`) | • $S \xrightarrow{\text{cap } 1, \text{cost } 0} u_{\text{out}}$ ($\forall u \in V$)<br>• **Starter Hub**: $S \xrightarrow{\text{cap } K, \text{cost } 0} H_{\text{start}}$ | • Relocations: $u_{\text{out}} \xrightarrow{\text{cap } 1, \text{cost } D(u,v)} v_{\text{in}}$ ($u < v$)<br>• Depot starts ($s_v = 1$): $H_{\text{start}} \xrightarrow{\text{cap } 1, \text{cost } D(0,v)} v_{\text{in}}$ | $v_{\text{in}} \xrightarrow{\text{cap } 1, \text{cost } 0} T$; require exact flow $F = N$. |
+
+::: {.callout-tip title="Precedence-Locked Metric Closure via Restricted Floyd–Warshall (`[ZJOI2011] 营救皮卡丘`, `#157`)"}
+In **Luogu P4542 (`#157`)**, $K$ agents start at depot $0$ in an undirected weighted graph on $\{0, 1, \dots, N\}$ and must visit vertices $1, \dots, N$ such that **vertex $v$ cannot be unlocked until all vertices $1, 2, \dots, v-1$ have been visited**, and an agent travelling from an already-unlocked vertex $u < v$ to unlock $v$ **cannot pass through any still-locked vertex $w > v$**.
+
+- Why does standard all-pairs Floyd–Warshall fail? Because the unconstrained shortest path $d(u, v)$ might detour through a high-numbered vertex $w > v$ that is still locked when the agent moves from $u$ to $v$!
+- **Exact Fix**: During the outer loop $k = 0, 1, \dots, N$ of Floyd–Warshall, record the **precedence-restricted distance** $D(u, v)$ for $0 \le u < v \le N$ by allowing intermediate transitions through $k$ **only when $k \le \max(u, v) = v$**:
+  $$D(u, v) = \text{shortest path from } u \text{ to } v \text{ using only internal vertices in } \{0, 1, \dots, v\}.$$
+  Once $D(u, v)$ is precomputed in $O(N^3)$ time, the undirected graph becomes a transitive DAG on $\{1, \dots, N\}$ with edge weights $D(u, v)$ ($u < v$) and depot start weights $D(0, v)$, compiling directly into Row 3 of the table above!
+:::
+
+### 2.4 Step 4 — Hand-Checkable Toy Trace & Subtour / Odd-Cycle Failure Modes
+
+#### Concrete Toy Trace: DAG Path Cover (`N = 3`, Fleet Limit `K = 2`)
+
+Suppose we have $N = 3$ targets $\{1, 2, 3\}$ and $K = 2$ agents at depot $0$.
+- Depot start costs: $D(0, 1) = 5$, $D(0, 2) = 8$, $D(0, 3) = 9$.
+- DAG transition costs ($u < v$): $D(1, 2) = 2$, $D(2, 3) = 6$, $D(1, 3) = 3$.
+- We need $F = 3$ units of flow into $T$ via $1_{\text{in}}, 2_{\text{in}}, 3_{\text{in}}$.
+  - If we used $1$ agent ($0 \to 1 \to 2 \to 3$), the cost would be $D(0, 1) + D(1, 2) + D(2, 3) = 5 + 2 + 6 = 13$.
+  - With $K = 2$ agents available at $H_{\text{start}}$, the MCMF network routes:
+    1. $S \to H_{\text{start}} \xrightarrow{5} 1_{\text{in}} \to T$ (Agent 1 starts at $1$, cost $5$),
+    2. $S \to 1_{\text{out}} \xrightarrow{3} 3_{\text{in}} \to T$ (Agent 1 continues $1 \to 3$, cost $3$),
+    3. $S \to H_{\text{start}} \xrightarrow{8} 2_{\text{in}} \to T$ (Agent 2 starts at $2$, cost $8$).
+  -Wait: $5 + 3 + 8 = 16 > 13$, so the solver actually prefers using **only $1$ unit** from $H_{\text{start}}$ ($0 \to 1 \to 2 \to 3$, cost $13$)! What if $D(0, 2) = 3$ instead of $8$? Then Agent 1 takes $0 \xrightarrow{5} 1 \xrightarrow{3} 3$ (cost $8$) and Agent 2 takes $0 \xrightarrow{3} 2$ (cost $3$), achieving total cost $11 < 13$. Because $S \to H_{\text{start}}$ has capacity $K = 2$ and cost $0$, the network automatically chooses the optimal number of active agents $P \in \{1, \dots, K\}$!
+
+#### Broken Gadget Counterexamples (When Does $V_{\text{out}} \to V_{\text{in}}$ Fail?)
+
+1. **The Cyclic Subtour Trap (Applying Bounded-Fleet Path Cover to a Non-DAG)**:
+   Suppose $G$ is a **cyclic** graph consisting of a zero-cost triangle $1 \to 2 \to 3 \to 1$ ($c = 0$) that is unreachable from depot $0$ except via $D(0, v) = 100$ for $v \in \{1, 2, 3\}$, and we ask for $K = 1$ agent starting at $0$ to visit $\{1, 2, 3\}$.
+   - In the bipartite network $V_{\text{out}} \to V_{\text{in}}$, the solver pushes $3$ units of flow around the detached cycle $1_{\text{out}} \to 2_{\text{in}}, 2_{\text{out}} \to 3_{\text{in}}, 3_{\text{out}} \to 1_{\text{in}}$ at **cost $0$**, using $0$ units from $H_{\text{start}}$!
+   - **Why it broke**: A closed cycle of length $L$ supplies its own $L$ units of in-degree from its own $L$ units of out-degree ($s_v = 0$ for all $v$ on the cycle). Thus, the Component-Merging Invariant $P = N - \sum x_{u,v}$ is valid **if and only if the chosen transitions $x_{u,v} = 1$ cannot form a detached cycle**—which holds when $G$ is a DAG, or when the objective explicitly asks for a cycle cover (`#153`)!
+2. **The Undirected Odd-Cycle Half-Integrality Trap**:
+   Suppose $G = (V, E)$ is a **non-bipartite undirected** graph and we want a minimum-weight $1$-factor (undirected perfect matching) or $2$-factor (undirected cycle cover). If we replace each undirected edge $\{u, v\}$ by directed arcs $u_{\text{out}} \to v_{\text{in}}$ and $v_{\text{out}} \to u_{\text{in}}$ in the bipartite split graph, a single undirected edge $\{u, v\}$ can be used in **both directions** ($1 \leftrightarrow 2$, a degenerate 2-cycle), or an odd triangle $(1, 2, 3)$ can form a directed 3-cycle $1 \to 2 \to 3 \to 1$ corresponding to a half-integral $1$-factor $x_e = 1/2$! Undirected matching / $2$-factors on non-bipartite graphs require Edmonds's Blossom algorithm (`Ch 22`), whereas **directed** cycle covers (`#153`) are $100\%$ exact via bipartite MCMF.
+
+---
+
+## 3. Time-Delayed Resource Reuse & Inventory Splitting (`[网络流24题] 餐巾计划` `#155` & `CF 802 C` `#158`)
+
+### 3.1 Step 1 — Non-Graph Diagnostic Signal (Recognition)
+
+Let us examine the landmark Chinese OI model **[Luogu P1251 / 网络流 24 题 #09] Napkin Plan (`餐巾计划问题`, `#155`)**:
+
+- **Problem Mechanics**: A restaurant operates over $N \le 2,000$ days. Day $t \in \{1, \dots, N\}$ requires $r_t$ clean napkins. At the end of day $t$, the $r_t$ used napkins become **dirty** and can be:
+  1. Held over as dirty napkins to the end of day $t + 1$ (cost $0$),
+  2. Sent to the **fast laundry**, taking $m$ days at cost $f$ per napkin (ready as clean napkins on the morning of day $t + m$),
+  3. Sent to the **slow laundry**, taking $n$ days at cost $s$ per napkin (ready as clean napkins on the morning of day $t + n$), or
+  4. Left unwashed at the end of day $N$.
+  In addition, on any morning $t$, the restaurant can buy **new clean napkins** at cost $p$ per napkin. Minimize total cost over the $N$ days.
+- **Why Greedy Fails**:
+  Whether a dirty napkin from day $t$ should be fast-washed (for day $t+m$), slow-washed (for day $t+n$), or held over to day $t+1$ (to be slow-washed for day $t+1+n$) depends on the global demand spikes across the entire future timeline $[t+m, N]$.
+- **Why DP Fails**:
+  The state at day $t$ would have to record the vector of dirty napkins currently in transit for the next $\max(m, n)$ days, which has $O((\sum r_t)^{\max(m, n)})$ states.
+
+### 3.2 Broken-Gadget Counterexample `FM-20a`: Why a Single Vertex per Day Short-Circuits
+
+Why can't we build a simple $N$-vertex timeline $v_1, v_2, \dots, v_N$ (one vertex per day $t$), inject fresh purchases $S \xrightarrow{\infty, p} v_t$, add laundry edges $v_t \xrightarrow{\infty, f} v_{t+m}$ and $v_t \xrightarrow{\infty, s} v_{t+n}$, and require $v_t \xrightarrow{r_t, 0} T$?
+
+::: {.callout-warning title="Broken-Gadget Counterexample `FM-20a` ($\leftrightarrow$ `H-20B`) — The Single-Vertex Per Day Short-Circuit Trap"}
+Suppose we use a single vertex $v_t$ for Day $t$. Look at what happens to a unit of flow at $v_t$:
+
+1. **Attempt 1 (Demand Drain $v_t \xrightarrow{r_t, 0} T$ Without Re-Injection)**:
+   If satisfying day $t$'s demand sends $r_t$ units of flow out of $v_t$ into the sink $T$, then by flow conservation at $v_t$, those $r_t$ napkins have **permanently exited the network at $T$**! Zero flow remains at $v_t$ to traverse the laundry arcs $v_t \to v_{t+m}$ or $v_t \to v_{t+n}$. Every napkin can be used only once!
+2. **Attempt 2 (Injecting Both $S \xrightarrow{r_t, 0} v_t$ and $v_t \xrightarrow{r_t, 0} T$ at the Same Vertex $v_t$)**:
+   Suppose a student tries to fix Attempt 1 by also injecting day $t$'s $r_t$ newly generated dirty napkins at the *same* vertex $v_t$ via $S \xrightarrow{r_t, 0} v_t$.
+   - Immediately, the $r_t$ units of dirty supply from $S \xrightarrow{r_t, 0} v_t$ flow straight out through $v_t \xrightarrow{r_t, 0} T$ on the **same day $t$ at total cost $0$**!
+   - Physically, dirty napkins generated at the *end* of day $t$ have travelled backward in time to satisfy the clean demand at the *start* of day $t$ without being washed!
+
+**Root Cause**: At a single vertex $v_t$, flow conservation $\text{In}(v_t) = \text{Out}(v_t)$ cannot distinguish between a **clean napkin arriving in the morning** and a **dirty napkin departing in the evening**.
+:::
+
+### 3.3 Step 2 & Step 3 — Algebraic Derivation of the Dirty/Clean Split $(d_t \in \mathcal{S}, c_t \in \mathcal{D})$
+
+We can derive the exact bipartite split graph from first principles in two complementary ways:
+
+#### Derivation A: Direct Bipartite Conservation Pools (Dirty Supply $d_t \in \mathcal{S}$ vs. Clean Demand $c_t \in \mathcal{D}$)
+
+Decouple day $t \in \{1, \dots, N\}$ into two independent conservation pools:
+
+1. **Evening Dirty Supply Pool $d_t \in \mathcal{S}$**:
+   At the end of day $t$, the restaurant generates $r_t$ dirty napkins. Let:
+   - $w_t^{\text{hold}} \ge 0$ be the dirty napkins carried over from night $t$ to night $t+1$ (cost $0$),
+   - $w_t^{\text{fast}} \ge 0$ be the dirty napkins sent from night $t$ to clean morning $t+m$ (cost $f$),
+   - $w_t^{\text{slow}} \ge 0$ be the dirty napkins sent from night $t$ to clean morning $t+n$ (cost $s$).
+   Since at most $r_t$ new dirty napkins are created on night $t$ (any unwashed napkins at the end of the horizon are simply left unused), the dirty pool conservation inequality at night $t$ is:
+   $$w_t^{\text{hold}} + w_t^{\text{fast}} + w_t^{\text{slow}} - w_{t-1}^{\text{hold}} \le r_t \qquad (\forall t = 1, \dots, N).$$
+   In flow language: source $S$ supplies **at most $r_t$ units** into dirty vertex $d_t$ via $S \xrightarrow{\text{cap } r_t, \text{cost } 0} d_t$!
+
+2. **Morning Clean Demand Pool $c_t \in \mathcal{D}$**:
+   On the morning of day $t$, the restaurant must assemble **exactly $r_t$** clean napkins from fresh purchases $b_t \ge 0$ (cost $p$), fast laundry arriving from night $t - m$, and slow laundry arriving from night $t - n$:
+   $$b_t + w_{t-m}^{\text{fast}} + w_{t-n}^{\text{slow}} = r_t \qquad (\forall t = 1, \dots, N).$$
+   In flow language: clean vertex $c_t$ drains **exactly $r_t$ units** into the sink $T$ via $c_t \xrightarrow{\text{cap } r_t, \text{cost } 0} T$!
+
+#### Derivation B: Lower-Bound Demand Substitution on the Continuous Napkin Timeline
+
+What if we originally thought of a napkin as a continuous token flowing through a mandatory usage bridge $c_t \xrightarrow{[r_t, r_t]} d_t$ (lower bound $L = r_t$, upper bound $U = r_t$, cost $0$) on day $t$, with a disposal arc $d_N \xrightarrow{\infty, 0} T_{\text{real}}$ at the end of day $N$?
+
+By Chapter 04's **Lower-Bound Demand Substitution** ($f(c_t \to d_t) = r_t$), fixing the flow on edge $c_t \to d_t$ to $r_t$ removes the edge $c_t \to d_t$ and replaces it with:
+- A mandatory **excess supply of $+r_t$ at $d_t$**, which compiles to the super-source arc $S \xrightarrow{\text{cap } r_t, \text{cost } 0} d_t$, and
+- A mandatory **deficit demand of $-r_t$ at $c_t$**, which compiles to the super-sink arc $c_t \xrightarrow{\text{cap } r_t, \text{cost } 0} T$!
+
+Thus the Lower-Bound Circulation Model and the Bipartite Dirty/Clean Split Model are **algebraically identical**!
+
+```{mermaid}
+flowchart LR
+    S(["Source S"]) -->|"cap r_t, cost 0"| Dt["Dirty Supply d_t"]
+    S -->|"cap inf, cost p"| Ct["Clean Demand c_t"]
+    Dt -->|"cap inf, cost 0"| Dt1["Dirty Supply d_{t+1}"]
+    Dt -->|"cap inf, cost f"| Ctm["Clean Demand c_{t+m}"]
+    Dt -->|"cap inf, cost s"| Ctn["Clean Demand c_{t+n}"]
+    Ct -->|"cap r_t, cost 0"| T(["Sink T"])
+```
+
+| Arc Type | Directed Edge | Capacity | Unit Cost | Physical & Algebraic Meaning |
+| :--- | :---: | :---: | :---: | :--- |
+| **Dirty Generation** | $S \to d_t$ | $r_t$ | $0$ | Day $t$ generates up to $r_t$ dirty napkins after usage. |
+| **Clean Consumption** | $c_t \to T$ | $r_t$ | $0$ | Day $t$ consumes $r_t$ clean napkins (saturated when $F = \sum r_t$). |
+| **Fresh Purchase** | $S \to c_t$ | $\infty$ | $p$ | Buy $b_t$ brand-new clean napkins on morning $t$. |
+| **Dirty Holdover** | $d_t \to d_{t+1}$ | $\infty$ | $0$ | Store dirty napkins from night $t$ to night $t+1$ ($t < N$). |
+| **Fast Laundry** | $d_t \to c_{t+m}$ | $\infty$ | $f$ | Wash dirty napkins from night $t$ in $m$ days ($t + m \le N$). |
+| **Slow Laundry** | $d_t \to c_{t+n}$ | $\infty$ | $s$ | Wash dirty napkins from night $t$ in $n$ days ($t + n \le N$). |
+
+::: {.callout-caution title="Subtle Failure Guard: Why You Must NEVER Add a Disposal Edge $d_t \to T$ in the Split Graph"}
+A frequent mistake when coding `Luogu P1251` is thinking: *"Dirty napkins left over on night $N$ are thrown away, so I should add a disposal edge $d_N \to T$ with `(cap = \infty, cost = 0)`."*
+
+**Why this fails**: In the split network, $T$ is the super-sink that measures **how many clean demands $c_t \to T$ have been satisfied**. If you add $d_N \xrightarrow{\infty, 0} T$, the solver routes all $\sum_{t=1}^N r_t$ units of flow along the zero-cost path $S \xrightarrow{0} d_t \xrightarrow{0} \cdots \xrightarrow{0} d_N \xrightarrow{0} T$, reporting a max flow of $\sum r_t$ at **total cost $0$** while buying $0$ clean napkins!
+
+In the split network, throwing away a dirty napkin on night $t$ is represented automatically by **leaving the supply arc $S \to d_t$ unsaturated**: because every flow path reaching $T$ must end at some $c_{t'} \to T$ (total capacity $\sum r_t$), only dirty napkins that are *actually laundered* into some $c_{t'}$ are ever pulled through $S \to d_t$!
+:::
+
+### 3.4 Step 4 — Hand-Checkable Toy Trace (`N = 3` Days) & Extension to $K$-Slot Caching (`#158`)
+
+#### Numerical Toy Trace (`N = 3`, Demands `r = [3, 2, 4]`)
+
+Suppose $N = 3$ days with demands $r = [3, 2, 4]$ (total required flow $F = 3 + 2 + 4 = 9$), fresh purchase cost $p = 10$, fast laundry $(m = 1 \text{ day}, f = 6)$, and slow laundry $(n = 2 \text{ days}, s = 3)$.
+
+1. **Day 1 ($c_1 \to T$, cap $3$)**: No laundry can arrive on Day 1 ($1 - m = 0$). All $3$ units must take $S \xrightarrow{10} c_1 \to T$ (cost $3 \times 10 = 30$).
+2. **Day 2 ($c_2 \to T$, cap $2$)**: Can buy fresh ($S \xrightarrow{10} c_2$) or fast-wash from Day 1 ($S \to d_1 \xrightarrow{6} c_2$). Wait: should we fast-wash Day 1's $3$ dirty napkins for Day 2, or save them to **slow-wash** for Day 3?
+   - Let's trace SSP:
+     - First, $S \to d_1 \xrightarrow{3} c_3 \to T$ has unit cost $3$ (slow laundry from Day 1 to Day 3!). SSP pushes $\min(r_1, r_3) = \min(3, 4) = 3$ units along $S \to d_1 \xrightarrow{3} c_3 \to T$ (cost $3 \times 3 = 9$). Now $S \to d_1$ (cap $3$) is completely saturated!
+     - Next, for the remaining $1$ unit of $c_3 \to T$, SSP uses fast laundry from Day 2: $S \to d_2 \xrightarrow{6} c_3 \to T$ (pushes $1$ unit, cost $6$).
+     - Finally, for Day 2 ($c_2 \to T$, cap $2$), since $S \to d_1$ is already used for slow laundry to $c_3$ (and rerouting $d_1$ to $c_2$ via the residual path $S \to c_3 \xleftarrow{-3} d_1 \xrightarrow{+6} c_2$ would cost $10 - 3 + 6 = 13 > 10$, wait: buying fresh at $c_2$ costs $10$, whereas fast-washing $d_1 \to c_2$ and buying fresh at $c_3$ would cost $6 + 10 = 16 > 3 + 10 = 13$!), SSP buys $2$ fresh napkins on Day 2 via $S \xrightarrow{10} c_2 \to T$ (cost $2 \times 10 = 20$).
+   - **Total Optimal Cost**: $30 + 9 + 6 + 20 = 65$ ($5$ fresh napkins bought on Days 1–2, $3$ slow-washed $d_1 \to c_3$, $1$ fast-washed $d_2 \to c_3$, and $1$ dirty napkin from $d_2$ + $4$ from $d_3$ left unpulled at $S \to d_t$).
+
+#### Extension: Weighted $K$-Slot Caching (**Codeforces 802 C — Heidi and Library (hard), `#158`**)
+
+In **Codeforces 802 C (`#158`)**, a library cache holds at most $K$ books ($N, K \le 80$). On day $t \in \{1, \dots, N\}$, book $a_t$ is requested: if $a_t$ is already in the cache from an earlier day, cost is $0$; otherwise we must buy $a_t$ at cost $c_{a_t}$ (evicting a cached book if the cache is full).
+
+Just like `餐巾计划`, we can compile this in two ways:
+1. **Split-Request Token Routing (`20.2` Direct Split)**: Split request $t$ into $t_{\text{in}}$ and $t_{\text{out}}$ (enforcing that $a_t$ is present on day $t$). Keeping book $a_t$ in cache until its next occurrence $\text{next}(t)$ is a direct reuse chord $t_{\text{out}} \to \text{next}(t)_{\text{in}}$ of capacity $1$ that saves re-buying $a_t$ on day $\text{next}(t)$!
+2. **Timeline Saving Chords (Compressed Equation-Difference Form)**: Even more compactly, pay the baseline cost $\text{Base} = \sum_{t=1}^N c_{a_t}$ upfront (assuming every request buys its book fresh). On any day $s$, the requested book $a_s$ occupies $1$ mandatory cache slot, leaving **$K - 1$ background cache slots** for books retained across day $s$. Retaining book $a_t$ from day $t$ to its next request $t' = \text{next}(t)$ occupies $1$ background slot on days $s \in \{t+1, \dots, t'-1\}$ and **saves $c_{a_t}$**:
+   - Build a timeline spine $1 \to 2 \to \dots \to N$ where each edge $s \to s+1$ has `(cap = K - 1, cost = 0)`.
+   - If $\text{next}(t) = t + 1$, book $a_t$ is requested again immediately tomorrow, saving $c_{a_t}$ unconditionally with $0$ background slots!
+   - If $\text{next}(t) > t + 1$, add a saving chord $(t + 1) \xrightarrow{\text{cap } 1, \text{cost } -c_{a_t}} \text{next}(t)$.
+   Both compilations are presented in full detail in Worked Problem `#158` (§6.6).
+
+
+---
+
+## 4. Reverse Queue-Position Factorization & Dynamic Lazy Node Spawning (`动态加点`: `[SCOI2007] 修车` `#154` & `[NOI2012] 美食节` `#156`)
+
+### 4.1 Step 1 — Non-Graph Diagnostic Signal (Recognition)
+
+Consider a scheduling problem on heterogeneous parallel machines/chefs (**[SCOI2007] Car Repair `修车`, `#154`** and **[NOI2012] Food Festival `美食节`, `#156`**):
+
+- **Problem Mechanics**: There are $N$ dish types (with order counts $p_1, \dots, p_N$, totaling $P = \sum_{i=1}^N p_i$ dishes; in `修车`, $p_i = 1$ so $P = N \le 60$; in `美食节`, $N \le 40$ and $P \le 800$) and $M$ chefs ($M \le 9$ in `修车`; $M \le 100$ in `美食节`). Chef $j \in \{1, \dots, M\}$ takes $T_{i,j} > 0$ time to cook one dish of type $i$. Each chef cooks their assigned dishes **sequentially one after another**. The waiting time of a dish is the time from $t = 0$ until that dish finishes cooking (i.e., the sum of cooking times of all dishes cooked by that chef before it, plus its own cooking time). Minimize the **total waiting time** (or average waiting time $\frac{1}{P} \sum C_d$) across all $P$ dishes.
+- **Why Greedy Fails**: Assigning a dish to the chef who can finish it earliest right now ignores how that dish will delay all subsequent dishes assigned to the same chef later.
+- **Why DP Fails**: Tracking the current completion time or queue length across $M \le 100$ chefs requires exponential state space.
+
+### 4.2 Step 2 — The Waiting-Time Reverse-Indexing Identity & Broken-Gadget `FM-20b`
+
+Suppose chef $j$ is assigned $k$ dishes in chronological order $d_1, d_2, \dots, d_k$ with cooking times $t_1, t_2, \dots, t_k$ (where $t_p = T_{d_p, j}$). Let us write out the waiting time of each dish in chef $j$'s queue:
+
+- The $1\text{st}$ dish ($p = 1$) finishes at $t_1$.
+- The $2\text{nd}$ dish ($p = 2$) waits for $d_1$ and finishes at $t_1 + t_2$.
+- The $p\text{-th}$ dish finishes at $t_1 + t_2 + \dots + t_p$.
+
+::: {.callout-warning title="Broken-Gadget Counterexample `FM-20b` — Why Forward Queue Indexing ($p = 1, 2, \dots, k$) Fails"}
+Suppose a student creates queue slot vertices $(j, p)$ indexed in **forward chronological order** ($p = 1$ for the $1\text{st}$ dish cooked by chef $j$, $p = 2$ for the $2\text{nd}$ dish, $\dots$, $p = k$ for the $k\text{-th}$ dish).
+
+How much does the $p\text{-th}$ dish $d_p$ contribute to the **total** waiting time $\sum_{q=1}^k (t_1 + \dots + t_q)$?
+- Dish $d_1$ ($t_1$) appears in the completion time of $d_1, d_2, \dots, d_k$—so $t_1$ is multiplied by **$k$**!
+- Dish $d_p$ ($t_p$) appears in the completion time of $d_p, d_{p+1}, \dots, d_k$—so $t_p$ is multiplied by **$(k - p + 1)$**!
+
+Because the multiplier $(k - p + 1)$ of forward slot $p$ depends on the **unknown total number of dishes $k$** that chef $j$ will eventually cook, a forward-indexed edge $i \to (j, p)$ **cannot be assigned a fixed static cost** before solving the flow!
+:::
+
+How do we eliminate the unknown queue length $k$ from the multiplier? **Count positions backward from the end of chef $j$'s queue!**
+
+Define the **reverse queue position** $r = k - p + 1 \in \{1, 2, \dots, k\}$:
+
+- $r = 1$ is the **last** dish cooked by chef $j$ ($p = k$): it delays **only itself** ($1$ dish), so its cost contribution is $1 \cdot t_k$.
+- $r = 2$ is the **second-to-last** dish cooked by chef $j$ ($p = k - 1$): it delays **itself and the last dish** ($2$ dishes), so its cost contribution is $2 \cdot t_{k-1}$.
+- In general, the dish placed at **reverse position $r$ from the end** of chef $j$'s queue ($p = k - r + 1$) delays itself and the $r - 1$ dishes after it—contributing **exactly $r \cdot t_{k - r + 1}$** to the total waiting time, regardless of how many dishes precede it!
+
+Algebraically, swapping the order of summation gives the foundational **Waiting-Time Reverse Factorization Identity**:
+
+$$\boxed{\sum_{p=1}^k \big(t_1 + t_2 + \dots + t_p\big) = \sum_{p=1}^k (k - p + 1) \cdot t_p = \sum_{r=1}^k r \cdot t_{k - r + 1}.}$$
+
+Under our Chapter 20 Unification Spine (§1.2), each reverse queue slot $h = (j, r) \in \{1, \dots, M\} \times \{1, \dots, P\}$ acts as a capacity-$1$ **intermediate hub**:
+
+- **Supply Side ($\mathcal{S}$)**: Each dish type $i \in \{1, \dots, N\}$ receives $S \xrightarrow{\text{cap } p_i, \text{cost } 0} i$.
+- **Kernel Transition ($\mathcal{S} \to \mathcal{H}$)**: Assigning a dish of type $i$ to chef $j$'s $r$-th from last slot $(j, r)$ traverses the directed arc:
+  $$i \xrightarrow{\text{cap } 1,\; \text{cost } r \cdot T_{i,j}} (j, r).$$
+- **Demand Side ($\mathcal{H} \to T$)**: Each reverse slot $(j, r)$ can hold at most $1$ dish across all types:
+  $$(j, r) \xrightarrow{\text{cap } 1,\; \text{cost } 0} T.$$
+
+### 4.3 Step 3 — Frontier Slot Dominance & Dynamic Lazy Node Spawning (`动态加点`, `#156`)
+
+In **[SCOI2007] Car Repair (`#154`)**, $P = N \le 60$ and $M \le 9$, so pre-allocating all $M \times N \le 540$ slot hubs $(j, r)$ creates $N^2 M \le 32,400$ edges—solving in $< 10\text{ ms}$.
+
+Now look at **[NOI2012] Food Festival (`#156`)**, where $N \le 40$ dish types, $M \le 100$ chefs, and $P = \sum_{i=1}^N p_i \le 800$ total dishes (or variants where $N = P = 800, M = 40$):
+
+- **The Static Graph Explosion**: Because a single chef could theoretically cook all $P = 800$ dishes, each of the $M = 100$ chefs has $P = 800$ potential reverse slots $(j, 1), \dots, (j, P)$. Pre-allocating all $M \cdot P = 80,000$ slot vertices and wiring every dish to every slot builds $N \cdot M \cdot P = 3.2 \times 10^6$ edges (or $P^2 M \approx 2.56 \times 10^7$ edges if dishes are individual nodes). Running $P = 800$ augmentations on millions of edges results in an immediate **Time Limit Exceeded (TLE)**!
+- **The Key Sparsity Insight**: Across all $M = 100$ chefs combined, the total number of dishes cooked in the entire festival is **only $P = 800$**. At the end of the algorithm, out of the $80,000$ potential slot vertices $(j, r)$, **at most $P = 800$ slots are ever used; the remaining $79,200$ slots sit at flow $0$ forever!**
+
+Why did we build $(j, 2), (j, 3), \dots, (j, 800)$ before $(j, 1)$ was even used? For each chef $j \in \{1, \dots, M\}$, define the **frontier rank $r_j \ge 1$** to be the smallest reverse rank on chef $j$ whose sink arc $(j, r_j) \to T$ is currently unsaturated.
+
+::: {.callout-important title="Theorem 4.1 — Frontier Slot Dominance & The Dynamic Lazy Spawning Invariant (`动态加点`)"}
+Suppose $T_{i,j} > 0$ for all $i, j$. At any stage of the Successive Shortest Path (SSP) algorithm, every shortest augmenting path from $S$ to $T$ uses **exclusively**:
+
+1. **Already-saturated slots** $(j, s)$ with $1 \le s < r_j$ (which carry residual backward arcs $(j, s) \to i_{\text{old}}$ of cost $-s \cdot T_{i_{\text{old}}, j}$, allowing the solver to dynamically reorder or reassign previously scheduled dishes), and
+2. **At most one frontier slot** $(j^*, r_{j^*})$ as its penultimate vertex immediately before $T$.
+
+No shortest augmenting path can ever visit any higher unsaturated slot $(j, r)$ with $r > r_j$!
+
+*Proof*:
+1. For any unsaturated slot $(j, r)$ with $r \ge r_j$, the current flow on $(j, r) \to T$ is $0$. By flow conservation at $(j, r)$, the current flow on every incoming arc $i \to (j, r)$ is also $0$.
+2. Therefore, in the residual network $G_f$, vertex $(j, r)$ has **zero outgoing residual arcs back to any dish node $i$**; its only outgoing residual arc is the sink edge $(j, r) \xrightarrow{\text{cap } 1, \text{cost } 0} T$.
+3. Consequently, any simple augmenting path from $S$ to $T$ that visits an unsaturated slot $(j, r)$ ($r \ge r_j$) must enter $(j, r)$ from some dish node $i$ and immediately exit to $T$:
+   $$S \leadsto i \xrightarrow{r \cdot T_{i,j}} (j, r) \xrightarrow{0} T.$$
+4. Because the frontier slot $(j, r_j)$ is also unsaturated, the path $S \leadsto i \xrightarrow{r_j \cdot T_{i,j}} (j, r_j) \xrightarrow{0} T$ is also residual-feasible and is **strictly cheaper** by $(r - r_j) \cdot T_{i,j} > 0$ for all $r > r_j$! $\blacksquare$
+:::
+
+```{mermaid}
+flowchart LR
+    S(["Source S"]) -->|"cap p_i, cost 0"| Dish["Dish Type i"]
+    Dish -->|"cap 1, cost 1*T_{i,j} (SATURATED)"| Slot1["Slot (j, 1)"]
+    Slot1 -.->|"residual -1*T_{i',j} (reorders queue!)"| DishOld["Earlier Dish i'"]
+    Slot1 -->|"flow 1/1"| T(["Sink T"])
+    Dish -->|"cap 1, cost r_j*T_{i,j} (ACTIVE FRONTIER)"| SlotR["Frontier Slot (j, r_j)"]
+    SlotR -->|"cap 1, cost 0 (saturating this spawns r_j+1!)"| T
+```
+
+#### The Dynamic Lazy Spawning Algorithm Contract (`[NOI2012] 美食节`, `#156`)
+
+1. **Initialization ($0$ Flow)**:
+   - Create $S$, $T$, the $N$ dish vertices $i \in \{1, \dots, N\}$ with $S \xrightarrow{p_i, 0} i$, and **only the $M$ rank-$1$ frontier slots $(j, 1)$** for $j \in \{1, \dots, M\}$.
+   - Wire $i \xrightarrow{1,\; 1 \cdot T_{i,j}} (j, 1)$ for all $i, j$ and $(j, 1) \xrightarrow{1, 0} T$.
+   - Initial active graph size: $N + M + 2 \le 142$ vertices and $N M + N + M \le 4,140$ directed edges!
+2. **Single-Unit Augmentation + On-Demand Spawning ($f = 1, 2, \dots, P$)**:
+   - Find the shortest augmenting path $P_f$ from $S$ to $T$ in the current active residual graph and push **$\Delta = 1$ unit of flow** along $P_f$.
+   - Look at the penultimate vertex of $P_f$: because only frontier slots have unsaturated edges into $T$, the last edge of $P_f$ is guaranteed to be $(j^*, r_{j^*}) \to T$ for some unique chef $j^* \in \{1, \dots, M\}$.
+   - **Immediate Lazy Spawn**: Increment $r_{j^*} \gets r_{j^*} + 1$, allocate a single new vertex $v_{\text{new}} = (j^*, r_{j^*})$, wire $v_{\text{new}} \xrightarrow{1, 0} T$, and wire $N$ incoming arcs:
+     $$i \xrightarrow{\text{cap } 1,\; \text{cost } r_{j^*} \cdot T_{i, j^*}} (j^*, r_{j^*}) \qquad (\forall i \in \{1, \dots, N\}).$$
+   - *(If using Primal–Dual Dijkstra with Johnson potentials $\pi$, initialize the new vertex's potential in $O(N)$ time as $\pi(j^*, r_{j^*}) = \min_{1 \le i \le N}\big(\pi(i) + r_{j^*} \cdot T_{i, j^*}\big)$ so all reduced costs remain non-negative, or run SPFA on the tiny $\le 942$-vertex active graph!)*
+3. **Final Graph Complexity**:
+   After all $P \le 800$ dishes are scheduled, the total number of spawned slot vertices is **exactly $M + P \le 900$**, and the total number of directed edges ever created is:
+   $$|E_{\text{active}}| = N(M + P) + N + M + P \le 40 \times 900 + 940 = 36,940 \text{ edges},$$
+   shrinking the graph by **nearly $100\times$** and running in $< 0.05\text{ s}$!
+
+::: {.callout-caution title="Implementation Trap: Why Zkw Multi-Push Blocking Flow Fails Without Inline Spawning"}
+If you use a Dinic-style **multi-augmenting blocking flow** on the zero-reduced-cost DAG (Zkw MCMF) and wait until the *end* of the DFS phase to spawn $(j^*, r_{j^*} + 1)$, the algorithm can produce a **suboptimal cost**!
+
+*Why?* Suppose Dish 1 has $p_1 = 2$, Chef 1 takes $T_{1,1} = 1$, and Chef 2 takes $T_{1,2} = 3$. If a phase pushes $2$ units of flow simultaneously before spawning $(1, 2)$ (which has cost $2 \cdot 1 = 2 < 3$), the second unit of Dish 1 cannot see $(1, 2)$ yet and is forced onto Chef 2 at cost $3$ instead of $(1, 2)$ at cost $2$!
+
+**Rule**: Always push **$\Delta = 1$ unit of flow per shortest-path step** (or spawn $(j^*, r_{j^*} + 1)$ inline inside the DFS the exact instant $(j^*, r_{j^*}) \to T$ is saturated).
+:::
+
+### 4.4 Step 4 — Hand-Checkable Toy Trace: How Residual Backward Arcs Reorder a Chef's Queue!
+
+A common question when first meeting reverse queue slots is: *"If Augmentation 1 puts Dish A into slot $(j, 1)$ (the LAST dish cooked by chef $j$), what if we later realize Dish A is super fast and should be cooked FIRST (at slot $(j, 2)$), while a slow Dish B should be cooked LAST (at slot $(j, 1)$)?"*
+
+Let us trace a concrete 2-dish, 2-chef instance to watch the residual network **reorder Chef 2's queue automatically**:
+
+- **Instance**: $P = 2$ cars (`Car 1`, `Car 2`), $M = 2$ mechanics (`Mech 1`, `Mech 2`).
+  - `Car 1` repair times: $T_{1,1} = 10$ on `Mech 1`, $T_{1,2} = 2$ on `Mech 2`.
+  - `Car 2` repair times: $T_{2,1} = 10$ on `Mech 1`, $T_{2,2} = 5$ on `Mech 2`.
+- **Initial Active Slots**: $(1, 1)$ and $(2, 1)$.
+- **Augmentation 1 ($f = 1$)**:
+  - Shortest path from $S$ to $T$ is $S \to \text{Car } 1 \xrightarrow{1 \times 2 = 2} (2, 1) \to T$ of cost $+2$.
+  - Now `Car 1` occupies $(2, 1)$ (last slot on `Mech 2`), creating the **residual backward arc** $(2, 1) \xrightarrow{-2} \text{Car } 1$.
+  - Since $(2, 1) \to T$ is saturated, we **lazily spawn slot $(2, 2)$** with incoming arcs $\text{Car } 1 \xrightarrow{2 \times 2 = 4} (2, 2)$ and $\text{Car } 2 \xrightarrow{2 \times 5 = 10} (2, 2)$.
+- **Augmentation 2 ($f = 2$, Scheduling `Car 2`)**:
+  Look at the three residual paths available from $S \to \text{Car } 2$ to $T$:
+  1. Put `Car 2` on `Mech 1` slot $(1, 1)$: $S \to \text{Car } 2 \xrightarrow{+10} (1, 1) \to T$ (cost $+10$).
+  2. Put `Car 2` on `Mech 2` slot $(2, 2)$ (**before** `Car 1`, so slow `Car 2` delays fast `Car 1`!): $S \to \text{Car } 2 \xrightarrow{+10} (2, 2) \to T$ (cost $+10$).
+  3. **Traverse the residual backward arc $(2, 1) \xrightarrow{-2} \text{Car } 1$ to swap `Car 1` into slot $(2, 2)$**:
+     $$S \to \text{Car } 2 \xrightarrow{+5} (2, 1) \xrightarrow{-2} \text{Car } 1 \xrightarrow{+4} (2, 2) \to T \qquad (\text{net cost } = 5 - 2 + 4 = +7!).$$
+- SSP selects Path 3 of cost $+7$, giving total waiting time $2 + 7 = 9$:
+  - **Physical Result after Cancellation**: `Car 1` is moved to reverse slot $(2, 2)$ ($2\text{nd}$ from last = **cooked $1\text{st}$**, finishes at $t = 2$), and `Car 2` takes reverse slot $(2, 1)$ ($1\text{st}$ from last = **cooked $2\text{nd}$**, finishes at $t = 2 + 5 = 7$), for total waiting time $2 + 7 = 9$!
+  - Notice why we must **never delete** already-saturated slot nodes $(j, s)$ ($s < r_j$): their residual backward arcs $(j, s) \to i_{\text{old}}$ are the exact mechanism that shifts fast jobs earlier in the queue when slower jobs arrive!
+
+---
+
+## 5. Non-Graph Geometric & Order-Statistic Hubs — 2D Rank Slots (`AGC 031 E` `#159`) & 4-Sign Manhattan Hubs (`AGC 034 D` `#160`)
+
+We now apply the Chapter 20 **Transition Kernel Factorization Spine** ($\mathcal{S} \to \mathcal{H} \to \mathcal{D}$) to two landmark AtCoder Grand Contest problems that contain **zero graphs** in their problem statements.
+
+### 5.1 Flagship I: 2D Order-Statistic Rank Hubs (`AtCoder AGC 031 E — Snuke the Phantom Thief`, `#159`)
+
+#### Step 1 — Non-Graph Diagnostic Signal (Recognition)
+
+- **Problem Statement (`AGC 031 E`)**: There are $N \le 80$ jewels in the 2D plane at $(x_i, y_i)$ ($1 \le x_i, y_i \le 100$) with values $v_i \le 10^{15}$. Snuke wants to steal a subset of jewels of maximum total value subject to $M \le 320$ directional half-plane count constraints of 4 types:
+  - Type `L` $(a_m, b_m)$: **At most $b_m$** stolen jewels have $x_i \le a_m$.
+  - Type `R` $(a_m, b_m)$: **At most $b_m$** stolen jewels have $x_i \ge a_m$.
+  - Type `D` $(a_m, b_m)$: **At most $b_m$** stolen jewels have $y_i \le a_m$.
+  - Type `U` $(a_m, b_m)$: **At most $b_m$** stolen jewels have $y_i \ge a_m$.
+- **Why 2D DP and Direct Submodular Cuts Fail**:
+  - In general 2D subset selection, simultaneously enforcing upper bounds on prefix and suffix sums along both the $X$-axis and the $Y$-axis couples every jewel with two orthogonal families of half-planes.
+  - Because `R` constraints bound the suffix $x \ge a_m$ while `L` constraints bound the prefix $x \le a_m$, we cannot even tell how many jewels are allowed in $(-\infty, a_m - 1]$ unless we know the **total number of stolen jewels $k$**!
+
+#### Step 2 — Intermediate Algebraic Representation: Fixing $k$ Turns Count Bounds into Order-Statistic Intervals!
+
+Look at the small constraint $N \le 80$: we can afford an outer loop over the **exact total number of stolen jewels $k \in \{1, 2, \dots, N\}$**!
+
+Suppose Snuke steals **exactly $k$ jewels**. Sort the $k$ stolen jewels twice:
+- Sort their $X$-coordinates in non-decreasing order: $x_{(1)} \le x_{(2)} \le \dots \le x_{(k)}$.
+- Sort their $Y$-coordinates in non-decreasing order: $y_{(1)} \le y_{(2)} \le \dots \le y_{(k)}$.
+
+Now watch what happens to each of the 4 constraint types when $k$ is fixed:
+
+1. **Type `L` ("At most $b_m$ stolen jewels have $x \le a_m$")**:
+   In the sorted sequence $x_{(1)} \le x_{(2)} \le \dots \le x_{(k)}$, saying that at most $b_m$ elements are $\le a_m$ is $100\%$ equivalent to saying that **the $(b_m + 1)$-th smallest element is strictly greater than $a_m$**:
+   $$\text{Count}(x \le a_m) \le b_m \quad \Longleftrightarrow \quad \begin{cases} x_{(b_m + 1)} \ge a_m + 1 & \text{if } b_m + 1 \le k, \\ \text{vacuously true} & \text{if } b_m \ge k. \end{cases}$$
+
+2. **Type `R` ("At most $b_m$ stolen jewels have $x \ge a_m$")**:
+   Because the total number of stolen jewels is **fixed at $k$**, having at most $b_m$ jewels with $x \ge a_m$ is $100\%$ equivalent to having **at least $k - b_m$ jewels with $x \le a_m - 1$**—which means the $(k - b_m)$-th smallest element is at most $a_m - 1$:
+   $$\text{Count}(x \ge a_m) \le b_m \quad \Longleftrightarrow \quad \begin{cases} x_{(k - b_m)} \le a_m - 1 & \text{if } k - b_m \ge 1, \\ \text{infeasible for this } k & \text{if } b_m < 0 \text{ (never)}. \end{cases}$$
+
+3. **Types `D` and `U` on $y_{(1)} \le \dots \le y_{(k)}$**:
+   By identical logic, Type `D` $(a_m, b_m)$ becomes $y_{(b_m + 1)} \ge a_m + 1$ (for $b_m + 1 \le k$), and Type `U` $(a_m, b_m)$ becomes $y_{(k - b_m)} \le a_m - 1$ (for $k - b_m \ge 1$).
+
+#### The Interval Monotonization Recurrences
+
+Furthermore, because $x_{(1)} \le x_{(2)} \le \dots \le x_{(k)}$ and $y_{(1)} \le y_{(2)} \le \dots \le y_{(k)}$, any lower bound on rank $r - 1$ is inherited by rank $r$, and any upper bound on rank $r + 1$ is inherited by rank $r$. We propagate all bounds across $r = 1, \dots, k$:
+
+$$L_r = \max\!\Big(\{L_{r-1}\} \cup \{a_m + 1 : \text{type}_m = \texttt{'L'},\; b_m + 1 \le r\}\Big), \qquad R_r = \min\!\Big(\{R_{r+1}\} \cup \{a_m - 1 : \text{type}_m = \texttt{'R'},\; k - b_m \ge r\}\Big),$$
+
+and analogously $[D_q, U_q]$ for each $Y$-rank $q \in \{1, \dots, k\}$. This produces $k$ **monotone $X$-intervals** $[L_r, R_r]$ and $k$ **monotone $Y$-intervals** $[D_q, U_q]$ satisfying:
+
+$$\boxed{L_1 \le L_2 \le \dots \le L_k, \quad R_1 \le R_2 \le \dots \le R_k, \qquad D_1 \le D_2 \le \dots \le D_k, \quad U_1 \le U_2 \le \dots \le U_k.}$$
+
+*(If $L_r > R_r$ or $D_r > U_r$ for any $r \in \{1, \dots, k\}$, then stealing $k$ jewels is immediately impossible!)*
+
+#### Step 3 — 4-Layer MCMF Compilation & The Monotone Interval Uncrossing Theorem
+
+For a fixed $k \in \{1, \dots, N\}$, we create:
+- **Supply Side ($\mathcal{S}$)**: $k$ $X$-rank slot vertices $X_1, \dots, X_k$, each with $S \xrightarrow{\text{cap } 1, \text{cost } 0} X_r$.
+- **Intermediate Jewel Hubs ($\mathcal{H}$)**: Each jewel $i \in \{1, \dots, N\}$ is split into $i_{\text{in}} \xrightarrow{\text{cap } 1, \text{cost } -v_i} i_{\text{out}}$ (or shifted cost $V_{\max} - v_i \ge 0$).
+- **Demand Side ($\mathcal{D}$)**: $k$ $Y$-rank slot vertices $Y_1, \dots, Y_k$, each with $Y_q \xrightarrow{\text{cap } 1, \text{cost } 0} T$.
+- **Interval Compatibility Edges**:
+  - Wire $X_r \xrightarrow{\text{cap } 1, \text{cost } 0} i_{\text{in}}$ if and only if $x_i \in [L_r, R_r]$.
+  - Wire $i_{\text{out}} \xrightarrow{\text{cap } 1, \text{cost } 0} Y_q$ if and only if $y_i \in [D_q, U_q]$.
+
+```{mermaid}
+flowchart LR
+    S(["Source S"]) -->|"cap 1, cost 0"| Xr["X-Rank Slot X_r"]
+    Xr -->|"cap 1, cost 0 (if L_r <= x_i <= R_r)"| Iin["Jewel i_in"]
+    Iin -->|"cap 1, cost -v_i"| Iout["Jewel i_out"]
+    Iout -->|"cap 1, cost 0 (if D_q <= y_i <= U_q)"| Yq["Y-Rank Slot Y_q"]
+    Yq -->|"cap 1, cost 0"| T(["Sink T"])
+```
+
+Wait—when we match $k$ jewels to $X_1, \dots, X_k$ in this 4-layer network, nothing in the graph forces the jewel matched to $X_1$ to have a smaller $X$-coordinate than the jewel matched to $X_2$! Could the MCMF solver cheat by matching a jewel with $x = 10$ to $X_1$ and a jewel with $x = 5$ to $X_2$?
+
+::: {.callout-important title="Theorem 5.1 — The Monotone Interval Uncrossing Theorem"}
+Let $[L_1, R_1], \dots, [L_k, R_k]$ be monotone intervals ($L_1 \le \dots \le L_k$ and $R_1 \le \dots \le R_k$). For any $k$-element subset of jewels $J = \{i_1, \dots, i_k\}$ sorted as $x_{i_1} \le x_{i_2} \le \dots \le x_{i_k}$:
+
+$$J \text{ has a perfect matching to } \{X_1, \dots, X_k\} \quad \Longleftrightarrow \quad x_{i_r} \in [L_r, R_r] \text{ for all } r \in \{1, \dots, k\}.$$
+
+*Proof*:
+$(\Leftarrow)$ is immediate: match $i_r$ to $X_r$.
+$(\Rightarrow)$ Suppose $J$ has a valid matching $\pi : \{1, \dots, k\} \to J$ that contains an inversion: for some $p < q$, the matched jewels $u = \pi(p)$ and $w = \pi(q)$ satisfy $x_u > x_w$.
+- Because $u$ is matched to $X_p$ and $w$ is matched to $X_q$, we have $L_p \le x_u \le R_p$ and $L_q \le x_w \le R_q$.
+- Combining $x_w < x_u$ with the Monotone Interval Property $L_p \le L_q$ and $R_p \le R_q$ yields two chains of inequalities:
+  $$L_p \le L_q \le x_w < x_u \le R_p \implies x_w \in [L_p, R_p],$$
+  $$L_q \le x_w < x_u \le R_p \le R_q \implies x_u \in [L_q, R_q].$$
+- Therefore, **both cross-edges $X_p \to w_{\text{in}}$ and $X_q \to u_{\text{in}}$ are also present in the graph**! Swapping the $X$-slot assignments of $u$ and $w$ preserves feasibility and keeps the chosen jewel set $J$ (and its total value $\sum_{i \in J} v_i$) $100\%$ unchanged. Repeating this uncrossing swap eliminates all inversions on both the $X$-side and the $Y$-side! $\blacksquare$
+:::
+
+::: {.callout-note title="Theoretical Boundary — Why 2D Rank Slots Work (`2-Matroid Intersection`) While 3D Rank Slots Are NP-Hard (`3-Matroid Intersection`)"}
+Why does `AGC 031 E` compile to MCMF in 2D (`L, R, D, U`), and what would happen in 3D $(x_i, y_i, z_i)$ with 6 constraint types (`L, R, D, U, F, B`)?
+- Along a single axis (say $X$), the family of $k$-subsets matchable to $[L_1, R_1], \dots, [L_k, R_k]$ forms the bases of a **Transversal / Laminar Matroid** $\mathcal{M}_X$.
+- In **2D**, we are maximizing $\sum_{i \in J} v_i$ over the **2-Matroid Intersection** $\mathcal{B}(\mathcal{M}_X) \cap \mathcal{B}(\mathcal{M}_Y)$, which glues $\mathcal{M}_X$ on the left of $i_{\text{in}} \to i_{\text{out}}$ and $\mathcal{M}_Y$ on the right—forming a single series flow network!
+- In **3D**, feasible subsets lie in the **3-Matroid Intersection** $\mathcal{B}(\mathcal{M}_X) \cap \mathcal{B}(\mathcal{M}_Y) \cap \mathcal{B}(\mathcal{M}_Z)$. A single-commodity flow token passing through $i_{\text{in}} \to i_{\text{out}}$ has only **one entry port** ($X$) and **one exit port** ($Y$); it has no third port to simultaneously enforce a $1$-to-$1$ matching with $Z$-slots, and 3-Matroid Intersection is **strongly NP-hard**!
+:::
+
+#### Step 4 — Broken-Gadget Counterexamples for `AGC 031 E`
+
+1. **Accepting Partial Flow $f < k$ During Trial $k$**:
+   Because Type `R` and Type `U` constraints place upper bounds on rank $k - b_m$ (which explicitly depends on the assumed total cardinality $k$), the graph constructed for trial $k$ is **only valid if all $k$ rank slots are saturated ($\text{flow} = k$)**! If the max flow for trial $k$ is $f < k$, you must **discard** that trial completely (if $f$ jewels were actually valid, they would be found during the outer-loop iteration for $k' = f$).
+2. **Omitting the Interval Monotonization Pass**:
+   Suppose $k = 2$ and there is a single constraint `L` $(a = 10, b = 0)$, which says $x_{(1)} \ge 11$. If you only set $L_1 = 11$ without propagating $L_2 = \max(L_2, L_1) = 11$, then $[L_2, R_2]$ remains $[1, 100]$. The solver can then match a jewel at $x = 3$ to $X_2$ and a jewel at $x = 15$ to $X_1$, violating "at most $0$ jewels have $x \le 10$"!
+
+---
+
+### 5.2 Flagship II: 4-Sign Manhattan Hubs (`AtCoder AGC 034 D — Manhattan Max Matching`, `#160`)
+
+#### Step 1 — Non-Graph Diagnostic Signal (Recognition)
+
+- **Problem Statement (`AGC 034 D`)**: In the 2D plane, there are $N \le 1,000$ Red point piles at $(x_i, y_i)$ with $c_i$ red balls, and $N \le 1,000$ Blue point piles at $(x'_j, y'_j)$ with $d_j$ blue balls, where $\sum_{i=1}^N c_i = \sum_{j=1}^N d_j = S_{\text{tot}} \le 10^5$. Match all $S_{\text{tot}}$ red balls with blue balls to **maximize** the sum of Manhattan distances:
+  $$\max \sum_{(i, j)} f_{i,j} \Big(|x_i - x'_j| + |y_i - y'_j|\Big).$$
+- **Why Complete Bipartite MCMF TLEs**:
+  Wiring every Red pile $R_i$ directly to every Blue pile $B_j$ creates $N^2 = 10^6$ edges. Running SSP across up to $S_{\text{tot}} \le 10^5$ units of flow on $10^6$ edges is far too slow.
+
+#### Step 2 — Intermediate Algebraic Representation: Dual-Norm Sign Factorization
+
+Why can we factor the non-linear Manhattan kernel $K_{\max}(i, j) = |x_i - x'_j| + |y_i - y'_j|$ when we are **maximizing** total distance?
+
+For any real number $z \in \mathbb{R}$, $|z| = \max(z, -z) = \max_{s \in \{-1, +1\}} s \cdot z$. Therefore, in 2D ($d = 2$), the Manhattan distance between $(x_i, y_i)$ and $(x'_j, y'_j)$ is the pointwise maximum over all $2^2 = 4$ sign pairs $(s_1, s_2) \in \{-1, +1\}^2$:
+
+$$\boxed{|x_i - x'_j| + |y_i - y'_j| = \max_{s_1, s_2 \in \{-1, +1\}} \Big[ \underbrace{(s_1 x_i + s_2 y_i)}_{\text{Depends ONLY on Red } i} + \underbrace{(-s_1 x'_j - s_2 y'_j)}_{\text{Depends ONLY on Blue } j} \Big].}$$
+
+Look at the right-hand side: for each fixed sign pair $(s_1, s_2) \in \{ (+1, +1), (+1, -1), (-1, +1), (-1, -1) \}$, the interaction between Red pile $i$ and Blue pile $j$ **decouples completely into a sum of a Red-only weight and a Blue-only weight**!
+
+#### Step 3 — Mechanical Graph Compilation Through the 4 Global Sign Hubs $H_{\pm, \pm}$
+
+Introduce **4 global intermediate hub vertices** $\mathcal{H} = \{H_{++}, H_{+-}, H_{-+}, H_{--}\}$ corresponding to the $4$ sign pairs $(s_1, s_2) \in \{-1, +1\}^2$. To convert maximization into standard Min-Cost Max-Flow, we negate all edge costs:
+
+```{mermaid}
+flowchart LR
+    S(["Source S"]) -->|"cap c_i, cost 0"| Ri["Red Pile R_i"]
+    Ri -->|"cap inf, cost -(x_i + y_i)"| Hpp["Hub H_{++}"]
+    Ri -->|"cap inf, cost -(x_i - y_i)"| Hpm["Hub H_{+-}"]
+    Ri -->|"cap inf, cost -(-x_i + y_i)"| Hmp["Hub H_{-+}"]
+    Ri -->|"cap inf, cost -(-x_i - y_i)"| Hmm["Hub H_{--}"]
+    Hpp -->|"cap inf, cost +(x'_j + y'_j)"| Bj["Blue Pile B_j"]
+    Hpm -->|"cap inf, cost +(x'_j - y'_j)"| Bj
+    Hmp -->|"cap inf, cost +(-x'_j + y'_j)"| Bj
+    Hmm -->|"cap inf, cost +(-x'_j - y'_j)"| Bj
+    Bj -->|"cap d_j, cost 0"| T(["Sink T"])
+```
+
+- **Graph Sparsification**:
+  - Total vertices: $|V| = 2N + 6 \le 2,006$.
+  - Total directed edges: $N$ (`S -> R_i`) $+ 4N$ (`R_i -> H`) $+ 4N$ (`H -> B_j`) $+ N$ (`B_j -> T`) $= 10N \le 10,000$ edges—a **$100\times$ reduction** from $N^2 = 10^6$!
+- **Why Different Pairs Sharing a Hub Never Interfere**:
+  Because the cost of routing $1$ unit along $R_i \to H_{s_1, s_2} \to B_j$ is strictly additive, any flow entering $H_{s_1, s_2}$ from multiple Red piles and exiting to multiple Blue piles pays the exact sum of their individual linear coordinates regardless of how the units are paired inside $H_{s_1, s_2}$. And because we minimize total negated cost, any unit routed from $R_i$ to $B_j$ will automatically pick the hub $H_{s_1^*, s_2^*}$ that minimizes $-(s_1(x_i - x'_j) + s_2(y_i - y'_j)) = -(|x_i - x'_j| + |y_i - y'_j|)$!
+- **$O(N)$ DAG Potential Initialization**:
+  Before the first augmentation, the network $S \to R_i \to H_{s_1,s_2} \to B_j \to T$ is a **4-layer DAG**. We compute initial Johnson potentials $\pi(v)$ in $O(N)$ time by a single forward pass:
+  $$\pi(S) = \pi(R_i) = 0, \qquad \pi(H_{s_1, s_2}) = \min_{1 \le i \le N} \big(-(s_1 x_i + s_2 y_i)\big), \qquad \pi(B_j) = \min_{s_1, s_2 \in \{\pm 1\}} \big(\pi(H_{s_1, s_2}) + s_1 x'_j + s_2 y'_j\big), \qquad \pi(T) = \min_{1 \le j \le N} \pi(B_j).$$
+  This allows every augmentation to run via pure **$O(N \log N)$ Dijkstra** with zero SPFA passes!
+
+::: {.callout-tip title="High-Dimensional Generalization: $2^d$ Hubs for $\ell_1^d$ Manhattan vs. $2d$ Hubs for $\ell_\infty^d$ Chebyshev"}
+What if the points lie in $\mathbb{R}^d$ ($d \ge 3$)?
+1. **Manhattan Norm ($\ell_1^d$)**: $\sum_{k=1}^d |p_k - q_k| = \max_{\sigma \in \{\pm 1\}^d} \big(\langle \sigma, p \rangle + \langle -\sigma, q \rangle\big)$ requires **$2^d$ sign hubs** $H_\sigma$.
+2. **Chebyshev Norm ($\ell_\infty^d$)**: $\max_{1 \le k \le d} |p_k - q_k| = \max_{1 \le k \le d,\; s \in \{\pm 1\}} \big(s \cdot p_k + (-s \cdot q_k)\big)$ requires **only $2d$ signed-axis hubs** $H_{k, s}$! (In $d = 2$, $2^2 = 2 \cdot 2 = 4$ because $\ell_1^2$ and $\ell_\infty^2$ are $45^\circ$ rotations of each other.)
+:::
+
+#### Step 4 — Hand-Checkable Toy Trace & Why Sign Hubs Fail for Minimization (`FM-20c`)
+
+- **Numerical Toy Trace ($N = 1$, $R_1 = (1, 5)$, $B_1 = (4, 1)$)**:
+  - True Manhattan distance: $|1 - 4| + |5 - 1| = 3 + 4 = 7$.
+  - Let us check the negated cost of routing $1$ unit from $R_1(1, 5)$ to $B_1(4, 1)$ through each of the $4$ hubs:
+    - $H_{++}$: $-(1 + 5) + (4 + 1) = -6 + 5 = -1$.
+    - $H_{+-}$: $-(1 - 5) + (4 - 1) = +4 + 3 = +7$.
+    - $H_{-+}$: $-(-1 + 5) + (-4 + 1) = -4 - 3 = -7$ (**Minimum negated cost = $-7 \implies$ Max distance $+7$!**).
+    - $H_{--}$: $-(-1 - 5) + (-4 - 1) = +6 - 5 = +1$.
+- **Broken-Gadget Counterexample `FM-20c`: Why Sign Hubs Fail Catastrophically for MIN-Cost Manhattan Matching**:
+  Suppose a problem asks to **minimize** $\sum (|x_i - x'_j| + |y_i - y'_j|)$ instead of maximizing it, and a contestant builds the exact same 4-hub network without negating costs (so $R_1 \to H_{s_1,s_2} \to B_1$ has cost $s_1(x_1 - x'_1) + s_2(y_1 - y'_1)$).
+  - In our toy trace above, what is the minimum cost over the 4 hubs? It is **not** $+7$; the min-cost flow solver picks $H_{-+}$ of cost **$-7 = -\big(|x_1 - x'_1| + |y_1 - y'_1|\big)$**!
+  - **Why it broke**: Because $\min_{s_1, s_2 \in \{\pm 1\}} \big(s_1 \Delta x + s_2 \Delta y\big) = -|\Delta x| - |\Delta y|$. A hub layer computes the **minimum** cost among parallel paths $h \in \mathcal{H}$, which can represent a **pointwise maximum** when negated ($\min_h (-f_h) = -\max_h f_h$), but can **never** represent minimizing a pointwise maximum $\min \max_h f_h$!
+
+---
+
+## 6. Worked Examples & Progressive 8-Problem Difficulty Ladder (`#153`–`#160`)
+
+We now apply our five structural modules across the eight canonical contest problems of Chapter 20, progressing from Stepping Stones to Grandmaster Mastery.
+
+### 6.1 Problem `#153` (`SS-1`) — [Luogu P3171 / TJOI2013] 循环格 (Cyclic Torus Grid)
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P3171](https://www.luogu.com.cn/problem/P3171)
+- **Bounds**: $R, C \le 15$ ($N = R \times C \le 225$).
+
+#### Problem Statement
+
+Given an $R \times C$ grid on a torus (wrapping top-to-bottom and left-to-right) where each cell $(r, c)$ contains a direction arrow $d_{r,c} \in \{\text{'U'}, \text{'D'}, \text{'L'}, \text{'R'}\}$, find the minimum number of cells whose arrows must be changed so that every cell in the grid has **in-degree $1$ and out-degree $1$** (forming a vertex-disjoint directed cycle cover of the torus).
+
+#### 4-Step Compilation Summary
+
+1. **Step 1 (Diagnostic Signal)**: Each cell has out-degree $1$, and we require every cell to also have in-degree $1$ — i.e., the transition map $(r, c) \mapsto \text{next}(r, c)$ must be a bijection on the $R \times C$ cells. Because $R, C \le 15$, $V = 2RC + 2 \le 452$ is tiny, and we want a minimum-cost permutation of grid cells where edges to the 4 torus neighbors cost $0$ (if matching $d_{r,c}$) or $1$ (if modified).
+2. **Step 2 (Algebraic Formulation)**: Let $x_{u, v} \in \{0, 1\}$ for adjacent torus cells $u, v$. Minimize $\sum_{u} \sum_{v \in N(u)} \mathbf{1}[v \neq \text{dir}(u)] x_{u, v}$ subject to $\sum_v x_{u, v} = 1$ (out-degree $1$) and $\sum_u x_{u, v} = 1$ (in-degree $1$).
+3. **Step 3 (Graph Compilation)**: Split each cell $u$ into $u_{\text{out}}$ (left) and $u_{\text{in}}$ (right).
+   - $S \to u_{\text{out}}$ with $(\text{cap} = 1, \text{cost} = 0)$ and $u_{\text{in}} \to T$ with $(\text{cap} = 1, \text{cost} = 0)$.
+   - For each of the 4 torus neighbors $v$ of $u$, add $u_{\text{out}} \to v_{\text{in}}$ with $\text{cap} = 1$ and $\text{cost} = 0$ if $v$ lies in direction $d_u$, or $\text{cost} = 1$ otherwise.
+4. **Step 4 (Bonus Efficiency Insight)**: Because all edge costs are in $\{0, 1\}$ and all capacities are $1$, any shortest augmenting path step in the residual network has edge weights in $\{-1, 0, +1\}$, and with Johnson potentials all reduced costs are non-negative integers with path length $\le RC$. Standard SSP runs in $< 5\text{ ms}$ for $RC \le 225$.
+
+:::: {.callout-tip collapse="true" title="Hint 1 — Structural Recognition (Problem #153)"}
+What does "every cell is visited in a cycle cover, and each cell steps to the next cell along its arrow" mean for the in-degree and out-degree of every cell $(r, c)$?
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 — Bipartite Split Formulation (Problem #153)"}
+Every cell always has out-degree $1$ (it points somewhere). For the arrows to partition the grid into disjoint cycles, every cell must also have **in-degree $1$**. How do we model $\text{out-deg}(u) = 1$ and $\text{in-deg}(v) = 1$ simultaneously as a bipartite assignment?
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 — Full Network Specification (Problem #153)"}
+Split each cell $u = (r, c)$ into $u_{\text{out}}$ and $u_{\text{in}}$. Connect $S \to u_{\text{out}}$ $(1, 0)$ and $u_{\text{in}} \to T$ $(1, 0)$. For each of the 4 torus neighbors $v$ of $u$, add edge $u_{\text{out}} \to v_{\text{in}}$ with capacity $1$ and cost $0$ if $v$ matches $u$'s original arrow, or cost $1$ otherwise. The min-cost max-flow of value $RC$ is the answer.
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution — Problem #153 ([TJOI2013] 循环格)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+struct MCMF {
+    struct Edge { int to, rev, cap, cost; };
+    int n;
+    vector<vector<Edge>> g;
+    vector<int> dist, pv, pe;
+    vector<bool> inq;
+
+    MCMF(int n) : n(n), g(n), dist(n), pv(n), pe(n), inq(n) {}
+
+    void add_edge(int u, int v, int cap, int cost) {
+        g[u].push_back({v, (int)g[v].size(), cap, cost});
+        g[v].push_back({u, (int)g[u].size() - 1, 0, -cost});
+    }
+
+    int min_cost_max_flow(int s, int t) {
+        int total_cost = 0;
+        const int INF = 1e9;
+        while (true) {
+            fill(dist.begin(), dist.end(), INF);
+            fill(inq.begin(), inq.end(), false);
+            queue<int> q;
+            dist[s] = 0;
+            q.push(s);
+            inq[s] = true;
+            while (!q.empty()) {
+                int u = q.front();
+                q.pop();
+                inq[u] = false;
+                for (int i = 0; i < (int)g[u].size(); ++i) {
+                    auto &e = g[u][i];
+                    if (e.cap > 0 && dist[u] + e.cost < dist[e.to]) {
+                        dist[e.to] = dist[u] + e.cost;
+                        pv[e.to] = u;
+                        pe[e.to] = i;
+                        if (!inq[e.to]) {
+                            inq[e.to] = true;
+                            q.push(e.to);
+                        }
+                    }
+                }
+            }
+            if (dist[t] == INF) break;
+            int push = INF;
+            for (int v = t; v != s; v = pv[v])
+                push = min(push, g[pv[v]][pe[v]].cap);
+            for (int v = t; v != s; v = pv[v]) {
+                auto &e = g[pv[v]][pe[v]];
+                e.cap -= push;
+                g[v][e.rev].cap += push;
+            }
+            total_cost += push * dist[t];
+        }
+        return total_cost;
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int R, C;
+    if (!(cin >> R >> C)) return 0;
+    vector<string> grid(R);
+    for (int r = 0; r < R; ++r) cin >> grid[r];
+
+    int N = R * C;
+    int S = 2 * N, T = 2 * N + 1;
+    MCMF mcmf(2 * N + 2);
+
+    const int dr[4] = {-1, 1, 0, 0};
+    const int dc[4] = {0, 0, -1, 1};
+    const char dir_ch[4] = {'U', 'D', 'L', 'R'};
+
+    for (int r = 0; r < R; ++r) {
+        for (int c = 0; c < C; ++c) {
+            int u = r * C + c;
+            mcmf.add_edge(S, u, 1, 0);
+            mcmf.add_edge(N + u, T, 1, 0);
+            for (int d = 0; d < 4; ++d) {
+                int nr = (r + dr[d] + R) % R;
+                int nc = (c + dc[d] + C) % C;
+                int v = nr * C + nc;
+                int cost = (grid[r][c] == dir_ch[d]) ? 0 : 1;
+                mcmf.add_edge(u, N + v, 1, cost);
+            }
+        }
+    }
+
+    cout << mcmf.min_cost_max_flow(S, T) << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### 6.2 Problem `#154` (`SS-2`) — [Luogu P2053 / SCOI2007] 修车 (Car Repair)
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P2053](https://www.luogu.com.cn/problem/P2053)
+- **Bounds**: $M \le 9$ technicians, $N \le 60$ cars, repair times $t_{i, j} \le 1000$.
+
+#### Problem Statement
+
+$N$ customers bring their cars to a repair shop with $M$ technicians. Technician $j$ takes $t_{i, j}$ minutes to repair car $i$. Each technician repairs their assigned cars sequentially one at a time. Minimize the **average waiting + repair completion time** across all $N$ customers (accurate to $2$ decimal places).
+
+#### 4-Step Compilation Summary
+
+1. **Step 1 (Diagnostic Signal)**: Minimizing $\frac{1}{N} \sum_{i=1}^N C_i$ is equivalent to minimizing total completion time $\sum_{i=1}^N C_i$. A forward queue index $q$ depends on the durations of the $q - 1$ cars before it (coupled state!), whereas a **reverse queue index** $r \in \{1, \dots, N\}$ (counting from the **last** car repaired by technician $j$) delays exactly $r$ cars (itself plus the $r - 1$ cars after it).
+2. **Step 2 (Algebraic Formulation)**: By Equation (2), placing car $i$ into reverse slot $(j, r)$ contributes exactly $r \cdot t_{i, j}$ to $\sum C_i$. Let $x_{i, j, r} \in \{0, 1\}$. Minimize $\sum_{i=1}^N \sum_{j=1}^M \sum_{r=1}^N (r \cdot t_{i, j}) x_{i, j, r}$ subject to $\sum_{j, r} x_{i, j, r} = 1$ for each car $i$, and $\sum_i x_{i, j, r} \le 1$ for each slot $(j, r)$.
+3. **Step 3 (Graph Compilation)**:
+   - Left nodes: $N$ cars $i \in \{1, \dots, N\}$, with $S \to i$ $(\text{cap} = 1, \text{cost} = 0)$.
+   - Right nodes: $M \cdot N$ reverse slots $(j, r)$, with $(j, r) \to T$ $(\text{cap} = 1, \text{cost} = 0)$.
+   - Bipartite edges: $i \to (j, r)$ with $\text{cap} = 1, \text{cost} = r \cdot t_{i, j}$.
+4. **Step 4 (Scale Verification)**: With $N \le 60, M \le 9$, $M \cdot N \le 540$ slots and $N \cdot M \cdot N \le 32{,}400$ edges fit easily in static memory without needing lazy node spawning (which we will deploy in `#156`).
+
+:::: {.callout-tip collapse="true" title="Hint 1 — Breaking Forward-Queue Coupling (Problem #154)"}
+If car $i$ is the $q$-th car repaired by technician $j$, its completion time depends on the repair times of the $q - 1$ cars before it. What if instead you count its position $r \in \{1, \dots, k_j\}$ **from the back of technician $j$'s queue** ($r = 1$ is the last car repaired)?
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 — Contribution Counting (Problem #154)"}
+If car $i$ is the $r$-th from last car repaired by technician $j$, how many cars in technician $j$'s queue have to wait for car $i$'s repair to finish? Exactly $r$ cars (car $i$ itself, plus the $r - 1$ cars behind it)! So car $i$'s standalone contribution to the total waiting time is $r \cdot t_{i, j}$.
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 — Bipartite Assignment Graph (Problem #154)"}
+Create $N$ car vertices on the left and $M \times N$ slot vertices $(j, r)$ on the right ($1 \le j \le M, 1 \le r \le N$). Connect car $i$ to slot $(j, r)$ with capacity $1$ and cost $r \cdot t_{i, j}$. Run MCMF and divide the minimum cost by $N$.
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution — Problem #154 ([SCOI2007] 修车)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+struct MCMF {
+    struct Edge { int to, rev, cap; long long cost; };
+    int n;
+    vector<vector<Edge>> g;
+    vector<long long> dist;
+    vector<int> pv, pe;
+    vector<bool> inq;
+
+    MCMF(int n) : n(n), g(n), dist(n), pv(n), pe(n), inq(n) {}
+
+    void add_edge(int u, int v, int cap, long long cost) {
+        g[u].push_back({v, (int)g[v].size(), cap, cost});
+        g[v].push_back({u, (int)g[u].size() - 1, 0, -cost});
+    }
+
+    long long min_cost_max_flow(int s, int t) {
+        long long total_cost = 0;
+        const long long INF = 1e18;
+        while (true) {
+            fill(dist.begin(), dist.end(), INF);
+            fill(inq.begin(), inq.end(), false);
+            queue<int> q;
+            dist[s] = 0;
+            q.push(s);
+            inq[s] = true;
+            while (!q.empty()) {
+                int u = q.front();
+                q.pop();
+                inq[u] = false;
+                for (int i = 0; i < (int)g[u].size(); ++i) {
+                    auto &e = g[u][i];
+                    if (e.cap > 0 && dist[u] + e.cost < dist[e.to]) {
+                        dist[e.to] = dist[u] + e.cost;
+                        pv[e.to] = u;
+                        pe[e.to] = i;
+                        if (!inq[e.to]) {
+                            inq[e.to] = true;
+                            q.push(e.to);
+                        }
+                    }
+                }
+            }
+            if (dist[t] == INF) break;
+            int push = 1e9;
+            for (int v = t; v != s; v = pv[v])
+                push = min(push, g[pv[v]][pe[v]].cap);
+            for (int v = t; v != s; v = pv[v]) {
+                auto &e = g[pv[v]][pe[v]];
+                e.cap -= push;
+                g[v][e.rev].cap += push;
+            }
+            total_cost += 1LL * push * dist[t];
+        }
+        return total_cost;
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int M, N;
+    if (!(cin >> M >> N)) return 0;
+    vector<vector<int>> t(N, vector<int>(M));
+    for (int i = 0; i < N; ++i)
+        for (int j = 0; j < M; ++j)
+            cin >> t[i][j];
+
+    int S = N + M * N, T = S + 1;
+    MCMF mcmf(T + 1);
+    for (int i = 0; i < N; ++i) {
+        mcmf.add_edge(S, i, 1, 0);
+        for (int j = 0; j < M; ++j) {
+            for (int r = 1; r <= N; ++r) {
+                int slot = N + j * N + (r - 1);
+                mcmf.add_edge(i, slot, 1, 1LL * r * t[i][j]);
+            }
+        }
+    }
+    for (int j = 0; j < M; ++j)
+        for (int r = 1; r <= N; ++r)
+            mcmf.add_edge(N + j * N + (r - 1), T, 1, 0);
+
+    long long min_cost = mcmf.min_cost_max_flow(S, T);
+    cout << fixed << setprecision(2) << (double)min_cost / N << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### 6.3 Problem `#155` (`Int-1`) — [Luogu P1251 / 网络流24题] 餐巾计划问题 (Napkin Plan)
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P1251](https://www.luogu.com.cn/problem/P1251) (and Large-Scale Direction B: [Luogu P4480 `[BJWC2018]` 餐巾计划问题](https://www.luogu.com.cn/problem/P4480))
+- **Bounds**: $N \le 2000$ days, $r_t \le 10^7$, costs $\le 10^4$.
+
+#### Problem Statement
+
+A restaurant requires $r_t$ clean napkins on day $t \in \{1, \dots, N\}$. Each day, it can buy new napkins at cost $p$ each; after day $t$'s meal, the $r_t$ used (dirty) napkins can either be held in dirty storage for the next day, sent to a fast laundry taking $m_1$ days at cost $c_1$ each, or sent to a slow laundry taking $m_2$ days at cost $c_2$ each. Find the minimum total cost to meet all $N$ days of demand.
+
+#### 4-Step Compilation Summary
+
+1. **Step 1 (Diagnostic Signal)**: Used napkins are **not** consumed — they transition from clean to dirty, wait in storage or laundry, and re-emerge as clean napkins $m_1$ or $m_2$ days later. As proved in `FM-20a`, a single node per day cannot simultaneously enforce exact consumption $r_t$ and re-inject those $r_t$ dirty napkins into the timeline without destroying clean-napkin inventory.
+2. **Step 2 (Algebraic Formulation)**: Decouple dirty supply $X_t$ (injected from $S$, cap $r_t$) and clean demand $Y_t$ (drained to $T$, cap $r_t$):
+   - Dirty conservation at $X_t$: $r_t + h_{t-1} = h_t + f_t + s_t$.
+   - Clean conservation at $Y_t$: $b_t + f_{t-m_1} + s_{t-m_2} = r_t$.
+3. **Step 3 (Graph Compilation)**:
+   - $S \to X_t$ $(r_t, 0)$ and $Y_t \to T$ $(r_t, 0)$ for $1 \le t \le N$.
+   - Buy new: $S \to Y_t$ $(\infty, p)$.
+   - Dirty holdover: $X_t \to X_{t+1}$ $(\infty, 0)$ for $t < N$.
+   - Fast laundry: $X_t \to Y_{t+m_1}$ $(\infty, c_1)$ for $t + m_1 \le N$.
+   - Slow laundry: $X_t \to Y_{t+m_2}$ $(\infty, c_2)$ for $t + m_2 \le N$.
+
+::: {.callout-note title="Bridge to Chapter 22 (Direction B): $[BJWC2018]$ 餐巾计划问题 ($N \le 3 \times 10^5$) via Ternary Search + Monotone Deque"}
+When $N \le 3 \times 10^5$ ([Luogu P4480](https://www.luogu.com.cn/problem/P4480)), explicit MCMF is too slow, so we simulate the flow directly:
+1. Ensure $p > c_1 > c_2$ and $m_1 < m_2$ (removing dominated options).
+2. As a function of the **total number of newly purchased napkins** $K \in [\max_{T \le m_1} \sum_{t=1}^T r_t,\; \sum_{t=1}^N r_t]$, the minimum laundry cost $g(K)$ is **discrete convex** (since it is the parametric min-cost flow cost as the capacity on the $S \to Y_1$ purchase edge varies).
+3. For a fixed $K$ (bought on day $1$ since clean holdover is free), we simulate day by day $t = 1 \dots N$ using a doubly-ended queue of dirty napkins indexed by creation day:
+   - First use any remaining initial stock from $K$.
+   - Next, greedily launder the **oldest** available dirty napkins from days $\le t - m_2$ via **slow laundry** at cost $c_2$ (**FIFO** from the front of the queue, saving newer dirty napkins that are not yet old enough for slow laundry!).
+   - Finally, if demand remains, launder the **newest** available dirty napkins from days $\le t - m_1$ via **fast laundry** at cost $c_1$ (**LIFO** from the back of the eligible window, leaving older dirty napkins to mature into slow-laundry eligibility on future days!).
+   Ternary search over $K$ with this $O(N)$ deque check solves $N = 3 \times 10^5$ in $O(N \log(\sum r_t))$ time!
+:::
+
+:::: {.callout-tip collapse="true" title="Hint 1 — Why Single-Node Per Day Fails (Problem #155)"}
+If you represent day $t$ by a single vertex and drain $r_t$ units to the sink $T$, those $r_t$ units disappear from the network and cannot be sent to laundry for days $t + m_1$ or $t + m_2$. How do we separate "clean napkins consumed on day $t$" from "dirty napkins produced on day $t$"?
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 — Dirty Supply vs. Clean Demand Split (Problem #155)"}
+Since we know every day $t$'s demand of $r_t$ clean napkins will be met in a valid max-flow, we know beforehand that **exactly $r_t$ dirty napkins are generated at the end of day $t$**. Create a dirty supply node $X_t$ receiving $r_t$ units from $S$, and a clean demand node $Y_t$ sending $r_t$ units to $T$.
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 — Edge Catalogue & `long long` Capacities (Problem #155)"}
+Connect $S \to X_t$ $(r_t, 0)$, $Y_t \to T$ $(r_t, 0)$, $S \to Y_t$ $(\infty, p)$, $X_t \to X_{t+1}$ $(\infty, 0)$, $X_t \to Y_{t+m_1}$ $(\infty, c_1)$, and $X_t \to Y_{t+m_2}$ $(\infty, c_2)$. Watch out: $r_t \le 10^7$ and $N \le 2000$, so both **flow capacities** and **total cost** must use `long long`!
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution — Problem #155 ([网络流24题] 餐巾计划问题)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+struct MCMF {
+    struct Edge { int to, rev; long long cap, cost; };
+    int n;
+    vector<vector<Edge>> g;
+    vector<long long> dist;
+    vector<int> pv, pe;
+    vector<bool> inq;
+
+    MCMF(int n) : n(n), g(n), dist(n), pv(n), pe(n), inq(n) {}
+
+    void add_edge(int u, int v, long long cap, long long cost) {
+        g[u].push_back({v, (int)g[v].size(), cap, cost});
+        g[v].push_back({u, (int)g[u].size() - 1, 0, -cost});
+    }
+
+    long long min_cost_max_flow(int s, int t) {
+        long long total_cost = 0;
+        const long long INF = 4e18;
+        while (true) {
+            fill(dist.begin(), dist.end(), INF);
+            fill(inq.begin(), inq.end(), false);
+            queue<int> q;
+            dist[s] = 0;
+            q.push(s);
+            inq[s] = true;
+            while (!q.empty()) {
+                int u = q.front();
+                q.pop();
+                inq[u] = false;
+                for (int i = 0; i < (int)g[u].size(); ++i) {
+                    auto &e = g[u][i];
+                    if (e.cap > 0 && dist[u] + e.cost < dist[e.to]) {
+                        dist[e.to] = dist[u] + e.cost;
+                        pv[e.to] = u;
+                        pe[e.to] = i;
+                        if (!inq[e.to]) {
+                            inq[e.to] = true;
+                            q.push(e.to);
+                        }
+                    }
+                }
+            }
+            if (dist[t] == INF) break;
+            long long push = INF;
+            for (int v = t; v != s; v = pv[v])
+                push = min(push, g[pv[v]][pe[v]].cap);
+            for (int v = t; v != s; v = pv[v]) {
+                auto &e = g[pv[v]][pe[v]];
+                e.cap -= push;
+                g[v][e.rev].cap += push;
+            }
+            total_cost += push * dist[t];
+        }
+        return total_cost;
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int N;
+    if (!(cin >> N)) return 0;
+    vector<long long> r(N + 1);
+    for (int t = 1; t <= N; ++t) cin >> r[t];
+    long long p, m1, c1, m2, c2;
+    cin >> p >> m1 >> c1 >> m2 >> c2;
+
+    int S = 0, T = 2 * N + 1;
+    const long long INF = 1e16;
+    MCMF mcmf(T + 1);
+
+    for (int t = 1; t <= N; ++t) {
+        int X_t = t;         // Dirty supply node on day t
+        int Y_t = N + t;     // Clean demand node on day t
+        mcmf.add_edge(S, X_t, r[t], 0);
+        mcmf.add_edge(Y_t, T, r[t], 0);
+        mcmf.add_edge(S, Y_t, INF, p);
+        if (t + 1 <= N) mcmf.add_edge(X_t, t + 1, INF, 0);
+        if (t + m1 <= N) mcmf.add_edge(X_t, N + t + m1, INF, c1);
+        if (t + m2 <= N) mcmf.add_edge(X_t, N + t + m2, INF, c2);
+    }
+
+    cout << mcmf.min_cost_max_flow(S, T) << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### 6.4 Problem `#156` (`Int-2`) — [Luogu P2050 / NOI2012] 美食节 (Food Festival)
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P2050](https://www.luogu.com.cn/problem/P2050)
+- **Bounds**: $n \le 40$ dish types, $m \le 100$ chefs, total dishes $P = \sum_{i=1}^n p_i \le 800$, $t_{i, j} \le 1000$.
+
+#### Problem Statement
+
+At a food festival, $n$ types of dishes are ordered, with $p_i$ orders of dish type $i$ (total orders $P = \sum_{i=1}^n p_i \le 800$). There are $m$ chefs; chef $j$ takes $t_{i, j}$ time to cook one dish of type $i$. Each chef cooks their assigned dishes one by one. Minimize the sum of waiting times of all $P$ dish orders.
+
+#### 4-Step Compilation Summary
+
+1. **Step 1 (Diagnostic Signal)**: Identical objective to `#154` (`[SCOI2007] 修车`), except dishes of type $i$ are bundled with multiplicity $p_i$ ($S \to \text{Dish}_i$ has capacity $p_i$) and total dishes $P \le 800$ with $m \le 100$ makes the static graph ($n \cdot m \cdot P = 3.2 \times 10^6$ edges) **40x too large** for 800 SSP augmentations.
+2. **Step 2 (Algebraic Formulation)**: By Theorem 4.1 (Frontier Slot Dominance), for each chef $j$, the first unallocated reverse slot $(j, r_j)$ strictly dominates all higher slots $(j, r)$ with $r > r_j$.
+3. **Step 3 (Dynamic Lazy Compilation)**:
+   - Initially create only $r = 1$ slots $(j, 1)$ for each chef $j \in \{1, \dots, m\}$.
+   - Run **strictly 1-unit SSP augmentation** per step (`push = 1`).
+   - Identify the chef slot $u_{\text{slot}} = \text{pv}[T]$ that just became saturated on the edge $u_{\text{slot}} \to T$. If it belongs to chef $j^*$ at rank $r^* < P$, allocate a new vertex for $(j^*, r^* + 1)$, add $(j^*, r^* + 1) \to T$ $(1, 0)$, and add $\text{Dish}_i \to (j^*, r^* + 1)$ $(1, (r^* + 1) t_{i, j^*})$ for $i = 1 \dots n$.
+4. **Step 4 (Complexity Check)**: Total vertices spawned $= n + m + P + 2 \le 942$; total edges ever added $= (m + P)n + m + P \le 36{,}900$. Runs in $< 80\text{ ms}$!
+
+:::: {.callout-tip collapse="true" title="Hint 1 — Why Static Graph Construction TLEs (Problem #156)"}
+With $n = 40, m = 100, P = 800$, how many edges would the static Car Repair graph from `#154` have? $40 \times 100 \times 800 = 3.2 \times 10^6$ edges! Over $P = 800$ augmentations, scanning $3.2 \times 10^6$ edges per SPFA pass takes $\sim 2.5 \times 10^9$ operations.
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 — Frontier Slot Dominance (Problem #156)"}
+Notice that for any chef $j$ and any dish $i$, slot $(j, r+1)$ costs $(r+1) t_{i, j} > r \cdot t_{i, j}$. Could a shortest augmenting path ever use slot $(j, r+1)$ while slot $(j, r)$ is still empty? Never! And since each augmentation saturates at most **one** sink slot, how many slots across all $m$ chefs can ever be used after $P$ augmentations?
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 — On-Demand Spawning Protocol (Problem #156)"}
+Start the graph with only slot $(j, 1)$ for each of the $m$ chefs. In each step of SSP, push $1$ unit of flow to $T$. Check which slot vertex $u = \text{pv}[T]$ was just used to reach $T$: if $u$ belongs to chef $j^*$ at rank $r^*$, dynamically append a new vertex for $(j^*, r^* + 1)$ and its $n + 1$ incident edges!
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution — Problem #156 ([NOI2012] 美食节)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+struct Edge {
+    int to, rev, cap;
+    long long cost;
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int n, m;
+    if (!(cin >> n >> m)) return 0;
+    vector<int> p(n);
+    int P = 0;
+    for (int i = 0; i < n; ++i) {
+        cin >> p[i];
+        P += p[i];
+    }
+    vector<vector<int>> t(n, vector<int>(m));
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < m; ++j)
+            cin >> t[i][j];
+
+    int max_nodes = n + m + P + 5;
+    int S = 0, T = 1;
+    int next_node = 2 + n;
+    vector<vector<Edge>> g(max_nodes);
+    vector<int> slot_chef(max_nodes, -1), slot_rank(max_nodes, 0);
+
+    auto add_edge = [&](int u, int v, int cap, long long cost) {
+        g[u].push_back({v, (int)g[v].size(), cap, cost});
+        g[v].push_back({u, (int)g[u].size() - 1, 0, -cost});
+    };
+
+    auto spawn_slot = [&](int j, int r) {
+        int u = next_node++;
+        slot_chef[u] = j;
+        slot_rank[u] = r;
+        for (int i = 0; i < n; ++i) {
+            add_edge(2 + i, u, 1, 1LL * r * t[i][j]);
+        }
+        add_edge(u, T, 1, 0);
+    };
+
+    for (int i = 0; i < n; ++i) {
+        add_edge(S, 2 + i, p[i], 0);
+    }
+    for (int j = 0; j < m; ++j) {
+        spawn_slot(j, 1);
+    }
+
+    const long long INF = 4e18;
+    vector<long long> dist(max_nodes);
+    vector<int> pv(max_nodes), pe(max_nodes);
+    vector<bool> inq(max_nodes);
+    long long total_cost = 0;
+
+    for (int step = 0; step < P; ++step) {
+        fill(dist.begin(), dist.begin() + next_node, INF);
+        fill(inq.begin(), inq.begin() + next_node, false);
+        queue<int> q;
+        dist[S] = 0;
+        q.push(S);
+        inq[S] = true;
+        while (!q.empty()) {
+            int u = q.front();
+            q.pop();
+            inq[u] = false;
+            for (int idx = 0; idx < (int)g[u].size(); ++idx) {
+                auto &e = g[u][idx];
+                if (e.cap > 0 && dist[u] + e.cost < dist[e.to]) {
+                    dist[e.to] = dist[u] + e.cost;
+                    pv[e.to] = u;
+                    pe[e.to] = idx;
+                    if (!inq[e.to]) {
+                        inq[e.to] = true;
+                        q.push(e.to);
+                    }
+                }
+            }
+        }
+
+        // Push strictly 1 unit along the shortest augmenting path
+        for (int v = T; v != S; v = pv[v]) {
+            auto &e = g[pv[v]][pe[v]];
+            e.cap -= 1;
+            g[v][e.rev].cap += 1;
+        }
+        total_cost += dist[T];
+
+        // Identify the chef slot that just saturated its edge to T
+        int used_slot = pv[T];
+        int j = slot_chef[used_slot];
+        int r = slot_rank[used_slot];
+        if (r + 1 <= P) {
+            spawn_slot(j, r + 1);
+        }
+    }
+
+    cout << total_cost << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### 6.5 Problem `#157` (`Adv-1`) — [Luogu P4542 / ZJOI2011] 营救皮卡丘 (Rescuing Pikachu)
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P4542](https://www.luogu.com.cn/problem/P4542) (and Unbounded-Fleet Direct-Jump Sibling: [Luogu P2469 `[SDOI2010]` 星际竞速](https://www.luogu.com.cn/problem/P2469))
+- **Bounds**: $N \le 150$ bases (indexed $0, 1, \dots, N$), $M \le 20{,}000$ undirected weighted roads, $K \le 10$ rescue teams.
+
+#### Problem Statement
+
+You start at base $0$ with $K$ rescue teams and must unlock bases $1, 2, \dots, N$ in order. A team can travel along roads to unlock base $j$ only after every intermediate base $v$ along its road path with $v < j$ has already been unlocked; in particular, when moving from a previously unlocked base $i < j$ to unlock $j$, a team may only pass through intermediate vertices $k \le \max(i, j) = j$. Minimize the total road distance traveled by all $K$ teams to unlock all bases $1, \dots, N$.
+
+#### 4-Step Compilation Summary
+
+1. **Step 1 (Diagnostic Signal)**: Every base $j \in \{1, \dots, N\}$ is unlocked by some team arriving from an already-unlocked base $i \in \{0, 1, \dots, j-1\}$. The restriction "all bases $< j$ are already unlocked when unlocking $j$" means the shortest valid road path from $i$ to $j$ can use any intermediate vertex $k \in \{0, 1, \dots, j\}$. Once those pairwise shortest distances $D[i][j]$ ($0 \le i < j \le N$) are precomputed, the problem reduces to covering DAG vertices $\{1, \dots, N\}$ with at most $K$ directed paths starting at $0$.
+2. **Step 2 (Two-Stage Decomposition)**:
+   - **Stage 1 (Restricted Floyd–Warshall)**: Run Floyd–Warshall with outer pivot $k = 0, 1, \dots, N$. Record $D[i][j]$ ($i < j$) immediately after pivot $k = j$ completes (so only intermediate nodes $\le j$ are used!).
+   - **Stage 3 (Bipartite Split for $K$-Team Path Cover)**: Split $u \in \{1, \dots, N\}$ into $u_{\text{out}}$ and $u_{\text{in}}$, plus base $0_{\text{out}}$ of supply $K$:
+     $$\min \sum_{0 \le i < j \le N} D[i][j] x_{i, j} \quad \text{s.t.} \quad \sum_{j=1}^N x_{0, j} \le K, \quad \sum_{i=0}^{j-1} x_{i, j} = 1 \;\; (\forall j \ge 1), \quad \sum_{j=i+1}^N x_{i, j} \le 1 \;\; (\forall i \ge 1).$$
+3. **Step 3 (Graph Compilation)**:
+   - $S \to 0_{\text{out}}$ $(K, 0)$; for $1 \le i \le N$, $S \to i_{\text{out}}$ $(1, 0)$ and $i_{\text{in}} \to T$ $(1, 0)$.
+   - For $0 \le i < j \le N$ with $D[i][j] < \infty$, add $i_{\text{out}} \to j_{\text{in}}$ $(1, D[i][j])$.
+   - Find the minimum-cost flow that saturates all $N$ sink edges $j_{\text{in}} \to T$ (total flow $= N$; notice $S \to 0_{\text{out}} \cup \{i_{\text{out}}\}$ has total capacity $K + N$, and any unused capacity simply stays at $S$, which corresponds to paths terminating or $< K$ teams being used!).
+
+:::: {.callout-tip collapse="true" title="Hint 1 — Decoupling the Road Graph from the Team Routing (Problem #157)"}
+When a team travels from an already-unlocked base $i < j$ to unlock base $j$, which bases are already unlocked at that moment? Bases $0, 1, \dots, j-1$! So the team can pass through any intermediate vertex $k \le j$. How can you compute the shortest path $D[i][j]$ between all pairs $0 \le i < j \le N$ using only intermediate vertices $\le j$?
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 — Restricted Floyd–Warshall + Path Cover (Problem #157)"}
+In standard Floyd–Warshall, the outer loop iterates over $k = 0, 1, \dots, N$. At the exact moment when outer loop iteration $k$ finishes, `dist[i][j]` is the shortest path using only intermediate vertices in $\{0, \dots, k\}$. Thus for $i < j$, $D[i][j]$ is simply `dist[i][j]` after outer step $k = j$! Once $D[i][j]$ is known, how do we cover vertices $\{1, \dots, N\}$ with $\le K$ paths starting at $0$?
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 — Bipartite Supply–Demand Network (Problem #157)"}
+Create $0_{\text{out}}$ with edge $S \to 0_{\text{out}}$ $(\text{cap} = K, \text{cost} = 0)$. For each $i \in \{1, \dots, N\}$, create $i_{\text{out}}$ with $S \to i_{\text{out}}$ $(1, 0)$ and $i_{\text{in}}$ with $i_{\text{in}} \to T$ $(1, 0)$. For all $0 \le i < j \le N$, add $i_{\text{out}} \to j_{\text{in}}$ $(1, D[i][j])$. The min-cost max-flow (of flow value $N$) is the answer!
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution — Problem #157 ([ZJOI2011] 营救皮卡丘)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+struct MCMF {
+    struct Edge { int to, rev, cap; long long cost; };
+    int n;
+    vector<vector<Edge>> g;
+    vector<long long> dist;
+    vector<int> pv, pe;
+    vector<bool> inq;
+
+    MCMF(int n) : n(n), g(n), dist(n), pv(n), pe(n), inq(n) {}
+
+    void add_edge(int u, int v, int cap, long long cost) {
+        g[u].push_back({v, (int)g[v].size(), cap, cost});
+        g[v].push_back({u, (int)g[u].size() - 1, 0, -cost});
+    }
+
+    long long min_cost_max_flow(int s, int t) {
+        long long total_cost = 0;
+        const long long INF = 4e18;
+        while (true) {
+            fill(dist.begin(), dist.end(), INF);
+            fill(inq.begin(), inq.end(), false);
+            queue<int> q;
+            dist[s] = 0;
+            q.push(s);
+            inq[s] = true;
+            while (!q.empty()) {
+                int u = q.front();
+                q.pop();
+                inq[u] = false;
+                for (int i = 0; i < (int)g[u].size(); ++i) {
+                    auto &e = g[u][i];
+                    if (e.cap > 0 && dist[u] + e.cost < dist[e.to]) {
+                        dist[e.to] = dist[u] + e.cost;
+                        pv[e.to] = u;
+                        pe[e.to] = i;
+                        if (!inq[e.to]) {
+                            inq[e.to] = true;
+                            q.push(e.to);
+                        }
+                    }
+                }
+            }
+            if (dist[t] == INF) break;
+            int push = 1e9;
+            for (int v = t; v != s; v = pv[v])
+                push = min(push, g[pv[v]][pe[v]].cap);
+            for (int v = t; v != s; v = pv[v]) {
+                auto &e = g[pv[v]][pe[v]];
+                e.cap -= push;
+                g[v][e.rev].cap += push;
+            }
+            total_cost += 1LL * push * dist[t];
+        }
+        return total_cost;
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int N, M, K;
+    if (!(cin >> N >> M >> K)) return 0;
+
+    const long long INF = 1e15;
+    vector<vector<long long>> fw(N + 1, vector<long long>(N + 1, INF));
+    vector<vector<long long>> D(N + 1, vector<long long>(N + 1, INF));
+    for (int i = 0; i <= N; ++i) fw[i][i] = 0;
+
+    for (int e = 0; e < M; ++e) {
+        int u, v;
+        long long w;
+        cin >> u >> v >> w;
+        fw[u][v] = min(fw[u][v], w);
+        fw[v][u] = min(fw[v][u], w);
+    }
+
+    // Restricted Floyd-Warshall: record D[i][j] (i < j) after pivot k <= j
+    for (int k = 0; k <= N; ++k) {
+        for (int i = 0; i <= N; ++i) {
+            for (int j = 0; j <= N; ++j) {
+                fw[i][j] = min(fw[i][j], fw[i][k] + fw[k][j]);
+                if (k >= max(i, j)) {
+                    D[i][j] = min(D[i][j], fw[i][j]);
+                }
+            }
+        }
+    }
+
+    // Nodes: 0..N are i_out, N+1..2N are j_in, S = 2N+1, T = 2N+2
+    int S = 2 * N + 1, T = 2 * N + 2;
+    MCMF mcmf(T + 1);
+    mcmf.add_edge(S, 0, K, 0);
+    for (int i = 1; i <= N; ++i) {
+        mcmf.add_edge(S, i, 1, 0);
+        mcmf.add_edge(N + i, T, 1, 0);
+    }
+    for (int i = 0; i <= N; ++i) {
+        for (int j = i + 1; j <= N; ++j) {
+            if (D[i][j] < INF) {
+                mcmf.add_edge(i, N + j, 1, D[i][j]);
+            }
+        }
+    }
+
+    cout << mcmf.min_cost_max_flow(S, T) << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### 6.6 Problem `#158` (`Adv-2`) — [Codeforces 802 C] Heidi and Library (hard)
+
+- **Judge URL**: [https://codeforces.com/problemset/problem/802/C](https://codeforces.com/problemset/problem/802/C)
+- **Bounds**: $n \le 80$ requests, cache capacity $k \le 80$, book costs $c_i \le 10^6$.
+
+#### Problem Statement
+
+On day $t \in \{1, \dots, n\}$, book $a_t$ is requested. The library holds at most $k$ books at a time. If $a_t$ is not currently in the library, Heidi must buy it for cost $c_{a_t}$ (first discarding an existing book if the library already has $k$ books). Minimize the total purchase cost over all $n$ days.
+
+#### 4-Step Compilation Summary
+
+1. **Step 1 (Diagnostic Signal)**: Offline Bélády caching fails when book purchase costs $c_b$ are heterogeneous and we must jointly choose which $\le k$ books occupy the cache across time. Because $n, k \le 80$, we can compile the cache into an $O(n)$-vertex flow network using either **Compilation A (Split-Request Token Routing)** or **Compilation B (Timeline Saving Chords)** from Section 3.2.
+2. **Step 2 (Algebraic Formulation — Split-Request Token Routing)**: Split day $t$ into $t_{\text{in}}$ and $t_{\text{out}}$ with required internal edge $t_{\text{in}} \to t_{\text{out}}$ (implemented by supply/demand splitting or a large negative bonus $-M$). A token leaving $t_{\text{out}}$ can either be preserved as the same book until its next request $\text{next}(t)$ at cost $0$, or overwritten by a newly purchased book on day $t + 1$ at cost $c_{a_{t+1}}$.
+3. **Step 3 (Clean Supply–Demand Split Implementation)**:
+   Rather than using a large $-M$ bonus, we can also use our exact **Bipartite Supply–Demand Split** directly:
+   - Every day $t \in \{1, \dots, n\}$ must be satisfied (supply $S \to t_{\text{out}}$ $(1, 0)$, demand $t_{\text{in}} \to T$ $(1, 0)$).
+   - How is request $t_{\text{in}}$ satisfied? Either by **buying** book $a_t$ on day $t$ ($S \to t_{\text{in}}$ or via the idle pool at cost $c_{a_t}$), OR by **carrying** book $a_t$ directly from its previous occurrence $p = \text{prev}(t)$ at cost $0$ — provided the cache capacity $k$ is respected!
+   - Even simpler: in the **Timeline Saving Chord** model (Section 3.2 Compilation B), start with base cost $\sum_{t=1}^n c_{a_t}$, run a backbone $1 \to 2 \to \dots \to n$ of capacity $k - 1$ (since $1$ slot is occupied by today's requested book $a_t$), and for each consecutive occurrence pair $(p, t)$ of book $a_t$:
+     - If $t = p + 1$, subtract $c_{a_t}$ immediately (occupies $0$ extra cache slots between $p$ and $p+1$).
+     - If $t > p + 1$, add chord $(p + 1) \to t$ with $\text{cap} = 1, \text{cost} = -c_{a_t}$ (occupying $1$ of the $k - 1$ background cache slots during days $p + 1, \dots, t - 1$ to save $c_{a_t}$!).
+
+:::: {.callout-tip collapse="true" title="Hint 1 — Base Cost minus Cache Savings (Problem #158)"}
+Suppose you bought a fresh copy of $a_t$ on every single day $t$: you would pay $\sum_{t=1}^n c_{a_t}$. When can you **save** the purchase cost $c_{a_t}$ on day $t$? Precisely when you kept book $a_t$ in the cache from its previous request day $p = \text{prev}(t)$ all the way to day $t$!
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 — Counting Background Cache Slots (Problem #158)"}
+On any day $d$, today's requested book $a_d$ must be in the library, leaving **$k - 1$ background slots** for other books being held across day $d$. If you keep book $a_t$ from day $p$ to day $t$, which intermediate days $d$ require a background slot for $a_t$? Exactly days $d \in \{p + 1, \dots, t - 1\}$!
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 — Interval Packing Network (Problem #158)"}
+Build a timeline $1 \to 2 \to \dots \to n$ where edge $d \to d+1$ has capacity $k - 1$ and cost $0$. Connect $S \to 1$ $(k - 1, 0)$ and $n \to T$ $(k - 1, 0)$. For each request $t$ with previous occurrence $p = \text{prev}(t)$: if $t = p + 1$, subtract $c_{a_t}$ from the base cost directly; if $t > p + 1$, add edge $(p + 1) \to t$ with capacity $1$ and cost $-c_{a_t}$. Run MCMF and add the (negative) min-cost to the base cost!
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution — Problem #158 (CF 802 C: Heidi and Library hard)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+struct MCMF {
+    struct Edge { int to, rev, cap; long long cost; };
+    int n;
+    vector<vector<Edge>> g;
+    vector<long long> dist;
+    vector<int> pv, pe;
+    vector<bool> inq;
+
+    MCMF(int n) : n(n), g(n), dist(n), pv(n), pe(n), inq(n) {}
+
+    void add_edge(int u, int v, int cap, long long cost) {
+        g[u].push_back({v, (int)g[v].size(), cap, cost});
+        g[v].push_back({u, (int)g[u].size() - 1, 0, -cost});
+    }
+
+    long long min_cost_max_flow(int s, int t) {
+        long long total_cost = 0;
+        const long long INF = 4e18;
+        while (true) {
+            fill(dist.begin(), dist.end(), INF);
+            fill(inq.begin(), inq.end(), false);
+            queue<int> q;
+            dist[s] = 0;
+            q.push(s);
+            inq[s] = true;
+            while (!q.empty()) {
+                int u = q.front();
+                q.pop();
+                inq[u] = false;
+                for (int i = 0; i < (int)g[u].size(); ++i) {
+                    auto &e = g[u][i];
+                    if (e.cap > 0 && dist[u] + e.cost < dist[e.to]) {
+                        dist[e.to] = dist[u] + e.cost;
+                        pv[e.to] = u;
+                        pe[e.to] = i;
+                        if (!inq[e.to]) {
+                            inq[e.to] = true;
+                            q.push(e.to);
+                        }
+                    }
+                }
+            }
+            if (dist[t] >= 0) break; // Stop as soon as no negative-cost saving path remains
+            int push = 1e9;
+            for (int v = t; v != s; v = pv[v])
+                push = min(push, g[pv[v]][pe[v]].cap);
+            for (int v = t; v != s; v = pv[v]) {
+                auto &e = g[pv[v]][pe[v]];
+                e.cap -= push;
+                g[v][e.rev].cap += push;
+            }
+            total_cost += 1LL * push * dist[t];
+        }
+        return total_cost;
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int n, k;
+    if (!(cin >> n >> k)) return 0;
+    vector<int> a(n + 1);
+    for (int t = 1; t <= n; ++t) cin >> a[t];
+    vector<long long> c(n + 1);
+    for (int i = 1; i <= n; ++i) cin >> c[i];
+
+    int S = 0, T = n + 1;
+    MCMF mcmf(T + 1);
+    mcmf.add_edge(S, 1, k - 1, 0);
+    for (int t = 1; t < n; ++t) {
+        mcmf.add_edge(t, t + 1, k - 1, 0);
+    }
+    mcmf.add_edge(n, T, k - 1, 0);
+
+    long long base_cost = 0;
+    vector<int> last_pos(n + 1, 0);
+    for (int t = 1; t <= n; ++t) {
+        int book = a[t];
+        base_cost += c[book];
+        int p = last_pos[book];
+        if (p != 0) {
+            if (p + 1 == t) {
+                base_cost -= c[book];
+            } else {
+                mcmf.add_edge(p + 1, t, 1, -c[book]);
+            }
+        }
+        last_pos[book] = t;
+    }
+
+    cout << base_cost + mcmf.min_cost_max_flow(S, T) << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### 6.7 Problem `#159` (`Mas-1`) — [AtCoder AGC 031 E] Snuke the Phantom Thief
+
+- **Judge URL**: [https://atcoder.jp/contests/agc031/tasks/agc031_e](https://atcoder.jp/contests/agc031/tasks/agc031_e)
+- **Bounds**: $N \le 80$ jewels, $M \le 320$ conditions, coordinates $x_i, y_i \le 100$, values $v_i \le 10^{15}$.
+
+#### Problem Statement
+
+There are $N$ jewels in 2D at $(x_i, y_i)$ with value $v_i$. You are given $M$ constraints of four types (`L`, `R`, `D`, `U`):
+- `L` $a_j, b_j$: at most $b_j$ stolen jewels have $x \le a_j$.
+- `R` $a_j, b_j$: at most $b_j$ stolen jewels have $x \ge a_j$.
+- `D` $a_j, b_j$: at most $b_j$ stolen jewels have $y \le a_j$.
+- `U` $a_j, b_j$: at most $b_j$ stolen jewels have $y \ge a_j$.
+
+Find the maximum total value of a valid subset of jewels.
+
+#### 4-Step Compilation Summary
+
+1. **Step 1 (Diagnostic Signal)**: Prefix/suffix count bounds are non-local over subsets, but if we fix the **total number of stolen jewels** $K \in \{1, \dots, N\}$, every `L`/`R`/`D`/`U` constraint becomes a point bound on the $k$-th smallest $x$-coordinate $x_{(k)}$ or $y$-coordinate $y_{(k)}$!
+2. **Step 2 (Interval Monotonization)**: For fixed $K$:
+   - Initialize $L_k^x = 1, R_k^x = 100, L_k^y = 1, R_k^y = 100$ for $k = 1 \dots K$.
+   - `L` $(a, b)$: if $b + 1 \le K$, $L_{b+1}^x = \max(L_{b+1}^x, a + 1)$.
+   - `R` $(a, b)$: if $K - b \ge 1$, $R_{K-b}^x = \min(R_{K-b}^x, a - 1)$.
+   - Propagate $L_k^x = \max(L_k^x, L_{k-1}^x)$ and $R_k^x = \min(R_k^x, R_{k+1}^x)$ (and identically for $y$).
+3. **Step 3 (3-Layer Hub Network)**:
+   - $S \to X_k$ $(1, 0)$ for $1 \le k \le K$.
+   - $X_k \to J_i^{\text{in}}$ $(1, 0)$ iff $L_k^x \le x_i \le R_k^x$.
+   - $J_i^{\text{in}} \to J_i^{\text{out}}$ $(1, -v_i)$ for $1 \le i \le N$.
+   - $J_i^{\text{out}} \to Y_r$ $(1, 0)$ iff $L_r^y \le y_i \le R_r^y$.
+   - $Y_r \to T$ $(1, 0)$ for $1 \le r \le K$.
+4. **Step 4 (Uncrossing Guarantee)**: By Theorem 5.1, any minimum-cost flow of value $K$ can be uncrossed inside the jewel layer so that $X_k$ matches to the $k$-th smallest $x$-coordinate and $Y_r$ matches to the $r$-th smallest $y$-coordinate. Maximize over $K = 1 \dots N$.
+
+:::: {.callout-tip collapse="true" title="Hint 1 — Fixing the Subset Size $K$ (Problem #159)"}
+Since $N \le 80$, we can afford to iterate over the exact number of stolen jewels $K \in \{1, \dots, N\}$. Once $K$ is fixed, what does "at most $b$ stolen jewels have $x \le a$" say about the $(b + 1)$-th smallest $x$-coordinate among the $K$ stolen jewels?
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 — Translating Count Bounds to Coordinate Intervals (Problem #159)"}
+If at most $b$ stolen jewels have $x \le a$, then the $(b+1)$-th smallest stolen $x$-coordinate must satisfy $x_{(b+1)} \ge a + 1$. Similarly, if at most $b$ stolen jewels have $x \ge a$, then the $(K - b)$-th smallest stolen $x$-coordinate must satisfy $x_{(K - b)} \le a - 1$. Propagate these bounds so each rank $k \in \{1, \dots, K\}$ has a monotone window $[L_k^x, R_k^x]$ and $[L_k^y, R_k^y]$.
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 — Three-Layer Rank-Jewel-Rank MCMF (Problem #159)"}
+For a fixed $K$, build a flow network with $K$ $x$-rank nodes $X_1 \dots X_K$, $N$ split jewel nodes $J_i^{\text{in}} \to J_i^{\text{out}}$ of capacity $1$ and cost $-v_i$, and $K$ $y$-rank nodes $Y_1 \dots Y_K$. Connect $X_k \to J_i^{\text{in}}$ if $x_i \in [L_k^x, R_k^x]$ and $J_i^{\text{out}} \to Y_r$ if $y_i \in [L_r^y, R_r^y]$. If the max flow from $S$ to $T$ reaches $K$, update the answer with $-\text{min\_cost}$.
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution — Problem #159 (AtCoder AGC 031 E: Snuke the Phantom Thief)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+struct MCMF {
+    struct Edge { int to, rev, cap; long long cost; };
+    int n;
+    vector<vector<Edge>> g;
+    vector<long long> dist;
+    vector<int> pv, pe;
+    vector<bool> inq;
+
+    MCMF(int n) : n(n), g(n), dist(n), pv(n), pe(n), inq(n) {}
+
+    void add_edge(int u, int v, int cap, long long cost) {
+        g[u].push_back({v, (int)g[v].size(), cap, cost});
+        g[v].push_back({u, (int)g[u].size() - 1, 0, -cost});
+    }
+
+    pair<int, long long> min_cost_max_flow(int s, int t) {
+        int total_flow = 0;
+        long long total_cost = 0;
+        const long long INF = 4e18;
+        while (true) {
+            fill(dist.begin(), dist.end(), INF);
+            fill(inq.begin(), inq.end(), false);
+            queue<int> q;
+            dist[s] = 0;
+            q.push(s);
+            inq[s] = true;
+            while (!q.empty()) {
+                int u = q.front();
+                q.pop();
+                inq[u] = false;
+                for (int i = 0; i < (int)g[u].size(); ++i) {
+                    auto &e = g[u][i];
+                    if (e.cap > 0 && dist[u] + e.cost < dist[e.to]) {
+                        dist[e.to] = dist[u] + e.cost;
+                        pv[e.to] = u;
+                        pe[e.to] = i;
+                        if (!inq[e.to]) {
+                            inq[e.to] = true;
+                            q.push(e.to);
+                        }
+                    }
+                }
+            }
+            if (dist[t] == INF) break;
+            int push = 1e9;
+            for (int v = t; v != s; v = pv[v])
+                push = min(push, g[pv[v]][pe[v]].cap);
+            for (int v = t; v != s; v = pv[v]) {
+                auto &e = g[pv[v]][pe[v]];
+                e.cap -= push;
+                g[v][e.rev].cap += push;
+            }
+            total_flow += push;
+            total_cost += 1LL * push * dist[t];
+        }
+        return {total_flow, total_cost};
+    }
+};
+
+struct Cond {
+    char type;
+    int a, b;
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int N;
+    if (!(cin >> N)) return 0;
+    vector<int> x(N), y(N);
+    vector<long long> val(N);
+    for (int i = 0; i < N; ++i) cin >> x[i] >> y[i] >> val[i];
+
+    int M;
+    cin >> M;
+    vector<Cond> conds(M);
+    for (int j = 0; j < M; ++j) cin >> conds[j].type >> conds[j].a >> conds[j].b;
+
+    long long ans = 0;
+    for (int K = 1; K <= N; ++K) {
+        vector<int> Lx(K + 1, 1), Rx(K + 1, 100);
+        vector<int> Ly(K + 1, 1), Ry(K + 1, 100);
+
+        for (auto &c : conds) {
+            if (c.type == 'L' && c.b + 1 <= K) Lx[c.b + 1] = max(Lx[c.b + 1], c.a + 1);
+            if (c.type == 'R' && K - c.b >= 1) Rx[K - c.b] = min(Rx[K - c.b], c.a - 1);
+            if (c.type == 'D' && c.b + 1 <= K) Ly[c.b + 1] = max(Ly[c.b + 1], c.a + 1);
+            if (c.type == 'U' && K - c.b >= 1) Ry[K - c.b] = min(Ry[K - c.b], c.a - 1);
+        }
+        for (int k = 2; k <= K; ++k) {
+            Lx[k] = max(Lx[k], Lx[k - 1]);
+            Ly[k] = max(Ly[k], Ly[k - 1]);
+        }
+        for (int k = K - 1; k >= 1; --k) {
+            Rx[k] = min(Rx[k], Rx[k + 1]);
+            Ry[k] = min(Ry[k], Ry[k + 1]);
+        }
+
+        int S = 0, T = 2 * K + 2 * N + 1;
+        MCMF mcmf(T + 1);
+        for (int k = 1; k <= K; ++k) {
+            mcmf.add_edge(S, k, 1, 0);
+            mcmf.add_edge(K + 2 * N + k, T, 1, 0);
+        }
+        for (int i = 0; i < N; ++i) {
+            int jin = K + 1 + 2 * i;
+            int jout = K + 1 + 2 * i + 1;
+            mcmf.add_edge(jin, jout, 1, -val[i]);
+            for (int k = 1; k <= K; ++k) {
+                if (Lx[k] <= x[i] && x[i] <= Rx[k])
+                    mcmf.add_edge(k, jin, 1, 0);
+                if (Ly[k] <= y[i] && y[i] <= Ry[k])
+                    mcmf.add_edge(jout, K + 2 * N + k, 1, 0);
+            }
+        }
+
+        auto [flow, cost] = mcmf.min_cost_max_flow(S, T);
+        if (flow == K) {
+            ans = max(ans, -cost);
+        }
+    }
+
+    cout << ans << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### 6.8 Problem `#160` (`Mas-2`) — [AtCoder AGC 034 D] Manhattan Max Matching
+
+- **Judge URL**: [https://atcoder.jp/contests/agc034/tasks/agc034_d](https://atcoder.jp/contests/agc034/tasks/agc034_d)
+- **Bounds**: $N \le 1000$ Red piles and $N \le 1000$ Blue piles, $c_i \le 10$ balls per pile, coordinates $0 \le X_i, Y_i \le 10^9$.
+
+#### Problem Statement
+
+You are given $N$ Red piles at $(RX_i, RY_i)$ with $RC_i$ balls and $N$ Blue piles at $(BX_j, BY_j)$ with $BC_j$ balls ($\sum RC_i = \sum BC_j \le 10^4$). Pair every Red ball with a Blue ball to **maximize** the sum of Manhattan distances $|RX_i - BX_j| + |RY_i - BY_j|$ across all paired balls.
+
+#### 4-Step Compilation Summary
+
+1. **Step 1 (Diagnostic Signal)**: Complete bipartite graph has $N^2 = 10^6$ edges (TLE for $10^4$ augmentations). Because we **maximize** Manhattan distance, $|x_i - x'_j| + |y_i - y'_j|$ is the pointwise maximum of $4$ separable linear forms over $(s_1, s_2) \in \{\pm 1\}^2$.
+2. **Step 2 (Algebraic Hub Factorization)**:
+   $$|RX_i - BX_j| + |RY_i - BY_j| = \max_{s_1, s_2 \in \{\pm 1\}} \Big((s_1 RX_i + s_2 RY_i) + (-s_1 BX_j - s_2 BY_j)\Big).$$
+3. **Step 3 (4-Hub Graph Compilation + $O(N)$ DAG Potentials)**:
+   - $S \to R_i$ $(RC_i, 0)$ and $B_j \to T$ $(BC_j, 0)$.
+   - Four sign hubs $H_0, H_1, H_2, H_3$ for $(s_1, s_2) \in \{(+1, +1), (+1, -1), (-1, +1), (-1, -1)\}$.
+   - $R_i \to H_h$ $(\infty, -(s_1 RX_i + s_2 RY_i))$ and $H_h \to B_j$ $(\infty, s_1 BX_j + s_2 BY_j)$.
+   - Initialize Johnson potentials $\pi(v)$ in $O(N)$ via the 4-layer DAG DP and run Dijkstra-SSP!
+
+:::: {.callout-tip collapse="true" title="Hint 1 — Expanding $|x_i - x'_j| + |y_i - y'_j|$ (Problem #160)"}
+Recall that $|A| = \max(+A, -A)$. Therefore, $|x_i - x'_j| + |y_i - y'_j|$ is the maximum of how many linear expressions without absolute value signs?
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 2 — Separating $i$ and $j$ via 4 Sign Hubs (Problem #160)"}
+For each of the $4$ sign choices $(s_1, s_2) \in \{+1, -1\}^2$, we can write $s_1(x_i - x'_j) + s_2(y_i - y'_j) = (s_1 x_i + s_2 y_i) + (-s_1 x'_j - s_2 y'_j)$. Create $4$ intermediate hub vertices $H_{s_1, s_2}$. Connect every Red pile $R_i$ to all $4$ hubs, and all $4$ hubs to every Blue pile $B_j$. How many edges does the entire graph have now? Only $10N = 10{,}000$!
+::::
+
+:::: {.callout-tip collapse="true" title="Hint 3 — Negated Costs & Fast Johnson Potentials (Problem #160)"}
+Negate the edge weights so max-cost flow becomes min-cost flow: $R_i \to H_{s_1, s_2}$ gets cost $-(s_1 RX_i + s_2 RY_i)$ and $H_{s_1, s_2} \to B_j$ gets cost $+(s_1 BX_j + s_2 BY_j)$. Since the initial graph is a 4-layer DAG ($S \to R \to H \to B \to T$), compute initial shortest-path potentials $\pi$ in $O(N)$ time and use Dijkstra for every augmentation!
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution — Problem #160 (AtCoder AGC 034 D: Manhattan Max Matching)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+struct Edge {
+    int to, rev, cap;
+    long long cost;
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int N;
+    if (!(cin >> N)) return 0;
+
+    vector<long long> rx(N), ry(N), bx(N), by(N);
+    vector<int> rc(N), bc(N);
+    for (int i = 0; i < N; ++i) cin >> rx[i] >> ry[i] >> rc[i];
+    for (int j = 0; j < N; ++j) cin >> bx[j] >> by[j] >> bc[j];
+
+    // Nodes: S = 0, R_i = 1..N, H_h = N+1..N+4, B_j = N+5..2N+4, T = 2N+5
+    int S = 0, T = 2 * N + 5;
+    int V = T + 1;
+    vector<vector<Edge>> g(V);
+
+    auto add_edge = [&](int u, int v, int cap, long long cost) {
+        g[u].push_back({v, (int)g[v].size(), cap, cost});
+        g[v].push_back({u, (int)g[u].size() - 1, 0, -cost});
+    };
+
+    const int INF_CAP = 1e9;
+    const int s1[4] = {1, 1, -1, -1};
+    const int s2[4] = {1, -1, 1, -1};
+
+    for (int i = 0; i < N; ++i) {
+        add_edge(S, 1 + i, rc[i], 0);
+        for (int h = 0; h < 4; ++h) {
+            long long cost = -(s1[h] * rx[i] + s2[h] * ry[i]);
+            add_edge(1 + i, N + 1 + h, INF_CAP, cost);
+        }
+    }
+    for (int j = 0; j < N; ++j) {
+        for (int h = 0; h < 4; ++h) {
+            long long cost = +(s1[h] * bx[j] + s2[h] * by[j]);
+            add_edge(N + 1 + h, N + 5 + j, INF_CAP, cost);
+        }
+        add_edge(N + 5 + j, T, bc[j], 0);
+    }
+
+    const long long INF = 4e18;
+    vector<long long> pi(V, INF);
+    pi[S] = 0;
+    for (int i = 0; i < N; ++i) pi[1 + i] = 0;
+    for (int h = 0; h < 4; ++h) {
+        for (int i = 0; i < N; ++i) {
+            pi[N + 1 + h] = min(pi[N + 1 + h], -(s1[h] * rx[i] + s2[h] * ry[i]));
+        }
+    }
+    for (int j = 0; j < N; ++j) {
+        for (int h = 0; h < 4; ++h) {
+            pi[N + 5 + j] = min(pi[N + 5 + j], pi[N + 1 + h] + s1[h] * bx[j] + s2[h] * by[j]);
+        }
+        pi[T] = min(pi[T], pi[N + 5 + j]);
+    }
+
+    long long total_cost = 0;
+    vector<long long> dist(V);
+    vector<int> pv(V), pe(V);
+
+    while (true) {
+        fill(dist.begin(), dist.end(), INF);
+        priority_queue<pair<long long, int>, vector<pair<long long, int>>, greater<>> pq;
+        dist[S] = 0;
+        pq.push({0, S});
+
+        while (!pq.empty()) {
+            auto [d, u] = pq.top();
+            pq.pop();
+            if (d > dist[u]) continue;
+            for (int idx = 0; idx < (int)g[u].size(); ++idx) {
+                auto &e = g[u][idx];
+                if (e.cap > 0) {
+                    long long nd = d + e.cost + pi[u] - pi[e.to];
+                    if (nd < dist[e.to]) {
+                        dist[e.to] = nd;
+                        pv[e.to] = u;
+                        pe[e.to] = idx;
+                        pq.push({nd, e.to});
+                    }
+                }
+            }
+        }
+
+        if (dist[T] == INF) break;
+        for (int v = 0; v < V; ++v) {
+            if (dist[v] < INF) pi[v] += dist[v];
+        }
+
+        int push = INF_CAP;
+        for (int v = T; v != S; v = pv[v])
+            push = min(push, g[pv[v]][pe[v]].cap);
+        for (int v = T; v != S; v = pv[v]) {
+            auto &e = g[pv[v]][pe[v]];
+            e.cap -= push;
+            g[v][e.rev].cap += push;
+        }
+        total_cost += 1LL * push * pi[T];
+    }
+
+    cout << -total_cost << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+## 7. Pre-Submission Checklist (`FM-20` Audit)
+
+Before submitting any Min-Cost Cycle Cover, Resource Reuse, Dynamic Scheduling, or Hub Factorization model in a live contest, run through this 6-point diagnostic audit:
+
+1. **Cycle vs. Path Cover Boundary**:
+   - Did you check whether short cycles are valid? Split-vertex MCMF finds a **cycle cover**; it is a **path cover** *if and only if* the transition graph is a **DAG** (such as $i < j$ in `[SDOI2010] 星际竞速` and `[ZJOI2011] 营救皮卡丘`).
+2. **Dirty Supply vs. Clean Demand Decoupling (`FM-20a`)**:
+   - In any inventory/laundry/caching model with resource recycling, did you split each time step $t$ into an independent **post-consumption supply node $X_t$** (injected from $S$) and **pre-consumption demand node $Y_t$** (drained to $T$)? Never connect $Y_t \to X_t$ on a single-pipeline node!
+3. **Reverse vs. Forward Queue Indexing (`FM-20b`)**:
+   - In multi-machine sum-of-completion-times scheduling ($\min \sum C_i$), did you index slots $r = 1, 2, \dots$ from the **back of each machine's queue** ($r = 1$ = last job executed) so that cost $r \cdot t_{i, j}$ is decoupled from other jobs' durations?
+4. **Dynamic Lazy Spawning Single-Unit Push Rule**:
+   - In `[NOI2012] 美食节`, did you restrict each SSP augmentation to push **strictly $1$ unit** (or stop at the first saturated chef slot) rather than running multi-path Zkw DFS, so that newly unlocked slots $(j^*, r^* + 1)$ are spawned immediately before the next unit of dish $i$ is routed?
+5. **Monotone Interval Propagation for Order-Statistic Hubs**:
+   - In `AGC 031 E`, did you propagate $L_k \gets \max(L_k, L_{k-1})$ and $R_k \gets \min(R_k, R_{k+1})$ before building the graph so that Theorem 5.1 (Uncrossing) guarantees valid order statistics? And did you verify that only $\le 2$ coordinate axes are constrained?
+6. **Hub Objective Direction (`FM-20c`)**:
+   - When using $2^d$ sign hubs for $\ell_1^d$ or $2d$ axis hubs for $\ell_\infty^d$, did you verify that the problem **maximizes** distance (so $\min_h (-f_h) = -\max_h f_h$ selects the true norm)? Never use sign hubs to *minimize* Manhattan/Chebyshev distance!
+
+---
+
+## 8. Chapter Summary, Quarantined Reference & Bridge to Chapter 21
+
+### 8.1 Summary of Chapter 20 Compilation Paradigms
+
+| Archetype | Algebraic Kernel $c(i, j)$ | Graph Compilation | Complexity Gain |
+| :--- | :--- | :--- | :--- |
+| **Cycle / DAG Path Cover** (`#153`, `#157`) | Degree-1 equations $\sum_v x_{u,v} = 1$, $\sum_u x_{u,v} = 1$ | Split $u \mapsto (u_{\text{out}}, u_{\text{in}})$; add $0_{\text{out}}$ (cap $K$) for $K$-fleet cover | Exact LP integrality via Birkhoff–von Neumann |
+| **Delayed Resource Reuse** (`#155`, `#158`) | Coupled inventory + delayed return $t \to t + m$ | Split day $t \mapsto$ Dirty supply $X_t$ + Clean demand $Y_t$ | Exact multi-tier recycling without artificial $-M$ loops |
+| **Reverse-Queue Lazy Scheduling** (`#154`, `#156`) | $\sum_{i \in Q_j} r(i) t_{i, j}$ ($r =$ reverse rank from end) | Left: Dish $i$; Right: Frontier slot $(j, r_j)$ spawned on demand | $O(nmP) \to O((m+P)n)$ edges (**40x speedup**) |
+| **2D Order-Statistic Hubs** (`#159`) | $x_{(k)} \in [L_k^x, R_k^x]$, $y_{(r)} \in [L_r^y, R_r^y]$ | 3-layer DAG: $X_k \to J_i^{\text{in}} \to J_i^{\text{out}} \to Y_r$ + Uncrossing | Solves non-local 2D prefix/suffix count bounds |
+| **4-Sign Manhattan Hubs** (`#160`) | $\max_{s_1, s_2 \in \{\pm 1\}} [(s_1 x_i + s_2 y_i) - (s_1 x'_j + s_2 y'_j)]$ | 4 Sign Hubs $H_{\pm,\pm}$ + $O(N)$ DAG Johnson potentials | $O(N^2) \to O(N)$ edges (**100x speedup**) |
+
+### 8.2 Quarantined Template Problems Reference
+
+For additional basic practice on standard vertex-splitting cycle covers and 24-problem suite variations without new structural twists, consult:
+
+| Problem | Judge URL | Core Mechanism |
+| :--- | :--- | :--- |
+| **[SDOI2010] 星际竞速** | [Luogu P2469](https://www.luogu.com.cn/problem/P2469) | Unbounded-fleet DAG path cover with direct-jump cost $A_j$ (`0_out -> j_in` of cost $A_j$) |
+| **[网络流24题] 负载平衡问题** | [Luogu P4016](https://www.luogu.com.cn/problem/P4016) | Circular supply-demand balancing (solvable in $O(N \log N)$ via median prefix-sum algebraic shift) |
+| **[SDOI2011] 工作安排** | [Luogu P2488](https://www.luogu.com.cn/problem/P2488) | Convex piecewise-linear marginal edge bundling $(u, v, c_k - c_{k-1}, w_k)$, precursor to `[NOI2012] 美食节` |
+
+### 8.3 Bridge to Chapter 21 (Linear Programming Duality & Interval/Tree Covering)
+
+In Chapters 19 and 20, we compiled algebraic recurrences, degree constraints, and factored kernels into Min-Cost Max-Flow networks by matching flow conservation laws directly. What happens when a problem presents **arbitrary interval inequalities, laminar tree constraints, or cyclic consecutive-difference equations** where no obvious bipartite split exists? In **Chapter 21**, we unlock the master key behind every network flow construction in this book: **Linear Programming Duality, Totally Unimodular (TU) Incidence Matrices, and Consecutive Equation Differencing ($\Delta E_t = E_t - E_{t-1}$)** — showing how *any* system of inequalities where each variable appears in at most two equations with opposite signs $+1$ and $-1$ compiles mechanically into a Min-Cost Circulation network!
+
+---
+
+## 9. Multilingual Bibliography & Seminal References (`[EN]`, `[ZH]`, `[JA]`)
+
+- **`[EN]` Ahuja, R. K., Magnanti, T. L., & Orlin, J. B. (1993)**. *Network Flows: Theory, Algorithms, and Applications*. Prentice Hall. (Chapter 9: *Minimum Cost Flows*; Section 9.7: *Successive Shortest Path Algorithm and Reduced-Cost Optimality*; Chapter 14: *Applications of Minimum Cost Flows to Inventory, Lot Sizing, and Scheduling*).
+- **`[EN]` Schrijver, A. (2003)**. *Combinatorial Optimization: Polyhedra and Efficiency* (Vol. A). Springer. (Chapter 18: *Birkhoff–von Neumann Theorem and Doubly Stochastic Matrices*; Chapter 41: *Matroid Intersection and Three-Matroid NP-Hardness Boundary*).
+- **`[EN]` AtCoder Editorial — AGC 031 E (2019)**. *Snuke the Phantom Thief Official Editorial*. [https://img.atcoder.jp/agc031/editorial.pdf](https://img.atcoder.jp/agc031/editorial.pdf) (2D order-statistic rank-slot compilation and uncrossing argument).
+- **`[EN]` AtCoder Editorial — AGC 034 D (2019)**. *Manhattan Max Matching Official Editorial*. [https://img.atcoder.jp/agc034/editorial.pdf](https://img.atcoder.jp/agc034/editorial.pdf) (4-sign auxiliary hub factorization for $\ell_1$ maximization).
+- **`[ZH]` 胡伯涛 [Hu Botao / Amber] (2007)**. 《最小割模型在信息学竞赛中的应用》 (*Applications of Minimum Cut Models in OI*) &《网络流24题》解析. 国家集训队2007年论文集. (Foundational Chinese OI reference for `餐巾计划问题` dirty/clean vertex splitting and degree-constrained path covers).
+- **`[ZH]` NOI 2012 Official Solution Report (2012)**. 《[NOI2012] 美食节 命题报告与动态加点费用流解析》. 中国计算机学会 (CCF). (Introduces reverse queue-position factorization with on-demand dynamic vertex spawning `动态加点`).
+- **`[ZH]` OI-Wiki Contributors (2024)**. 《费用流 (Min-Cost Max-Flow) 与上下界网络流》. [https://oi-wiki.org/graph/flow/min-cost/](https://oi-wiki.org/graph/flow/min-cost/).
+- **`[JA]` maspy (maspypy) (2019)**. *AtCoder AGC 031 E — Snuke the Phantom Thief 解説 (最小費用流・順序統計量スロット)*. [https://maspypy.com/](https://maspypy.com/) (Detailed Japanese derivation of rank-slot interval monotonization and matroid intersection geometry).
+- **`[JA]` noshi91 & tatyam (2020)**. *最小費用流の双対とポテンシャル初期化 / マンハッタン距離のハブ分解 (DAG Potentials and Manhattan Hub Factorization in MCMF)*. Japanese Competitive Programming Treatises on DAG potential initialization and metric hub reductions.

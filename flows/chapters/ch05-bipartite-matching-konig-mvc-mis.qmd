@@ -1,0 +1,938 @@
+---
+title: "Chapter 5 — Bipartite Matching, König's Theorem, Minimum Vertex Cover, and Maximum Independent Set"
+subtitle: "From 0-1 Incidence Matrices and Bipartite Variable Inversion to Constructive Set Recovery and Odd-Cycle Integrality Barriers"
+---
+
+## Prerequisites & Learning Objectives
+
+::: {.callout-note title="Prerequisites & Foundations"}
+Before studying this chapter, make sure you are comfortable with:
+
+- **Maximum Flow & Residual Networks (`Ch 01`–`Ch 02`)**: Augmenting paths, residual capacities $c_f(u, v)$, and the Max-Flow Min-Cut Theorem ($\operatorname{MaxFlow}(s, t) = \operatorname{MinCut}(s, t)$).
+- **Canonical $s$-$t$ Cut Compilation (`Ch 03`)**: Translating pseudo-Boolean cut polynomials $\sum c_{uv} s_u(1 - s_v)$ into directed $s$-$t$ networks, including $+\infty$ implication arcs and Bipartite Variable Inversion.
+- **Unit-Capacity Blocking Flows (`Ch 04`)**: Why Dinic's algorithm runs in $O(E\sqrt{V})$ time on unit networks where every interior vertex has either in-degree $\le 1$ or out-degree $\le 1$ (matching the Hopcroft–Karp bound).
+:::
+
+By the end of this chapter, you will be able to:
+
+1. **Diagnose Hidden Bipartite Structures (`Step 1`)**: Recognize when a seemingly non-graph problem—0-1 grid line covering, prime-sum card conflicts, permutation cycle intersections, or attribute-to-item assignments—is secretly a bipartite packing or covering problem.
+2. **Compile Bipartite Covering via Bipartite Variable Inversion (`Steps 2–3`)**: Derive the canonical $s \to L \xrightarrow{\infty} R \to t$ network algebraically from the Minimum Vertex Cover integer program (`MWVC-IP`), and prove why middle capacity $+\infty$ is mandatory for cut recovery and vertex-weighted models even though capacity $1$ suffices for the unweighted matching size $\nu(G)$.
+3. **Prove König's Theorem & Gallai's Dual Identities**: Prove $\nu(G) = \tau(G)$ and its weighted generalization $\tau_w(G) = \operatorname{MinCut}(s, t)$, and combine them with Gallai's identities ($\alpha(G) + \tau(G) = |V|$ and $\nu(G) + \rho(G) = |V|$) to lock all four fundamental graph invariants together.
+4. **Reconstruct Optimal Vertex & Edge Sets in $O(V + E)$ Time**: Extract the exact Minimum Vertex Cover (`MVC`), Maximum Independent Set (`MIS`), and Minimum Edge Cover (`MEC`) using König's alternating reachability set $Z = S_{\min} \setminus \{s\}$, while avoiding the classic seeding bug (`FM-05`).
+5. **Diagnose Odd-Cycle Half-Integrality (`FM-07`)**: Explain why non-bipartite graphs break both Total Unimodularity and $s$-$t$ cut sign inversion, using the $C_5$ half-integral counterexample ($\nu(C_5) = 2 < 2.5 < 3 = \tau(C_5)$).
+
+---
+
+## 1. Motivation: Recognizing Pairwise Exclusion and Conflict Coverage
+
+### 1.1 Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+How do you recognize a Bipartite Matching, König Minimum Vertex Cover (`MVC`), or Maximum Independent Set (`MIS`) problem when the English problem statement never mentions a graph? Look for three structural signatures:
+
+1. **Binary Partition of Entities or Conflict Modes ($V = L \sqcup R$)**:
+   Every decision variable or conflict pairs an entity from Class $L$ with an entity from Class $R$, and two entities within the same class never directly constrain each other:
+
+   - *2D Grid & Matrix Line Models*: Row $r \in \{1, \dots, H\}$ vs. Column $c \in \{1, \dots, W\}$, or maximal horizontal mud/empty strips vs. maximal vertical strips.
+   - *Resource & Attribute Assignment*: Workers/Factories $u \in L$ vs. Tasks/Airports $v \in R$, or weapon attribute values $a \in L$ vs. physical items $i \in R$.
+   - *Hidden Arithmetic Parity*: Odd numbers $L$ vs. Even numbers $R$ under prime-sum conflicts ($c_i + c_j \in \mathbb{P}$ for $c_i, c_j \ge 2$, since any prime $> 2$ is odd and requires an odd + even summand), or power-of-two sum conflicts ($a_i + a_j = 2^k$ partitioned by the parity of the exponent of $2$ dividing each number).
+   - *Graph Complement of Two Cliques*: If a graph $G$ can be partitioned into two cliques $V = K_A \sqcup K_B$, then its complement $\bar{G}$ has no edges inside $K_A$ and no edges inside $K_B$—so $\bar{G}$ is **strictly bipartite**!
+
+2. **Primal 1-to-1 Packing vs. Dual 2-SAT Conflict Coverage**:
+   Depending on the objective and quantifier, the problem asks for one of four dual quantities on $G = (L \sqcup R, E)$:
+
+   - **Maximum Matching (`MM`, $\nu(G)$)**: Select the maximum number of disjoint compatible pairs $(u, v) \in E$ so each vertex in $L \sqcup R$ is used at most once.
+   - **Minimum Vertex Cover (`MVC`, $\tau(G)$)**: Select the minimum number (or minimum total weight) of vertices $C \subseteq L \sqcup R$ so that **every** conflict edge $(u, v) \in E$ has at least one endpoint in $C$ ($x_u + y_v \ge 1$).
+   - **Maximum Independent Set (`MIS`, $\alpha(G)$)**: Select the maximum number (or maximum total weight) of vertices $I \subseteq L \sqcup R$ so that **no** conflict edge $(u, v) \in E$ has both endpoints in $I$ ($x_u + y_v \le 1$).
+   - **Minimum Edge Cover (`MEC`, $\rho(G)$)**: In a bipartite graph without isolated vertices, select the minimum number of edges $F \subseteq E$ needed to touch **every** vertex in $L \sqcup R$ at least once.
+
+3. **Why Naive Greedy and Bitmask DP Fail**:
+
+   - *Why Greedy Fails*: Suppose $u_1 \in L$ can match to $\{v_1, v_2\}$ and $u_2 \in L$ can only match to $\{v_1\}$. A greedy choice that commits $(u_1, v_1)$ leaves $u_2$ stranded, achieving size $1$; the globally optimal assignment uses the augmenting path $u_2 \to v_1 \Rightarrow u_1 \to v_2$ to reassign $u_1$ and achieve size $2$.
+   - *Why Bitmask / Profile DP Fails*: Tracking which subset of $R$ has already been matched or covered requires $2^{\min(|L|, |R|)}$ states, which explodes as soon as $\min(|L|, |R|) > 20$. Because the vertex-edge incidence matrix of any bipartite graph is **Totally Unimodular (`TU`)**, linear programming duality collapses this exponential state space into polynomial-time network flow: $O(E\sqrt{V})$ for unweighted graphs via Hopcroft–Karp / unit Dinic, and $O(V^2 E)$ or $O(E\sqrt{V})$-like scaling for weighted graphs.
+
+### 1.2 The Canonical 0-1 Incidence Matrix Dictionary
+
+A powerful way to unify bipartite matching and König's theorem is through a 2D binary matrix $A = (a_{r,c}) \in \{0, 1\}^{H \times W}$. Create a left vertex $u_r \in L$ for each row $r \in \{1, \dots, H\}$, a right vertex $v_c \in R$ for each column $c \in \{1, \dots, W\}$, and an undirected edge $(u_r, v_c) \in E$ whenever $a_{r,c} = 1$:
+
+| Matrix / Grid Problem Statement | Bipartite Graph Translation on $G = (L \sqcup R, E)$ | Dual Partner via König / Gallai |
+| :--- | :--- | :--- |
+| Place maximum **non-attacking rooks** on cells with $a_{r,c} = 1$ (at most one per row and column). | **Maximum Matching** $\nu(G)$: pick maximum vertex-disjoint edges $(u_r, v_c) \in E$. | Equals **Minimum Line Cover** $\tau(G)$ ($\nu(G) = \tau(G)$). |
+| Choose minimum **rows + columns** whose union covers every cell with $a_{r,c} = 1$. | **Minimum Vertex Cover** $\tau(G)$: pick minimum vertices $C \subseteq L \sqcup R$ hitting every edge $(u_r, v_c) \in E$. | Complement $V \setminus C$ is the **Maximum Zero-Submatrix** (`MIS`, $\alpha(G) = H + W - \tau(G)$). |
+| Choose maximum **rows + columns** $(I_L \subseteq L, I_R \subseteq R)$ such that the submatrix $I_L \times I_R$ is **all zeros** ($a_{r,c} = 0$). | **Maximum Independent Set** $\alpha(G)$: no edge $(u_r, v_c) \in E$ has both $u_r \in I_L$ and $v_c \in I_R$. | $\alpha(G) = (H + W) - \tau(G) = (H + W) - \nu(G)$. |
+| Pick minimum $1$-cells so every non-empty row and column contains at least one chosen $1$-cell. | **Minimum Edge Cover** $\rho(G)$: pick minimum edges covering every vertex $z \in L \sqcup R$. | $\rho(G) = |V| - \nu(G)$ (valid iff every vertex has degree $\ge 1$). |
+
+---
+
+## 2. Unweighted & Weighted Bipartite Reduction to $s$-$t$ Min-Cut
+
+### 2.1 Step 2: Intermediate Algebraic & LP Primal–Dual Representation
+
+Let $G = (L \sqcup R, E)$ be a bipartite graph where each left vertex $u \in L$ has a positive covering weight $w_u > 0$ and each right vertex $v \in R$ has a positive covering weight $w_v > 0$ (in the unweighted case, $w_u = w_v = 1$ for all $u, v$).
+
+To formulate **Minimum-Weight Vertex Cover (`MWVC`)** algebraically before drawing any flow network, introduce a binary indicator variable for each vertex:
+
+- For each $u \in L$, let $x_u \in \{0, 1\}$, where $x_u = 1$ if $u$ is chosen in the vertex cover $C$, and $x_u = 0$ otherwise.
+- For each $v \in R$, let $y_v \in \{0, 1\}$, where $y_v = 1$ if $v$ is chosen in the vertex cover $C$, and $y_v = 0$ otherwise.
+
+Every edge $(u, v) \in E$ represents a conflict that must be covered by picking $u$ **OR** picking $v$ (or both). In linear arithmetic over $\{0, 1\}$, the logical disjunction $(x_u = 1) \lor (y_v = 1)$ is written as the linear inequality $x_u + y_v \ge 1$. This gives the exact Integer Linear Program (`MWVC-IP`):
+
+$$\begin{aligned}
+\text{(MWVC-IP)} \quad \tau_w(G) = \min_{x, y} \quad & \sum_{u \in L} w_u x_u + \sum_{v \in R} w_v y_v \\
+\text{subject to} \quad & x_u + y_v \ge 1 \qquad \forall (u, v) \in E, \\
+& x_u \in \{0, 1\} \ \ (\forall u \in L), \qquad y_v \in \{0, 1\} \ \ (\forall v \in R).
+\end{aligned}$$
+
+Now relax the integrality constraints $x_u, y_v \in \{0, 1\}$ to $x_u \ge 0, y_v \ge 0$ (since $w_u, w_v > 0$, no optimal solution ever sets $x_u > 1$ or $y_v > 1$) and take the Linear Programming Dual by introducing a non-negative dual variable $f_{uv} \ge 0$ for each edge constraint $x_u + y_v \ge 1$:
+
+$$\begin{aligned}
+\text{(Dual-Flow-LP)} \quad \nu_w(G) = \max_{f \ge 0} \quad & \sum_{(u, v) \in E} f_{uv} \\
+\text{subject to} \quad & \sum_{v \in R : (u, v) \in E} f_{uv} \le w_u \qquad \forall u \in L, \\
+& \sum_{u \in L : (u, v) \in E} f_{uv} \le w_v \qquad \forall v \in R, \\
+& f_{uv} \ge 0 \qquad \forall (u, v) \in E.
+\end{aligned}$$
+
+Look closely at $\text{(Dual-Flow-LP)}$: it asks us to push maximum total flow $\sum_{(u,v) \in E} f_{uv}$ across the bipartite edges $E$ from $L$ to $R$, subject to a supply cap of $w_u$ at each $u \in L$ and a demand cap of $w_v$ at each $v \in R$!
+
+::: {.callout-important title="Total Unimodularity (Hoffman–Kruskal 1956) & Zero Integrality Gap"}
+Let $M \in \{0, 1\}^{|V| \times |E|}$ be the vertex-edge incidence matrix of a bipartite graph $G = (L \sqcup R, E)$, where column $e = (u, v)$ has $+1$ in row $u \in L$, $+1$ in row $v \in R$, and $0$ elsewhere. If we multiply every row $u \in L$ by $\sigma(u) = +1$ and every row $v \in R$ by $\sigma(v) = -1$, every column sums to $(+1) + (-1) = 0$. By the Ghouila-Houri / Hoffman–Kruskal criterion, **every square submatrix of $M$ has determinant in $\{-1, 0, +1\}$** ($M$ is *Totally Unimodular*).
+
+Consequently, for any integer weight vector $w \in \mathbb{Z}_{\ge 0}^{|V|}$, the LP relaxation polytope $\{(x, y) \ge 0 : x_u + y_v \ge 1 \ \forall (u,v) \in E\}$ has **exclusively integral extreme points** $(x^*, y^*) \in \{0, 1\}^{|L| + |R|}$, and the dual flow polytope has an integral optimal flow $f^* \in \mathbb{Z}_{\ge 0}^{|E|}$. Strong LP Duality therefore holds over the integers with zero integrality gap:
+
+$$\tau_w(G) = \nu_w(G), \qquad \text{and when } w \equiv 1: \qquad \tau(G) = \nu(G).$$
+:::
+
+### 2.2 Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation via Bipartite Variable Inversion)
+
+Instead of memorizing the bipartite flow network as a rule, let us compile $\text{(MWVC-IP)}$ directly into a minimum $s$-$t$ cut polynomial using the machinery of Chapter 3.
+
+In any directed $s$-$t$ cut network on vertex set $V_{\text{net}} = \{s, t\} \cup L \cup R$, an $s$-$t$ cut $(S, T)$ is defined by a binary cut-side indicator $s_z \in \{0, 1\}$ for each vertex $z \in V_{\text{net}}$, where $s_z = 1 \iff z \in S$ (source side) and $s_z = 0 \iff z \in T$ (sink side), with boundary conditions $s_s = 1$ and $s_t = 0$. Recall that a directed arc $p \to q$ of capacity $c \ge 0$ contributes $c \cdot s_p(1 - s_q)$ to the cut capacity $\operatorname{cap}(S, T)$, which is non-zero **if and only if** $s_p = 1$ and $s_q = 0$.
+
+Now try to express the vertex-cover constraint $x_u + y_v \ge 1 \iff \neg(x_u = 0 \land y_v = 0)$ as a cut penalty:
+
+1. **Why Direct Encoding Fails**: If we naively set $x_u = s_u$ and $y_v = s_v$, the forbidden state $(x_u = 0 \land y_v = 0)$ is $(1 - s_u)(1 - s_v) = 1$, which is a *same-side* product rather than a cut term $s_p(1 - s_q)$.
+2. **Bipartite Variable Inversion**: Because $G = (L \sqcup R, E)$ is bipartite, every edge $(u, v) \in E$ has one endpoint in $L$ and one in $R$. We can therefore **invert the cut-side encoding on $L$ relative to $R$**:
+
+   - **Left Vertices ($u \in L$)**: Encode $x_u := 1 - s_u$. That is, $u \in L$ is chosen in the vertex cover ($x_u = 1$) $\iff u \in T$ ($s_u = 0$). To charge cost $w_u$ when $x_u = 1 \iff s_u = 0$, we need the term $w_u \cdot s_s(1 - s_u)$, which compiles to a **source arc $s \to u$ of capacity $w_u$**.
+   - **Right Vertices ($v \in R$)**: Encode $y_v := s_v$. That is, $v \in R$ is chosen in the vertex cover ($y_v = 1$) $\iff v \in S$ ($s_v = 1$). To charge cost $w_v$ when $y_v = 1 \iff s_v = 1$, we need the term $w_v \cdot s_v(1 - s_t)$, which compiles to a **sink arc $v \to t$ of capacity $w_v$**.
+
+3. **Compiling the Conflict Clause $x_u + y_v \ge 1$**: Substitute $x_u = 1 - s_u$ and $y_v = s_v$ into the forbidden uncovered state $(x_u = 0 \land y_v = 0)$:
+
+   $$x_u = 0 \land y_v = 0 \iff (1 - s_u = 0) \land (s_v = 0) \iff (s_u = 1) \land (s_v = 0) \iff s_u(1 - s_v) = 1.$$
+
+   The forbidden uncovered configuration $(x_u = 0, y_v = 0)$ is **literally the event that $(S, T)$ severs the directed arc $u \to v$** ($u \in S$ and $v \in T$)! To make this uncovered state infinitely expensive in any minimum cut, we add a **directed middle arc $u \to v$ of capacity $+\infty$** for every $(u, v) \in E$.
+
+Summing over all $u \in L$, $v \in R$, and $(u, v) \in E$ gives the exact cut polynomial of the compiled network $\mathcal{N} = (V_{\text{net}}, E_{\text{net}})$:
+
+$$\operatorname{cap}(S, T) = \sum_{u \in L} w_u \underbrace{s_s(1 - s_u)}_{x_u \in \{0,1\}} + \sum_{v \in R} w_v \underbrace{s_v(1 - s_t)}_{y_v \in \{0,1\}} + \sum_{(u, v) \in E} (+\infty) \cdot \underbrace{s_u(1 - s_v)}_{(1 - x_u)(1 - y_v)}.$$
+
+```{mermaid}
+flowchart LR
+    s(("s (Source)"))
+    t(("t (Sink)"))
+    subgraph Left["Left Partite Set L (x_u = 1 iff u in T)"]
+        u1["u_1 in L"]
+        u2["u_2 in L"]
+    end
+    subgraph Right["Right Partite Set R (y_v = 1 iff v in S)"]
+        v1["v_1 in R"]
+        v2["v_2 in R"]
+    end
+    s -->|"cap = w(u_1) (cut => u_1 in MVC)"| u1
+    s -->|"cap = w(u_2) (cut => u_2 in MVC)"| u2
+    u1 ==>|"cap = +inf (forbids u_1 in S, v_1 in T)"| v1
+    u1 ==>|"cap = +inf"| v2
+    u2 ==>|"cap = +inf"| v2
+    v1 -->|"cap = w(v_1) (cut => v_1 in MVC)"| t
+    v2 -->|"cap = w(v_2) (cut => v_2 in MVC)"| t
+```
+
+### 2.3 Bijection Between Finite $s$-$t$ Cuts and Vertex Covers & The 3 Middle-Edge Capacity Regimes
+
+Let us state and prove the fundamental structural theorem governing the compiled network $\mathcal{N}$.
+
+::: {.callout-tip title="Theorem 5.1 — Bijection Between Finite $s$-$t$ Cuts and Vertex Covers"}
+Let $G = (L \sqcup R, E)$ be a bipartite graph with vertex weights $w : L \sqcup R \to \mathbb{R}_{>0}$, and let $\mathcal{N}$ be the directed network on $\{s, t\} \cup L \cup R$ with arcs $s \xrightarrow{w_u} u$ ($\forall u \in L$), $u \xrightarrow{+\infty} v$ ($\forall (u, v) \in E$), and $v \xrightarrow{w_v} t$ ($\forall v \in R$).
+
+Then the map
+
+$$\Phi(S, T) := (L \cap T) \cup (R \cap S)$$
+
+is a **weight-preserving bijection** between $s$-$t$ cuts $(S, T)$ of finite capacity in $\mathcal{N}$ and valid vertex covers $C \subseteq L \sqcup R$ of $G$, satisfying $\operatorname{cap}(S, T) = \sum_{z \in \Phi(S, T)} w_z$.
+:::
+
+*Proof*:
+1. **Finite Cut $\implies$ Valid Vertex Cover**: Suppose $(S, T)$ is an $s$-$t$ cut in $\mathcal{N}$ with $\operatorname{cap}(S, T) < +\infty$, and set $C = (L \cap T) \cup (R \cap S)$. Consider any edge $(u, v) \in E$. Because the arc $u \to v$ has capacity $+\infty$ and $\operatorname{cap}(S, T) < +\infty$, the cut $(S, T)$ cannot sever $u \to v$; that is, it is impossible to have both $u \in S$ and $v \in T$. By De Morgan's law:
+
+   $$\neg(u \in S \land v \in T) \iff (u \in T) \lor (v \in S) \iff (u \in L \cap T) \lor (v \in R \cap S) \iff (u \in C) \lor (v \in C).$$
+
+   Thus $C$ covers every edge $(u, v) \in E$. Since no middle arc $u \to v$ is severed, the only arcs crossing from $S$ to $T$ are $\{s \to u : u \in L \cap T\}$ and $\{v \to t : v \in R \cap S\}$, whose capacities sum to $\sum_{u \in L \cap T} w_u + \sum_{v \in R \cap S} w_v = w(C)$.
+2. **Valid Vertex Cover $\implies$ Finite Cut**: Conversely, given any vertex cover $C \subseteq L \sqcup R$, define $S := \{s\} \cup (L \setminus C) \cup (R \cap C)$ and $T := \{t\} \cup (L \cap C) \cup (R \setminus C)$. Then $(L \cap T) \cup (R \cap S) = C$, and for every $(u, v) \in E$, since $u \in C$ or $v \in C$, we never have both $u \in L \setminus C = L \cap S$ and $v \in R \setminus C = R \cap T$. Hence no $+\infty$ middle arc crosses from $S$ to $T$, and $\operatorname{cap}(S, T) = w(C) < +\infty$. Since $\Phi$ and this inverse construction compose to the identity in both directions, $\Phi$ is a weight-preserving bijection. $\blacksquare$
+
+#### Why Capacity $+\infty$ vs. Capacity $1$ vs. Finite $c_{uv}$ on Middle Arcs?
+
+A classic point of confusion in competitive programming is whether middle arcs $u \to v$ should have capacity $1$ or capacity $+\infty$. The table below resolves all three regimes completely:
+
+| Middle Arc Capacity $c(u, v)$ | Valid for Unweighted Matching Size $\nu(G)$? | Valid for König Cut Recovery $C^* = (L \cap T) \cup (R \cap S)$? | Valid for Weighted $\operatorname{MWVC}(G)$? | Exact Combinatorial Meaning of $\operatorname{MinCut}(s, t)$ |
+| :--- | :---: | :---: | :---: | :--- |
+| **$c(u, v) = +\infty$** *(Canonical)* | **Yes** (since $\operatorname{cap}(s \to u) = 1$ already caps flow through $u$ to $\le 1$). | **Yes** ($c_f(u, v) = +\infty > 0$ always holds, forcing $u \in S_{\min} \implies v \in S_{\min}$). | **Yes** | **Pure Vertex Cover (`MWVC`)**: Every edge $(u, v) \in E$ must be covered by $u \in C$ or $v \in C$. |
+| **$c(u, v) = 1$** *(Unweighted Flow Only)* | **Yes** (each matched edge carries $1$ unit of flow). | **DANGEROUS / NO** (arbitrary min-cuts may sever $u \to v$ instead of $s \to u$ or $v \to t$). | **NO!** (If $w_u = w_v = 10$, min-cut severs $u \to v$ for cost $1 < 10$ instead of covering a vertex). | **Edge-Bottlenecked Flow**: Valid *only* when all $w_u = w_v = 1$ and you only inspect $f(u, v) = 1$ to list matched pairs. |
+| **Finite $c(u, v) \in (0, \infty)$** | N/A | N/A | Generalizes MWVC | **Mixed Vertex–Edge Cover (Soft Penalty)**: Each $(u, v) \in E$ is covered by $u$ (cost $w_u$), covered by $v$ (cost $w_v$), or left uncovered by paying an **edge-deletion penalty $c_{uv}$** when $u \in S, v \in T$. |
+
+### 2.4 Proving König's Theorem and Its Weighted Generalization
+
+Combining Theorem 5.1 with the Max-Flow Min-Cut Theorem (`Ch 02`) yields a five-line proof of both **König's Theorem (1931)** and its weighted generalization (**Egerváry 1931**).
+
+::: {.callout-important title="Theorem 5.2 — König–Egerváry Theorem (Unweighted & Weighted)"}
+1. **Weighted König–Egerváry Duality**: In any bipartite graph $G = (L \sqcup R, E)$ with positive vertex weights $w : L \sqcup R \to \mathbb{R}_{>0}$, the minimum weight of a vertex cover equals the maximum $s$-$t$ flow in $\mathcal{N}$:
+
+   $$\tau_w(G) = \operatorname{MWVC}(G) = \operatorname{MinCut}_{\mathcal{N}}(s, t) = \operatorname{MaxFlow}_{\mathcal{N}}(s, t) = \nu_w(G).$$
+
+2. **Unweighted König's Theorem ($\nu(G) = \tau(G)$)**: When $w_u = 1$ for all $u \in L$ and $w_v = 1$ for all $v \in R$, the maximum cardinality of a matching equals the minimum cardinality of a vertex cover:
+
+   $$\nu(G) = \tau(G).$$
+:::
+
+*Proof*:
+- **Part 1 (Weighted)**: Because $C = L$ is always a valid vertex cover of finite weight $\sum_{u \in L} w_u < +\infty$, the minimum cut in $\mathcal{N}$ has finite capacity. By Theorem 5.1, minimizing $\operatorname{cap}(S, T)$ over all finite $s$-$t$ cuts is identical to minimizing $w(C)$ over all vertex covers $C \subseteq L \sqcup R$. By the Max-Flow Min-Cut Theorem (`Ch 02`), $\operatorname{MinCut}_{\mathcal{N}}(s, t) = \operatorname{MaxFlow}_{\mathcal{N}}(s, t) = \nu_w(G)$.
+- **Part 2 (Unweighted)**: Set $w \equiv 1$ in $\mathcal{N}$. First, for any matching $M \subseteq E$ and any vertex cover $C \subseteq L \sqcup R$, each edge $e \in M$ must contain at least one vertex of $C$, and because $M$ is vertex-disjoint, no vertex of $C$ can cover two edges of $M$; this gives weak duality $\nu(G) \le \tau(G)$. Second, by the Integrality Theorem for Max-Flow (`Ch 01`), since all source capacities $s \xrightarrow{1} u$ and sink capacities $v \xrightarrow{1} t$ are integers, there exists an **integral maximum flow** $f^* : E_{\text{net}} \to \mathbb{Z}_{\ge 0}$ of value $\operatorname{MaxFlow}_{\mathcal{N}}(s, t) = \tau(G)$. Because $\operatorname{cap}(s \to u) = 1$, flow conservation at $u \in L$ forces $\sum_{v : (u,v) \in E} f^*(u, v) = f^*(s, u) \in \{0, 1\}$, and similarly flow conservation at $v \in R$ forces $\sum_{u : (u,v) \in E} f^*(u, v) = f^*(v, t) \in \{0, 1\}$. Therefore, the set of active middle arcs
+
+  $$M^* := \{(u, v) \in E : f^*(u, v) = 1\}$$
+
+  is a valid matching in $G$ of cardinality $|M^*| = \sum_{(u,v) \in E} f^*(u, v) = \operatorname{MaxFlow}_{\mathcal{N}}(s, t) = \tau(G)$. Thus $\nu(G) \ge |M^*| = \tau(G)$, which together with $\nu(G) \le \tau(G)$ proves $\nu(G) = \tau(G)$. $\blacksquare$
+
+---
+
+## 3. Gallai's Dual Identities ($\alpha + \tau = |V|$, $\nu + \rho = |V|$) & Constructive Set Recovery
+
+Knowing the scalar value $\nu(G) = \tau(G)$ is only half the story. In contest problems, you are frequently asked to output the **Maximum Independent Set (`MIS`)**, the **Minimum Edge Cover (`MEC`)**, or the **explicit list of vertices** in a Minimum Vertex Cover.
+
+### 3.1 Gallai's Dual Identities (1959)
+
+Two identities discovered by Tibor Gallai hold in **every** undirected graph $G = (V, E)$ (even non-bipartite ones!), and combine with König's Theorem when $G$ is bipartite:
+
+::: {.callout-important title="Theorem 5.3 — Gallai's Dual Identities & The Bipartite Quartet"}
+Let $G = (V, E)$ be any undirected graph.
+
+1. **Gallai's First Identity ($\text{MIS} = V \setminus \text{MVC}$)**: A subset $C \subseteq V$ is a vertex cover of $G$ **if and only if** its complement $I = V \setminus C$ is an independent set of $G$. Consequently, for any vertex weights $w : V \to \mathbb{R}_{>0}$:
+
+   $$\alpha_w(G) + \tau_w(G) = \sum_{v \in V} w_v, \qquad \text{and in the unweighted case:} \qquad \alpha(G) + \tau(G) = |V|.$$
+
+2. **Gallai's Second Identity (Matching + Edge Cover)**: If $G$ has **no isolated vertices** ($\deg(v) \ge 1$ for all $v \in V$), then the maximum matching size $\nu(G)$ and the minimum edge cover size $\rho(G)$ satisfy:
+
+   $$\nu(G) + \rho(G) = |V|.$$
+
+3. **The Bipartite Quartet**: When $G = (L \sqcup R, E)$ is **bipartite**, König's Theorem ($\tau(G) = \nu(G)$) bridges the two Gallai pairs into a single unified chain:
+
+   $$\boxed{\tau(G) = \nu(G)}, \qquad \boxed{\alpha(G) = |V| - \nu(G)}, \qquad \boxed{\rho(G) = |V| - \nu(G) = \alpha(G)} \ \ (\text{if } \delta(G) \ge 1),$$
+
+   and in the vertex-weighted case:
+
+   $$\boxed{\alpha_w(G) = \sum_{z \in L \sqcup R} w_z - \tau_w(G) = \sum_{z \in L \sqcup R} w_z - \operatorname{MinCut}_{\mathcal{N}}(s, t)}.$$
+:::
+
+*Proof*:
+1. **Proof of Gallai I ($\text{MIS} = V \setminus \text{MVC}$)**: By definition, $C \subseteq V$ is a vertex cover $\iff$ every edge $(u, v) \in E$ has $u \in C$ or $v \in C$ $\iff$ no edge $(u, v) \in E$ has both $u \in V \setminus C$ and $v \in V \setminus C$ $\iff$ $I = V \setminus C$ is an independent set. Since $w(C) + w(V \setminus C) = \sum_{v \in V} w_v$ is constant, minimizing $w(C)$ is identical to maximizing $w(I) = \sum_{v \in V} w_v - w(C)$.
+2. **Proof of Gallai II ($\nu(G) + \rho(G) = |V|$)**:
+   - *Upper bound ($\rho(G) \le |V| - \nu(G)$ — Constructive MEC Algorithm)*: Let $M^*$ be a maximum matching of size $\nu(G)$, covering $2|M^*| = 2\nu(G)$ vertices. Each of the remaining $|V| - 2\nu(G)$ unmatched vertices $z \notin V(M^*)$ has $\deg(z) \ge 1$, so we can greedily pick one arbitrary incident edge $e_z \in E$ for each unmatched vertex $z$. Adding these $|V| - 2\nu(G)$ edges to $M^*$ yields a valid edge cover $F^*$ of size:
+
+     $$|F^*| = \nu(G) + (|V| - 2\nu(G)) = |V| - \nu(G) \implies \rho(G) \le |V| - \nu(G).$$
+
+   - *Lower bound ($\nu(G) \ge |V| - \rho(G)$)*: Let $F^* \subseteq E$ be a minimum edge cover of size $\rho(G)$. By minimality, no edge $e \in F^*$ has both endpoints covered by other edges of $F^*$; hence $(V, F^*)$ contains no cycles or paths of length $\ge 3$, so it is a disjoint union of $k$ **star graphs** $K_{1, s_1}, \dots, K_{1, s_k}$. In a forest of $k$ stars on $|V|$ vertices, the number of edges is $|F^*| = \rho(G) = |V| - k$, so there are $k = |V| - \rho(G)$ connected star components. Picking one edge from each star gives a valid matching of size $k = |V| - \rho(G) \le \nu(G)$. Combining both bounds proves $\nu(G) + \rho(G) = |V|$. $\blacksquare$
+
+### 3.2 Constructive Set Recovery via Alternating Reachability ($Z = S_{\min} \setminus \{s\}$)
+
+Suppose we have computed a maximum flow $f^*$ in the canonical bipartite network $\mathcal{N}$ (or a maximum matching $M^*$ via Hopcroft–Karp in the unweighted case). How do we recover the exact vertex sets $C^*$ (`MVC`) and $I^*$ (`MIS`) in $O(V + E)$ time?
+
+Let $S_{\min} \subseteq \{s, t\} \cup L \cup R$ be the set of vertices reachable from the source $s$ in the residual network $G_{f^*}$ via arcs of positive residual capacity ($c_f > 0$), and define $Z := S_{\min} \setminus \{s\} \subseteq L \sqcup R$.
+
+::: {.callout-tip title="Theorem 5.4 — Equivalence of Residual Reachability $S_{\min}$ and König's Alternating Set $Z$"}
+In the canonical bipartite network $\mathcal{N}$ with middle capacities $c(u, v) = +\infty$:
+
+1. **Exact Combinatorial Characterization of $Z = S_{\min} \setminus \{s\}$** (Unweighted Case): Let $U_L := L \setminus V(M^*)$ be the set of **unmatched left vertices**. Then $Z = S_{\min} \setminus \{s\}$ is precisely the set of vertices in $L \sqcup R$ reachable from $U_L$ via **alternating paths** that traverse:
+
+   - **Unmatched edges** $(u, v) \in E \setminus M^*$ forward from $L$ to $R$, and
+   - **Matched edges** $(u, v) \in M^*$ backward from $R$ to $L$.
+
+2. **Canonical Optimal Vertex Cover and Independent Set Extraction** (Unweighted & Weighted):
+   Let $T_{\min} = V_{\text{net}} \setminus S_{\min}$. Then:
+
+   $$\boxed{\operatorname{MVC} = C^* = (L \setminus S_{\min}) \cup (R \cap S_{\min}) = (L \setminus Z) \cup (R \cap Z)},$$
+
+   $$\boxed{\operatorname{MIS} = I^* = (L \cap S_{\min}) \cup (R \setminus S_{\min}) = (L \cap Z) \cup (R \setminus Z)}.$$
+:::
+
+*Proof*:
+1. **Why $Z = S_{\min} \setminus \{s\}$ matches König's alternating reachability**:
+   - *Step from $s$ into $L$*: A source arc $s \to u$ ($u \in L$) has residual capacity $c_f(s, u) = 1 - f^*(s, u) > 0 \iff f^*(s, u) = 0 \iff u \in U_L$ is an **unmatched left vertex**! (If $u$ is matched, $c_f(u, s) = 1$, which only points back to $s$.) Thus the entry points of $S_{\min}$ in $L$ are exactly $U_L$.
+   - *Step from $L$ to $R$*: Because every original edge $(u, v) \in E$ has capacity $c(u, v) = +\infty$, its forward residual capacity is $c_f(u, v) = +\infty - f^*(u, v) = +\infty > 0$. Thus from any $u \in L \cap S_{\min}$, residual BFS can step to **every** neighbor $v \in R$ along $(u, v) \in E$ (if $(u, v) \in M^*$, stepping to $v$ simply leads back to $u$).
+   - *Step from $R$ to $L$*: For any $(u, v) \in E$, the backward residual arc $v \to u$ ($v \in R, u \in L$) has capacity $c_f(v, u) = f^*(u, v) > 0 \iff (u, v) \in M^*$ is a **matched edge**! Moreover, because $f^*$ is a maximum flow, $t \notin S_{\min}$, so every $v \in R \cap S_{\min}$ must have $c_f(v, t) = 0 \iff f^*(v, t) = 1$ (every right vertex in $Z$ is **matched**), and its unique outgoing residual arc in $G_{f^*}$ goes backward along $M^*$ to its partner $M^*(v) \in L$.
+2. **Why $C^* = (L \setminus Z) \cup (R \cap Z)$ is a Minimum Vertex Cover of size $|M^*|$**:
+   - *Validity*: Could there exist an uncovered edge $(u, v) \in E$ with $u \notin C^*$ and $v \notin C^*$? By definition of $C^*$, $u \notin C^* \implies u \in L \cap Z = L \cap S_{\min}$, and $v \notin C^* \implies v \in R \setminus Z = R \cap T_{\min}$. But since $c_f(u, v) = +\infty > 0$, any vertex $v$ adjacent to $u \in L \cap S_{\min}$ is immediately reached by the residual search and placed in $R \cap S_{\min} = R \cap Z$, a contradiction!
+   - *Optimality ($|C^*| = |M^*|$ in the unweighted case; $w(C^*) = \operatorname{MinCut}(s, t)$ in general)*: Because $(S_{\min}, T_{\min})$ is a minimum $s$-$t$ cut in $\mathcal{N}$ (`Ch 02`), Theorem 5.1 immediately implies that $C^* = \Phi(S_{\min}, T_{\min}) = (L \cap T_{\min}) \cup (R \cap S_{\min}) = (L \setminus S_{\min}) \cup (R \cap S_{\min})$ is a minimum-weight vertex cover of weight $\operatorname{MinCut}_{\mathcal{N}}(s, t)$. Combinatorially, in the unweighted case, every unmatched left vertex $u \in U_L$ is in $Z$ (so $u \notin C^*$), every right vertex in $R \cap Z$ is matched (since $t \notin S_{\min}$), and for every matched edge $(u, v) \in M^*$, since $v \in Z \iff u \in Z$, exactly one endpoint of $(u, v)$ belongs to $C^*$ ($v \in R \cap Z$ if both are in $Z$, or $u \in L \setminus Z$ if neither is in $Z$). Thus $|C^*| = |M^*|$.
+3. **Why $I^* = (L \cap S_{\min}) \cup (R \setminus S_{\min})$ is a Maximum Independent Set**: By Gallai's First Identity (Theorem 5.3), $I^* = (L \sqcup R) \setminus C^* = (L \cap S_{\min}) \cup (R \setminus S_{\min})$ is a maximum-weight independent set. $\blacksquare$
+
+::: {.callout-warning title="Broken-Gadget Counterexample FM-05 (H-06) — Seeding König's Alternating DFS from Matched Left Vertices"}
+A notorious implementation bug when reconstructing a Minimum Vertex Cover without explicit $s, t$ nodes is seeding the alternating DFS from **all** left vertices (or from matched left vertices) instead of strictly from **unmatched left vertices** $U_L = L \setminus V(M^*)$.
+
+**Concrete Counterexample**: Let $L = \{u_1, u_2\}$, $R = \{v_1\}$ with edges $E = \{(u_1, v_1), (u_2, v_1)\}$, and suppose Hopcroft–Karp finds the maximum matching $M^* = \{(u_1, v_1)\}$ of size $1$.
+
+- **Correct Seeding from $U_L = \{u_2\}$**:
+  Start at unmatched $u_2 \in U_L$. Traverse unmatched edge $u_2 \to v_1$ into $R$, then traverse matched edge $v_1 \Rightarrow u_1$ back into $L$. This yields $Z = \{u_2, v_1, u_1\}$, so:
+
+  $$C^* = (L \setminus Z) \cup (R \cap Z) = \emptyset \cup \{v_1\} = \{v_1\} \quad (\text{size } 1, \text{ covers both } (u_1, v_1) \text{ and } (u_2, v_1)).$$
+
+- **Broken Seeding (Forgetting the backward matched step $R \to L$, or seeding only from $u_1$)**:
+  If you forget to traverse matched edges $v_1 \Rightarrow u_1$ back to $L$, then starting from $U_L = \{u_2\}$ visits $Z_{\text{broken}} = \{u_2, v_1\}$, giving $C_{\text{broken}} = (L \setminus Z_{\text{broken}}) \cup (R \cap Z_{\text{broken}}) = \{u_1, v_1\}$ of size $2 > \nu(G)$! Conversely, if you only mark $Z = \{u_2\}$, you output $C = \{u_1\}$, which leaves $(u_2, v_1)$ **completely uncovered**!
+:::
+
+### 3.3 Complete Worked Numerical Trace ($N \le 4$: Unweighted & Weighted Set Recovery)
+
+Let us trace Theorem 5.4 by hand on two concrete 4-vertex bipartite graphs so you can verify every residual arc and set-recovery formula.
+
+#### Trace A: Unweighted König Set Recovery (`MVC`, `MIS`, `MEC`)
+
+Let $L = \{u_1, u_2\}$, $R = \{v_1, v_2\}$ with three edges $E = \{(u_1, v_1), (u_2, v_1), (u_2, v_2)\}$.
+
+1. **Maximum Matching $M^*$**:
+   Augment $s \to u_1 \to v_1 \to t$ and $s \to u_2 \to v_2 \to t$, or suppose a suboptimal initial greedy step matched $(u_2, v_1)$ and then augmented $u_1 \to v_1 \Rightarrow u_2 \to v_2$. Either way, $M^* = \{(u_1, v_1), (u_2, v_2)\}$ of size $\nu(G) = 2$.
+   Now delete edge $(u_2, v_2)$ so the graph is $E' = \{(u_1, v_1), (u_2, v_1)\}$ with $v_2$ replaced by $u_3 \in L$ connected to $v_2$: specifically, let $L = \{u_1, u_2, u_3\}$, $R = \{v_1, v_2\}$ with $E = \{(u_1, v_1), (u_2, v_1), (u_2, v_2), (u_3, v_2)\}$:
+   - **Maximum Matching**: $M^* = \{(u_1, v_1), (u_2, v_2)\}$ of size $\nu(G) = 2$.
+   - **Unmatched Left Vertices**: $U_L = L \setminus \{u_1, u_2\} = \{u_3\}$.
+   - **Alternating Reachability $Z = S_{\min} \setminus \{s\}$**:
+     - Start at $u_3 \in U_L$ (since $c_f(s, u_3) = 1 > 0$).
+     - Follow unmatched edge $(u_3, v_2) \in E \setminus M^*$ to reach $v_2 \in R$.
+     - From $v_2$, follow matched edge $(u_2, v_2) \in M^*$ backward ($c_f(v_2, u_2) = 1 > 0$) to reach $u_2 \in L$.
+     - From $u_2$, follow unmatched edge $(u_2, v_1) \in E \setminus M^*$ to reach $v_1 \in R$.
+     - From $v_1$, follow matched edge $(u_1, v_1) \in M^*$ backward ($c_f(v_1, u_1) = 1 > 0$) to reach $u_1 \in L$.
+     - Thus $Z = \{u_1, u_2, u_3, v_1, v_2\}$!
+   - **Extracted Sets**:
+     - $\operatorname{MVC} = C^* = (L \setminus Z) \cup (R \cap Z) = \emptyset \cup \{v_1, v_2\} = \{v_1, v_2\}$ (size $2 = \nu(G)$).
+     - $\operatorname{MIS} = I^* = (L \cap Z) \cup (R \setminus Z) = \{u_1, u_2, u_3\} \cup \emptyset = \{u_1, u_2, u_3\}$ (size $3 = 5 - 2$).
+     - $\operatorname{MEC} = F^*$: Start with $M^* = \{(u_1, v_1), (u_2, v_2)\}$; for the single unmatched vertex $u_3$, greedily add its incident edge $(u_3, v_2)$, giving $F^* = \{(u_1, v_1), (u_2, v_2), (u_3, v_2)\}$ of size $3 = 5 - 2$.
+
+#### Trace B: Weighted `MWVC` and `MWIS` Recovery
+
+Let $L = \{u_1, u_2\}$ with weights $w(u_1) = 10, w(u_2) = 2$, and $R = \{v_1, v_2\}$ with weights $w(v_1) = 3, w(v_2) = 4$, and edges $E = \{(u_1, v_1), (u_1, v_2), (u_2, v_2)\}$.
+
+1. **Compiled Network $\mathcal{N}$**:
+   - Source arcs: $s \xrightarrow{10} u_1$, $s \xrightarrow{2} u_2$.
+   - Middle arcs: $u_1 \xrightarrow{+\infty} v_1$, $u_1 \xrightarrow{+\infty} v_2$, $u_2 \xrightarrow{+\infty} v_2$.
+   - Sink arcs: $v_1 \xrightarrow{3} t$, $v_2 \xrightarrow{4} t$.
+2. **Augmentations**:
+   - Path 1: $s \to u_1 \to v_1 \to t$ pushes $3$ units (saturates $v_1 \to t$; leaves $c_f(s, u_1) = 7$).
+   - Path 2: $s \to u_1 \to v_2 \to t$ pushes $4$ units (saturates $v_2 \to t$; leaves $c_f(s, u_1) = 3$).
+   - Total flow: $\operatorname{MaxFlow}_{\mathcal{N}}(s, t) = 3 + 4 = 7$.
+3. **Residual Reachability $S_{\min}$ from $s$**:
+   - $c_f(s, u_1) = 3 > 0$ and $c_f(s, u_2) = 2 > 0 \implies u_1, u_2 \in S_{\min}$.
+   - Via $u_1 \xrightarrow{+\infty} v_1$ and $u_1 \xrightarrow{+\infty} v_2 \implies v_1, v_2 \in S_{\min}$.
+   - Both $v_1 \to t$ and $v_2 \to t$ are saturated ($c_f = 0$), so $t \notin S_{\min}$.
+   - Thus $S_{\min} = \{s, u_1, u_2, v_1, v_2\}$ and $T_{\min} = \{t\}$.
+4. **Extracted Optimal Weighted Sets**:
+   - $\operatorname{MWVC} = C^* = (L \setminus S_{\min}) \cup (R \cap S_{\min}) = \emptyset \cup \{v_1, v_2\} = \{v_1, v_2\}$ of total weight $3 + 4 = 7 = \operatorname{MinCut}(s, t)$.
+   - $\operatorname{MWIS} = I^* = (L \cap S_{\min}) \cup (R \setminus S_{\min}) = \{u_1, u_2\} \cup \emptyset = \{u_1, u_2\}$ of total weight $10 + 2 = 12 = (10 + 2 + 3 + 4) - 7$.
+
+---
+
+## 4. Why Bipartiteness Is Mandatory: Odd-Cycle Half-Integrality (`FM-07`)
+
+What happens if we try to apply König's Theorem ($\nu(G) = \tau(G)$), the LP relaxation $\text{(MWVC-IP)}$, or the $s$-$t$ cut reduction to a **non-bipartite** graph containing an odd cycle? Both the combinatorics and the algebra break down at a fundamental barrier.
+
+::: {.callout-warning title="Failure Mode FM-07 — The Odd-Cycle Half-Integrality Barrier ($C_5$ Counterexample)"}
+Consider the 5-vertex odd cycle $C_5$ with vertices $V = \{1, 2, 3, 4, 5\}$ (unit weights $w_v = 1$) and edges $E = \{(1,2), (2,3), (3,4), (4,5), (5,1)\}$.
+
+1. **Strict Gap Between Integral Invariants ($\nu(C_5) < \tau(C_5)$)**:
+
+   - **Maximum Matching ($\nu(C_5) = 2$)**: Since each matched edge uses $2$ vertices and $|V| = 5$ is odd, any matching can pair at most $\lfloor 5/2 \rfloor = 2$ edges (e.g., $\{(1,2), (3,4)\}$).
+   - **Minimum Vertex Cover ($\tau(C_5) = 3$)**: Each vertex in $C_5$ has degree $2$, so $2$ vertices can cover at most $2 \times 2 = 4 < 5$ edges. At least $3$ vertices are required to cover all $5$ edges (e.g., $\{1, 3, 4\}$).
+   - **Maximum Independent Set ($\alpha(C_5) = 2$)**: Consistent with Gallai's First Identity ($\alpha(C_5) + \tau(C_5) = 2 + 3 = 5 = |V|$), which holds in *all* graphs, König's equality fails strictly:
+
+     $$\nu(C_5) = 2 < 3 = \tau(C_5) \implies \alpha(C_5) = 2 < 3 = |V| - \nu(C_5).$$
+
+2. **Fractional Half-Integrality of the LP Relaxation ($\tau_{\text{LP}}(C_5) = 2.5$)**:
+   Look at the LP relaxation of $\text{(MWVC-IP)}$ on $C_5$: minimize $\sum_{v=1}^5 x_v$ subject to $x_u + x_v \ge 1$ for every edge $(u, v) \in E$. By setting
+
+   $$x_1^* = x_2^* = x_3^* = x_4^* = x_5^* = \frac{1}{2} \quad \text{and dual edge flows} \quad f_{12}^* = f_{23}^* = f_{34}^* = f_{45}^* = f_{51}^* = \frac{1}{2},$$
+
+   every edge constraint $x_u^* + x_v^* = \frac{1}{2} + \frac{1}{2} = 1 \ge 1$ and every degree constraint $\sum_{e \ni v} f_e^* = \frac{1}{2} + \frac{1}{2} = 1 \le 1$ is satisfied tightly! The LP relaxation achieves a strictly smaller fractional optimum lying halfway between $\nu(C_5)$ and $\tau(C_5)$:
+
+   $$\nu(C_5) = 2 < \nu_{\text{LP}}(C_5) = \tau_{\text{LP}}(C_5) = 2.5 < 3 = \tau(C_5).$$
+
+3. **Why Total Unimodularity and Bipartite Variable Inversion Fail on $C_5$**:
+   - *Algebraic Failure ($\det = \pm 2$)*: The $5 \times 5$ vertex-edge incidence matrix $A(C_5)$ of an odd cycle $C_{2k+1}$ has determinant $\det A(C_{2k+1}) = 1 - (-1)^{2k+1} = 2 \notin \{-1, 0, +1\}$. When solving $A x = \mathbf{1}$ by Cramer's rule, this determinant $2$ in the denominator produces the $\frac{1}{2}$ fractional entries!
+   - *Cut-Compilation Failure (Sign Frustration)*: Recall from Section 2.2 that compiling $x_u + y_v \ge 1$ into a directed $+\infty$ arc $u \to v$ required encoding one endpoint as $1 - s_u$ (left side $L$) and the other as $s_v$ (right side $R$). Around the 5-cycle $1 - 2 - 3 - 4 - 5 - 1$, alternating the encoding ($1 \in L, 2 \in R, 3 \in L, 4 \in R, 5 \in L$) forces edge $(5, 1)$ to connect **two vertices in $L$** ($x_5 + x_1 \ge 1 \iff (1 - s_5) + (1 - s_1) \ge 1 \iff s_1 s_5 = 0$), which is a non-submodular same-side conflict that cannot be represented by any directed $s$-$t$ cut arc!
+:::
+
+::: {.callout-note title="Bridge to the Nemhauser–Trotter Theorem (1975) & The Doubled-Graph Trap"}
+Suppose we build the **bipartite double cover** $G \times K_2$ of an arbitrary graph $G = (V, E)$ by creating two copies $v_L \in V_L$ and $v_R \in V_R$ of every vertex $v \in V$ and adding both $(u_L, v_R)$ and $(v_L, u_R)$ for every undirected edge $\{u, v\} \in E$.
+
+- **If $G$ is bipartite** (as in Problem `#036` below): $G \times K_2$ is simply two disjoint isomorphic copies of $G$, so $\nu(G \times K_2) = 2\nu(G)$ and $\tau(G \times K_2) = 2\tau(G)$.
+- **If $G$ has odd cycles**: $\frac{1}{2} \tau_w(G \times K_2)$ equals the **fractional LP optimum** $\tau_{w,\text{LP}}(G)$ (for $C_5$, $\nu(C_5 \times K_2) = 5$, giving $5/2 = 2.5 \ne \nu(C_5)$!). By the **Nemhauser–Trotter Theorem (1975)**, setting $x_v = \frac{1}{2}(\mathbb{I}[v_L \in C^*] + \mathbb{I}[v_R \in C^*]) \in \{0, \frac{1}{2}, 1\}$ yields a half-integral optimal LP vertex cover in which all vertices with $x_v = 1$ (and $x_v = 0$) preserve an exact integral $\operatorname{MWVC}$ of $G$! However, solving the remaining $x_v = \frac{1}{2}$ core in general graphs is NP-hard (for $\operatorname{MVC}$/$\operatorname{MIS}$) or requires Edmonds's Blossom Algorithm (`Ch 10`) for general graph matching $\nu(G)$.
+:::
+
+---
+
+## 5. Black-Box Algorithmic Contract & Recognition Table
+
+### 5.1 Canonical $O(V + E)$ König Set Recovery Implementation Contract
+
+Assuming you have already run Dinic's algorithm (`Ch 01`) on the canonical network $\mathcal{N}$ where middle arcs $u \to v$ have capacity $+\infty$, the following clean $O(V + E)$ helper extracts all four canonical sets (`MVC`, `MIS`, matched pairs $M^*$, and `MEC` when unweighted) from the residual graph:
+
+```cpp
+// Contract:
+// 1. Network has source `s`, sink `t`, left vertices `L`, right vertices `R`.
+// 2. Every original edge (u, v) in E was added as a directed arc u -> v with capacity INF,
+//    so forward residual capacity c_f(u, v) > 0 ALWAYS holds after Max-Flow.
+struct KonigDecomposition {
+    vector<int> mvc_L, mvc_R; // Minimum (Weighted) Vertex Cover: (L \ S_min) U (R ^ S_min)
+    vector<int> mis_L, mis_R; // Maximum (Weighted) Independent Set: (L ^ S_min) U (R \ S_min)
+};
+
+template <typename FlowNetwork>
+KonigDecomposition extract_konig_sets(
+    int s, int num_nodes,
+    const vector<int>& L, const vector<int>& R,
+    const FlowNetwork& net) 
+{
+    vector<bool> in_S(num_nodes, false);
+    queue<int> q;
+    q.push(s);
+    in_S[s] = true;
+    while (!q.empty()) {
+        int u = q.front();
+        q.pop();
+        for (const auto& e : net.adj[u]) {
+            if (e.cap_residual > 0 && !in_S[e.to]) {
+                in_S[e.to] = true;
+                q.push(e.to);
+            }
+        }
+    }
+
+    KonigDecomposition res;
+    for (int u : L) {
+        if (!in_S[u]) res.mvc_L.push_back(u); // s -> u severed: u in L \ S_min (in MVC)
+        else          res.mis_L.push_back(u); // s -> u intact:  u in L ^ S_min (in MIS)
+    }
+    for (int v : R) {
+        if (in_S[v])  res.mvc_R.push_back(v); // v -> t severed: v in R ^ S_min (in MVC)
+        else          res.mis_R.push_back(v); // v -> t intact:  v in R \ S_min (in MIS)
+    }
+    return res;
+}
+```
+
+### 5.2 Master Recognition & Compilation Summary Table
+
+| Problem Archetype & English Signal | Bipartition $V = L \sqcup R$ & Edge Rule | Target Invariant & Formula | Complexity & Guardrail |
+| :--- | :--- | :--- | :--- |
+| **Bottleneck Perfect Matching** (`#033`: minimize max edge cost $T$ for $N$-matching) | Given $L, R$; filter edges with $d_e \le T$. | Check $\nu(G_{\le T}) = N$ via binary search on $T$. | $O(E\sqrt{V}\log E)$ via Hopcroft–Karp (`FM`: $O(VE)$ Kuhn TLEs). |
+| **Sequential Prefix Matching / Transversal Matroid** (`#034`: match $1, 2, \dots, K$ to items) | $L = \text{Attributes } \{1..V\}$, $R = \text{Items } \{1..N\}$; or undirected item-edges $(a_i, b_i)$ on $V$. | Augment $u = 1, 2, \dots$ sequentially until first failure; or DSU tree/unicyclic check. | $O(N \alpha(V))$ DSU or timestamped Kuhn (`FM`: `memset` inside loop TLEs). |
+| **0-1 Grid Line Covering + Explicit Set Output** (`#035`: minimum row/col shots to hit all targets) | $L = \text{Rows}$, $R = \text{Cols}$; edge $(r, c)$ per target. | $\operatorname{MVC} = (L \setminus Z) \cup (R \cap Z)$ via alternating BFS from $U_L$. | $O(E\sqrt{V} + V + E)$ (`FM-05`: seed BFS **only** from $U_L = L \setminus V(M^*)$). |
+| **Unpartitioned Bipartite MIS** (`#036`, `#038`: symmetric conflict graph with no odd cycles) | 2-color components into $L \sqcup R$ (or double vertices $V_L \sqcup V_R$ with $\nu = M_{\text{double}} / 2$). | $\alpha(G) = |V| - \nu(G)$. | $O(E\sqrt{V})$ (`FM`: always symmetrize input edges before 2-coloring). |
+| **Prime-Sum Conflict Selection** (`#037`: no two chosen cards have $c_i + c_j \in \mathbb{P}$) | Deduplicate $c_i = 1$ (keep max $p_i$); split remaining into $L = \text{Odd } c_i$, $R = \text{Even } c_j$. | $\operatorname{MWIS} = \sum w_v - \operatorname{MinCut}(s, t)$ with $u \xrightarrow{+\infty} v$. | Binary search level + Max-Flow (`FM`: forgetting $1 + 1 = 2$ creates odd cycles!). |
+| **Complement of Two Cliques & Critical Matching Edges** (`#039`: add edge to $G$ to increase $\omega(G)$) | Build complement $\bar{G} = (L \sqcup R, \bar{E})$; $\omega(G) = \alpha(\bar{G}) = |V| - \nu(\bar{G})$. | Matched edge $e = (u,v) \in M^*$ is critical iff `scc[u] != scc[v]` in $G_{f^*}$. | $O((V + \bar{E})\sqrt{V})$ Dinic + $O(V + \bar{E})$ Tarjan SCC on $G_{f^*}$. |
+
+---
+
+## 6. Curated 4-Tier Practice Ladder
+
+Each problem below is engineered to build a distinct layer of the Chapter 5 modelling pipeline. Try to formulate the algebraic indicator variables and bipartition on your own before opening the progressive hints and the full 4-step compilation.
+
+---
+
+### `#033` — [CF 1423B] Valuable Paper
+
+- **Tier**: `Stepping Stone 1 (SS-1)` | **Judge URL**: <https://codeforces.com/problemset/problem/1423/B>
+- **Constraints**: $N \le 10^4$ factories, $N \le 10^4$ airports, $M \le 10^5$ candidate bidirectional roads $(u_e, v_e)$ with construction times $d_e \in [1, 10^9]$. Time limit: `2.0s`.
+- **Problem Summary**: You are given $N$ factories, $N$ airports, and $M$ candidate roads connecting factories to airports. All chosen roads are built in parallel, so the completion time of a subset of roads is the **maximum** construction time $\max_{e \in M^*} d_e$ among the chosen roads. Each factory must be connected to a distinct airport ($1$-to-$1$ pairing). Find the minimum possible completion time $T$, or output `-1` if no perfect matching exists.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Monotonicity of the Bottleneck Threshold"}
+Whenever an objective minimizes the **maximum edge weight** ($\min_{M^*} \max_{e \in M^*} d_e$) rather than the sum of edge weights, convert the optimization problem into a decision problem: *"Given a time budget $T$, does there exist a matching of size $N$ using only roads with $d_e \le T$?"* Since increasing $T$ only adds edges to the graph, this predicate is monotone in $T$.
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Complexity Trap at $N = 10^4, M = 10^5$"}
+Sort the distinct road weights $d_e$ and binary search over the index $k \in [0, M-1]$ ($\le 17$ checks). At each step, why does a standard $O(NM)$ DFS-based Kuhn matching algorithm Time Limit Exceed (`TLE`), and which $O(M\sqrt{N})$ unit-network algorithm must you use instead?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — CF 1423B: Valuable Paper"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+- **Surface Signal**: We must pair $N$ factories with $N$ airports ($1$-to-$1$ disjoint assignment between two disjoint classes $L$ and $R$) while minimizing the **bottleneck** edge weight $\max_{e \in M^*} d_e$.
+- **Why Greedy & Kuhn Fail**: Sorting edges by weight and greedily pairing endpoints fails whenever an early cheap edge blocks the only valid partner of another factory. Furthermore, at $N = 10^4, M = 10^5$, running $O(NM) \approx 10^9$ Kuhn DFS per binary search step takes $\sim 1.7 \times 10^{10}$ operations (`TLE`). Hopcroft–Karp (Dinic on unit networks, `Ch 04`) runs in $O(M\sqrt{N})$ per check.
+
+#### Step 2: Intermediate Algebraic Representation
+
+For a fixed threshold $T$, let $E_{\le T} = \{e = (u, v) \in E : d_e \le T\}$. Introduce binary decision variables $f_{uv} \in \{0, 1\}$ for each $(u, v) \in E_{\le T}$:
+
+$$\nu(G_{\le T}) = \max_{f \in \{0,1\}^{|E_{\le T}|}} \sum_{(u,v) \in E_{\le T}} f_{uv} \quad \text{s.t.} \quad \sum_{v : (u,v) \in E_{\le T}} f_{uv} \le 1 \ \ (\forall u \in L), \quad \sum_{u : (u,v) \in E_{\le T}} f_{uv} \le 1 \ \ (\forall v \in R).$$
+
+The threshold $T$ is feasible if and only if $\nu(G_{\le T}) = N$. Since $E_{\le T_1} \subseteq E_{\le T_2}$ for $T_1 \le T_2$, $\nu(G_{\le T})$ is monotonically non-decreasing in $T$.
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+1. Sort the $M$ roads in non-decreasing order of $d_e$: $d_{e_1} \le d_{e_2} \le \dots \le d_{e_M}$.
+2. Binary search the road index $mid \in [1, M]$:
+
+   - Construct the unit bipartite network $\mathcal{N}(mid)$ on $\{s, t\} \cup L \cup R$ where $|L| = |R| = N$:
+
+     - Source arcs: $s \xrightarrow{1} u$ for all $u \in \{1, \dots, N\}$.
+     - Middle arcs: $u_{e_i} \xrightarrow{1} v_{e_i}$ for all $1 \le i \le mid$.
+     - Sink arcs: $v \xrightarrow{1} t$ for all $v \in \{1, \dots, N\}$.
+
+   - Run Hopcroft–Karp / unit Dinic to compute $\nu(G_{\le d_{e_{mid}}})$. If $\nu = N$, move the upper bound $hi \gets mid$; otherwise move $lo \gets mid + 1$.
+
+#### Step 4: Concrete Trace & Failure-Mode Guard
+
+- **Toy Trace**: Suppose $N = 2$ and roads are $(u_1, v_1, d=3)$, $(u_1, v_2, d=5)$, $(u_2, v_1, d=4)$.
+
+  - For $T = 3$: $E_{\le 3} = \{(u_1, v_1)\}$, $\nu = 1 < 2$ (infeasible).
+  - For $T = 4$: $E_{\le 4} = \{(u_1, v_1), (u_2, v_1)\}$, both factories compete for $v_1$, so $\nu = 1 < 2$ (infeasible; König MVC is $\{v_1\}$ of size $1$).
+  - For $T = 5$: $E_{\le 5}$ adds $(u_1, v_2)$; augmenting path $u_2 \to v_1 \Rightarrow u_1 \to v_2$ yields $M^* = \{(u_2, v_1), (u_1, v_2)\}$ of size $\nu = 2 = N$ (feasible, optimal $T^* = 5$).
+
+- **Failure-Mode Guard**: Always check if $mid = M$ achieves $\nu = N$ (or search over $[1, M+1]$); if even all $M$ roads have $\nu(G) < N$, output `-1`. Never use $O(VE)$ single-path Kuhn on $N = 10^4, M = 10^5$—Hopcroft–Karp's multi-path blocking flow phase in $O(M\sqrt{N} \log M) \approx 1.7 \times 10^8$ operations is mandatory.
+::::
+
+---
+
+### `#034` — [Luogu P1640 / SCOI2010] 连续攻击游戏 (Continuous Attack Game)
+
+- **Tier**: `Stepping Stone 2 (SS-2)` | **Judge URL**: <https://www.luogu.com.cn/problem/P1640>
+- **Constraints**: $N \le 10^6$ equipment items; each item $i$ has two integer attribute values $(a_i, b_i) \in [1, 10^4]^2$. Time limit: `1.0s`.
+- **Problem Summary**: You have $N$ equipment items. Each item $i$ can be used **at most once**, and when used it provides **either** attribute $a_i$ **or** attribute $b_i$ (not both). You must attack sequentially with attribute values $1, 2, 3, \dots, K$ without skipping any integer. Find the maximum consecutive prefix length $K$ ($0 \le K \le 10^4$) that can be simultaneously covered by distinct items.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Which Side Goes on $L$, and Why Can We Augment Greedily?"}
+If you put the $N = 10^6$ items on $L$, you don't know which subset of items should be matched. Instead, put the **attribute values** $1, 2, \dots, 10^4$ on $L$ and the **items** $1, \dots, N$ on $R$! Because augmenting paths in Kuhn's algorithm never unmatch a previously matched left vertex (the **Transversal Matroid** property), you can try matching $u = 1, 2, 3, \dots$ in order and stop at the **very first** attribute $u = K + 1$ where `dfs(u)` fails!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — The `memset` TLE Trap & The $O(N \alpha(V))$ Pseudoforest Dual View"}
+
+1. **In Kuhn's algorithm**: If you call `memset(vis, 0, sizeof(vis))` inside the loop $u = 1 \dots 10^4$, clearing an array of size $10^4$ or $10^6$ takes $10^8 \sim 10^{10}$ operations (`TLE`). How do you clear `vis` in $O(1)$ time using an integer timestamp `vis[u] == timer`?
+2. **Even Faster ($O(N \alpha(V))$ without Flow)**: View each item $i$ not as a vertex, but as an **undirected edge $(a_i, b_i)$** between attribute vertices $a_i$ and $b_i$! When can a connected component $C$ of $V_C$ vertices and $E_C$ edges orient its edges to cover all $V_C$ vertices vs. $V_C - 1$ vertices?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Luogu P1640: Continuous Attack Game"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+- **Surface Signal**: Each item $i \in \{1, \dots, N\}$ covers one of two attributes $\{a_i, b_i\} \subseteq \{1, \dots, V\}$ ($V = 10^4$), and we want the longest matchable prefix $\{1, 2, \dots, K\} \subseteq L$.
+- **Two Dual Formulations**:
+
+  1. **Bipartite Transversal Matroid View**: $L = \{1, \dots, V\}$ (attributes), $R = \{1, \dots, N\}$ (items), with edges $(a_i, i)$ and $(b_i, i)$. By Theorem 2.2 (Edmonds–Fulkerson Transversal Matroid), matchable subsets of $L$ form a matroid, and augmenting from $u = K+1$ never unmatches $\{1, \dots, K\}$. Thus we sequentially run `dfs(u)` for $u = 1, 2, \dots, V$ and halt at the first $u$ where `dfs(u)` returns `false`, outputting $K = u - 1$.
+  2. **2-Choice Edge-Orientation / Pseudoforest View**: Since each item $i$ touches *at most two* attributes $(a_i, b_i)$, view $V = \{1, \dots, 10^4\}$ as vertices and each item $i$ as an undirected edge $e_i = (a_i, b_i)$! Matching item $i$ to attribute $a_i$ or $b_i$ is equivalent to **orienting** edge $e_i$ toward one of its endpoints so that each vertex receives in-degree $\le 1$.
+
+#### Step 2: Intermediate Algebraic Representation
+
+- **In the Bipartite View**: For each prefix $K$, we require binary assignments $x_{i, a_i}, x_{i, b_i} \in \{0, 1\}$ with $x_{i, a_i} + x_{i, b_i} \le 1$ ($\forall i \in [1, N]$) and $\sum_{i : a_i = u} x_{i, a_i} + \sum_{i : b_i = u} x_{i, b_i} = 1$ ($\forall u \in [1, K]$).
+- **In the Pseudoforest View**: By Hall's Theorem applied to each connected component $C = (V_C, E_C)$ of the attribute graph:
+
+  - If $E_C = |V_C| - 1$ ($C$ is a **tree**), at most $|V_C| - 1$ vertices in $C$ can be covered (by rooting the tree at the single uncovered vertex and orienting all edges away from the root). To maximize the covered prefix $1, 2, \dots, K$, we must leave the **maximum-numbered vertex** $\max(V_C)$ uncovered, covering all other $|V_C| - 1$ vertices in $C$!
+  - If $E_C \ge |V_C|$ ($C$ contains **at least one cycle** / unicyclic / multicyclic), we can orient the cycle cyclically and orient all attached trees away from the cycle, covering **all $|V_C|$ vertices** in $C$!
+
+#### Step 3: Reverse-Engineering Scratchpad (Both Algorithms)
+
+- **Method A (Sequential Kuhn with Timestamp Guard)**:
+  Build adjacency list `adj[u]` from each attribute $u \in [1, 10^4]$ to its incident items $i \in [1, N]$. Maintain `match_item[i]` (which attribute item $i$ is currently matched to) and `vis_attr[u]`. For $u = 1, 2, \dots, 10^4$: increment `++timer` and run `dfs(u, timer)`. If `dfs(u, timer)` fails, return $u - 1$.
+- **Method B ($O(N \alpha(V))$ Disjoint Set Union)**:
+  Maintain for each DSU root $r$: `max_val[r]` (maximum attribute ID in component $r$) and `has_cycle[r]` (boolean, true iff $E_C \ge |V_C|$). When processing item $(a_i, b_i)$:
+
+  - Find $u = \text{find}(a_i)$ and $v = \text{find}(b_i)$.
+  - If $u == v$: set `has_cycle[u] = true`.
+  - If $u \ne v$: merge $u$ and $v$, set `max_val` to $\max(\text{max\_val}[u], \text{max\_val}[v])$, and set `has_cycle` to `has_cycle[u] | has_cycle[v]`.
+
+  Finally, the first uncovered attribute is the minimum of `max_val[find(u)]` over all components where `!has_cycle[find(u)]` (or $10^4 + 1$ if none).
+
+#### Step 4: Concrete Trace & Failure-Mode Guard
+
+- **Toy Trace**: Items are $(1, 2), (2, 3), (1, 3), (4, 5)$.
+
+  - Component $\{1, 2, 3\}$ has $3$ vertices and $3$ edges (`has_cycle = true`), so all three attributes $1, 2, 3$ are covered.
+  - Component $\{4, 5\}$ has $2$ vertices and $1$ edge (`has_cycle = false`), so it covers $\min(4, 5) = 4$ and leaves $\max(4, 5) = 5$ uncovered.
+  - First uncovered attribute is $5 \implies$ maximum prefix is $K = 4$.
+
+- **Failure-Mode Guard**: In Method A, calling `memset(vis, 0, sizeof(vis))` inside the $10^4$ loop resets $10^6$ item booleans $10^4$ times ($10^{10}$ ops $\to$ instant `TLE`). Always put `vis` on the smaller side ($V = 10^4$) AND use `vis[u] == timer` so each step only touches visited vertices!
+::::
+
+---
+
+### `#035` — [UVA 11419] SAM I AM
+
+- **Tier**: `Intermediate 1 (Int-1)` | **Judge URL**: <https://onlinejudge.org/external/114/11419.pdf>
+- **Constraints**: $R, C \le 1000$ rows and columns; $N \le 10^6$ enemy locations $(r_i, c_i)$. Multiple test cases terminated by `0 0 0`.
+- **Problem Summary**: Enemies are located at grid coordinates $(r_i, c_i)$ in an $R \times C$ temple grid. Firing a cannon along row $r$ (`r<r>`) destroys all enemies in row $r$; firing along column $c$ (`c<c>`) destroys all enemies in column $c$. Output the minimum total number of cannon shots required to destroy all enemies, followed by the **exact space-separated list** of row and column shots (`rX` and `cY`).
+
+:::: {.callout-note collapse="true" title="Hint 1 — From 2D Grid Lasers to König's Minimum Vertex Cover"}
+Every enemy at $(r_i, c_i)$ imposes the logical clause: *"Row $r_i$ must be fired OR Column $c_i$ must be fired."* What graph has Rows $L = \{1, \dots, R\}$ on the left, Columns $R_{\text{col}} = \{1, \dots, C\}$ on the right, and an edge $(r_i, c_i)$ for each enemy?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Reconstructing the Exact Shots via Alternating Reachability ($Z$)"}
+After computing a maximum matching $M^*$ via Hopcroft–Karp, how do you identify which rows `rX` and which columns `cY` belong to the Minimum Vertex Cover? Recall Theorem 5.4 and `FM-05`: which left vertices seed the alternating BFS/DFS, and which direction do unmatched vs. matched edges go?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — UVA 11419: SAM I AM"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+- **Surface Signal**: Each enemy at $(r_i, c_i)$ is an incidence constraint between Row $r_i \in L$ and Column $c_i \in R_{\text{col}}$. We need the minimum number of rows and columns covering all enemies, **plus constructive vertex-cover recovery**.
+- **Why Naive Degree Greedy Fails**: Greedily shooting the row or column with the most remaining enemies fails on simple trees (e.g., row $1$ has $2$ enemies in columns $1, 2$, while columns $1, 2$ each have $1$ additional enemy in rows $2, 3$: greedy shoots row $1$ first and then needs $2$ more shots for total $3$, whereas shooting columns $1$ and $2$ covers everything in $2$ shots).
+
+#### Step 2: Intermediate Algebraic Representation
+
+Introduce indicator variables $x_r \in \{0, 1\}$ for firing row $r \in \{1, \dots, R\}$ and $y_c \in \{0, 1\}$ for firing column $c \in \{1, \dots, C\}$:
+
+$$\min \sum_{r=1}^R x_r + \sum_{c=1}^C y_c \quad \text{s.t.} \quad x_{r_i} + y_{c_i} \ge 1 \quad \forall (r_i, c_i) \in E, \quad x_r, y_c \in \{0, 1\}.$$
+
+By König's Theorem (Theorem 5.2), this minimum equals $\nu(G)$, and by Theorem 5.4, the optimal cover is recovered from the alternating reachability set $Z$.
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation & Recovery)
+
+1. **Network / Bipartite Graph Construction**:
+   Create left vertices $L = \{1, \dots, R\}$ and right vertices $R_{\text{col}} = \{1, \dots, C\}$. For each enemy $(r_i, c_i)$, add directed arc $r_i \to c_i$ of capacity $+\infty$, with $s \xrightarrow{1} r$ and $c \xrightarrow{1} t$.
+2. **Compute Maximum Matching $M^*$**:
+   Run Hopcroft–Karp / unit Dinic in $O(N\sqrt{R + C})$ time.
+3. **Constructive Set Recovery ($Z = S_{\min} \setminus \{s\}$)**:
+
+   - Seed a BFS queue with **all unmatched rows** $U_L = \{r \in L : \text{match}_L[r] == 0\}$. Mark `visL[r] = true` for $r \in U_L$.
+   - From each reached row $r \in L$, traverse every incident enemy edge $(r, c) \in E$ to reach column $c \in R_{\text{col}}$. If `!visR[c]`, mark `visR[c] = true` and immediately traverse its **matched edge** backward to $r' = \text{match}_R[c] \in L$ (marking `visL[r'] = true` and pushing $r'$ to the queue).
+   - Output $|M^*|$, then output `r<r>` for every row $r$ with `!visL[r]` ($r \in L \setminus Z$), and `c<c>` for every column $c$ with `visR[c]` ($c \in R_{\text{col}} \cap Z$).
+
+#### Step 4: Concrete Trace & Failure-Mode Guard
+
+- **Toy Trace**: $R = C = 3$, enemies at $(1, 1), (1, 2), (2, 1), (3, 2)$.
+
+  - Maximum matching: $M^* = \{(2, 1), (3, 2)\}$ of size $2$.
+  - Unmatched row: $U_L = \{1\}$.
+  - Alternating BFS from $r = 1$: reaches columns $c = 1, 2$ via unmatched edges $(1, 1), (1, 2)$; from $c = 1, 2$, steps backward along matched edges $(2, 1), (3, 2)$ to reach rows $r = 2, 3$.
+  - Final visited sets: $\text{visL} = \{1, 2, 3\}$, $\text{visR} = \{1, 2\}$.
+  - Output cover: $(L \setminus \text{visL}) \cup (R_{\text{col}} \cap \text{visR}) = \emptyset \cup \{\text{c1}, \text{c2}\} = \{\text{c1}, \text{c2}\}$ (2 shots, destroying all 4 enemies!).
+
+- **Failure-Mode Guard (`FM-05`)**: Never start the alternating search from matched rows, and never include unmatched right vertices in $Z$ unless reached from $U_L$.
+::::
+
+---
+
+### `#036` — [POJ 1466] Girls and Boys
+
+- **Tier**: `Intermediate 2 (Int-2)` | **Judge URL**: <http://poj.org/problem?id=1466>
+- **Constraints**: $N \le 500$ students ($0, \dots, N-1$); symmetric "romantically involved" adjacency list guaranteed to be bipartite (no odd cycles), though the bipartition $(L, R)$ is **not** given in the input.
+- **Problem Summary**: Given a group of $N$ students and a symmetric binary relation of romantic involvement (forming a bipartite graph whose left/right gender labels are hidden), find the size of the **Maximum Independent Set**—the largest subset of students such that no two chosen students are romantically involved.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Maximum Independent Set via Gallai + König"}
+By Gallai's First Identity and König's Theorem (Theorem 5.3), in any bipartite graph $G = (V, E)$, the Maximum Independent Set size is $\alpha(G) = |V| - \tau(G) = N - \nu(G)$. How do we compute $\nu(G)$ when the input does not tell us which vertices belong to $L$ and which belong to $R$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Two Ways to Handle an Unpartitioned Bipartite Graph"}
+Compare two approaches:
+
+1. **Explicit 2-Coloring**: Run a BFS/DFS 2-coloring across all connected components to partition $V = L \sqcup R$, then run matching from $L$ to $R$.
+2. **The Bipartite Double Cover ($G \times K_2$)**: Create $N$ left copies $V_L$ and $N$ right copies $V_R$, add directed arc $u_L \to v_R$ for every ordered pair $(u, v)$ in the symmetric input, and compute maximum matching $M_{\text{double}}$. Why does $\nu(G) = |M_{\text{double}}| / 2$ hold here, and why would it fail if $G$ had an odd cycle?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — POJ 1466: Girls and Boys"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+- **Surface Signal**: We want the largest conflict-free subset (`Maximum Independent Set`, $\alpha(G)$) in a graph guaranteed to be bipartite (boys vs. girls), where the input already lists both $(u, v)$ and $(v, u)$ without specifying each student's side.
+
+#### Step 2: Intermediate Algebraic Representation
+
+Let $x_v \in \{0, 1\}$ indicate whether student $v \in V$ is selected in the independent set $I$:
+
+$$\alpha(G) = \max_{x \in \{0,1\}^N} \sum_{v \in V} x_v \quad \text{s.t.} \quad x_u + x_v \le 1 \quad \forall \{u, v\} \in E.$$
+
+By Gallai's First Identity ($\bar{x}_v := 1 - x_v$) and König's Theorem on the underlying bipartite graph $G = (L \sqcup R, E)$:
+
+$$\alpha(G) = N - \tau(G) = N - \nu(G).$$
+
+#### Step 3: Reverse-Engineering Scratchpad (2-Coloring vs. Double Cover $G \times K_2$)
+
+- **Approach 1 (Canonical 2-Coloring)**:
+  Run a linear-time $O(N + M)$ BFS to 2-color each connected component into color $0$ ($L$) and color $1$ ($R$). Direct edges from $L \to R$ and compute $\nu(G)$ directly, outputting $N - \nu(G)$.
+- **Approach 2 (Bipartite Double Cover $G \times K_2$)**:
+  Because the input already gives each undirected edge $\{u, v\} \in E$ in **both** directions $(u, v)$ and $(v, u)$, consider the doubled bipartite graph $G \times K_2$ on $V_L \sqcup V_R$ ($|V_L| = |V_R| = N$). Since $G = (L \sqcup R, E)$ is bipartite, the edges of $G \times K_2$ partition into two **completely vertex-disjoint copies** of $G$:
+
+  - Copy 1 between $L_{\text{left}} \subseteq V_L$ and $R_{\text{right}} \subseteq V_R$, and
+  - Copy 2 between $R_{\text{left}} \subseteq V_L$ and $L_{\text{right}} \subseteq V_R$.
+
+  Therefore, $\nu(G \times K_2) = \nu(\text{Copy 1}) + \nu(\text{Copy 2}) = 2\nu(G)$, and hence:
+
+  $$\alpha(G) = N - \frac{\nu(G \times K_2)}{2}.$$
+
+#### Step 4: Concrete Trace & Failure-Mode Guard
+
+- **Toy Trace**: $N = 4$ with romantic pairs $\{0, 1\}, \{1, 2\}, \{2, 3\}$ (path $P_4$).
+
+  - 2-Coloring puts $L = \{0, 2\}$, $R = \{1, 3\}$, giving $\nu(G) = 2$ and $\alpha(G) = 4 - 2 = 2$ (e.g., $\{0, 3\}$).
+  - Double cover $G \times K_2$ matches $(0_L, 1_R), (2_L, 3_R), (1_L, 0_R), (3_L, 2_R)$ of size $4$, giving $4 - 4/2 = 2$.
+
+- **Failure-Mode Guard (`FM-07`)**: Never apply the formula $N - \nu(G \times K_2)/2$ unless $G$ is **proven bipartite**! On the odd triangle $K_3$ ($N = 3$), $\alpha(K_3) = 1$ and $\nu(K_3) = 1$, but $K_3 \times K_2 = C_6$ has a perfect matching of size $\nu(K_3 \times K_2) = 3$, so $3 - 3/2 = 1.5$ is fractional (`FM-07`)!
+::::
+
+---
+
+### `#037` — [CF 808F] Card Game
+
+- **Tier**: `Advanced 1 (Adv-1)` | **Judge URL**: <https://codeforces.com/problemset/problem/808/F>
+- **Constraints**: $N \le 100$ cards, target power $K \le 10^5$; each card $i$ has power $p_i \in [1, 1000]$, magic number $c_i \in [1, 10^5]$, and level $l_i \in [1, N]$. Time limit: `2.0s`.
+- **Problem Summary**: At player level $L$, you may select any subset of cards having $l_i \le L$, subject to the rule that **no two selected cards $i, j$ may have a prime sum of magic numbers** ($c_i + c_j \notin \mathbb{P}$). Find the minimum level $L$ such that there exists a valid subset of cards with total power $\sum_{i \in I} p_i \ge K$, or output `-1` if impossible.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Is a Prime-Sum Conflict Graph Almost Bipartite?"}
+Every prime number greater than $2$ is **odd**, and the sum of two integers $c_i + c_j$ is odd **if and only if** one integer is odd and the other is even! What is the **only** even prime number, and which magic number $c_i$ can sum with another $c_j$ of the same parity to produce $2$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Resolving the $1 + 1 = 2$ Odd-Cycle Trap & Compiling to MWIS"}
+Because $1 + 1 = 2 \in \mathbb{P}$, all cards with $c_i = 1$ mutually conflict with one another (forming a clique!), so any valid subset can include **at most one** card with $c_i = 1$. Among all available cards with $c_i = 1$ and $l_i \le L$, which single card dominates all others? Once you discard all other $c_i = 1$ cards, the remaining conflict graph is 100% bipartite (`Odd` vs. `Even`)!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — CF 808F: Card Game"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+- **Surface Signal**: Monotone level threshold $L \in [1, N]$ combined with a **Maximum-Weight Independent Set (`MWIS`)** problem under pairwise conflicts $c_i + c_j \in \mathbb{P}$.
+- **Hidden Bipartition & The $1 + 1 = 2$ Trap**:
+  - For any two cards with $(c_i, c_j) \ne (1, 1)$, their sum is $c_i + c_j > 2$. Since every prime $> 2$ is odd, a conflict $c_i + c_j \in \mathbb{P}$ can only occur between an **odd** magic number ($u \in L$) and an **even** magic number ($v \in R$).
+  - However, for cards with $c_i = 1$, $1 + 1 = 2 \in \mathbb{P}$ creates odd-to-odd conflicts (and triangles $(1, 1, 2)$ since $1 + 2 = 3 \in \mathbb{P}$), destroying bipartiteness (`FM-07`)!
+  - **Dominance Reduction**: Every card with $c_i = 1$ has the **exact same conflict neighborhood** ($c_j$ such that $1 + c_j \in \mathbb{P}$), and at most one $c_i = 1$ card can ever be chosen. Therefore, for a fixed level $L$, we simply keep the **single $c_i = 1$ card with maximum power $p_i$** (among $l_i \le L$) and discard all other $c_i = 1$ cards! Now the conflict graph is strictly bipartite.
+
+#### Step 2: Intermediate Algebraic Representation
+For a fixed level $L$, let $V(L) = L_{\text{odd}} \sqcup R_{\text{even}}$ be the filtered card set (after deduplicating $c_i = 1$). Introduce binary selection variables $\bar{x}_u \in \{0, 1\}$ ($u \in L_{\text{odd}}$) and $\bar{y}_v \in \{0, 1\}$ ($v \in R_{\text{even}}$). By Gallai's First Identity ($\text{MWIS} = \sum w - \text{MWVC}$, Theorem 5.3):
+
+$$\alpha_p(G_L) = \sum_{z \in V(L)} p_z - \min_{x, y \in \{0,1\}} \left\{ \sum_{u \in L_{\text{odd}}} p_u x_u + \sum_{v \in R_{\text{even}}} p_v y_v \;\middle|\; x_u + y_v \ge 1 \ \ \forall (u, v) \text{ with } c_u + c_v \in \mathbb{P} \right\}.$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+1. Precompute primes up to $2 \cdot 10^5$ using a linear sieve.
+2. Binary search the level threshold $L \in [1, N]$:
+   - Filter cards with $l_i \le L$; among those with $c_i = 1$, keep only the one with maximum $p_i$.
+   - Build the canonical `MWVC` cut network $\mathcal{N}(L)$ on $\{s, t\} \cup L_{\text{odd}} \cup R_{\text{even}}$:
+     - For each $u \in L_{\text{odd}}$: add $s \xrightarrow{p_u} u$.
+     - For each $v \in R_{\text{even}}$: add $v \xrightarrow{p_v} t$.
+     - For each $(u, v) \in L_{\text{odd}} \times R_{\text{even}}$ with $c_u + c_v \in \mathbb{P}$: add $u \xrightarrow{+\infty} v$.
+   - Compute $\alpha_p(G_L) = \sum_{z \in V(L)} p_z - \operatorname{MaxFlow}_{\mathcal{N}(L)}(s, t)$. Check if $\alpha_p(G_L) \ge K$.
+
+#### Step 4: Concrete Trace & Failure-Mode Guard
+
+- **Toy Trace**: Cards at level $\le L$ are $A = (p=5, c=1)$, $B = (p=8, c=1)$, $C = (p=10, c=2)$.
+  - Deduplicating $c=1$ discards $A$ and keeps $B = (p=8, c=1) \in L_{\text{odd}}$ alongside $C = (p=10, c=2) \in R_{\text{even}}$.
+  - Since $1 + 2 = 3 \in \mathbb{P}$, edge $B \xrightarrow{+\infty} C$ exists.
+  - $\operatorname{MinCut}(s, t) = \min(8, 10) = 8$, so $\alpha_p = (8 + 10) - 8 = 10$ (pick card $C$).
+- **Failure-Mode Guard**: Never put $+\infty$ middle arcs with capacity $1$, and never forget to deduplicate $c_i = 1$ before building the network (otherwise two $c_i = 1$ cards both sit in $L_{\text{odd}}$ with no conflict edge between them, allowing the flow model to illegally pick both!).
+::::
+
+---
+
+### `#038` — [Luogu P6268 / SHOI2002] 舞会 (Dance Party)
+
+- **Tier**: `Advanced 2 (Adv-2)` | **Judge URL**: <https://www.luogu.com.cn/problem/P6268>
+- **Constraints**: $N \le 1000$ students ($0, \dots, N-1$), $M \le 2000$ pairs $(u, v)$ who have danced together. Time limit: `1.0s`.
+- **Problem Summary**: At a school dance, $M$ pairs of students have danced together. Every dance pair consists of one boy and one girl (so the underlying graph is guaranteed to be bipartite), but the input **neither reveals which students are boys/girls nor guarantees that pairs are listed as `(boy, girl)`**. Find the maximum number of students who can be invited to a party such that no two invited students have ever danced together.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Naive Directed Matching on Input Pairs Fails"}
+Suppose student $1$ (boy) danced with student $2$ (girl) and student $3$ (girl), and the input lists the pairs as `1 2` and `3 1`. If you naively treat the first column of input as $L$ and the second column as $R$, student $1$ is split into two independent copies on $L$ and $R$, corrupting the matching! How must you preprocess the edges first?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Symmetrization + 2-Coloring into $L \sqcup R$"}
+First add **undirected** edges $u \leftrightarrow v$ for all $M$ input pairs. Then run a BFS/DFS across all connected components to assign each vertex a color $\text{col}[v] \in \{0, 1\}$. Once $V = L \sqcup R$ is partitioned by color, orient every edge from color $0$ ($L$) to color $1$ ($R$) and apply Gallai + König!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Luogu P6268: Dance Party"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+- **Surface Signal**: Maximum Independent Set ($\alpha(G) = N - \nu(G)$) on a bipartite graph where both the vertex partition $V = L \sqcup R$ and the edge orientations in the input file are unstandardized.
+
+#### Step 2: Intermediate Algebraic Representation
+For the underlying undirected bipartite graph $G = (V, E)$, let $x_v \in \{0, 1\}$ indicate whether student $v$ is invited:
+
+$$\alpha(G) = \max_{x \in \{0,1\}^N} \sum_{v=0}^{N-1} x_v \quad \text{s.t.} \quad x_u + x_v \le 1 \quad \forall \{u, v\} \in E.$$
+
+Since $G$ contains no odd cycles, $V$ admits a valid 2-coloring $c : V \to \{0, 1\}$ such that every edge $\{u, v\} \in E$ has $c(u) \ne c(v)$. Defining $L = c^{-1}(0)$ and $R = c^{-1}(1)$ reduces the problem to $\alpha(G) = N - \tau(G) = N - \nu(G)$.
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+1. **Symmetrize & Deduplicate**: For each of the $M$ input pairs $(u, v)$, insert $v$ into `undir_adj[u]` and $u$ into `undir_adj[v]`.
+2. **Component-Wise 2-Coloring**: Initialize `col[0..N-1] = -1`. Loop $i = 0 \dots N-1$: if `col[i] == -1`, set `col[i] = 0` and run BFS/DFS, setting `col[nxt] = col[cur] ^ 1` for every neighbor.
+3. **Build Unit Network $\mathcal{N}$**:
+   - For each $u$ with `col[u] == 0`: add $s \xrightarrow{1} u$, and for each neighbor $v \in \text{undir\_adj}[u]$ (which has `col[v] == 1`), add $u \xrightarrow{1} v$.
+   - For each $v$ with `col[v] == 1`: add $v \xrightarrow{1} t$.
+4. **Solve**: Compute $\nu(G) = \operatorname{MaxFlow}_{\mathcal{N}}(s, t)$ and output $N - \nu(G)$.
+
+#### Step 4: Concrete Trace & Failure-Mode Guard
+
+- **Toy Trace**: $N = 3$ with input edges `(0, 1)` and `(1, 2)`.
+  - If we naively wired $0_L \to 1_R$ and $1_L \to 2_R$, both arcs would be matched independently (`flow = 2`), wrongly outputting $3 - 2 = 1$!
+  - Symmetrizing and 2-coloring assigns $\text{col}[0] = 0, \text{col}[1] = 1, \text{col}[2] = 0$, so $L = \{0, 2\}, R = \{1\}$ with arcs $0 \to 1$ and $2 \to 1$. Now $\nu(G) = 1$, and $\alpha(G) = 3 - 1 = 2$ (invite $\{0, 2\}$).
+- **Failure-Mode Guard**: Always symmetrize the adjacency list before 2-coloring, and remember to loop the 2-coloring seed over all $i \in [0, N-1]$ because $G$ may have multiple disconnected components!
+::::
+
+---
+
+### `#039` — [Luogu P3731 / HAOI2017] 新型城市化 (New Urbanization)
+
+- **Tier**: `Mastery 1 (Mas-1)` | **Judge URL**: <https://www.luogu.com.cn/problem/P3731>
+- **Constraints**: $N \le 10^4$ cities, $M \le 1.5 \cdot 10^5$ non-friendship pairs (or complement edges); the cities can be partitioned into **at most two cliques** (urban clusters). Time limit: `1.0s`.
+- **Problem Summary**: A country has $N$ cities that can be partitioned into two urban clusters (each cluster is a **clique** of mutually connected cities), plus some inter-cluster edges. The government can build **one** new road between a currently unconnected pair of cities. Find **all** candidate missing roads $\{u, v\} \notin E(G)$ whose addition strictly increases the size of the **Maximum Clique** $\omega(G)$ of the country, output in lexicographical order.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Complement Graph Dualization: From 2 Cliques to Bipartite MIS"}
+Finding a Maximum Clique $\omega(G)$ in a general graph is NP-hard, and network flow cannot model cliques directly. Take the **complement graph** $\bar{G} = (V, \bar{E})$ (where $\{u, v\} \in \bar{E} \iff \{u, v\} \notin E(G)$)!
+
+1. Since $V$ is the union of two cliques in $G$, what is the structure of $\bar{G}$?
+2. What does a Maximum Clique in $G$ correspond to in $\bar{G}$?
+3. What does *adding* a missing road $\{u, v\}$ to $G$ correspond to in $\bar{G}$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Critical Edges of Maximum Matching via Residual Tarjan SCC"}
+In the bipartite complement graph $\bar{G} = (L \sqcup R, \bar{E})$, the maximum clique size of $G$ is $\omega(G) = \alpha(\bar{G}) = N - \nu(\bar{G})$. Adding a missing road to $G$ **deletes** an edge $e = (u, v) \in \bar{E}$ from $\bar{G}$, which strictly increases $\alpha(\bar{G})$ **if and only if** deleting $e$ strictly **decreases** the maximum matching $\nu(\bar{G})$!
+
+How do you find all edges $e \in \bar{E}$ that belong to **every** maximum matching of $\bar{G}$ in a single $O(V + \bar{E})$ pass after running Dinic? (Hint: run **Tarjan's Strongly Connected Components (`SCC`)** algorithm on the residual network $G_{f^*}$!)
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Luogu P3731: New Urbanization"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+- **Surface Signal**: The graph $G$ is a union of two cliques $K_A \sqcup K_B$, and we want to identify all non-edges whose addition increases $\omega(G)$ by $1$.
+- **Complement Dualization**:
+  - In the complement graph $\bar{G} = (V, \bar{E})$, there are no edges inside $K_A$ and no edges inside $K_B$, so $\bar{G}$ is **bipartite**!
+  - A clique in $G$ is an **independent set** in $\bar{G}$, so $\omega(G) = \alpha(\bar{G}) = N - \nu(\bar{G})$ by Gallai + König.
+  - Adding a missing road $e$ to $G$ is equivalent to **deleting edge $e \in \bar{E}$ from $\bar{G}$**. Thus $\omega(G \cup \{e\}) = \omega(G) + 1 \iff \nu(\bar{G} \setminus \{e\}) = \nu(\bar{G}) - 1$: edge $e \in \bar{E}$ must an **essential / critical edge** that appears in **every** maximum matching of $\bar{G}$!
+
+#### Step 2: Intermediate Algebraic & Residual Characterization
+Let $f^*$ be an integral maximum flow in the unit bipartite network $\mathcal{N}(\bar{G})$, corresponding to a maximum matching $M^*$ of size $\nu(\bar{G})$. When does an edge $e = (u, v) \in \bar{E}$ ($u \in L, v \in R$) belong to **every** maximum matching of $\bar{G}$?
+
+1. First, $e$ must belong to our current maximum matching $M^*$, i.e., $f^*(u, v) = 1$ (if $f^*(u, v) = 0$, then $M^*$ itself avoids $e$!).
+2. Second, there must **not** exist any other maximum matching $M'$ avoiding $e$. In the symmetric difference $M^* \triangle M'$, any replacement of $(u, v) \in M^*$ while preserving matching size $\nu(\bar{G})$ corresponds to either:
+   - An **alternating cycle** in $G_{f^*} \setminus \{s, t\}$ containing the backward residual arc $v \to u$, OR
+   - An **even-length alternating path** through $s$ or $t$ in $G_{f^*}$ (which, because $s \to u$ and $v \to t$ are saturated and have backward residual arcs $u \to s$ and $t \to v$, closes into a directed cycle through $s$ or $t$ in the full residual graph $G_{f^*}$ containing $v \to u$!).
+   In both cases, an alternative maximum matching avoiding $e = (u, v)$ exists **if and only if** there is a directed residual path from $u$ to $v$ in $G_{f^*}$, which together with the backward residual arc $v \to u$ ($c_f(v, u) = 1 > 0$) puts $u$ and $v$ in the **same Strongly Connected Component (`SCC`)** of $G_{f^*}$!
+
+$$\boxed{e = (u, v) \in \bar{E} \text{ is critical} \iff f^*(u, v) = 1 \ \land \ \operatorname{scc}(u) \ne \operatorname{scc}(v) \text{ in } G_{f^*}.}$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+1. 2-color the complement graph $\bar{G}$ into $L \sqcup R$ (looping over all connected components).
+2. Build the unit network $\mathcal{N}(\bar{G})$ on $\{s, t\} \cup L \cup R$ with $s \xrightarrow{1} u$, $u \xrightarrow{1} v$ ($\forall (u, v) \in \bar{E}$), and $v \xrightarrow{1} t$.
+3. Run Dinic (`Hopcroft–Karp`) in $O((N + |\bar{E}|)\sqrt{N})$ to obtain the residual network $G_{f^*}$.
+4. Run **Tarjan's SCC algorithm** in $O(N + |\bar{E}|)$ on all arcs of $G_{f^*}$ that have positive residual capacity $c_f > 0$ (including $s$ and $t$!).
+5. Collect all original middle arcs $u \to v$ ($u \in L, v \in R$) such that $f^*(u, v) = 1$ (saturated) and $\operatorname{scc}[u] \ne \operatorname{scc}[v]$. Sort pairs $(\min(u,v), \max(u,v))$ and output.
+
+#### Step 4: Concrete Trace & Failure-Mode Guard
+
+- **Toy Trace**: $\bar{G}$ has $L = \{1, 2\}, R = \{3, 4\}$ with edges $(1, 3), (1, 4), (2, 4)$.
+  - Unique maximum matching is $M^* = \{(1, 3), (2, 4)\}$ of size $2$!
+  - In $G_{f^*}$, $1 \to 4$ has $c_f(1, 4) = 1$, $4 \to 2$ has $c_f(4, 2) = 1$, and $3 \to 1$ has $c_f(3, 1) = 1$, but $2$ has no outgoing residual arc to $3$, so there is **no** residual cycle!
+  - Thus $\operatorname{scc}[1] \ne \operatorname{scc}[3]$ and $\operatorname{scc}[2] \ne \operatorname{scc}[4]$: both $(1, 3)$ and $(2, 4)$ are critical!
+- **Failure-Mode Guard**: Only inspect **middle arcs** $(u, v) \in L \times R$ with $f^*(u, v) = 1$ (never source/sink arcs $s \to u$ or $v \to t$), and make sure $s$ and $t$ (along with their residual arcs $s \leftrightarrow u$ and $v \leftrightarrow t$) are **included** in the Tarjan SCC graph so that even-length alternating paths starting at unmatched vertices $U_L$ or $U_R$ properly form cycles through $s$ or $t$!
+::::
+
+---
+
+### `#040` — [CF 1404C] Fixed Point Removal
+
+- **Tier**: `Mastery 2 (Mas-2 — Decoy / Structural Elimination)` | **Judge URL**: <https://codeforces.com/problemset/problem/1404/C>
+- **Constraints**: Array $a_1, \dots, a_N$ ($N \le 3 \cdot 10^5$), $Q \le 3 \cdot 10^5$ offline queries $(x_q, y_q)$ restricting removals to the subarray $[L_q, R_q] = [x_q + 1, N - y_q]$. Time limit: `3.0s`.
+- **Problem Summary**: In a 1-indexed array $a$, you may repeatedly choose an element currently at position $p$ that satisfies $a_p = p$, remove it from the array, and shift all elements to its right one position to the left. For each query $(x_q, y_q)$, the first $x_q$ elements and last $y_q$ elements are nailed down and cannot be removed; find the maximum number of elements that can be removed from the remaining active range $[L_q, R_q] = [x_q + 1, N - y_q]$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Is This in Chapter 5? Recognizing Monotone Precedence Closure"}
+An element originally at index $i$ with value $a_i$ can eventually land at index $a_i$ and be removed **if and only if**:
+
+1. $d_i := i - a_i \ge 0$ (since elements only shift **left**, never right!), and
+2. At least $d_i = i - a_i$ elements in $[L_q, i - 1]$ are removed before $i$!
+
+At $N, Q = 3 \cdot 10^5$, building an explicit dependency DAG or flow network per query is impossible. What monotonicity property holds as we vary the left boundary $L$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — The Critical Left-Boundary Threshold $L_{\max}(i)$ & Fenwick Binary Lifting"}
+Decreasing the left boundary $L$ (allowing more elements on the left to be removed) can **only help** element $i$ become removable! Therefore, for each index $i \in [1, N]$, there is a single maximum threshold $L_{\max}(i) \in [0, i]$ such that element $i$ is removable in $[L, R]$ **if and only if** $L \le L_{\max}(i)$ and $i \le R$. How can you sweep $i = 1 \dots N$ and compute $L_{\max}(i)$ in $O(\log N)$ using a Fenwick tree?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — CF 1404C: Fixed Point Removal"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition & Flow-Elimination)
+
+- **Surface Signal**: Precedence-constrained selection on $[L_q, R_q]$ where element $i$ requires $d_i = i - a_i$ predecessors in $[L_q, i - 1]$ to be selected first.
+- **Why Explicit Graph / Flow Modelling Is Eliminated**:
+  1. First, if a set of elements is removable, removing them in **right-to-left** order of their current fixed points never hurts any element to the right, so the **maximal removable set is unique** (greedy closure)!
+  2. Second, for a fixed $i$, let $C(L, i - 1)$ be the number of removable elements in $[L, i - 1]$ when the left barrier is $L$. As $L$ decreases from $i$ down to $1$, $C(L, i - 1)$ is **monotonically non-increasing in $L$**. Thus the feasibility condition $C(L, i - 1) \ge i - a_i$ holds on a contiguous prefix of left boundaries $L \in [1, L_{\max}(i)]$.
+
+#### Step 2: Intermediate Algebraic Representation
+For each index $i \in \{1, \dots, N\}$, define its critical left-barrier threshold $L_{\max}(i) \in \{0, 1, \dots, i\}$ recursively:
+
+$$L_{\max}(i) = \begin{cases} 0 & \text{if } i - a_i < 0 \text{ or } \sum_{j=1}^{i-1} \mathbb{I}[L_{\max}(j) \ge 1] < i - a_i, \\[6pt] \max \left\{ L \in [1, i] : \sum_{j=1}^{i-1} \mathbb{I}[L_{\max}(j) \ge L] \ge i - a_i \right\} & \text{otherwise.} \end{cases}$$
+
+Once $L_{\max}(1), \dots, L_{\max}(N)$ are known, a query $[L_q, R_q]$ simply asks for the 2D orthogonal range count:
+
+$$\text{Ans}(L_q, R_q) = \sum_{i = L_q}^{R_q} \mathbb{I}[L_{\max}(i) \ge L_q] = \sum_{i = 1}^{R_q} \mathbb{I}[L_{\max}(i) \ge L_q] \quad (\text{since } L_{\max}(i) \le i < L_q \text{ for } i < L_q).$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Offline Sweep + Fenwick Tree Binary Lifting)
+
+1. Group all queries $(L_q, R_q)$ by their right endpoint $R_q$.
+2. Maintain a Fenwick tree (Binary Indexed Tree) `bit[1..N]` where after processing prefix $1 \dots i$, `query_suffix(L)` returns the count of $j \le i$ with $L_{\max}(j) \ge L$ (implemented as a prefix Fenwick tree by storing `total_inserted - bit.sum(L - 1)`).
+3. Sweep $i = 1 \dots N$:
+   - Let $d_i = i - a_i$. If $d_i \ge 0$ and `total_inserted >= d_i`:
+     - Use **binary lifting** on the Fenwick tree in $O(\log N)$ time to find the largest index $pos \le i$ such that `bit.sum(pos - 1) <= total_inserted - d_i`. That $pos$ is $L_{\max}(i)$!
+     - Insert $L_{\max}(i)$ into the Fenwick tree (`bit.add(L_max[i], 1)`, `total_inserted++`).
+   - For every query $(L_q, R_q)$ with $R_q = i$, the answer is `total_inserted - bit.sum(L_q - 1)`.
+
+#### Step 4: Concrete Trace & Failure-Mode Guard
+
+- **Toy Trace**: $a = [2, 1, 2]$ ($N = 3$).
+  - $i = 1$: $d_1 = 1 - 2 = -1 < 0 \implies L_{\max}(1) = 0$ (not inserted).
+  - $i = 2$: $d_2 = 2 - 1 = 1 > \text{total\_inserted} = 0 \implies L_{\max}(2) = 0$.
+  - Now suppose instead $a = [1, 1, 2]$:
+    - $i = 1$: $d_1 = 1 - 1 = 0 \implies L_{\max}(1) = 1$ (inserted at $1$).
+    - $i = 2$: $d_2 = 2 - 1 = 1 \implies$ needs $1$ prior removal; $L_{\max}(1) = 1 \ge 1 \implies L_{\max}(2) = 1$ (inserted at $1$).
+    - $i = 3$: $d_3 = 3 - 2 = 1 \implies$ at $L = 2$, $L_{\max}(2) = 1 < 2$ so $0$ removals; at $L = 1$, $2 \ge 1$ removals $\implies L_{\max}(3) = 1$.
+- **Failure-Mode Guard**: Never insert $L_{\max}(i) = 0$ into the Fenwick tree (otherwise `total_inserted` counts unremovable elements!). Always guard $d_i = i - a_i \ge 0$ AND $\min(L_{\max}(i), i)$ so $L_{\max}(i)$ never exceeds $i$. Total complexity: $O((N + Q)\log N)$ time and $O(N + Q)$ space.
+::::
+
+---
+
+## 7. Chapter 5 Verification Checklist, Quarantined Templates & Failure Modes
+
+### 7.1 Pre-Submission 5-Point Verification Checklist
+
+Before submitting any Bipartite Matching, König Vertex Cover, or Maximum Independent Set solution in a contest, run through this 5-point verification checklist:
+
+1. **Have you proved the conflict graph is bipartite (`FM-07`)?**
+   - Check for hidden odd cycles! In prime-sum conflicts (`#037`), $1 + 1 = 2$ creates a clique among $1$s; deduplicate to at most one $c_i = 1$ card first.
+   - If the bipartition $(L, R)$ is not given in the input (`#036`, `#038`), **symmetrize** the edges and run a 2-coloring BFS across all connected components before building the flow network.
+2. **Did you use capacity $+\infty$ on middle arcs $u \to v$ when extracting cuts or solving weighted problems?**
+   - Setting $c(u, v) = 1$ is only valid when $w \equiv 1$ and you only need $\nu(G)$ or the matched pairs $M^*$. Whenever you extract `MVC`/`MIS` via $S_{\min}$ or have vertex weights $w_u, w_v$, middle arcs **must** have capacity $+\infty$.
+3. **Did you seed König's alternating DFS/BFS strictly from unmatched left vertices $U_L$ (`FM-05`)?**
+   - In residual terms, $s \to u$ has $c_f(s, u) > 0 \iff u \in U_L$. Starting from matched left vertices or forgetting to follow matched arcs backward from $R \to L$ corrupts $Z$ and outputs an invalid cover.
+4. **Did you apply Bipartite Variable Inversion in the right direction when reading off `MVC` and `MIS`?**
+   - $\operatorname{MVC} = (L \setminus S_{\min}) \cup (R \cap S_{\min})$ (severed source arcs $s \to u$ plus severed sink arcs $v \to t$).
+   - $\operatorname{MIS} = (L \cap S_{\min}) \cup (R \setminus S_{\min})$ (intact source arcs $s \to u$ plus intact sink arcs $v \to t$).
+5. **Did you check the complexity regime ($O(E\sqrt{V})$ vs. $O(VE)$ vs. Timestamp Reset)?**
+   - When $V \sim 10^4, E \sim 10^5$ (especially inside a binary search, `#033`), use Hopcroft–Karp / unit Dinic in $O(E\sqrt{V})$.
+   - When running sequential Kuhn on a Transversal Matroid (`#034`), never call `memset(vis, 0, sizeof(vis))` inside the loop; use `vis[u] == timer` or DSU.
+
+### 7.2 Quarantined Pure-Template Benchmarks & Multilingual Reference Index
+
+In accordance with our **Zero Template Bloat Mandate**, pure textbook verification problems are quarantined from the main 8-problem ladder and catalogued below for rapid implementation testing:
+
+| Problem / Source | Category | Reason for Quarantine / Pedagogical Role |
+| :--- | :--- | :--- |
+| **Library Checker — Matching on Bipartite Graph** (`judge.yosupo.jp/problem/bipartitematching`) | Pure Solver Verification | Naked bipartite graph with $L, R, M \le 2 \cdot 10^5$; tests $O(E\sqrt{V})$ Hopcroft–Karp / Dinic speed with zero modelling. |
+| **Luogu P3386 — 【模板】二分图最大匹配** | Pure Solver Verification | Naked bipartite matching template ($N, M \le 500, E \le 5 \cdot 10^4$). |
+| **POJ 3041 — Asteroids** | Direct König MVC | Direct unweighted Row $\to$ Column `MVC` without constructive set recovery ( strictly superseded by `#035` UVA 11419 SAM I AM). |
+| **Luogu P2763 — 试题库问题** (`网络流 24 题`) | Direct Bounded Assignment | Direct $s \xrightarrow{k_j} \text{Category}_j \xrightarrow{1} \text{Problem}_i \xrightarrow{1} t$ capacity assignment with no non-trivial algebraic compilation. |
+| **Luogu P3355 — 骑士共存问题** (`网络流 24 题`) | Direct Parity Grid MIS | Chessboard $(r+c) \bmod 2$ bipartite `MIS` on knight attacks. |
+
+**Key Multilingual References (`[EN]` / `[ZH]` / `[JA]`)**:
+
+- **`[EN]`** D. König (1931), *"Gráfok és mátrixok"*, Matematikai és Fizikai Lapok 38: 116–119; E. Egerváry (1931), *"Matrixok kombinatorius tulajdonságairól"*, Matematikai és Fizikai Lapok 38: 16–28; T. Gallai (1959), *"Über extreme Punkt- und Kantenmengen"*, Annales Universitatis Scientiarum Budapestinensis.
+- **`[EN]`** A. Schrijver (2003), *Combinatorial Optimization: Polyhedra and Efficiency*, Vol. A, Chapters 16–19 (Total Unimodularity, Bipartite Matching, König–Egerváry, and Gallai's Identities).
+- **`[ZH]`** 胡伯涛 (Amber, 2007), 《最小割模型在信息学竞赛中的应用》 (*Applications of Minimum Cut Models in OI*), 2007 国家集训队论文 — foundational Chinese treatise introducing Bipartite Variable Inversion, $+\infty$ middle-arc immunities, and residual `MWVC`/`MWIS` extraction.
+- **`[JA]`** `noshi91`, `maspypy`, and `tatyam`, *二部グラフの最大マッチング・最小点被覆・最大独立集合 (Maximum Matching, Minimum Vertex Cover, and Maximum Independent Set on Bipartite Graphs)* — Japanese competitive programming monographs connecting König's alternating reachability set $Z$ directly to `燃やす埋める` (`Burn-or-Bury`) $s$-$t$ cut compilation.
+
+---
+
+## 8. Chapter Revision Summary
+
+- **Bipartite Variable Inversion & Cut Compilation**: Encoding $x_u = 1 - s_u$ on $L$ and $y_v = s_v$ on $R$ compiles the covering disjunction $x_u + y_v \ge 1$ into a directed middle arc $u \xrightarrow{+\infty} v$ whose cut term $+\infty \cdot s_u(1 - s_v)$ forbids the uncovered state $(x_u = 0, y_v = 0)$.
+- **König–Egerváry Theorem & Total Unimodularity**: Because the incidence matrix of a bipartite graph is Totally Unimodular, LP duality holds over the integers with zero integrality gap: $\tau(G) = \nu(G)$ and $\tau_w(G) = \operatorname{MinCut}_{\mathcal{N}}(s, t) = \operatorname{MaxFlow}_{\mathcal{N}}(s, t)$.
+- **Gallai's Dual Identities**: In all graphs, $\alpha(G) + \tau(G) = |V|$ and (without isolated vertices) $\nu(G) + \rho(G) = |V|$. In bipartite graphs, $\tau(G) = \nu(G)$ locks all four invariants together: $\alpha(G) = \rho(G) = |V| - \nu(G)$.
+- **Constructive Set Recovery in $O(V + E)$**: The residual source-reachable set $Z = S_{\min} \setminus \{s\}$ equals the set of vertices reachable from unmatched left vertices $U_L$ via alternating paths, yielding $\operatorname{MVC} = (L \setminus Z) \cup (R \cap Z)$ and $\operatorname{MIS} = (L \cap Z) \cup (R \setminus Z)$.
+- **Looking Ahead to Chapter 6**: In Chapter 6, we extend alternating reachability from $U_L$ and $U_R$ to the full **Dulmage–Mendelsohn (`DM`) Canonical Decomposition** ($V = V^+ \sqcup V^- \sqcup V^0$), unlocking linear-time winning-strategy analysis for Two-Player Impartial Bipartite Walk Games and weighted poset / grid models.

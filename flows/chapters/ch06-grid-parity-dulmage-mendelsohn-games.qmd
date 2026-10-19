@@ -1,0 +1,1086 @@
+---
+title: "Chapter 6 — Hidden Bipartitions, Dulmage–Mendelsohn Decomposition, and Matching Games"
+subtitle: "From Non-Graph Parity Invariants and Obstacle-Split Grids to Canonical Matching Decomposition and Impartial Token Walk Games"
+---
+
+## Prerequisites & Learning Objectives
+
+::: {.callout-note title="Prerequisites"}
+Before studying this chapter, you should be fluent in:
+
+- **Chapter 1–2 (Max-Flow Min-Cut Duality & Residual Graphs)**: Forward vs. backward residual arcs, $s$-$t$ cut reachability $V_S$ and $V_T^{\text{rev}}$, and Tarjan's Strongly Connected Components (SCC) algorithm on residual graphs.
+- **Chapter 5 (Bipartite Matching, König's Theorem & Minimum Vertex Cover)**: Unit-capacity bipartite networks $s \to L \to R \to t$, Hopcroft–Karp $O(E\sqrt{V})$ complexity, König's identity $\tau(G) = \nu(G)$, and Maximum Weight Independent Set $\alpha_w(G) = \sum_{v \in V} w_v - \text{MinCut}(s, t)$.
+:::
+
+::: {.callout-tip title="Learning Objectives"}
+By the end of this chapter, you will be able to:
+
+1. **Compile Non-Graph Problems into Bipartite Networks**: Uncover hidden bipartitions in 2D/3D grids, arithmetic conflict sets, and geometric point clouds using chessboard parity $(r+c) \bmod 2$, leaper parity, 2-adic Euclidean distance valuations (`AtCoder AGC 025 D`), prime-sum parity (`CF 808 F`), popcount parity $\operatorname{popcount}(x) \bmod 2$, maximal obstacle-split strips (`POJ 2226`, `[HEOI2016] 游戏`, `ABC 274 G`), and shared-border dualization (`CF 1404 E`).
+2. **Construct the Canonical Dulmage–Mendelsohn (`DM`) Decomposition**: Partition any bipartite graph into its coarse $V_E \sqcup V_O \sqcup V_U$ vertex blocks (or six-block oriented refinement $L_1 \sqcup L_0 \sqcup L_2$ and $R_1 \sqcup R_0 \sqcup R_2$) and fine SCC blocks in $O(V + E)$ time after a single maximum matching run.
+3. **Classify Vertices and Edges Across All Maximum Matchings**: Determine in $O(V + E)$ time which vertices are *essential* (in every maximum matching) vs. *avoidable* (omitted by at least one maximum matching), and which edges are *mandatory/$\nu$-critical* (`[HAOI2017] 新型城市化`), *admissible*, or *forbidden*.
+4. **Solve Impartial Token Walk Games on Bipartite Graphs**: Prove and apply the theorem that a starting vertex $v_0$ is winning for the first mover if and only if $v_0 \in V_O \cup V_U$ belongs to **every** maximum matching (`[JSOI2009] 游戏`, `[NOI2011] 兔兔与蛋蛋游戏`), while avoiding the $O(V \cdot E\sqrt{V})$ per-vertex rematching TLE trap.
+:::
+
+---
+
+## 1. Motivation: Finding Bipartite Structure in Grids, Number Theory, and Impartial Games
+
+In Chapter 5, the bipartite conflict or incidence graph $G = (L \sqcup R, E)$ was handed to us explicitly, or emerged directly from a two-sided matching narrative (workers vs. tasks, boys vs. girls). In advanced competitive programming, however, **the hardest bipartite matching problems never mention a bipartite graph in the problem statement**. Instead, they present:
+
+- **A geometric or grid packing puzzle**: *"Place the maximum number of non-attacking knights or bombs on a board with walls"* (`Luogu P3355`, `[HEOI2016] 游戏`), *"Tile all black cells with the minimum number of $1 \times k$ or $k \times 1$ bricks"* (`CF 1404 E`), or *"Select $N^2$ grid points from a $2N \times 2N$ lattice so that no two selected points lie at Euclidean distance $\sqrt{D_1}$ or $\sqrt{D_2}$"* (`AGC 025 D`).
+- **An arithmetic subset-selection problem**: *"Choose a maximum-weight subset of integers such that no two chosen integers sum to a prime number"* (`CF 808 F`) or *"differ in a single bit"* (Hamming cube games).
+- **A universal quantifier over all optimal matchings or an impartial two-player game**: *"Which edges, if deleted, strictly shrink the maximum matching?"* (`[HAOI2017] 新型城市化`), or *"Two players alternately slide a token or blank tile across a grid to unvisited squares; find every winning starting square or every blunder in a recorded game log"* (`[JSOI2009] 游戏`, `[NOI2011] 兔兔与蛋蛋游戏`).
+
+On general graphs, Maximum Independent Set (`MIS`) is NP-hard, and testing whether a vertex belongs to every maximum matching or whether a game position is winning requires Edmonds' Blossom algorithm and the Gallai–Edmonds decomposition. Yet whenever a hidden invariant forces every conflict edge to cross a binary partition $V = L \sqcup R$, or splits each 2D constraint into a rank-2 incidence between a horizontal object and a vertical object, the problem collapses into polynomial time.
+
+Moreover, once a bipartite graph is solved via Dinic or Hopcroft–Karp, its residual network $G_{f^*}$ encodes **every** maximum matching and **every** minimum vertex cover simultaneously. The **Dulmage–Mendelsohn (`DM`) Decomposition** (Dulmage & Mendelsohn, 1958; Gallai, 1963) extracts this complete structural map in a single $O(V + E)$ breadth-first search and Tarjan SCC pass—turning quantifier queries and impartial game analyses into linear-time post-processing.
+
+---
+
+## 2. The Hidden Bipartition Compiler: Chessboard Parity, Prime Sums, Popcount, and Obstacle-Split Segments
+
+To adhere to the **Zero Magic Gadgets Mandate**, we first systematize how non-graph problem statements compile into bipartite graphs $G = (L \sqcup R, E)$ before any flow network is drawn.
+
+### 2.1 Step 1 — Non-Graph Diagnostic Signal (Recognition)
+
+Whenever a problem asks to maximize selected items without pairwise conflicts (Independent Set), minimize covering primitives (Vertex Cover), or pack non-overlapping pairs (Matching) under $N, M \le 200$ (or $V \le 5 \cdot 10^4$), test for **two canonical bipartite signatures**:
+
+1. **Signature A — Parity-Flipping Binary Conflicts (Vertices $=$ Elements, Edges $=$ Conflicts)**:
+   Every forbidden pair $\{u, v\} \in E$ changes a binary valuation $\phi: V \to \{0, 1\}$, i.e., $\phi(u) \ne \phi(v)$. Because no edge can connect two vertices of the same color $\phi$, odd cycles are impossible and $G$ is bipartite with $L = \phi^{-1}(0)$ and $R = \phi^{-1}(1)$.
+2. **Signature B — Orthogonal Rank-2 Incidence (Edges $=$ Grid Cells, Vertices $=$ Maximal Strips)**:
+   Every target cell or choice $(r, c)$ lies at the intersection of **exactly two** covering primitives—one horizontal ($H \in L$) and one vertical ($V \in R$).
+
+```
++---------------------------------------------------------------------------------------------------+
+|                   THE HIDDEN BIPARTITION COMPILER: TWO CANONICAL PIPELINES                        |
+|                                                                                                   |
+|  PIPELINE A: PARITY-FLIPPING CONFLICT GRAPH        PIPELINE B: ORTHOGONAL STRIP INCIDENCE         |
+|  (Vertices = Objects, Edges = Forbidden Pairs)     (Vertices = Maximal Strips, Edges = Cells)     |
+|                                                                                                   |
+|   * Grid step / Knight jump: (r + c) mod 2          * Standard Grid: Row r in L, Col c in R       |
+|   * Euclidean dist D = 4^k m: 2-adic coloring       * Hard walls '#': Split rows/cols at '#'      |
+|   * Prime sum a_i + a_j in P: a_i mod 2               into maximal segments H_a in L, V_b in R    |
+|     (Deduplicate 1 + 1 = 2 first!)                  * Soft obstacles 'x': Do NOT split strips,    |
+|   * Bit-flip / Hamming dist: popcount(x) mod 2        but omit edge (H_a, V_b) at 'x'!            |
+|   * Shared-border bricks: Horiz in L, Vert in R     * Discretized 10^9 rects: Elementary strips   |
+|                                                                                                   |
+|   Target: Bipartite MIS alpha(G) = |V| - nu(G)      Target: Max Matching nu(G) or MVC tau(G)      |
++---------------------------------------------------------------------------------------------------+
+```
+
+---
+
+### 2.2 Step 2 & Step 3 — Algebraic Parity & 2-Adic Valuation Colorings
+
+Suppose we must choose a maximum-weight conflict-free subset $I \subseteq V$, modeled by indicator variables $x_u \in \{0, 1\}$ with pairwise conflict constraints $x_u + x_v \le 1$ for $(u, v) \in E$. To compile this into a bipartite minimum cut (Chapter 5), we must exhibit an explicit 2-coloring $\phi: V \to \{0, 1\}$ such that $(u, v) \in E \implies \phi(u) \ne \phi(v)$.
+
+#### 1. Chessboard Parity $(r + c) \bmod 2$ and Generalized $(p, q)$-Leapers
+On a 2D integer grid, let a move vector be $(\Delta r, \Delta c)$.
+
+- **Orthogonal Grid Steps ($|\Delta r| + |\Delta c| = 1$)**: Every step changes $r + c$ by $\pm 1$, flipping $\phi(r, c) = (r + c) \bmod 2$. Thus any subgraph of the 4-connected grid is bipartite.
+- **Standard Knight Moves ($\{|\Delta r|, |\Delta c|\} = \{1, 2\}$, `Luogu P3355`)**: Since $\pm 1 \pm 2 \in \{\pm 1, \pm 3\}$ is always odd, $\Delta(r + c) \equiv 1 \pmod 2$. Every knight attack connects a Black square ($\phi = 1$) to a White square ($\phi = 0$).
+- **Generalized $(p, q)$-Leapers (`Luogu P5030 — Giraffe Placement`)**: Suppose pieces jump by $(\pm p, \pm q)$ or $(\pm q, \pm p)$. Let $g = \gcd(p, q)$:
+  - First decouple the grid into $g^2$ independent sublattices by residue classes $(r \bmod g, c \bmod g)$, replacing $(r, c) \gets (\lfloor r/g \rfloor, \lfloor c/g \rfloor)$ and $(p', q') = (p/g, q/g)$ with $\gcd(p', q') = 1$.
+  - **Case 1 ($p' + q'$ is odd)**: One of $p', q'$ is odd and the other is even. Then $\Delta(r' + c') \equiv p' + q' \equiv 1 \pmod 2$, so $\phi(r', c') = (r' + c') \bmod 2$ is a valid 2-coloring!
+  - **Case 2 ($p'$ and $q'$ are both odd, e.g., $(1, 3)$-Giraffes in `Luogu P5030`)**: Here $p' + q'$ is even, so chessboard coloring $(r' + c') \bmod 2$ **fails** (every jump stays on the same chessboard color!). However, because $\Delta r' \in \{\pm p', \pm q'\}$ is **always odd**, the row parity $\phi(r', c') = r' \bmod 2$ (or column parity $c' \bmod 2$) strictly flips on every jump!
+
+#### 2. Two-Grid-Coloring at Euclidean Distances $D_1, D_2$ via 2-Adic Valuation (`AtCoder AGC 025 D`)
+In **`AtCoder AGC 025 D — Choosing Points`**, we are given a $2N \times 2N$ grid of $4N^2$ points ($N \le 300$) and two squared distances $D_1, D_2 \le 2 \cdot 10^5$. We must select $N^2$ points such that no two selected points lie at squared Euclidean distance $D_1$ or $D_2$. Why does no flow solver even need to be called? Because **every Euclidean distance graph on $\mathbb{Z}^2$ is bipartite**!
+
+::: {#thm-lattice-distance-bipartite}
+### Theorem 2.1 (Universal Bipartiteness of Lattice Distance Graphs $G_D$)
+For any integer $D \ge 1$, let $G_D = (\mathbb{Z}^2, E_D)$ have an edge between $\mathbf{p} = (x_1, y_1)$ and $\mathbf{q} = (x_2, y_2)$ if and only if $(x_1 - x_2)^2 + (y_1 - y_2)^2 = D$. Then $G_D$ is bipartite, and an explicit $O(1)$-time 2-coloring $\phi_D: \mathbb{Z}^2 \to \{0, 1\}$ is constructed from the 2-adic valuation of $D$:
+Write $D = 4^k m$ where $k \ge 0$ and $4 \nmid m$ (by repeatedly dividing $D$ by $4$ while $D \equiv 0 \pmod 4$). Define rescaled coordinates $(x', y') = (\lfloor x / 2^k \rfloor, \lfloor y / 2^k \rfloor)$. Then:
+
+$$
+\phi_D(x, y) = \begin{cases}
+(x' + y') \bmod 2 & \text{if } m \equiv 1 \text{ or } 3 \pmod 4 \quad (m \text{ is odd}), \\
+x' \bmod 2 & \text{if } m \equiv 2 \pmod 4.
+\end{cases}
+$$
+:::
+
+::: {.proof}
+Let $\Delta x = x_1 - x_2$ and $\Delta y = y_1 - y_2$ satisfy $(\Delta x)^2 + (\Delta y)^2 = D = 4^k m$.
+Recall that for any integer $z$, $z^2 \equiv 0 \pmod 4$ if $z$ is even, and $z^2 \equiv 1 \pmod 4$ if $z$ is odd.
+If $k \ge 1$, then $(\Delta x)^2 + (\Delta y)^2 \equiv 0 \pmod 4$. Since the sum of two values in $\{0, 1\}$ is $0 \pmod 4$ only when both are $0$, both $\Delta x$ and $\Delta y$ must be even. Dividing by $2$ gives $(\Delta x / 2)^2 + (\Delta y / 2)^2 = 4^{k-1} m$. By induction on $k$, both $\Delta x$ and $\Delta y$ are multiples of $2^k$!
+
+Consequently, any two points $\mathbf{p}, \mathbf{q}$ connected by an edge in $G_D$ satisfy $x_1 \equiv x_2 \pmod{2^k}$ and $y_1 \equiv y_2 \pmod{2^k}$, meaning their rescaled differences $\Delta x' = \Delta x / 2^k = x'_1 - x'_2$ and $\Delta y' = \Delta y / 2^k = y'_1 - y'_2$ are exact integers satisfying $(\Delta x')^2 + (\Delta y')^2 = m$ with $4 \nmid m$:
+
+- **Case 1 ($m \equiv 1, 3 \pmod 4$, i.e., $m$ is odd)**: Since $(\Delta x')^2 + (\Delta y')^2 = m$ is odd, one of $\Delta x', \Delta y'$ is odd and the other is even. Thus $\Delta x' + \Delta y' = (x'_1 + y'_1) - (x'_2 + y'_2)$ is odd, so $\phi_D(x_1, y_1) \ne \phi_D(x_2, y_2)$.
+- **Case 2 ($m \equiv 2 \pmod 4$)**: Since $(\Delta x')^2 + (\Delta y')^2 \equiv 2 \pmod 4$, both $(\Delta x')^2 \equiv 1 \pmod 4$ and $(\Delta y')^2 \equiv 1 \pmod 4$. Hence $\Delta x' = x'_1 - x'_2$ is odd, so $x'_1 \bmod 2 \ne x'_2 \bmod 2$ and $\phi_D(x_1, y_1) \ne \phi_D(x_2, y_2)$. $\square$
+:::
+
+In `AGC 025 D`, assigning each of the $4N^2$ grid points the combined 4-color label $c(x, y) = (\phi_{D_1}(x, y), \phi_{D_2}(x, y)) \in \{0, 1\}^2$ partitions the $4N^2$ vertices into $4$ color classes, each of which is an independent set in $G_{D_1} \cup G_{D_2}$. By the Pigeonhole Principle, the largest color class has size $\ge 4N^2 / 4 = N^2$, solving the problem in $O(N^2)$ time!
+
+#### 3. Prime-Sum Parity (`CF 510 E`, `CF 808 F`) & Popcount / Arithmetic Parities
+When conflicts arise from number-theoretic or bitwise predicates on integers, three universal bipartitions recur across contests:
+
+1. **Prime Sums $a_i + a_j \in \mathbb{P}$ (`CF 510 E — Fox And Dinner`, `CF 808 F — Card Game`)**:
+   Every prime number $p > 2$ is **odd**. Since $a_i + a_j$ is odd if and only if one number is odd and the other is even, all prime-sum edges with $a_i + a_j > 2$ strictly cross the parity bipartition $L = \{i : a_i \text{ is odd}\}$ and $R = \{j : a_j \text{ is even}\}$.
+   - **The `1 + 1 = 2` Clique Trap**: The number $2$ is the **unique even prime**! For positive integers $a_i, a_j \ge 1$, $a_i + a_j = 2 \iff a_i = a_j = 1$. Thus multiple `1`s in the input form a complete clique inside $L$ (destroying bipartiteness!). In Maximum Independent Set problems (`CF 808 F`), you can select **at most one `1`**—so simply discard all `1`s except the single `1` with the maximum weight/power before building the bipartite graph!
+2. **Popcount Parity $\operatorname{popcount}(x) \bmod 2$ (Hamming Cube $Q_d$ & Bit-Flip Games)**:
+   If two bitmasks $x, y \in \{0, 1\}^d$ are adjacent whenever they differ in an odd number of bits ($\operatorname{popcount}(x \oplus y) \equiv 1 \pmod 2$, such as single-bit flips $x \oplus y = 2^k$), then since $\operatorname{popcount}(x \oplus y) \equiv \operatorname{popcount}(x) + \operatorname{popcount}(y) \pmod 2$, coloring by $\phi(x) = \operatorname{popcount}(x) \bmod 2$ makes the graph bipartite.
+3. **Power-of-2 Sums $a_i + a_j = 2^k$ & Primitive Pythagorean Pairs ($a_i^2 + a_j^2 = c^2, \gcd(a_i, a_j) = 1$)**:
+   - For primitive Pythagorean legs, two odd numbers satisfy $a_i^2 + a_j^2 \equiv 1 + 1 = 2 \pmod 4$ (never a square $c^2$), and two even numbers violate $\gcd(a_i, a_j) = 1$; thus $\phi(a_i) = a_i \bmod 2$ is a valid bipartition.
+   - For distinct positive integers with $a_i + a_j = 2^k$, every integer $y$ has at most one smaller neighbor $x = 2^{\lfloor \log_2 y \rfloor + 1} - y < y$, so the conflict graph on distinct integers is a **forest** (hence bipartite, 2-colorable via $v_2(a_i)$ and $((a_i / 2^{v_2(a_i)}) - 1)/2 \bmod 2$).
+
+---
+
+### 2.3 Step 2 & Step 3 — Obstacle-Split Maximal Segments & Boundary Dualization
+
+When a 2D grid problem does not involve parity jumps, it almost always compiles via **Maximal Strip Incidence** or **Shared-Border Dualization**.
+
+#### 1. Obstacle-Split Maximal Horizontal & Vertical Segments (`POJ 2226`, `[HEOI2016] 游戏`, `ABC 274 G`)
+Suppose a grid of size $N \times M$ contains three types of cells:
+
+- **Target / Empty Cells (`.` or `*`)**: Where rooks/bombs can be placed, or mud must be covered by planks/cameras.
+- **Soft Obstacles (`x`)**: Cannot hold a bomb or do not need to be covered, **but blasts/planks/camera rays pass straight through them**.
+- **Hard Obstacles (`#`)**: Impenetrable walls that **block** blasts, planks, or camera rays.
+
+**Step 2 (Algebraic Formulation)**:
+A hard wall `#` cuts a row or column into independent line-of-sight intervals. Define:
+
+- $\mathcal{H} = \{H_1, H_2, \dots, H_p\}$: the set of **maximal contiguous `#`-free horizontal segments** across all rows (each segment is broken only by `#` or the grid boundary, **never** by `x`).
+- $\mathcal{V} = \{V_1, V_2, \dots, V_q\}$: the set of **maximal contiguous `#`-free vertical segments** across all columns.
+
+Every target cell $(r, c)$ (where `grid[r][c]` is a target cell, excluding both `#` and `x`) belongs to a unique horizontal segment $H(r, c) \in \mathcal{H}$ and a unique vertical segment $V(r, c) \in \mathcal{V}$:
+
+- **Pack Non-Attacking Bombs (`[HEOI2016] 游戏`, Problem `#041`)**: Select maximum target cells $(r, c)$ such that each $H_a \in \mathcal{H}$ and each $V_b \in \mathcal{V}$ contains at most one bomb $\iff$ **Maximum Bipartite Matching $\nu(G)$** where each target cell $(r, c)$ is a directed edge $H(r, c) \to V(r, c)$!
+- **Cover All Target Cells with Minimum Planks / Cameras (`POJ 2226 — Muddy Fields`, `AtCoder ABC 274 G — Security Camera 3`)**: Assign binary indicators $x_a \in \{0, 1\}$ to each horizontal strip $H_a \in \mathcal{H}$ and $y_b \in \{0, 1\}$ to each vertical strip $V_b \in \mathcal{V}$ such that every target cell $(r, c)$ satisfies $x_{H(r,c)} + y_{V(r,c)} \ge 1$. By König's Theorem, $\min \sum x_a + \sum y_b = \tau(G) = \nu(G)$!
+
+#### 2. Shared-Border Dualization (`CF 1404 E — Bricks`)
+In **`CF 1404 E — Bricks`**, we must partition all black `#` cells of an $N \times M$ grid ($N, M \le 200$) into the **minimum number of non-overlapping $1 \times k$ or $k \times 1$ bricks**.
+
+**Step 2 (Algebraic Formulation via Unit-Border Merges)**:
+Start with every black `#` cell as an isolated $1 \times 1$ brick, giving $|\#|$ initial bricks. Whenever we merge two adjacent `#` cells across their shared unit grid border, the total number of bricks decreases by $1$:
+
+$$
+\min (\text{Number of Bricks}) = |\#| - \max (\text{Number of Valid Unit-Border Merges}).
+$$
+
+Let $L$ be the set of all **horizontal unit merges** $h_{r,c}$ (merging `#` at $(r, c)$ with `#` at $(r, c+1)$), and let $R$ be the set of all **vertical unit merges** $v_{r,c}$ (merging `#` at $(r, c)$ with `#` at $(r+1, c)$).
+When is a subset of merges valid (forming only $1 \times k$ and $k \times 1$ bricks)? **If and only if no black cell $(r, c)$ participates in both a horizontal merge and a vertical merge** (which would create a forbidden L-tromino corner)!
+
+**Step 3 (Graph Compilation)**:
+Create one left vertex for each $h_{r,c} \in L$ and one right vertex for each $v_{r,c} \in R$. For each black cell $(r, c)$, add a conflict edge between every horizontal merge touching $(r, c)$ ($h_{r,c-1}$ and $h_{r,c}$) and every vertical merge touching $(r, c)$ ($v_{r-1,c}$ and $v_{r,c}$). By König's Theorem, the maximum number of non-conflicting merges is the Bipartite Maximum Independent Set $\alpha(G) = |L| + |R| - \nu(G)$, so the minimum number of bricks is:
+
+$$
+\text{Ans} = |\#| - \big( |L| + |R| - \nu(G) \big).
+$$
+
+---
+
+### 2.4 Step 4 — Hand-Checkable Toy Trace & Broken-Gadget Counterexamples
+
+Let us trace **`CF 1404 E — Bricks`** on a $2 \times 2$ L-shaped black tromino: cells $(1, 1), (1, 2), (2, 1)$ are `#` ($|\#| = 3$), and $(2, 2)$ is `.`.
+
+- There is $|L| = 1$ horizontal merge $h_{1,1}$ (joining $(1,1) \leftrightarrow (1,2)$) and $|R| = 1$ vertical merge $v_{1,1}$ (joining $(1,1) \leftrightarrow (2,1)$).
+- Both $h_{1,1}$ and $v_{1,1}$ touch corner cell $(1, 1)$, inducing the single conflict edge $(h_{1,1}, v_{1,1})$.
+- Thus $\nu(G) = 1$, $\alpha(G) = 1 + 1 - 1 = 1$, and $\min(\text{Bricks}) = 3 - 1 = 2$ (either one $1 \times 2$ brick plus one $1 \times 1$ brick, or one $2 \times 1$ brick plus one $1 \times 1$ brick).
+
+::: {.callout-warning title="Broken-Gadget Counterexamples FM-06A — Three Classic Grid Compilation Traps"}
+1. **Trap 1: Splitting Strips at Soft Obstacles `x` or Adding Edges at `x` (`[HEOI2016] 游戏`)**:
+   If you split horizontal/vertical segments at soft obstacles `x`, two bombs placed on the same row on opposite sides of `x` get assigned different horizontal IDs $H_1 \ne H_2$ and blast each other! Conversely, if you add an edge $(H(r,c), V(r,c))$ when `(r, c) == 'x'`, Dinic will place a bomb on a forbidden soft obstacle. **Rule**: Hard walls `#` split segment IDs; soft walls `x` neither split segment IDs nor generate edges.
+2. **Trap 2: Making Cells Vertices Instead of Shared Borders (`CF 1404 E — Bricks`)**:
+   If you put `#` cells as vertices and try to match pairs of adjacent cells, a $1 \times 3$ brick covers 3 cells (which cannot be represented by a matching of size-2 edges!). Making **shared unit borders** the vertices reduces a $1 \times k$ brick to $k - 1$ independent horizontal merges that have zero conflicts with one another.
+3. **Trap 3: Coupled Row–Column Permutations (`[ZJOI2007] 矩阵游戏` vs. Matrix Conjugation)**:
+   Swapping rows $\sigma \in S_N$ and columns $\tau \in S_N$ *independently* to put $1$s on the main diagonal is equivalent to finding a perfect matching $\nu(G) = N$. However, if a problem requires the **same** permutation $\sigma = \tau$ on both rows and columns ($P A P^T$), the diagonal entries $A_{\sigma(i), \sigma(i)}$ are merely permuted among themselves! On $A = \begin{psmallmatrix} 0 & 1 \\ 1 & 0 \end{psmallmatrix}$, $\nu(G) = 2$, yet coupled swaps leave the diagonal $(0, 0)$ forever.
+:::
+
+---
+
+## 3. Dulmage–Mendelsohn (`DM`) Coarse & Fine Decomposition ($V_E \sqcup V_O \sqcup V_U$)
+
+A single run of Dinic's or Hopcroft–Karp's algorithm returns *one* maximum matching $M^*$ of size $\nu(G)$. Yet contest problems frequently ask **quantified structural questions** over the space $\mathcal{M}^*(G)$ of *all* maximum matchings and the space $\mathcal{C}^*(G)$ of *all* minimum vertex covers.
+
+### 3.1 Step 1 — Non-Graph Diagnostic Signal (Recognition)
+
+Reach for the **Dulmage–Mendelsohn (`DM`) Decomposition** whenever you see:
+
+1. **Universal or Existential Vertex Quantifiers**: *"Which vertices belong to **every** maximum matching?"*, *"Which vertices can be left unmatched in **at least one** maximum matching?"*, or *"Which vertices belong to **every** minimum vertex cover?"*
+2. **Edge Criticality & Admissibility (`[HAOI2017] 新型城市化`)**: *"Find all edges $e \in E$ whose removal strictly decreases $\nu(G)$ (or strictly increases $\alpha(G) = |V| - \nu(G)$)"*, or *"Classify each edge as appearing in all, some, or no maximum matchings."*
+3. **Why Naive Re-Solving Fails (`FM-06B`)**: Deleting each vertex $v \in V$ or edge $e \in E$ one by one and re-running Dinic costs $O(V \cdot E\sqrt{V})$ or $O(E^2\sqrt{V})$, which TLEs for $V \ge 2000, E \ge 10^4$. The DM decomposition answers all vertex and edge queries in **$O(V + E)$ total time** after a single maximum flow computation.
+
+---
+
+### 3.2 Step 2 & Step 3 — Coarse DM Partition ($V_E \sqcup V_O \sqcup V_U$) and Canonical Invariance
+
+Let $G = (L \sqcup R, E)$ be a bipartite graph, and let $M^*$ be any fixed maximum matching found by Dinic on the standard unit network $N$ ($s \xrightarrow{1} u \xrightarrow{\infty} v \xrightarrow{1} t$ for $u \in L, v \in R$). Let $U_L = L \setminus V(M^*)$ and $U_R = R \setminus V(M^*)$ be the sets of unmatched vertices in $L$ and $R$.
+
+An **$M^*$-alternating path** from $U = U_L \cup U_R$ is a path that starts at an unmatched vertex $u_0 \in U$ and alternates between unmatched edges in $E \setminus M^*$ and matched edges in $M^*$.
+
+#### 1. Equivalence of Alternating Parity ($V_E, V_O, V_U$) and Residual $s$-$t$ Reachability ($V_S, V_T^{\text{rev}}$)
+In the residual network $G_{f^*}$ of $N$:
+
+- An unmatched left vertex $u_0 \in U_L$ has residual arc $s \to u_0$ of capacity $1$. Moving from $L$ to $R$ traverses an unmatched edge $(u, v) \in E \setminus M^*$ (odd step from $U_L$), and moving from $R$ back to $L$ traverses a reversed matched edge $(v, u)$ with $(u, v) \in M^*$ (even step from $U_L$).
+- Symmetrically, an unmatched right vertex $v_0 \in U_R$ has residual arc $v_0 \to t$ of capacity $1$. Tracing residual arcs **backward from $t$** moves from $R$ to $L$ along unmatched edges $(u, v) \in E \setminus M^*$ (odd step from $U_R$) and from $L$ to $R$ along matched edges $(u, v) \in M^*$ (even step from $U_R$).
+
+Because $M^*$ is maximum, there is no augmenting path from $U_L$ to $U_R$ ($V_S \cap V_T^{\text{rev}} = \emptyset$). This induces both the **six-block oriented DM partition** $(L_1 \sqcup L_0 \sqcup L_2, R_1 \sqcup R_0 \sqcup R_2)$ and the **three-block parity DM partition** $V = V_E \sqcup V_O \sqcup V_U$ (Dulmage & Mendelsohn, 1958; Lovász & Plummer, 1986):
+
+$$
+\begin{aligned}
+L_1 &= L \cap V_S, & R_1 &= R \cap V_S \qquad &&(\text{Forward reachable from } s \text{ in } G_{f^*}), \\
+L_2 &= L \cap V_T^{\text{rev}}, & R_2 &= R \cap V_T^{\text{rev}} \qquad &&(\text{Can reach } t \text{ in } G_{f^*}, \text{ i.e., backward reachable from } t), \\
+L_0 &= L \setminus (V_S \cup V_T^{\text{rev}}), & R_0 &= R \setminus (V_S \cup V_T^{\text{rev}}) \qquad &&(\text{Unreachable residual core}).
+\end{aligned}
+$$
+
+Grouping across both sides by the parity of the alternating distance from $U_L \cup U_R$ gives:
+
+1. **$V_E = L_1 \cup R_2$ (Even-Alternating-Distance / Avoidable Vertices)**:
+   Vertices reachable from $U_L \cup U_R$ via an **even-length** $M^*$-alternating path (including length $0$, so $U_L \subseteq L_1$ and $U_R \subseteq R_2$).
+2. **$V_O = R_1 \cup L_2$ (Odd-Alternating-Distance / Bottleneck Vertices)**:
+   Vertices reachable from $U_L \cup U_R$ via an **odd-length** $M^*$-alternating path. Every $w \in V_O$ is matched in $M^*$ to a partner in $V_E$ ($M^*$ pairs $R_1$ bijectively with $L_1 \setminus U_L$, and $L_2$ bijectively with $R_2 \setminus U_R$).
+3. **$V_U = L_0 \cup R_0$ (Unreachable / Perfectly Matched Core)**:
+   Vertices not reachable from $U_L \cup U_R$ by any $M^*$-alternating path. $M^*$ restricts to a **perfect matching** between $L_0$ and $R_0$ ($|L_0| = |R_0|$).
+
+```
++---------------------------------------------------------------------------------------------------+
+|             COARSE DULMAGE-MENDELSOHN BLOCK UPPER-TRIANGULAR STRUCTURE (V_E, V_O, V_U)            |
+|                                                                                                   |
+|                  R_1 in V_O                 R_0 in V_U                 R_2 in V_E                 |
+|             (Essential in M* & MVC;    (Perfectly matched core;   (Avoidable in M*, Never in MVC; |
+|              matched into L_1 \ U_L)    |L_0| = |R_0|, Essential)  contains U_R; |R_2| > |L_2|)   |
+|            +--------------------------+--------------------------+--------------------------+     |
+|  L_1 in V_E|  MATCHED: L_1\U_L <=> R_1|         0 EDGES          |         0 EDGES          |     |
+| (Avoidable |  (+ unmatched U_L)       |  (Blocked by S-reach!)   |  (Would augment S -> T!) |     |
+|  in M*)    |  Surplus |L_1| > |R_1|   |                          |                          |     |
+|            +--------------------------+--------------------------+--------------------------+     |
+|  L_0 in V_U|  Unmatched edges         |  MATCHED: L_0 <===> R_0  |         0 EDGES          |     |
+| (Core;     |  L_0 ---> R_1 allowed    |  (Fine DM: Tarjan SCCs   |  (Blocked by T-reach!)   |     |
+|  Essential)|  (FORBIDDEN in all M*!)  |   of core G_{f*}^\circ)  |                          |     |
+|            +--------------------------+--------------------------+--------------------------+     |
+|  L_2 in V_O|  Unmatched edges         |  Unmatched edges         |  MATCHED: L_2 <=> R_2\U_R|     |
+| (Essential |  L_2 ---> R_1 allowed    |  L_2 ---> R_0 allowed    |  (+ unmatched U_R)       |     |
+|  in M*&MVC)|  (FORBIDDEN in all M*!)  |  (FORBIDDEN in all M*!)  |  Surplus |R_2| > |L_2|   |     |
+|            +--------------------------+--------------------------+--------------------------+     |
++---------------------------------------------------------------------------------------------------+
+```
+
+::: {#thm-dm-invariance}
+### Theorem 3.1 (Canonical Invariance & Structural Laws of the Coarse DM Decomposition)
+The partition $V = V_E \sqcup V_O \sqcup V_U$ (and its six-block refinement $L_1, L_0, L_2, R_1, R_0, R_2$) depends **only on the graph $G$**, and is completely independent of which maximum matching $M^*$ was used to construct it. Furthermore:
+
+1. **Zero-Edge Block Upper-Triangularity**: The original graph $G$ contains **zero edges** in $L_1 \times R_0$, $L_1 \times R_2$, and $L_0 \times R_2$. Equivalently, in terms of $(V_E, V_O, V_U)$, there are **no edges** in $V_E \times V_E$ or in $V_E \times V_U$; every neighbor of any $w \in V_E$ lies strictly inside $V_O$ ($N_G(V_E) \subseteq V_O$).
+2. **Vertex Classification Across All Maximum Matchings $\mathcal{M}^*(G)$**:
+   - **Avoidable Vertices ($\exists M' \in \mathcal{M}^*(G)$ leaving $w$ unmatched, i.e., $\nu(G \setminus \{w\}) = \nu(G)$)**: Exactly $V_E = L_1 \cup R_2$.
+     *(Moreover, $w \in V_E$ is **Never-Matched** iff $\deg_G(w) = 0$, and **Optionally-Matched** iff $\deg_G(w) \ge 1$.)*
+   - **Essential / Always-Matched Vertices ($\forall M' \in \mathcal{M}^*(G), w \in V(M')$, i.e., $\nu(G \setminus \{w\}) = \nu(G) - 1$)**: Exactly $V_O \cup V_U = R_1 \cup L_2 \cup L_0 \cup R_0$.
+3. **Vertex Classification Across All Minimum Vertex Covers $\mathcal{C}^*(G)$**:
+   - **Always in MVC ($\forall C^* \in \mathcal{C}^*(G), w \in C^*$)**: $V_O = R_1 \cup L_2$.
+   - **Never in MVC ($\forall C^* \in \mathcal{C}^*(G), w \notin C^*$)**: $V_E = L_1 \cup R_2$.
+   - **Optionally in MVC**: $V_U = L_0 \cup R_0$ (specifically, $C_{\min\text{-}R} = R_1 \cup L_0 \cup L_2$ uses $L_0$, while $C_{\min\text{-}L} = R_1 \cup R_0 \cup L_2$ uses $R_0$).
+4. **Cross-Block Forbidden Edges**: Every maximum matching $M' \in \mathcal{M}^*(G)$ matches $R_1$ into $L_1$, $L_0$ bijectively with $R_0$, and $L_2$ into $R_2$. All edges in $(L_0 \times R_1) \cup (L_2 \times R_1) \cup (L_2 \times R_0)$ (i.e., edges in $V_O \times V_O$ and $V_O \times V_U$) are **forbidden** (never appear in any maximum matching).
+:::
+
+::: {.proof}
+**Step 1 (Zero-Edge Blocks)**:
+In $G_{f^*}$, every unmatched edge $(u, v) \in E \setminus M^*$ is directed $u \to v$ ($L \to R$) with residual capacity $1$, and every matched edge $(u, v) \in M^*$ is directed $v \to u$ ($R \to L$) with residual capacity $1$.
+If any edge $(u, v) \in E$ existed with $u \in L_1 \subseteq V_S$ and $v \in R_0 \cup R_2$, then $(u, v)$ could not be in $M^*$ (else $v \to u$ would be in $G_{f^*}$, and $u \in V_S$ is only entered from $R_1$ via $M^*$). Thus $(u, v) \in E \setminus M^*$ has residual arc $u \to v$, forcing $v \in V_S \cap R = R_1$, a contradiction! Symmetrically, no edge can exist in $L_0 \times R_2$ (as $u \to v$ would pull $u$ into $V_T^{\text{rev}} \cap L = L_2$). Hence $N_G(L_1) \subseteq R_1$ and $N_G(R_2) \subseteq L_2$, proving $N_G(V_E) \subseteq V_O$.
+
+**Step 2 (Every $w \in V_E$ is Avoidable)**:
+Let $w \in L_1$ (the case $w \in R_2$ is symmetric). By construction of $L_1 = L \cap V_S$, there is an even-length $M^*$-alternating path $P$ from some unmatched vertex $u_0 \in U_L$ to $w$. The symmetric difference $M' = M^* \triangle E(P)$ has the exact same size $|M'| = |M^*| = \nu(G)$ and shifts the unmatched endpoint from $u_0$ to $w$, leaving $w$ **unmatched** in $M'$! Furthermore, if $\deg_G(w) \ge 1$, pick any neighbor $v \in N_G(w) \subseteq R_1$; since $v \in R_1$, flipping the alternating path from $U_L$ to $v$ frees $v$ so $(w, v)$ can be matched if $w$ was initially in $U_L$.
+
+**Step 3 (Every $w \notin V_E$ is Essential, Cross-Block Edges are Forbidden, and Canonical Invariance)**:
+Notice that $C_1 = R_1 \cup L_0 \cup L_2$ and $C_2 = R_1 \cup R_0 \cup L_2$ are both valid vertex covers of $G$ (since $L_1 \times (R_0 \cup R_2)$ and $L_0 \times R_2$ are empty!) of size $|R_1| + |L_0| + |L_2| = |M^*| = \nu(G)$.
+By Complementary Slackness (König Duality, Chapter 5), **every** maximum matching $M' \in \mathcal{M}^*(G)$ must saturate **every** vertex of any minimum vertex cover $C^*$, and every edge $e \in M'$ must contain **at least one** endpoint in $C^*$ and **at most one** endpoint in $C^*$:
+
+- Applying this to $C_1 = R_1 \cup L_0 \cup L_2$ and $C_2 = R_1 \cup R_0 \cup L_2$: every $M' \in \mathcal{M}^*(G)$ must cover every vertex in $C_1 \cup C_2 = R_1 \cup L_2 \cup L_0 \cup R_0 = V_O \cup V_U$! Thus every vertex in $V_O \cup V_U$ is matched in **all** maximum matchings, proving that $V_E = V \setminus (V_O \cup V_U)$ is the exact invariant set of Avoidable vertices!
+- Because no edge of $M'$ can have *both* endpoints inside the minimum vertex cover $C_1 = R_1 \cup L_0 \cup L_2$, no edge of $M'$ can lie in $L_0 \times R_1$ or $L_2 \times R_1$. Applying the same rule to $C_2 = R_1 \cup R_0 \cup L_2$ forbids $L_2 \times R_0$.
+- Finally, $V_O$ is uniquely determined as $N_G(V_E)$ (the neighbors of Avoidable vertices, or equivalently the intersection of all minimum vertex covers), and $V_U = V \setminus (V_E \cup V_O)$. Hence $(V_E, V_O, V_U)$ is 100% independent of $M^*$. $\square$
+:::
+
+---
+
+### 3.3 Fine DM Decomposition via Tarjan SCC: Allowed, Forbidden, and $\nu$-Critical Edges
+
+How do we classify individual edges $e = (u, v) \in E$ across all maximum matchings $\mathcal{M}^*(G)$?
+By Theorem 3.1, any maximum matching $M'$ differs from $M^*$ via $M^* \triangle M'$, which is a vertex-disjoint collection of:
+
+- Even-length alternating paths starting at $U_L$ (entirely inside $L_1 \cup R_1$, which correspond to directed cycles through $s$ in $G_{f^*}$!),
+- Even-length alternating paths ending at $U_R$ (entirely inside $L_2 \cup R_2$, which correspond to directed cycles through $t$ in $G_{f^*}$!), and
+- Even alternating cycles (which correspond to directed cycles in $G_{f^*}^\circ = G_{f^*} \setminus \{s, t\}$!).
+
+::: {#thm-fine-dm-edges}
+### Theorem 3.2 (Unified Fine DM Edge Classification via Tarjan SCC on $G_{f^*}$)
+Run Tarjan's Strongly Connected Components algorithm once in $O(V + E)$ time on the **full residual graph $G_{f^*}$ (including $s$ and $t$)**, where a directed arc $x \to y$ exists iff $c_{f^*}(x, y) > 0$. Then for every original bipartite edge $e = (u, v) \in E$ ($u \in L, v \in R$):
+
+1. **Allowed / Admissible Edge (`可行边`, in *at least one* maximum matching $M' \in \mathcal{M}^*(G)$)**:
+
+   $$
+   e = (u, v) \text{ is Admissible} \iff e \in M^* \;\lor\; \operatorname{scc}_{G_{f^*}}(u) = \operatorname{scc}_{G_{f^*}}(v).
+   $$
+
+2. **Mandatory / Essential / $\nu$-Critical Edge (`必须边`, in *every* maximum matching, i.e., $\nu(G \setminus \{e\}) = \nu(G) - 1$)**:
+
+   $$
+   e = (u, v) \text{ is Mandatory ($\nu$-Critical)} \iff e \in M^* \;\land\; \operatorname{scc}_{G_{f^*}}(u) \ne \operatorname{scc}_{G_{f^*}}(v).
+   $$
+
+3. **Forbidden Edge (`不可行边`, in *no* maximum matching)**:
+
+   $$
+   e = (u, v) \text{ is Forbidden} \iff e \notin M^* \;\land\; \operatorname{scc}_{G_{f^*}}(u) \ne \operatorname{scc}_{G_{f^*}}(v).
+   $$
+:::
+
+::: {.proof}
+An unmatched edge $e = (u, v) \notin M^*$ has forward residual arc $u \to v$ in $G_{f^*}$. It can be swapped into $M^*$ without reducing the flow value if and only if there is a residual return path $v \leadsto u$ in $G_{f^*}$ (forming a zero-net-change circulation cycle through $u \to v \leadsto u$, possibly passing through $s$ or $t$), which holds iff $\operatorname{scc}_{G_{f^*}}(u) = \operatorname{scc}_{G_{f^*}}(v)$.
+Symmetrically, a matched edge $e = (u, v) \in M^*$ has backward residual arc $v \to u$ in $G_{f^*}$. It can be removed from $M^*$ while preserving $|M^*| = \nu(G)$ if and only if there is an alternative augmenting path $u \leadsto v$ in $G_{f^*}$, which together with $v \to u$ forms a directed cycle in $G_{f^*}$, i.e., $\operatorname{scc}_{G_{f^*}}(u) = \operatorname{scc}_{G_{f^*}}(v)$. Notice that for every $(u, v) \in M^*$ inside $L_1 \times R_1$, we have $s \leadsto u$, $v \to u$, and $s \to u_0 \leadsto v \to u$, wait: in $L_1 \times R_1$, $u \in L_1$ has residual arc $u \to s$ (since $s \to u$ is saturated!), so $s \to u_0 \leadsto v \to u \to s$ is a directed cycle in $G_{f^*}$ containing $s, u, v$! Thus including $s$ and $t$ in Tarjan's SCC graph automatically places all matched and unmatched edges of $L_1 \times R_1$ into $\operatorname{scc}(s)$ and all of $L_2 \times R_2$ into $\operatorname{scc}(t)$, unifying the coarse and fine DM rules into a single SCC test! $\square$
+:::
+
+#### Application to `[HAOI2017] 新型城市化` (Increasing Maximum Clique by Deleting One Conflict Edge)
+In **`[HAOI2017 / Luogu P3731] 新型城市化`**, a country's cities partition into two cliques (so the complement graph $\bar{G} = (L \sqcup R, \bar{E})$ is bipartite). By König's Theorem, the maximum clique of $G$ equals the Maximum Independent Set of $\bar{G}$:
+
+$$
+\omega(G) = \alpha(\bar{G}) = |V| - \nu(\bar{G}).
+$$
+
+Adding one road $e$ in $G$ (i.e., **deleting** one conflict edge $e \in \bar{E}$ from $\bar{G}$) strictly increases $\omega(G)$ by $1$ if and only if deleting $e$ strictly **decreases** $\nu(\bar{G})$ by $1$—that is, iff $e \in \bar{E}$ is a **Mandatory ($\nu$-Critical) Edge** of $\bar{G}$ ($e \in M^* \land \operatorname{scc}_{G_{f^*}}(u) \ne \operatorname{scc}_{G_{f^*}}(v)$)!
+
+::: {#thm-hall-kotzig-peeling}
+### Theorem 3.3 (Unique Perfect Matching & $O(V + E)$ Degree-1 Leaf Peeling)
+For a balanced bipartite graph $G = (L \sqcup R, E)$ with $|L| = |R| = N$, $G$ has a **unique perfect matching** if and only if $G$ has a perfect matching $M^*$ and $G_{f^*}^\circ$ is a DAG (no alternating cycles), which holds if and only if **iterative degree-1 leaf peeling** (repeatedly matching a vertex $z$ of current degree $1$ with its unique neighbor $w$ and deleting $\{z, w\}$) matches all $2N$ vertices in $O(V + E)$ time without ever running Dinic.
+:::
+
+---
+
+## 4. Impartial Walk Games on Bipartite Graphs (`[JSOI2009] 游戏`, `[NOI2011] 兔兔与蛋蛋游戏`)
+
+We now connect the Dulmage–Mendelsohn decomposition $V = V_E \sqcup V_O \sqcup V_U$ to one of the most celebrated theorems in competitive programming game theory.
+
+### 4.1 Step 1 & Step 2 — The Bipartite Self-Avoiding Walk Game
+
+**Game Rules**: Given a bipartite graph $G = (L \sqcup R, E)$ and a starting vertex $v_0 \in V$, a token is initially placed on $v_0$ (marking $v_0$ as visited). Two players (**First Mover** and **Second Mover**) alternately move the token along an edge of $G$ from its current vertex $v_t$ to an **unvisited** neighbor $v_{t+1} \in N_G(v_t)$. Under Normal Play convention, the first player unable to move loses.
+
+**Step 1 (Diagnostic Signal)**:
+A grid or graph game where a single piece, king, or blank space `.` steps to adjacent cells without ever revisiting a cell ($N, M \le 100$), and the problem asks for all winning starting cells or asks to evaluate moves in a game transcript.
+
+**Step 2 (Intermediate Logical Representation)**:
+Instead of computing Sprague–Grundy (`SG`) values on the exponential state space $(v_t, \text{VisitedMask}) \in V \times 2^V$, we pair vertices using a maximum matching $M^*$ of $G$.
+
+---
+
+### 4.2 Complete Proof of the Bipartite Walk Game Theorem
+
+::: {#thm-bipartite-walk-game}
+### Theorem 4.1 (Bipartite Self-Avoiding Walk Game Characterization)
+In any bipartite graph $G = (L \sqcup R, E)$, the **First Mover from $v_0$** has a winning strategy if and only if $v_0$ belongs to **every** maximum matching of $G$—that is, $v_0 \in V_O \cup V_U$ is an **Essential** vertex ($v_0 \notin V_E = L_1 \cup R_2$).
+Equivalently, the **Second Mover from $v_0$** has a winning strategy if and only if $v_0 \in V_E = L_1 \cup R_2$ is an **Avoidable** vertex (reachable from $s$ in $G_{f^*}$ if $v_0 \in L$, or able to reach $t$ in $G_{f^*}$ if $v_0 \in R$).
+:::
+
+::: {.proof}
+We prove both directions by explicit strategy construction on the DM blocks.
+
+**Direction 1 ($v_0 \in V_E \implies$ Second Mover has a winning strategy)**:
+Since $v_0 \in V_E$ is Avoidable (Theorem 3.1(2)), there exists a maximum matching $M^*$ of $G$ that leaves $v_0$ **unmatched** ($v_0 \notin V(M^*)$).
+Second Mover adopts the following simple pairing strategy: **whenever First Mover moves the token to a vertex $y$, Second Mover immediately moves the token along the matched edge $(y, M^*(y)) \in M^*$**.
+Why is Second Mover guaranteed to have a legal move at every turn?
+Suppose at step $2k + 1$, First Mover moves the token from $x_{2k}$ to an unvisited neighbor $y = x_{2k+1}$:
+
+1. **Could $y$ be unmatched in $M^*$?**
+   Suppose for contradiction that $y \notin V(M^*)$. Look at the trajectory of the token so far:
+
+   $$
+   P = (v_0 = x_0 \to x_1 \to x_2 \to \dots \to x_{2k} \to x_{2k+1} = y).
+   $$
+
+   Because the game forbids revisiting vertices, $P$ is a **simple path** in $G$. In $P$, every odd-indexed edge $(x_{2j-1}, x_{2j})$ was chosen by Second Mover from $M^*$, and every even-indexed edge $(x_{2j}, x_{2j+1})$ was chosen by First Mover outside $M^*$. Furthermore, both endpoints $v_0$ and $y$ are unmatched in $M^*$! Thus $P$ is a simple **$M^*$-augmenting path** between two $M^*$-unmatched vertices, contradicting that $M^*$ is a maximum matching of $G$!
+2. **Could $y$'s partner $z = M^*(y)$ already have been visited earlier in the game?**
+   No! Every previously visited matched vertex entered at an odd step $x_{2j-1}$ was immediately paired with its unique $M^*$-partner $x_{2j} = M^*(x_{2j-1})$ at the very next step, and $v_0$ was unmatched. Since $y$ itself was unvisited prior to step $2k+1$, its unique partner $z = M^*(y)$ could never have been visited either!
+
+Therefore, $y$ is always matched in $M^*$ to an unvisited partner $M^*(y)$, so Second Mover can always reply. Since $V$ is finite, First Mover eventually runs out of moves and loses.
+
+**Direction 2 ($v_0 \in V_O \cup V_U \implies$ First Mover has a winning strategy)**:
+Suppose $v_0 \notin V_E$ belongs to **every** maximum matching of $G$. Fix any maximum matching $M^*$; then $v_0$ is matched to some partner $w_0 = M^*(v_0)$.
+First Mover makes the opening move $v_0 \to w_0$.
+Once $v_0$ is visited and permanently deleted from the board, consider the remaining bipartite graph $G' = G \setminus \{v_0\}$ where the token now sits at $w_0$ and **Second Mover is now the player who must move first from $w_0$ in $G'$**!
+
+- Because $v_0$ belonged to *every* maximum matching of $G$, removing $v_0$ strictly reduces the maximum matching size: $\nu(G') = \nu(G) - 1$.
+- Consequently, $M' = M^* \setminus \{(v_0, w_0)\}$ is a matching of size $\nu(G) - 1 = \nu(G')$ in $G'$—that is, **$M'$ is a maximum matching of $G'$ that leaves $w_0$ unmatched**!
+- Hence $w_0 \in V_E(G')$ is an **Avoidable** vertex of $G'$. By Direction 1 applied to $G'$ from $w_0$, the player who moves *second* from $w_0$ in $G'$ (which is our **First Mover**!) wins by replying along $M'$ for the rest of the game! $\square$
+:::
+
+---
+
+### 4.3 Step 3 & Step 4 — Linear-Time All-Starts Testing, Role Inversion, and Counterexamples
+
+How do we find **all** winning starting vertices $v_0 \in V$?
+
+- **The $O(V + E)$ Residual BFS Algorithm**:
+  1. Run Dinic once on $s \to L \to R \to t$ in $O(E\sqrt{V})$ time.
+  2. Run a single forward BFS from $s$ along positive residual arcs ($c_{f^*} > 0$) to mark $L_1 = L \cap V_S$.
+  3. Run a single backward BFS from $t$ along positive residual arcs ($c_{f^*} > 0$ into $t$) to mark $R_2 = R \cap V_T^{\text{rev}}$.
+  4. Then $V_E = L_1 \cup R_2$ are the **Avoidable** vertices (Second Mover wins), and $V \setminus V_E$ are the **Essential** vertices (First Mover wins)!
+
+::: {.callout-warning title="Broken-Gadget Counterexamples FM-06B — Role Inversion, O(VE) Rematching TLE, and Odd Cycles"}
+1. **The Role-Inversion Trap (`[JSOI2009] 游戏` vs. `[NOI2011] 兔兔与蛋蛋游戏`)**:
+   Read the opening protocol with extreme care!
+   - In **`[JSOI2009 / Luogu P4055] 游戏` (`#047`)**, Player 1 (`YY`) **places** the token on $v_0$, and then Player 2 (`HH`) makes the **first move** out of $v_0$! Because Player 2 is the First Mover in the walk game from $v_0$, Player 1 (`YY`) wins if and only if **Second Mover wins from $v_0$**, i.e., $v_0 \in V_E = L_1 \cup R_2$ is **Avoidable**!
+   - In **`[NOI2011 / Luogu P1971] 兔兔与蛋蛋游戏` (`#048`)**, the blank space `.` is already at $v_0$ and the current player slides a tile (moving `.` out of $v_0$ **first**), so the current player wins iff $v_0 \in V_O \cup V_U$ is **Essential**!
+2. **The $O(V \cdot E\sqrt{V})$ Per-Vertex Rematching Trap**:
+   Deleting each $v_0 \in V$ and re-running Dinic from scratch to check $\nu(G \setminus \{v_0\}) = \nu(G) - 1$ takes $10^4 \times 10^6 = 10^{10}$ operations on a $100 \times 100$ grid—an instant TLE. The residual BFS above finds $V_E = L_1 \cup R_2$ for all $10^4$ vertices in a single $O(V + E)$ pass ($< 1\text{ ms}$)!
+3. **Why Naive Bipartite DM BFS Fails on Non-Bipartite Graphs (The Bull Graph Counterexample)**:
+   Notice that the proof of Theorem 4.1 actually shows $\text{First Mover wins from } v_0 \iff \nu(G \setminus \{v_0\}) = \nu(G) - 1$ on *any* graph (since an alternating path between two unmatched vertices is augmenting even in non-bipartite graphs!). What fails on a non-bipartite graph is **computing Avoidable vertices via naive bipartite alternating BFS without shrinking odd-cycle blossoms**! For example, on the 5-vertex **Bull Graph** (triangle $\{1, 2, 3\}$ plus pendant leaves $(2, 4)$ and $(3, 5)$) with $M^* = \{(2, 4), (3, 5)\}$ and unmatched apex $1$, an alternating path $1 \to 2 \to 4$ (odd) cannot continue, whereas around the triangle $1 \to 2 \to 3 \to 5$ is not alternating; conversely, if $M^* = \{(1, 2), (3, 5)\}$ with $4$ unmatched, the alternating path $4 \to 2 \to 1 \to 3 \to 5$ traverses the odd cycle $\{1, 2, 3\}$ and reaches $1$ in *even* steps ($4 \to 2 \to 1$) AND reaches $3$ in *odd* steps ($4 \to 2 \to 1 \to 3$), requiring Edmonds' Blossom (Gallai–Edmonds) decomposition instead of bipartite BFS.
+:::
+
+---
+
+## 5. Black-Box Contract & Recognition Table
+
+### 5.1 Reference Implementation: Coarse & Fine Dulmage–Mendelsohn (`O(V + E)` Post-Dinic)
+
+Assume `dinic` has already computed the maximum flow on the unit network with source `S`, sink `T`, left vertices $L$, and right vertices $R$.
+
+```cpp
+struct DMDecomposition {
+    int n_total, S, T;
+    vector<int> vis_S, vis_T; // Coarse DM: L1 = L & vis_S, R2 = R & vis_T
+    vector<int> dfn, low, scc, stk;
+    vector<bool> in_stk;
+    int timer = 0, scc_cnt = 0;
+
+    // G_res[u] contains all residual neighbors v where cap > 0
+    // G_rev[v] contains all u where residual arc u -> v has cap > 0
+    void build(const Dinic& flow, int n_nodes, int s, int t) {
+        n_total = n_nodes; S = s; T = t;
+        vector<vector<int>> adj(n_total), radj(n_total);
+        for (int u = 0; u < n_total; ++u) {
+            for (const auto& e : flow.adj[u]) {
+                if (e.cap > 0) {
+                    adj[u].push_back(e.to);
+                    radj[e.to].push_back(u);
+                }
+            }
+        }
+        // 1. Coarse DM: Forward BFS from S, Backward BFS from T
+        vis_S.assign(n_total, 0);
+        vis_T.assign(n_total, 0);
+        queue<int> q;
+        q.push(S); vis_S[S] = 1;
+        while (!q.empty()) {
+            int u = q.front(); q.pop();
+            for (int v : adj[u]) if (!vis_S[v]) { vis_S[v] = 1; q.push(v); }
+        }
+        q.push(T); vis_T[T] = 1;
+        while (!q.empty()) {
+            int u = q.front(); q.pop();
+            for (int v : radj[u]) if (!vis_T[v]) { vis_T[v] = 1; q.push(v); }
+        }
+        // 2. Fine DM: Tarjan SCC on full residual graph (including S and T)
+        dfn.assign(n_total, 0); low.assign(n_total, 0);
+        scc.assign(n_total, 0); in_stk.assign(n_total, false);
+        auto dfs = [&](auto& self, int u) -> void {
+            dfn[u] = low[u] = ++timer;
+            stk.push_back(u); in_stk[u] = true;
+            for (int v : adj[u]) {
+                if (!dfn[v]) { self(self, v); low[u] = min(low[u], low[v]); }
+                else if (in_stk[v]) low[u] = min(low[u], dfn[v]);
+            }
+            if (low[u] == dfn[u]) {
+                ++scc_cnt;
+                while (true) {
+                    int x = stk.back(); stk.pop_back();
+                    in_stk[x] = false; scc[x] = scc_cnt;
+                    if (x == u) break;
+                }
+            }
+        };
+        for (int i = 0; i < n_total; ++i) if (!dfn[i]) dfs(dfs, i);
+    }
+
+    // True iff vertex w (in L or R) is Avoidable (in V_E = L_1 U R_2)
+    bool is_avoidable(int w, bool in_left) const {
+        return in_left ? (vis_S[w] == 1) : (vis_T[w] == 1);
+    }
+    // True iff matched/unmatched edge (u, v) is Mandatory / nu-Critical
+    bool is_critical_edge(int u, int v, bool is_matched) const {
+        return is_matched && (scc[u] != scc[v]);
+    }
+    // True iff edge (u, v) is Admissible (in at least one max matching)
+    bool is_admissible_edge(int u, int v, bool is_matched) const {
+        return is_matched || (scc[u] == scc[v]);
+    }
+};
+```
+
+### 5.2 Summary Recognition & Compilation Table
+
+| Problem Pattern / Surface Clue | Hidden Bipartition / DM Target | Graph Compilation & Query Rule |
+| :--- | :--- | :--- |
+| Grid walk / Knight $(\pm 1, \pm 2)$ / $(p, q)$-leaper with $p+q$ odd | Chessboard parity $\phi(r, c) = (r + c) \bmod 2$ | $L = \phi^{-1}(1), R = \phi^{-1}(0)$; MIS $= |V| - \nu(G)$ |
+| $(p, q)$-leaper with $p, q$ both odd (`Luogu P5030`) | Row parity $\phi(r, c) = r \bmod 2$ | $L = \{r \text{ odd}\}, R = \{r \text{ even}\}$; MIS $= |V| - \nu(G)$ |
+| Forbidden Euclidean distances $\sqrt{D_1}, \sqrt{D_2}$ (`AGC 025 D`) | 2-adic valuation $D = 4^k m \implies \phi_D(x, y)$ | 4-color grid via $(\phi_{D_1}, \phi_{D_2})$; largest class $\ge |V|/4$ |
+| Forbidden prime sums $a_i + a_j \in \mathbb{P}$ (`CF 808 F`) | Parity $a_i \bmod 2$ (**keep at most one `1`**!) | $L = \text{Odd}, R = \text{Even}$; Weighted König Min-Cut |
+| Rooks/Planks/Cameras with hard walls `#` & soft pits `x` | Maximal `#`-free strips $\mathcal{H} \in L, \mathcal{V} \in R$ | Target cell $(r,c) \mapsto \text{edge } (H_{r,c}, V_{r,c})$; ignore `x` |
+| Minimum $1 \times k$ and $k \times 1$ bricks (`CF 1404 E`) | Shared borders: Horiz $h \in L$, Vert $v \in R$ | L-corner at cell $(r,c) \mapsto$ conflict edge; $|\#| - \alpha(G)$ |
+| Vertex in *all* vs. *some* max matchings / Walk Game | Coarse DM $V_E = (L \cap V_S) \cup (R \cap V_T^{\text{rev}})$ | First Mover from $v_0$ wins $\iff v_0 \notin V_E$ |
+| Edge in *all* ($\nu$-critical), *some*, or *no* max matchings | Fine DM Tarjan SCC on $G_{f^*}$ (with $S, T$) | Critical $\iff e \in M^* \land \operatorname{scc}(u) \ne \operatorname{scc}(v)$ |
+
+---
+
+## 6. Curated 4-Tier Practice Ladder
+
+We now work through eight carefully selected problems (`#041`–`#048`) spanning our 4-Tier Practice Ladder (**Stepping Stone**, **Intermediate**, **Advanced**, and **Mastery**). Every problem follows the **4-Step "Zero Magic Gadgets" Compilation Framework**.
+
+---
+
+### `#041` — [HEOI2016 / TJOI2016] 游戏 (Game — Bombs with Soft & Hard Walls)
+
+- **Tier**: `Stepping Stone 1 (SS-1)` | **Judge URL**: [Luogu P2825](https://www.luogu.com.cn/problem/P2825)
+- **Problem Summary**: Given an $N \times M$ grid ($1 \le N, M \le 50$) where each cell is an empty space `*`, a soft obstacle `x` (cannot place a bomb here, but bomb blasts pass right through it), or a hard wall `#` (cannot place a bomb here, and blocks bomb blasts). A bomb blasts all cells in its row and column until hitting a hard wall `#`. Compute the maximum number of bombs that can be placed on `*` cells so that no two bombs blast each other.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Standard Row-Column Bipartite Matching Breaks"}
+On an obstacle-free board, each row holds at most one bomb and each column holds at most one bomb, so rows form $L$, columns form $R$, and `*` cells form edges. When a hard wall `#` sits at $(r, c)$, how many bombs can Row $r$ hold? One to the left of `#` and one to the right of `#`! What are the true independent conflict units?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Maximal Contiguous `#`-Free Segments"}
+Scan each row from left to right and assign a new Horizontal Segment ID $H_{r,c}$ whenever you pass a hard wall `#` (do **not** start a new ID at a soft obstacle `x`!). Symmetrically, scan each column from top to bottom and assign a Vertical Segment ID $V_{r,c}$ split only by `#`.
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Luogu P2825"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+We want to pack the maximum number of non-conflicting items on a 2D grid ($N, M \le 50$) where conflicts propagate horizontally and vertically until hitting `#`. Because each valid cell `(r, c) == '*'` lies at the intersection of **one** maximal horizontal blast interval and **one** maximal vertical blast interval, every `*` cell has degree $1$ in the horizontal family and degree $1$ in the vertical family. This is an exact **Rank-2 Orthogonal Strip Incidence** (Pipeline B), which compiles to **Maximum Bipartite Matching**.
+
+#### Step 2: Intermediate Algebraic & Logical Representation
+Let $\mathcal{H} = \{H_1, \dots, H_p\}$ be the set of maximal contiguous `#`-free horizontal segments across all $N$ rows, and let $\mathcal{V} = \{V_1, \dots, V_q\}$ be the set of maximal contiguous `#`-free vertical segments across all $M$ columns.
+For every empty cell $(r, c)$ with $\text{grid}[r][c] = \texttt{'*'}$, let $h(r, c) \in \mathcal{H}$ and $v(r, c) \in \mathcal{V}$ be the unique horizontal and vertical segments containing $(r, c)$, and assign a binary decision variable $x_{r,c} \in \{0, 1\}$ indicating whether a bomb is placed at $(r, c)$. The non-blasting constraints are:
+
+$$
+\max \sum_{(r,c) = \texttt{'*'}} x_{r,c} \quad \text{s.t.} \quad \forall a \in \{1, \dots, p\}, \sum_{(r,c) \in H_a} x_{r,c} \le 1 \quad \text{and} \quad \forall b \in \{1, \dots, q\}, \sum_{(r,c) \in V_b} x_{r,c} \le 1.
+$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+- **Left Partite Set $L$**: One vertex for each horizontal segment $H_a \in \mathcal{H}$ ($p \le NM$). Connect $s \to H_a$ with capacity $1$.
+- **Right Partite Set $R$**: One vertex for each vertical segment $V_b \in \mathcal{V}$ ($q \le NM$). Connect $V_b \to t$ with capacity $1$.
+- **Incidence Edges**: For each cell $(r, c)$ with $\text{grid}[r][c] = \texttt{'*'}$, add a directed arc $h(r, c) \to v(r, c)$ of capacity $1$. *(Soft obstacles `x` and hard walls `#` generate **zero** edges!)*
+
+```cpp
+int p = 0, q = 0;
+vector<vector<int>> hid(N, vector<int>(M, -1)), vid(N, vector<int>(M, -1));
+for (int r = 0; r < N; ++r) {
+    for (int c = 0; c < M; ++c) {
+        if (grid[r][c] == '#') continue;
+        if (c == 0 || grid[r][c - 1] == '#') ++p;
+        hid[r][c] = p;
+    }
+}
+for (int c = 0; c < M; ++c) {
+    for (int r = 0; r < N; ++r) {
+        if (grid[r][c] == '#') continue;
+        if (r == 0 || grid[r - 1][c] == '#') ++q;
+        vid[r][c] = q;
+    }
+}
+int S = 0, T = p + q + 1;
+Dinic dinic(T + 1);
+for (int a = 1; a <= p; ++a) dinic.add_edge(S, a, 1);
+for (int b = 1; b <= q; ++b) dinic.add_edge(p + b, T, 1);
+for (int r = 0; r < N; ++r)
+    for (int c = 0; c < M; ++c)
+        if (grid[r][c] == '*')
+            dinic.add_edge(hid[r][c], p + vid[r][c], 1);
+cout << dinic.max_flow(S, T) << "\n";
+```
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+On a $1 \times 4$ row `* x # *`:
+
+- Cells $(0, 0)$ (`*`) and $(0, 1)$ (`x`) share $H_1$; cell $(0, 2)$ is `#`; cell $(0, 3)$ (`*`) gets $H_2$.
+- Only $(0, 0)$ and $(0, 3)$ are `*`, creating edges $(H_1, V_1)$ and $(H_2, V_3)$, giving $\nu(G) = 2$.
+- **Failure Guard**: Never split $H$-segments at `x` (which would falsely give $(0, 0)$ and a cell at $(0, 2)$ different segment IDs if `#` were `*`), and never add edges for `x`.
+- **Complexity**: $|V| \le 2NM + 2 \le 5002$, $|E| \le 3NM \le 7500$; Dinic runs in $O((NM)^{3/2})$ ($< 5\text{ ms}$).
+::::
+
+---
+
+### `#042` — [Luogu P3355 / 网络流 24 题 #22] 骑士共存问题 (Knights Coexistence)
+
+- **Tier**: `Stepping Stone 2 (SS-2)` | **Judge URL**: [Luogu P3355](https://www.luogu.com.cn/problem/P3355)
+- **Problem Summary**: Given an $N \times N$ chessboard ($1 \le N \le 200$) with $M$ forbidden squares where knights cannot be placed. Two knights attack each other if $|\Delta r| = 1, |\Delta c| = 2$ or $|\Delta r| = 2, |\Delta c| = 1$. Find the maximum number of non-attacking knights that can be placed on the non-forbidden squares.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why the Knight Conflict Graph Has No Odd Cycles"}
+Look at the sum of coordinates $r + c$ before and after a knight jump $(\pm 1, \pm 2)$ or $(\pm 2, \pm 1)$. What is the parity of $\Delta r + \Delta c$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — From Conflict Graph to Maximum Independent Set"}
+Since $\Delta(r + c) \in \{\pm 1, \pm 3\}$ is always odd, every knight move connects a Black square ($(r+c) \bmod 2 = 1$) to a White square ($(r+c) \bmod 2 = 0$). Apply König's complement identity $\alpha(G) = |V_{\text{valid}}| - \nu(G)$.
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Luogu P3355"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+We want the **Maximum Independent Set (`MIS`)** of a pairwise conflict graph on $V_{\text{valid}} \le 40{,}000$ grid squares. General MIS is NP-hard, which signals that the knight conflict graph must be **bipartite** via a parity invariant.
+
+#### Step 2: Intermediate Algebraic & Logical Representation
+Let $V_{\text{valid}}$ be the set of non-forbidden squares, and let $x_{r,c} \in \{0, 1\}$ indicate whether a knight is placed at $(r, c) \in V_{\text{valid}}$. We maximize $\sum_{(r,c) \in V_{\text{valid}}} x_{r,c}$ subject to $x_{r,c} + x_{r',c'} \le 1$ whenever $\{|\Delta r|, |\Delta c|\} = \{1, 2\}$.
+Define the chessboard coloring $\phi(r, c) = (r + c) \bmod 2$. For any knight jump:
+
+$$
+(r' + c') - (r + c) = \Delta r + \Delta c \in \{\pm 1 \pm 2\} = \{-3, -1, +1, +3\} \equiv 1 \pmod 2.
+$$
+
+Thus every conflict edge strictly crosses between $L = \{(r, c) \in V_{\text{valid}} : (r+c) \text{ is odd}\}$ and $R = \{(r, c) \in V_{\text{valid}} : (r+c) \text{ is even}\}$.
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+- **Vertices**: Source $s$, sink $t$, and all valid squares $(r, c) \in V_{\text{valid}} = L \sqcup R$.
+- **Capacities**:
+  - For each $u \in L$: add arc $s \to u$ of capacity $1$.
+  - For each $v \in R$: add arc $v \to t$ of capacity $1$.
+  - For each $u = (r, c) \in L$ and each of the $8$ knight jumps $v = (r + \Delta r, c + \Delta c) \in R$ (if $v$ is in-bounds and not forbidden): add directed arc $u \to v$ of capacity $\infty$ (or $1$).
+- **Output**: $|V_{\text{valid}}| - \operatorname{MaxFlow}(s, t)$.
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+On a $3 \times 3$ board with $0$ forbidden cells ($|V_{\text{valid}}| = 9$):
+
+- Center $(2, 2)$ is isolated from all knight jumps. The remaining $8$ boundary squares form a single alternating 8-cycle $(1,1) - (2,3) - (3,1) - (1,2) - (3,3) - (2,1) - (1,3) - (3,2) - (1,1)$ of 4 White and 4 Black squares.
+- The 8-cycle has maximum matching $\nu(G) = 4$, giving $\alpha(G) = 9 - 4 = 5$ knights (e.g., center $(2, 2)$ plus all 4 even squares on the cycle).
+- **Failure Guard**: Always mark forbidden squares in a boolean grid `blocked[r][c]` and compute $|V_{\text{valid}}|$ by counting `blocked[r][c] == false`, rather than trusting $N^2 - M$ blindly in case the input lists a forbidden square twice!
+- **Complexity**: $|V| \le 4 \cdot 10^4$, $|E| \le 2 \cdot 10^5$; Hopcroft–Karp / Dinic runs in $O(E\sqrt{V}) \approx 4 \cdot 10^7$ ops.
+::::
+
+---
+
+### `#043` — [Codeforces 1773 D] Dominoes
+
+- **Tier**: `Intermediate 1 (Int-1)` | **Judge URL**: [CF 1773D](https://codeforces.com/problemset/problem/1773/D)
+- **Problem Summary**: An $N \times M$ grid ($NM \le 2 \cdot 10^5$) is tiled with $1 \times 2$ and $2 \times 1$ dominoes (`L`/`R` and `U`/`D`), leaving some empty `.` cells. You may repeatedly slide any domino lengthwise by $1$ cell into an adjacent empty `.` cell (which shifts the empty `.` cell by $2$ units along that domino). Count the number of unordered pairs of grid cells $\{a, b\}$ that can **simultaneously** be empty `.` cells after some sequence of domino slides.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Sliding a Domino is an $M^*$-Alternating Path Step!"}
+Color the grid like a chessboard into Black ($L$) and White ($R$). Every domino $(u, v)$ is a matched edge in $M^*$, and every `.` cell is an unmatched vertex! When you slide a domino $(u, v)$ lengthwise so that $u$ covers an adjacent empty cell $w$, what happens to the empty cell? It jumps from $w$ to $v$—a distance-2 step between two cells of the **same chessboard color**!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Why the Reverse Reachability Graph Has Out-Degree $\le 1$ (A Directed Forest!)"}
+Consider how a covered cell $v$ can become empty: the unique domino $(u, v)$ covering $v$ **must** slide into the cell $w$ immediately adjacent to $u$ on the side opposite to $v$! That requires $w$ to become empty first. Thus every covered cell $v$ has **at most one parent $w$** from which it can receive a hole!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — CF 1773D"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+With $NM \le 2 \cdot 10^5$, we cannot run an $O(V\sqrt{V})$ flow solver. Instead, we are given an **already-matched** bipartite graph $G = (L \sqcup R, E)$ (where dominoes are matched edges $M^*$) and allowed only **collinear augmenting walks**. The key structural insight is that each domino $(u, v)$ can only slide along its own axis, restricting the DM alternating graph so that every vertex has **in-degree $\le 1$**!
+
+#### Step 2: Intermediate Algebraic & Logical Representation
+Let $(u, v)$ be a domino covering cell $u$ and cell $v$. To expose cell $v$ (make $v$ empty), we must slide domino $(u, v)$ by $1$ unit in the direction $\vec{d} = u - v$ into cell $w = u + (u - v) = 2u - v$:
+
+- Notice that $w = 2u - v$ has the **exact same chessboard parity** as $v$: $(r_w + c_w) \equiv 2(r_u + c_u) - (r_v + c_v) \equiv r_v + c_v \pmod 2$!
+- Moreover, because $v$ is covered by a *unique* domino $(u, v)$, $w = 2u - v$ is the **unique cell** whose emptiness allows $v$ to become empty in one slide!
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+Add a directed edge $w \to v$ for every domino $(u, v)$ where $w = 2u - v$ is inside the $N \times M$ grid.
+
+- Because every covered cell $v$ has **in-degree at most $1$** (from $w = 2u - v$) and every initial `.` cell has **in-degree $0$**, and no cycle of slides can exist on a finite grid (each edge steps by $\pm 2$ along a coordinate), the graph decomposes into **disjoint directed trees (an out-forest)** rooted at the initial `.` cells (plus isolated components unable to reach any `.` root)!
+- Even better: since $w$ and $v$ always have the **same chessboard parity**, the forest splits completely into a **Black Forest $\mathcal{F}_L$** (on cells with $(r+c)$ odd) and a **White Forest $\mathcal{F}_R$** (on cells with $(r+c)$ even)!
+- Any cell $x$ in the subtree of an initial `.` root $r_0$ can be made empty by sliding the unique path of dominoes from $r_0$ to $x$. Because Black slides and White slides never share intermediate cells (actually, if $(u, v)$ is a domino, sliding $w \to v$ moves $u$ onto $w$, which never disturbs any orthogonal tree path, and within the forest two cells $a, b$ can be simultaneously empty iff they lie in subtrees of **distinct** `.` roots!).
+- Specifically, let $K$ be the total number of cells in all trees rooted at `.` cells across the board, and for each `.` root $r_i$, let $s_i$ be the size of its tree:
+  - Any two cells in **different** `.`-rooted trees can be made empty simultaneously (since their slide paths from their respective `.` roots are completely vertex-disjoint!):
+
+    $$
+    \text{Ans} = \binom{K}{2} - \sum_{i} \binom{s_i}{2}.
+    $$
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+Consider a $1 \times 4$ board `. L R .`:
+
+- Cells $1$ and $4$ are `.` roots ($r_1 = 1, r_2 = 4$). Domino $(2, 3)$ gives edges $1 \to 3$ (sliding `L R` left into $1$ exposes $3$) and $4 \to 2$ (sliding `L R` right into $4$ exposes $2$).
+- Tree at root $1$ is $\{1, 3\}$ ($s_1 = 2$); tree at root $4$ is $\{4, 2\}$ ($s_2 = 2$). Total reachable cells $K = 4$.
+- Pairs of cells in distinct trees: $\binom{4}{2} - \binom{2}{2} - \binom{2}{2} = 6 - 1 - 1 = 4$ pairs: $\{1, 4\}, \{1, 2\}, \{3, 4\}, \{3, 2\}$.
+- **Failure Guard**: A covered cell $v$ whose predecessor $w = 2u - v$ lies inside a disconnected cycle of dominoes that never reaches a `.` root is **unreachable**—only run DFS/BFS starting from the actual `.` cells!
+- **Complexity**: $O(NM)$ time and space via a single linear forest traversal from all `.` cells.
+::::
+
+---
+
+### `#044` — [Codeforces 1198 E] Rectangle Painting 1
+
+- **Tier**: `Intermediate 2 (Int-2)` | **Judge URL**: [CF 1198E](https://codeforces.com/problemset/problem/1198/E)
+- **Problem Summary**: You are given an $N \times N$ grid ($N \le 10^9$) that is initially all white, except for $M$ black rectangles $[x_{i,1}, x_{i,2}] \times [y_{i,1}, y_{i,2}]$ ($0 \le M \le 50$, rectangles may overlap). You can paint any sub-rectangle of size $w \times h$ white for a cost of $\min(w, h)$. Find the minimum total cost to paint all black cells white.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Reducing Arbitrary $w \times h$ Rectangles to Full Strips"}
+If you pay $\min(w, h) = w$ to whiten a $w \times h$ rectangle, you could instead whiten the **entire vertical strip of width $w$ and height $N$** ($w \times N$) for the exact same cost $\min(w, N) = w$! What does this imply about the shapes of all operations in an optimal solution?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Coordinate Discretization & Weighted König Min-Cut"}
+Collect all $x$-boundaries $x_{i,1}$ and $x_{i,2} + 1$ (half-open intervals!) and sort/deduplicate them into $K_x \le 2M \le 100$ elementary vertical strips of width $\Delta X_a = X_{a+1} - X_a$. Do the same for $y$-boundaries into $K_y \le 100$ elementary horizontal strips of height $\Delta Y_b$. Now how must each black elementary block $(a, b)$ be covered?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — CF 1198E"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+$N \le 10^9$ rules out per-row/per-column vertices directly, while $M \le 50$ is tiny. Furthermore, the cost function $\min(w, h)$ satisfies **full-strip dominance**: replacing $[x_1, x_2] \times [y_1, y_2]$ with $[x_1, x_2] \times [1, N]$ (if $w \le h$) or $[1, N] \times [y_1, y_2]$ (if $h < w$) never increases the cost and covers a superset of cells. Thus every cell is covered by either a vertical strip or a horizontal strip—a **Weighted Bipartite Minimum Vertex Cover** after coordinate compression!
+
+#### Step 2: Intermediate Algebraic & Logical Representation
+Represent each input black rectangle as a product of **half-open** integer intervals $[x_{i,1}, x_{i,2} + 1) \times [y_{i,1}, y_{i,2} + 1)$.
+Let $X_0 < X_1 < \dots < X_{K_x}$ be the sorted unique endpoints $\bigcup_{i=1}^M \{x_{i,1}, x_{i,2} + 1\}$, and let $Y_0 < Y_1 < \dots < Y_{K_y}$ be the sorted unique endpoints $\bigcup_{i=1}^M \{y_{i,1}, y_{i,2} + 1\}$, where $K_x, K_y \le 2M \le 100$.
+For each elementary vertical strip $I_a = [X_a, X_{a+1})$ of width $w_a = X_{a+1} - X_a$ and elementary horizontal strip $J_b = [Y_b, Y_{b+1})$ of height $h_b = Y_{b+1} - Y_b$, let $x_a \in \{0, 1\}$ and $y_b \in \{0, 1\}$ indicate whether strip $I_a$ or $J_b$ is whitened:
+
+$$
+\min \sum_{a=0}^{K_x-1} w_a x_a + \sum_{b=0}^{K_y-1} h_b y_b \quad \text{s.t.} \quad x_a + y_b \ge 1 \;\;\forall (a, b) \text{ covered by some black rectangle}.
+$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+Build a Weighted König Minimum Cut network on $\{s, t\} \cup \{I_0, \dots, I_{K_x-1}\} \cup \{J_0, \dots, J_{K_y-1}\}$:
+
+- For each $a \in [0, K_x)$: add directed arc $s \to I_a$ with capacity $w_a = X_{a+1} - X_a$.
+- For each $b \in [0, K_y)$: add directed arc $J_b \to t$ with capacity $h_b = Y_{b+1} - Y_b$.
+- For each pair $(a, b)$ such that $[X_a, X_{a+1}) \times [Y_b, Y_{b+1})$ lies inside at least one black rectangle $i$: add directed arc $I_a \to J_b$ with capacity $\infty$.
+- **Output**: $\operatorname{MinCut}(s, t) = \operatorname{MaxFlow}(s, t)$.
+
+```cpp
+vector<long long> xs, ys;
+for (int i = 0; i < M; ++i) {
+    xs.push_back(x1[i]); xs.push_back(x2[i] + 1);
+    ys.push_back(y1[i]); ys.push_back(y2[i] + 1);
+}
+sort(xs.begin(), xs.end()); xs.erase(unique(xs.begin(), xs.end()), xs.end());
+sort(ys.begin(), ys.end()); ys.erase(unique(ys.begin(), ys.end()), ys.end());
+int kx = (int)xs.size() - 1, ky = (int)ys.size() - 1;
+int S = 0, T = kx + ky + 1;
+Dinic<long long> dinic(T + 1);
+for (int a = 0; a < kx; ++a) dinic.add_edge(S, 1 + a, xs[a + 1] - xs[a]);
+for (int b = 0; b < ky; ++b) dinic.add_edge(1 + kx + b, T, ys[b + 1] - ys[b]);
+for (int a = 0; a < kx; ++a) {
+    for (int b = 0; b < ky; ++b) {
+        bool black = false;
+        for (int i = 0; i < M; ++i)
+            if (x1[i] <= xs[a] && xs[a + 1] - 1 <= x2[i] &&
+                y1[i] <= ys[b] && ys[b + 1] - 1 <= y2[i]) { black = true; break; }
+        if (black) dinic.add_edge(1 + a, 1 + kx + b, INF);
+    }
+}
+cout << dinic.max_flow(S, T) << "\n";
+```
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+Suppose $M = 1$ with black rectangle $[2, 4] \times [3, 3]$.
+
+- Using **half-open** intervals $[2, 5) \times [3, 4)$, we get $X = [2, 5]$ ($w_0 = 5 - 2 = 3$) and $Y = [3, 4]$ ($h_0 = 4 - 3 = 1$).
+- MinCut is $\min(w_0, h_0) = \min(3, 1) = 1$.
+- **Failure Guard**: If you compress closed endpoints $\{x_{i,1}, x_{i,2}\}$ instead of half-open $\{x_{i,1}, x_{i,2} + 1\}$, a $1$-wide interval $[3, 3]$ collapses to $3 - 3 = 0$ width and gives a wrong answer of $0$! Always use $[L, R + 1)$.
+- **Complexity**: $|V| \le 202, |E| \le 10^4$; Dinic runs in $O(M^3)$ ($< 2\text{ ms}$).
+::::
+
+---
+
+### `#045` — [POJ 3692 / LOJ #6062] Kindergarten (& `[HAOI2017] 新型城市化` $\nu$-Critical Extension)
+
+- **Tier**: `Advanced 1 (Adv-1)` | **Judge URL**: [POJ 3692](http://poj.org/problem?id=3692) / [Luogu P3731 (`[HAOI2017] 新型城市化`)](https://www.luogu.com.cn/problem/P3731)
+- **Problem Summary**:
+  - **Base Problem (`POJ 3692`)**: In a kindergarten, there are $G \le 200$ girls (who all know each other) and $B \le 200$ boys (who all know each other). Among the girls and boys, $M$ pairs $(g_i, b_i)$ know each other. Find the maximum number of children who can be chosen so that **every pair** of chosen children knows each other (Maximum Clique).
+  - **Fine DM Extension (`[HAOI2017 / Luogu P3731] 新型城市化`)**: Given a graph $G$ of $N \le 10^4$ cities whose complement $\bar{G}$ is bipartite (partitioned into two cliques $L$ and $R$), find the maximum clique size $\omega(G)$ **and** list all missing roads $e \in \bar{E}$ whose addition to $G$ strictly increases $\omega(G)$!
+
+:::: {.callout-note collapse="true" title="Hint 1 — Complement Graph Duality: From Two-Clique Union to Bipartite MIS"}
+A subset of vertices $S \subseteq V$ is a **clique** in $G$ (every pair is connected) if and only if $S$ is an **independent set** in the complement graph $\bar{G}$ (no pair is connected in $\bar{G}$). Since all girls know each other and all boys know each other, what edges exist in $\bar{G}$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — When Does Deleting One Edge of $\bar{G}$ Increase $\alpha(\bar{G})$? (`[HAOI2017]`)"}
+Because $\bar{G}$ has zero edges inside $L$ and zero edges inside $R$, $\bar{G}$ is **bipartite**! By König's Theorem, $\omega(G) = \alpha(\bar{G}) = |V| - \nu(\bar{G})$. Adding a missing road $e$ to $G$ deletes edge $e$ from $\bar{G}$. By Theorem 3.2, which edges $e \in E(\bar{G})$ satisfy $\nu(\bar{G} \setminus \{e\}) = \nu(\bar{G}) - 1$?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — POJ 3692 & Luogu P3731"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+Maximum Clique is NP-hard on general graphs, but whenever the vertex set partitions into **two cliques** $L$ and $R$ (such as Girls and Boys in `POJ 3692`, or the 2-colored complement graph $\bar{G}$ in `Luogu P3731`), all missing edges lie strictly between $L$ and $R$. Thus the complement graph $\bar{G} = (L \sqcup R, \bar{E})$ is **bipartite**!
+
+#### Step 2: Intermediate Algebraic & Logical Representation
+Let $x_u \in \{0, 1\}$ ($u \in L$) and $y_v \in \{0, 1\}$ ($v \in R$) indicate whether child/city $u$ or $v$ is selected into the clique. Two vertices conflict if and only if $(u, v) \notin E(G) \iff (u, v) \in \bar{E}$:
+
+$$
+\omega(G) = \max \left( \sum_{u \in L} x_u + \sum_{v \in R} y_v \right) \quad \text{s.t.} \quad x_u + y_v \le 1 \;\;\forall (u, v) \in \bar{E}.
+$$
+
+By König's Theorem on the bipartite complement graph $\bar{G}$:
+
+$$
+\omega(G) = \alpha(\bar{G}) = |L| + |R| - \nu(\bar{G}).
+$$
+
+Furthermore, for `[HAOI2017] 新型城市化`, adding road $e = (u, v) \in \bar{E}$ to $G$ removes $e$ from $\bar{G}$, which increases $\omega(G)$ by $1$ if and only if $\nu(\bar{G} \setminus \{e\}) = \nu(\bar{G}) - 1$—meaning $e$ is a **Mandatory ($\nu$-Critical) Edge** of $\bar{G}$!
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+1. **Complement Bipartite Network (`POJ 3692`)**:
+   - Build boolean matrix `know[g][b]`, initialized to `false`, and set `know[g][b] = true` for all $M$ input pairs.
+   - Connect $s \to g$ (cap $1$) for $g \in \{1, \dots, G\}$, $b \to t$ (cap $1$) for $b \in \{1, \dots, B\}$, and $g \to b$ (cap $1$) whenever `!know[g][b]`.
+   - Output $G + B - \operatorname{MaxFlow}(s, t)$.
+2. **Fine DM $\nu$-Critical Edge Extraction (`Luogu P3731`)**:
+   - 2-color the complement graph $\bar{G}$ into $L \sqcup R$ (any isolated vertex can be placed in $L$).
+   - Run Dinic on $s \to L \to R \to t$ for $\bar{G}$, then run `DMDecomposition::build` (Tarjan SCC on the full residual graph $G_{f^*}$ including $s$ and $t$).
+   - A conflict edge $e = (u, v) \in \bar{E}$ ($u \in L, v \in R$) is $\nu$-critical iff `e is saturated in M*` **and** `scc[u] != scc[v]`.
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+Suppose $G = 2$ girls $\{g_1, g_2\}$, $B = 2$ boys $\{b_1, b_2\}$, and only $(g_1, b_2)$ and $(g_2, b_1)$ know each other.
+
+- The missing edges $\bar{E}$ are $(g_1, b_1)$ and $(g_2, b_2)$, which form two disjoint edges of size $\nu(\bar{G}) = 2$.
+- Maximum clique size is $2 + 2 - 2 = 2$. Both $(g_1, b_1)$ and $(g_2, b_2)$ are Mandatory ($\nu$-critical) in $\bar{G}$: adding either acquaintance creates a clique of size $3$!
+- **Failure Guard**: In `POJ 3692`, the input often lists the same $(g, b)$ pair multiple times! Always deduplicate via `know[g][b] = true` before complementing. In `Luogu P3731`, remember to include $s$ and $t$ inside Tarjan's residual graph so that edges in $L_1 \times R_1$ and $L_2 \times R_2$ are recognized as non-critical via cycles through $s$ or $t$!
+- **Complexity**: $O((G+B)^{2.5})$ for `POJ 3692`; $O(E\sqrt{V} + V + E)$ for `Luogu P3731`.
+::::
+
+---
+
+### `#046` — [AtCoder ARC 074 F (D)] Lotus Leaves
+
+- **Tier**: `Advanced 2 (Adv-2)` | **Judge URL**: [AtCoder ARC 074 F](https://atcoder.jp/contests/arc074/tasks/arc074_d)
+- **Problem Summary**: A pond is an $H \times W$ grid ($2 \le H, W \le 100$) containing a start leaf `S`, a target leaf `T`, lotus leaves `o`, and water `.`. A frog starts on `S` and can jump between any two leaves located in the **same row** or the **same column**. Find the minimum number of `o` leaves that must be removed so the frog cannot reach `T` from `S` (or output `-1` if `T` is still reachable even after removing all `o` leaves).
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Naive Leaf-to-Leaf Vertex Cut Has Too Many Edges"}
+If you make each `o` leaf a vertex and add edges between all pairs of leaves in the same row or column, each row/column becomes a clique ($O(HW(H+W))$ edges). Instead, what are the $H + W$ shared communication buses of the grid?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Row Hubs and Column Hubs: Turning Vertex Deletion into Edge Cut!"}
+Create $H$ Row Hubs $R_1, \dots, R_H$ and $W$ Column Hubs $C_1, \dots, C_W$. When the frog lands on a lotus leaf `o` at $(r, c)$, it can switch from moving along Row $r$ to moving along Column $c$ (or vice versa)! Thus what is a lotus leaf `o` at $(r, c)$ in the bipartite graph of Row Hubs and Column Hubs?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — ARC 074 F"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+We want a **Minimum Cut** disconnecting `S` from `T` on an $H \times W$ grid where transitions occur along full rows and full columns. Instead of modeling cells as vertices (requiring vertex-splitting), **Row–Column Hub Dualization** makes the $H$ rows and $W$ columns the vertices ($|V| = H + W \le 200$), and turns every lotus leaf `o` at $(r, c)$ into an **undirected capacity-1 edge** $\{R_r, C_c\}$!
+
+#### Step 2: Intermediate Algebraic & Logical Representation
+Assign a binary potential $p(R_r) \in \{0, 1\}$ to each row $r \in \{1, \dots, H\}$ and $p(C_c) \in \{0, 1\}$ to each column $c \in \{1, \dots, W\}$, denoting whether that row or column is reachable from `S` ($0$) or disconnected toward `T` ($1$):
+
+- Starting leaf `S` at $(r_S, c_S)$ forces $p(R_{r_S}) = p(C_{c_S}) = 0$.
+- Target leaf `T` at $(r_T, c_T)$ forces $p(R_{r_T}) = p(C_{c_T}) = 1$.
+  *(Immediate Feasibility Check: if $r_S = r_T$ or $c_S = c_T$, then $0 = 1$ is impossible, so output `-1`!)*
+- Every lotus leaf `o` at $(r, c)$ allows jumping between Row $r$ and Column $c$ in **either direction** unless removed (cost $1$):
+
+$$
+\min \sum_{(r,c) = \texttt{'o'}} |p(R_r) - p(C_c)|.
+$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+- **Vertices**: Source $s$, sink $t$, Row Hubs $R_1, \dots, R_H$, Column Hubs $C_1, \dots, C_W$.
+- **Infinite-Capacity Anchors**:
+  - Connect $s \to R_{r_S}$ and $s \to C_{c_S}$ with capacity $\infty$.
+  - Connect $R_{r_T} \to t$ and $C_{c_T} \to t$ with capacity $\infty$.
+- **Bidirectional Leaf Edges**:
+  - For every cell $(r, c)$ with $\text{grid}[r][c] = \texttt{'o'}$, add a directed arc $R_r \to C_c$ of capacity $1$ **and** a directed arc $C_c \to R_r$ of capacity $1$.
+
+```cpp
+if (rS == rT || cS == cT) { cout << -1 << "\n"; return 0; }
+int S = 0, T = H + W + 1;
+Dinic<int> dinic(T + 1);
+dinic.add_edge(S, 1 + rS, INF);
+dinic.add_edge(S, 1 + H + cS, INF);
+dinic.add_edge(1 + rT, T, INF);
+dinic.add_edge(1 + H + cT, T, INF);
+for (int r = 0; r < H; ++r) {
+    for (int c = 0; c < W; ++c) {
+        if (grid[r][c] == 'o') {
+            dinic.add_edge(1 + r, 1 + H + c, 1);
+            dinic.add_edge(1 + H + c, 1 + r, 1);
+        }
+    }
+}
+cout << dinic.max_flow(S, T) << "\n";
+```
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+Suppose $H = W = 3$, `S` at $(1, 1)$, `T` at $(3, 3)$, and `o` at $(1, 3)$ and $(3, 2)$ and $(1, 2)$.
+
+- Path 1: $(1, 1) \xrightarrow{R_1} (1, 3) \xrightarrow{C_3} (3, 3)$ uses leaf $(1, 3)$.
+- Path 2: $(1, 1) \xrightarrow{R_1} (1, 2) \xrightarrow{C_2} (3, 2) \xrightarrow{R_3} (3, 3)$ traverses $R_1 \to C_2 \to R_3$!
+- **Failure Guard**: Notice that Path 2 traverses $C_2 \to R_3$ via leaf $(3, 2)$! If you wired leaf edges only one-way $R_r \to C_c$ instead of **bidirectionally** $R_r \leftrightarrow C_c$, the graph could never take $2$ hops $R_1 \to C_2 \to R_3$ and would miss Path 2 completely!
+- **Complexity**: $|V| = H + W + 2 \le 202$, $|E| \le 2HW \le 2 \cdot 10^4$; Dinic runs in $O(HW\sqrt{H+W})$ ($< 1\text{ ms}$).
+::::
+
+---
+
+### `#047` — [JSOI2009] 游戏 (Bipartite Grid Token Walk Game)
+
+- **Tier**: `Mastery 1 (Mas-1)` | **Judge URL**: [Luogu P4055](https://www.luogu.com.cn/problem/P4055)
+- **Problem Summary**: Given an $N \times M$ grid ($1 \le N, M \le 100$) of `.` (empty squares) and `#` (obstacles). First, Player 1 (`YY`) chooses an initial empty square $v_0$ and places a token on it. Then, starting with Player 2 (`HH`), the two players alternately move the token to a 4-connected adjacent `.` square that has **never been visited before**. The player who cannot make a valid move loses. Determine whether Player 1 (`YY`) has a winning strategy, and if so, output **all** winning starting squares $(r, c)$ in lexicographical order.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Check Who Moves First After $v_0$ Is Chosen!"}
+Player 1 (`YY`) only **places** the token on $v_0$; **Player 2 (`HH`)** makes the first move $v_0 \to v_1$! In the terminology of Theorem 4.1, is Player 1 the First Mover or the Second Mover in the walk game starting from $v_0$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Avoidable Vertices $V_E = L_1 \cup R_2$ via Residual BFS"}
+Because Player 2 moves first from $v_0$, Player 1 (`YY`) is the **Second Mover** from $v_0$! By Theorem 4.1, Second Mover wins from $v_0$ if and only if $v_0 \in V_E = L_1 \cup R_2$ is an **Avoidable** vertex (omitted by at least one maximum matching). How do you find all $v_0 \in L_1 \cup R_2$ in $O(NM)$ time after a single Dinic run?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Luogu P4055"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+This is the canonical **Impartial Self-Avoiding Walk Game on a Bipartite Graph** (§4). Every orthogonal grid step flips chessboard parity $\phi(r, c) = (r + c) \bmod 2$, so the grid of `.` cells is bipartite. Furthermore, we must classify **all** $\le 10^4$ starting cells, requiring the $O(V + E)$ Coarse Dulmage–Mendelsohn BFS rather than $O(V \cdot E\sqrt{V})$ per-vertex rematching.
+
+#### Step 2: Intermediate Algebraic & Logical Representation
+Partition the `.` cells into $L = \{(r, c) = \texttt{'.'} : (r + c) \text{ is odd}\}$ and $R = \{(r, c) = \texttt{'.'} : (r + c) \text{ is even}\}$.
+Since `YY` places the token on $v_0$ and `HH` moves first from $v_0$, `YY` is the **Second Mover** in the walk game from $v_0$. By Theorem 4.1:
+
+$$
+\text{YY wins by choosing } v_0 \iff \exists M^* \in \mathcal{M}^*(G) \text{ such that } v_0 \notin V(M^*) \iff v_0 \in V_E = L_1 \cup R_2.
+$$
+
+In particular, `YY` has at least one winning starting square if and only if $G$ does **not** have a perfect matching ($V_E \ne \emptyset$)!
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+1. Build the unit bipartite matching network $N$:
+   - $s \to u$ (cap $1$) for each $u \in L$, $v \to t$ (cap $1$) for each $v \in R$, and $u \to v$ (cap $1$) for adjacent `.` cells $u \in L, v \in R$.
+2. Run Dinic to obtain maximum flow $f^*$.
+3. Run Coarse DM Reachability (`DMDecomposition` from §5.1):
+   - Forward BFS from $s$ along residual arcs with $c_{f^*} > 0$ marks $V_S$, giving $L_1 = L \cap V_S$.
+   - Backward BFS from $t$ along residual arcs with $c_{f^*} > 0$ marks $V_T^{\text{rev}}$, giving $R_2 = R \cap V_T^{\text{rev}}$.
+4. Collect all `.` cells $(r, c)$ in $L_1 \cup R_2$. If empty, print `LOSE`; otherwise print `WIN` followed by all $(r, c) \in L_1 \cup R_2$.
+
+```cpp
+// After running Dinic on S -> L -> R -> T:
+vector<int> vis_S(T + 1, 0), vis_T(T + 1, 0);
+queue<int> q;
+q.push(S); vis_S[S] = 1;
+while (!q.empty()) {
+    int u = q.front(); q.pop();
+    for (const auto& e : dinic.adj[u])
+        if (e.cap > 0 && !vis_S[e.to]) { vis_S[e.to] = 1; q.push(e.to); }
+}
+q.push(T); vis_T[T] = 1;
+while (!q.empty()) {
+    int u = q.front(); q.pop();
+    for (const auto& e : dinic.adj[u]) {
+        // Backward arc v -> u has positive residual capacity iffdinic.adj[v][e.rev].cap > 0
+        int v = e.to;
+        if (dinic.adj[v][e.rev].cap > 0 && !vis_T[v]) { vis_T[v] = 1; q.push(v); }
+    }
+}
+vector<pair<int, int>> ans;
+for (int r = 1; r <= N; ++r)
+    for (int c = 1; c <= M; ++c)
+        if (grid[r][c] == '.') {
+            int id = node_id(r, c);
+            bool in_L = ((r + c) % 2 == 1);
+            if ((in_L && vis_S[id]) || (!in_L && vis_T[id]))
+                ans.emplace_back(r, c);
+        }
+```
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+Consider a $1 \times 3$ path `. . .` at $(1, 1), (1, 2), (1, 3)$:
+
+- $L = \{(1, 2)\}$ (odd sum $3$), $R = \{(1, 1), (1, 3)\}$ (even sums $2, 4$).
+- Maximum matching size is $\nu(G) = 1$, say $M^* = \{((1, 2), (1, 1))\}$, leaving $(1, 3) \in U_R$ unmatched.
+- Backward BFS from $t$: $t \leftarrow (1, 3) \leftarrow (1, 2) \leftarrow (1, 1)$ marks $R_2 = \{(1, 1), (1, 3)\}$ and $L_2 = \{(1, 2)\}$.
+- Thus $V_E = L_1 \cup R_2 = \{(1, 1), (1, 3)\}$: `YY` wins by placing the token on either endpoint $(1, 1)$ or $(1, 3)$ (`HH` is forced to step to $(1, 2)$, and `YY` steps to the other endpoint and wins!).
+- **Failure Guard**: Role-inversion (`FM-06B`)—outputting $V \setminus V_E$ instead of $V_E$ confuses `YY` (who places the token and moves *second*) with `HH` (who moves *first*).
+- **Complexity**: Dinic in $O((NM)^{3/2})$ plus $O(NM)$ BFS ($< 15\text{ ms}$).
+::::
+
+---
+
+### `#048` — [NOI2011] 兔兔与蛋蛋游戏 (Rabbit and Egg Sliding-Tile Game)
+
+- **Tier**: `Mastery 2 (Mas-2)` | **Judge URL**: [Luogu P1971](https://www.luogu.com.cn/problem/P1971)
+- **Problem Summary**: An $N \times M$ board ($1 \le N, M \le 40$) contains white stones `O`, black stones `X`, and **exactly one** blank space `.`. Rabbit and Egg play $K \le 1000$ turns ($2K$ half-moves): on Rabbit's turn, Rabbit slides an orthogonally adjacent white stone `O` into the blank space `.`; on Egg's turn, Egg slides an orthogonally adjacent black stone `X` into the blank space `.`. Given the transcript of $2K$ moves actually played, identify how many times Rabbit made a **blunder** (i.e., before Rabbit's move, Rabbit had a winning strategy from the current board state, AND after Rabbit's move, Egg now has a winning strategy from the resulting board state) and list their turn indices.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why the Blank Space `.` Can NEVER Revisit a Square!"}
+Track the movement of the single blank space `.`! Let the initial blank space at $(r_0, c_0)$ have chessboard parity $p_0 = (r_0 + c_0) \bmod 2$.
+
+- On Move 1 (Rabbit), `.` swaps with an adjacent `O` at parity $1 - p_0$, leaving `O` at $(r_0, c_0)$ (parity $p_0$).
+- On Move 2 (Egg), `.` swaps with an adjacent `X` at parity $p_0$, leaving `X` at parity $1 - p_0$.
+
+Notice that whenever `.` leaves a square of parity $p_0$, it leaves an `O` behind; whenever `.` leaves a square of parity $1 - p_0$, it leaves an `X` behind! What stone color is required to **enter** a square of parity $p_0$ vs. $1 - p_0$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Filtering the Board to the Valid Bipartite Graph & Online Vertex Deletion"}
+To enter a square of parity $1 - p_0$ (Rabbit's move), that square must hold `O`; once `.` leaves it on Egg's move, it forever holds `X`, so `.` can **never** enter it again! Symmetrically, to enter a square of parity $p_0$ (Egg's move), that square must hold `X`; once `.` leaves it on Rabbit's move, it forever holds `O`, so `.` can **never** enter it again!
+Thus if we keep **only**:
+
+- $L$: the initial blank $(r_0, c_0)$ plus all squares of parity $p_0$ that initially hold `X`, and
+- $R$: all squares of parity $1 - p_0$ that initially hold `O`,
+
+the sliding-tile game is **100% isomorphic to a Self-Avoiding Walk Game** on the bipartite graph $G = (L \sqcup R, E)$!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Luogu P1971"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+At first glance, sliding stones changes the board configuration dynamically, which looks like PSPACE-hard Rush Hour / 15-Puzzle. However, tracking the **blank space `.`** reveals a strict parity-color alternation: `.` alternates between $(p_0, \texttt{'X'})$ squares and $(1 - p_0, \texttt{'O'})$ squares, and overwriting a square with the opposite stone color permanently locks that square out of future moves! This compiles the entire game into an online **Bipartite Self-Avoiding Walk Game** where vertices are deleted one by one along the game transcript.
+
+#### Step 2: Intermediate Algebraic & Logical Representation
+Let $(r_0, c_0)$ be the initial blank `.`, and let $p_0 = (r_0 + c_0) \bmod 2$. Define the active vertex sets:
+
+$$
+L = \{(r_0, c_0)\} \cup \big\{ (r, c) : (r+c) \bmod 2 = p_0 \;\land\; \text{grid}[r][c] = \texttt{'X'} \big\},
+$$
+
+$$
+R = \big\{ (r, c) : (r+c) \bmod 2 = 1 - p_0 \;\land\; \text{grid}[r][c] = \texttt{'O'} \big\}.
+$$
+
+At the start of turn $t \in \{1, \dots, K\}$, the blank sits at $u_t \in L$, and Rabbit moves the blank to an unvisited neighbor $v_t \in R$ (permanently deleting $u_t$ from the graph); then Egg moves the blank from $v_t \in R$ to an unvisited neighbor $u_{t+1} \in L$ (permanently deleting $v_t$ from the graph).
+By Theorem 4.1 (since the current player moves `.` **first** out of its current cell!):
+
+- **Before Rabbit's move at turn $t$**: Rabbit has a winning strategy from $u_t$ in the current remaining graph $G_t$ if and only if **$u_t$ is Essential** in $G_t$ ($\nu(G_t \setminus \{u_t\}) = \nu(G_t) - 1$).
+- **After Rabbit's move $u_t \to v_t$**: The remaining graph is $G'_t = G_t \setminus \{u_t\}$ with the blank at $v_t$. Rabbit's move was a losing blunder if and only if Rabbit could have won before the move ($u_t$ was Essential in $G_t$) **and** Egg now has a winning strategy from $v_t$ in $G'_t$ (**$v_t$ is Essential** in $G'_t$)!
+
+#### Step 3: Reverse-Engineering Scratchpad (Incremental Online DM Maintenance)
+How do we test whether the current vertex $x$ is Essential, and then permanently delete $x$ from the maintaining maximum matching `match[]`, in $O(VE)$ time per step?
+
+1. **Initial Matching**: Build the bipartite graph $G = (L \sqcup R, E)$ between adjacent active cells and compute an initial maximum matching `match[]` via Hungary / Kuhn's DFS.
+2. **Testing Essentiality + Deleting $x$ in One Step (`del_and_check(x)`)**:
+   - Mark `removed[x] = true`.
+   - If `match[x] == -1` ($x$ was already unmatched in our current maximum matching!), then $x$ is trivially **Avoidable** (not Essential), and deleting $x$ leaves the remaining matching maximum! Return `essential = false`.
+   - If `match[x] = w != -1`, unmatch `w` (`match[w] = -1, match[x] = -1`) and run a single Kuhn augmenting-path DFS starting from `w` in the remaining graph (`!removed[.]`):
+     - If an augmenting path from `w` is found, the maximum matching size of $G \setminus \{x\}$ did **not** drop ($\nu(G \setminus \{x\}) = \nu(G)$), so $x$ was **Avoidable** (`essential = false`)!
+     - If **no** augmenting path from `w` exists, $\nu(G \setminus \{x\}) = \nu(G) - 1$, so $x$ was **Essential** (`essential = true`)!
+
+```cpp
+// Returns true iff x was Essential in the current graph, and permanently deletes x
+bool del_and_check(int x) {
+    removed[x] = true;
+    int w = match_partner[x];
+    if (w == -1) return false; // Already unmatched -> Avoidable!
+    match_partner[x] = match_partner[w] = -1;
+    fill(vis.begin(), vis.end(), 0);
+    // If w can re-augment in G \ {x}, then x was Avoidable; else x was Essential!
+    return !dfs_augment(w);
+}
+
+// For each turn t = 1 .. K:
+// Blank is currently at u_t (Rabbit's turn):
+bool win_before = del_and_check(u_t); // Deletes u_t and checks if Rabbit could win
+int v_t = cell_id(rabbit_r[t], rabbit_c[t]); // Blank moves to v_t
+bool egg_wins_after = del_and_check(v_t);    // Deletes v_t and checks if Egg wins from v_t
+if (win_before && egg_wins_after) blunders.push_back(t);
+int u_next = cell_id(egg_r[t], egg_c[t]);    // Blank moves to u_{t+1}
+u_t = u_next;
+```
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+Look at how clean `del_and_check` is: when Rabbit moves $u_t \to v_t$, `del_and_check(u_t)` tests whether $u_t$ was Essential in $G_t$ **and** updates the maximum matching to $G'_t = G_t \setminus \{u_t\}$. Immediately after, when Egg is about to move from $v_t$ in $G'_t$, `del_and_check(v_t)` tests whether $v_t$ is Essential in $G'_t$ **and** updates the maximum matching to $G_{t+1} = G'_t \setminus \{v_t\}$ for the next turn!
+
+- **Failure Guard**: Only include cells matching the invariant `(parity == p0 && grid == 'X') || (parity != p0 && grid == 'O') || initial_blank`. Including `(parity == p0 && grid == 'O')` adds unreachable vertices that corrupt the matching size!
+- **Complexity**: Initial matching plus $2K$ incremental DFS augmentations on $|V| \le 1600, |E| \le 3200$ runs in $O((NM + K) \cdot NM) \approx 5 \cdot 10^6$ operations ($< 10\text{ ms}$).
+::::
+
+---
+
+## 7. Chapter 6 Verification Checklist & Failure Mode Summary
+
+Before submitting any Hidden Bipartition, Dulmage–Mendelsohn, or Bipartite Game solution, run through this diagnostic checklist:
+
+1. **Bipartition Invariant Audit**:
+   - *Grid Leapers $(p, q)$*: Did you divide by $g = \gcd(p, q)$ first? If $(p/g + q/g)$ is odd, color by $(r' + c') \bmod 2$; if both $p/g$ and $q/g$ are odd (`Luogu P5030`), color by $r' \bmod 2$!
+   - *Prime Sums $a_i + a_j \in \mathbb{P}$*: Did you deduplicate $1$s so at most **one** $1$ remains (`1 + 1 = 2` clique trap)?
+2. **Obstacle-Split Strip & Coordinate Compression Audit**:
+   - *Soft (`x`) vs. Hard (`#`) Obstacles*: Do hard walls `#` split row/column segment IDs while soft obstacles `x` neither split segment IDs nor generate edges (`#041`)?
+   - *Discretized Grids (`#044`)*: Did you compress half-open intervals $[x_1, x_2 + 1)$ so unit widths are preserved?
+   - *Hub Dualization (`#046`)*: Are leaf edges wired **bidirectionally** ($R_r \leftrightarrow C_c$, cap $1$ each way)?
+3. **Dulmage–Mendelsohn & Game Role Audit**:
+   - *Tarjan SCC Domain*: When classifying $\nu$-critical edges via $\operatorname{scc}(u) \ne \operatorname{scc}(v)$, did you include **both $s$ and $t$** inside the residual graph passed to Tarjan?
+   - *Walk Game Role-Inversion*: Did you check whether Player 1 **moves first from $v_0$** (wins $\iff v_0 \notin V_E$ is Essential, `#048`) or **places the token on $v_0$ while Player 2 moves first** (wins $\iff v_0 \in V_E$ is Avoidable, `#047`)?
+
+---
+
+## 8. Chapter Revision Summary & Multilingual Bibliography
+
+### Key Formulas & Structural Invariants
+
+- **Coarse DM Partition ($V = V_E \sqcup V_O \sqcup V_U$)**:
+  - $V_E = (L \cap V_S) \cup (R \cap V_T^{\text{rev}})$: **Avoidable** vertices (omitted by at least one $M^*$; never in any MVC; Second Mover wins in Bipartite Walk Game).
+  - $V_O = (R \cap V_S) \cup (L \cap V_T^{\text{rev}})$: **Bottleneck Essential** vertices (in every $M^*$ and in **every** MVC).
+  - $V_U = V \setminus (V_S \cup V_T^{\text{rev}})$: **Core Essential** vertices (in every $M^*$ and in **some** MVC).
+- **Fine DM Edge Classification (Tarjan SCC on $G_{f^*}$ including $s, t$)**:
+  - **Mandatory ($\nu$-Critical)**: $e \in M^* \land \operatorname{scc}_{G_{f^*}}(u) \ne \operatorname{scc}_{G_{f^*}}(v)$.
+  - **Admissible (Allowed)**: $e \in M^* \lor \operatorname{scc}_{G_{f^*}}(u) = \operatorname{scc}_{G_{f^*}}(v)$.
+  - **Forbidden**: $e \notin M^* \land \operatorname{scc}_{G_{f^*}}(u) \ne \operatorname{scc}_{G_{f^*}}(v)$.
+
+### Multilingual Bibliography
+
+- **`[EN]` Dulmage, A. L., & Mendelsohn, N. S. (1958)**. *Coverings of bipartite graphs*. Canadian Journal of Mathematics, 10, 517–534. (Foundational paper introducing the canonical $V_E \sqcup V_O \sqcup V_U$ coarse and fine block triangular decomposition.)
+- **`[EN]` Lovász, L., & Plummer, M. D. (1986)**. *Matching Theory*. AMS Chelsea Publishing. (Chapters 3–4 develop the Dulmage–Mendelsohn and Gallai–Edmonds decompositions in full generality.)
+- **`[ZH]` 胡伯涛 [Amber] (2007)**. 《最小割模型在信息学竞赛中的应用》 (*Applications of Minimum Cut Models in OI*). 国家集训队 2007 论文集. (Standard Chinese reference on bipartite conflict compilation, grid parity, and extremal minimum cuts.)
+- **`[ZH]` 贾志鹏 (2011)**. 《二分图博弈及其在 NOI2011 兔兔与蛋蛋游戏中的应用》. (Introduces the online bipartite walk game reduction and incremental augmenting-path blunder check.)
+- **`[JA]` noshi91 & maspy (2020–2023)**. *Dulmage–Mendelsohn Decomposition (`DM分解`) and Maximum Matching Criticality*. (Japanese algorithmic competitive programming treatises on $G_{f^*}$ SCC decomposition and lattice distance 2-adic coloring in `AGC 025 D`.)

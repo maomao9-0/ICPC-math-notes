@@ -498,3 +498,25 @@ HTML dropdowns containing headings with fenced collapsible callouts, repaired
 four nested hint dropdowns in baseline chapter 08, and restored list boundaries
 throughout the FPS track. Validation and reproducible checks are recorded in
 [VALIDATION_FORMATTING.md](VALIDATION_FORMATTING.md).
+
+
+---
+
+## 24-Chapter Network Flows, Minimum Cuts, Matching & Duality Modelling Track Audit (`flows/` — `Ch 01`–`Ch 24`, `CP-I`–`CP-VI`, Capstones)
+
+In addition to the core competitive programming mathematics textbook (`math/`) and the Formal Power Series textbook (`fps/`), the repository includes the complete **36-page Network Flows, Minimum Cuts, Matching & Duality Modelling Textbook Track** (`4` Front-Matter pages + `24` Core Chapters + `6` Blind Recognition Checkpoints + `2` Capstone Compendia under `flows/`), governed by [`flows_research/CURRICULUM_ARCHITECTURE.md`](flows_research/CURRICULUM_ARCHITECTURE.md), [`flows_research/TEXTBOOK_AUTHORING_AUDIT.md`](flows_research/TEXTBOOK_AUTHORING_AUDIT.md), and [`AGENTS.md`](AGENTS.md).
+
+### Architectural & Editorial Invariants Verified Across All 36 `flows/` Pages
+
+1. **Zero-Magic 4-Step Non-Graph-to-Flow Compilation Protocol**: Every chapter and worked problem explicitly walks through (1) Non-Graph Diagnostic Signal, (2) Intermediate Algebraic Formulation, (3) Reverse-Engineering Scratchpad (Mechanical Graph Compilation), and (4) Toy Trace, Residual Extraction & Complexity Contract.
+2. **All Four User-Highlighted Benchmark Flagships Derived & Verified by Exact Oracles**:
+   - **Flagship #1**: [AtCoder AGC 038 F — Two Permutations](https://atcoder.jp/contests/agc038/tasks/agc038_f) (`#087`, `flows/chapters/ch11-bipartite-variable-inversion-supermodular-rescue.qmd`)
+   - **Flagship #2**: [AtCoder ARC 107 F — Sum of Abs](https://atcoder.jp/contests/arc107/tasks/arc107_f?lang=en) (`#095`, `flows/chapters/ch12-multi-state-unary-chains-threshold-cuts.qmd`)
+   - **Flagship #3**: [AtCoder ARC 142 E — Pairing Wizards](https://atcoder.jp/contests/arc142/tasks/arc142_e?lang=en) (`#096`, `flows/chapters/ch12-multi-state-unary-chains-threshold-cuts.qmd`)
+   - **Flagship #4**: [Codeforces 1427 G — One Billion Shades of Grey](https://codeforces.com/problemset/problem/1427/G) (`#103`, `flows/chapters/ch13-ishikawa-convex-penalties-coarea-parametric-cuts.qmd`)
+3. **All 25 Broken-Gadget Failure Modes (`FM-01`–`FM-25`) & 14 Direction B Flow-Elimination Archetypes (`Rev-01`–`Rev-14`) Covered**: Every chapter includes a concrete broken-gadget counterexample proving what breaks when a structural hypothesis is violated.
+4. **320-Problem Curation (`#001`–`#320`) + Strict Template Quarantine (`R-01`–`R-64`)**:
+   - **`192` Chapter Ladder Problems (`24 Chapters × 8 Problems`, `#001`–`#192`)**
+   - **`48` Blind Recognition Checkpoint Problems (`6 Checkpoints × 8 Problems`, `#193`–`#240`)**
+   - **`80` Synthesis Reserve & Dual-Perspective Problems (`#241`–`#320`)** in `flows/capstones/synthesis-reserve.qmd` and `flows/capstones/problem-archive-guide.qmd`, with all bare library/template problems (`R-01`–`R-64`) strictly quarantined.
+5. **Automated Mathematical Oracle & Quarto Hygiene Sign-Off (`tests/audit_flows_models.py`)**: All `24 / 24` exact mathematical & graph-compilation oracles (`Ch 01`–`Ch 24`) and all `36 / 36` `flows/*.qmd` structural/Quarto hygiene checks pass with `0` errors.

@@ -1,0 +1,1356 @@
+---
+title: "Chapter 09 — Minimum Cut as Binary Variable Assignment & Project Selection"
+subtitle: "From Pseudo-Boolean Cut Monomials and Optimistic Regret Accounting (`先拿后退`) to Picard's Maximum-Weight Closure, Topological Deadlock Pruning, and Hall-Shifted Closures"
+---
+
+## Prerequisites & Learning Objectives
+
+::: {.callout-note title="Prerequisites"}
+Before studying this chapter, you should be fluent in:
+
+- **Chapter 1 & Chapter 2 (Max-Flow Min-Cut Duality & Residual Cut Anatomy)**: Strongly polynomial runtime bounds of Dinic's algorithm on unit/bipartite networks, residual graph reachability $S_{\min} = \{v \in V : S \leadsto_{G_{f^*}} v\}$, and why directed edges crossing backward from $T$ to $S$ contribute zero to the capacity of an $(S, T)$-cut.
+- **Chapter 5 & Chapter 6 (Bipartite Minimum Vertex Cover & Maximum Weight Independent Set)**: How infinite-capacity internal edges $(u \to v, \infty)$ forbid simultaneous state pairs across a bipartite partition.
+:::
+
+::: {.callout-tip title="Learning Objectives"}
+By the end of this chapter, you will be able to:
+
+1. **Compile Logical Binary Decisions into Cut Polynomials**: Translate binary indicator variables $x_i \in \{0, 1\}$ ($x_i = 1 \iff i \in S$, $x_i = 0 \iff i \in T$) and directed cut edges $(u \to v, c)$ into quadratic pseudo-Boolean monomials $c \cdot x_u (1 - x_v)$, while seamlessly translating between the Chinese selection convention ($x_S = 1, x_T = 0$) and the Japanese `燃やす埋める` convention ($y_S = 0, y_T = 1$).
+2. **Apply Optimistic Baseline & Regret Accounting (`先拿后退`)**: Convert signed profit maximization problems into non-negative minimum-cut minimization via $\max \text{NetGain} = \sum_{w_i > 0} w_i - \min\text{Cut}$, and normalize signed unary payoffs via $O(1)$ 2-edge path pre-flow (`差値正規化`) or uniform pedestal shifts (`ゲタを履かせる`).
+3. **Prove and Apply Picard's Maximum-Weight Closure Theorem (`最大权闭合子图`)**: Compile arbitrary prerequisite implications $x_u = 1 \implies x_v = 1$ into $\infty$-capacity directed arcs, prove the exact double-inequality bijection between finite $(S, T)$-cuts and closed subsets, and reconstruct the minimum-cardinality optimal closure via $S_{\min}$.
+4. **Eliminate Cyclic Deadlocks and Compile Non-Graph Closure Archetypes**: Prune mutually dependent cycles and their causal descendants via Kahn's topological BFS (`[NOI2009] 植物大战僵尸`, `FM-09`), and compile divisibility posets (`ARC 085 E`), interval inclusion pyramids (`[SHOI2017] 寿司餐厅`), and Hall-guaranteed bipartite matchings (`CF 103 E`) into closure networks.
+:::
+
+---
+
+## 1. The Paradigm Shift — From Physical Pipes to Logical Binary Variables ($x_i \in \{0, 1\}$)
+
+In Parts I and II of this textbook, flow networks represented **physical movement** or **explicit matching**: units of fluid travelling along pipes from $S$ to $T$, trajectories stitching across a DAG, or disjoint pairings between left and right vertices.
+
+Beginning in Part III (`Chapters 09–13`), we abandon the physical pipe metaphor entirely. Whenever we invoke a minimum $(S, T)$-cut solver in this part of the book, no physical commodity is flowing through the problem's domain. Instead, the directed network $G = (V, E)$ is a **compiled algebraic circuit** whose $(S, T)$-partitions $(V_S, V_T)$ are in one-to-one correspondence with truth assignments to $N$ binary decision variables $\mathbf{x} = (x_1, \dots, x_N) \in \{0, 1\}^N$.
+
+In the Japanese competitive programming literature (`noshi91`, `maspypy`, `tatyam`), this paradigm is celebrated as **`燃やす埋める` (*Burn or Bury*)**: every decision item $i$ must ultimately be thrown into either the $S$-furnace ("burn") or the $T$-pit ("bury"), and each directed edge $(u \to v, c)$ acts as a tax collector that charges penalty $c \ge 0$ if and only if $u$ lands in $S$ while $v$ lands in $T$.
+
+---
+
+### 1.1 Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+How do you recognize a Minimum-Cut Binary Assignment or Project Selection problem when the English problem statement mentions no graphs, no pipes, and no flows?
+
+1. **Binary Decision Universe**: Every decision entity $i \in \{1, \dots, N\}$ must be assigned to one of two mutually exclusive states:
+   - *Select vs. Abandon*, *Build vs. Skip*, *Keep vs. Smash*, *Assign to Group A vs. Group B*, or *Fire vs. Retain*.
+2. **Overlapping Prerequisites or Coupled Pairwise Penalties**:
+   - Choosing entity $u$ forces you to also choose (or pay for) entity $v$ ($x_u = 1 \implies x_v = 1$), or choosing $u$ without $v$ incurs a penalty $c_{uv} > 0$.
+   - **Why Tree / Bitmask DP Fails**: In a general dependency DAG or interaction hypergraph, two projects $u_1, u_2$ can share a common prerequisite instrument $v$ (forming diamond subgraphs $u_1 \to v \leftarrow u_2$). A subtree DP cannot merge the profit of $u_1$ and $u_2$ without either double-counting the cost of $v$ or tracking the entire frontier of already-purchased instruments ($2^N$ states).
+   - **Why Greedy Fails**: An instrument $v$ may be unprofitable for any single experiment $u_1$ ($p_{u_1} < c_v$), so a local greedy check rejects $u_1$; yet when five experiments $u_1, \dots, u_5$ share $v$, their combined profit $\sum_{k=1}^5 p_{u_k} \gg c_v$ makes the bundle overwhelmingly profitable.
+3. **Constraint Bound Signature**: $N, M \in [50, 5 \cdot 10^4]$ entities/interactions with arbitrary large weights $V_{\max} \le 10^9$.
+   - Even when weights are $10^9$, if finite capacities appear primarily on $S$-incident and $T$-incident arcs while internal dependency arcs carry capacity $+\infty$, Dinic's algorithm runs in strongly polynomial time ($O(V^2 E)$ in general and $O(E\sqrt{V})$ on bipartite closure networks), completely independent of $V_{\max}$.
+
+---
+
+### 1.2 Step 2: The Cut Monomial $c \cdot x_u (1 - x_v)$ & The Dual-Convention Rosetta Stone
+
+Let $G = (V, E)$ be a directed network with source $S$, sink $T$, decision vertices $U = V \setminus \{S, T\}$, and non-negative edge capacities $c: E \to \mathbb{R}_{\ge 0} \cup \{+\infty\}$.
+
+An **$(S, T)$-cut** is a partition $V = V_S \sqcup V_T$ satisfying $S \in V_S$ and $T \in V_T$. By definition (`Chapter 1`), its capacity is the sum of capacities of all directed edges whose tail lies in $V_S$ and whose head lies in $V_T$:
+
+$$\text{cap}(V_S, V_T) = \sum_{\substack{(u \to v) \in E \\ u \in V_S, \, v \in V_T}} c(u \to v).$$
+
+Crucially, because the cut is **directed**, an edge $(u \to v)$ with $u \in V_T$ and $v \in V_S$ (crossing backward from $V_T$ to $V_S$) contributes **$0$** to $\text{cap}(V_S, V_T)$.
+
+To turn $\text{cap}(V_S, V_T)$ into an algebraic polynomial, we assign each vertex $v \in V$ a binary indicator variable. In the global literature, two opposite conventions exist for mapping $V_S$ and $V_T$ to $\{0, 1\}$. Mixing them up is the single most common source of reversed edges in contest implementations, so we state both explicitly and establish a permanent translation dictionary.
+
+#### Convention A (`[ZH]` Selection / Closure Convention — Primary Convention of This Chapter)
+
+For every vertex $v \in V$, define $x_v \in \{0, 1\}$ as the **membership indicator of $V_S$**:
+
+$$x_v = \begin{cases} 1 & \text{if } v \in V_S \quad (\text{"selected / active / kept on the } S\text{-side"}), \\ 0 & \text{if } v \in V_T \quad (\text{"abandoned / inactive / relegated to the } T\text{-side"}), \end{cases}$$
+
+with fixed boundary constants **$x_S = 1$** and **$x_T = 0$**.
+
+Under Convention A, when does a directed edge $(u \to v)$ of capacity $c \ge 0$ cross the cut from $V_S$ to $V_T$? Precisely when $u \in V_S$ ($x_u = 1$) and $v \in V_T$ ($x_v = 0$). Over $\{0, 1\}^2$, the unique polynomial that evaluates to $1$ at $(x_u, x_v) = (1, 0)$ and $0$ on the other three states $(0, 0), (0, 1), (1, 1)$ is the product $x_u (1 - x_v)$:
+
+$$\boxed{\text{Directed Edge } (u \xrightarrow{c} v) \quad \Longleftrightarrow \quad \text{Cut Monomial } c \cdot x_u (1 - x_v)}$$
+
+Substituting $x_S = 1$ and $x_T = 0$ into this single rule immediately yields all three atomic building blocks of a minimum-cut network:
+
+1. **Source-to-Vertex Edge $(S \xrightarrow{c} u)$**: Since $x_S = 1$, the cut monomial is $c \cdot x_S (1 - x_u) = c(1 - x_u)$. It charges penalty $c$ if and only if **$x_u = 0$** ($u \in V_T$).
+2. **Vertex-to-Sink Edge $(u \xrightarrow{c} T)$**: Since $x_T = 0$, the cut monomial is $c \cdot x_u (1 - x_T) = c x_u$. It charges penalty $c$ if and only if **$x_u = 1$** ($u \in V_S$).
+3. **Internal Directed Edge $(u \xrightarrow{c} v)$**: Charges penalty $c \cdot x_u(1 - x_v)$ if and only if **$x_u = 1 \land x_v = 0$** ($u \in V_S, v \in V_T$).
+
+Summing over all edges of $G$, the capacity of the cut $(V_S, V_T)$ induced by $\mathbf{x} \in \{0, 1\}^U$ is the **Quadratic Pseudo-Boolean Cut Polynomial** (a quadratic *posiform* in literals $x_u$ and $\bar{x}_v = 1 - x_v$):
+
+$$\Phi_G(\mathbf{x}) = \underbrace{\sum_{u \in U} c(S \to u)\,(1 - x_u)}_{\text{severed } S \to u \text{ when } x_u = 0} \;+\; \underbrace{\sum_{u \in U} c(u \to T)\,x_u}_{\text{severed } u \to T \text{ when } x_u = 1} \;+\; \underbrace{\sum_{(u \to v) \in E(U)} c(u \to v)\,x_u(1 - x_v)}_{\text{severed } u \to v \text{ when } x_u = 1, \, x_v = 0}.$$
+
+#### Convention B (`[JA]` `燃やす埋める` / Kolmogorov–Zabih Convention)
+
+In Japanese treatises (`noshi91`, `maspypy`) and computer vision papers (`Kolmogorov–Zabih 2004`), the binary variable $y_v \in \{0, 1\}$ is defined as the **membership indicator of $V_T$** ($y_v = 1 - x_v$):
+
+$$y_v = \begin{cases} 0 & \text{if } v \in V_S \quad (y_S = 0), \\ 1 & \text{if } v \in V_T \quad (y_T = 1). \end{cases}$$
+
+Under Convention B, an edge $(u \to v)$ is severed iff $y_u = 0$ and $y_v = 1$, producing the cut monomial $c \cdot (1 - y_u) y_v$. Both conventions compile the **exact same directed graph** when we identify "selected" with $V_S$ ($x_v = 1 \iff y_v = 0$).
+
+| Modelling Concept | Convention A ($x_S = 1, x_T = 0$: $x_v = [v \in V_S]$) | Convention B ($y_S = 0, y_T = 1$: $y_v = [v \in V_T]$) |
+| :--- | :--- | :--- |
+| **State Meaning of $v \in V_S$ (Selected)** | $x_v = 1$ | $y_v = 0$ ($y_v = 1 - x_v$) |
+| **State Meaning of $v \in V_T$ (Abandoned)** | $x_v = 0$ | $y_v = 1$ |
+| **Internal Edge $(u \xrightarrow{c} v)$** | $c \cdot x_u (1 - x_v)$ (penalizes $x_u = 1, x_v = 0$) | $c \cdot (1 - y_u) y_v$ (penalizes $y_u = 0, y_v = 1$) |
+| **Source Edge $(S \xrightarrow{c} u)$** | $c \cdot (1 - x_u)$ (cut when $u \in V_T$) | $c \cdot y_u$ (cut when $u \in V_T$) |
+| **Sink Edge $(u \xrightarrow{c} T)$** | $c \cdot x_u$ (cut when $u \in V_S$) | $c \cdot (1 - y_u)$ (cut when $u \in V_S$) |
+| **Implication ($u \in V_S \implies v \in V_S$)** | $\infty \cdot x_u(1 - x_v) \iff (u \xrightarrow{\infty} v)$ | $\infty \cdot (1 - y_u)y_v \iff (u \xrightarrow{\infty} v)$ |
+
+---
+
+### 1.3 Step 3: The Optimistic Baseline Transformation (`先拿后退`) & Unary Normalization
+
+A minimum $(S, T)$-cut solver computes $\min_{\mathbf{x} \in \{0,1\}^U} \Phi_G(\mathbf{x})$ with **non-negative** edge capacities $c(e) \ge 0$. Yet project selection and closure problems almost always ask to **maximize** a net profit function $\Psi(\mathbf{x})$ containing both positive rewards and negative costs.
+
+How do we turn $\max_{\mathbf{x}} \Psi(\mathbf{x})$ into $\min_{\mathbf{x}} \Phi_G(\mathbf{x})$ without introducing negative edge capacities? Through the two-step accounting identity known in Chinese OI literature (Hu Botao 2007) as **`先拿后退` (*Pre-Claim Positive Gains, Then Subtract Regret*)**:
+
+#### 1. The Optimistic Baseline Identity (`先拿后退`)
+
+Suppose each variable $x_i \in \{0, 1\}$ has a weight $w_i \in \mathbb{R}$ gained when $x_i = 1$ (and $0$ when $x_i = 0$). Partition the index set $U$ into positive-weight items $U^+ = \{i \in U : w_i > 0\}$ and non-positive-weight items $U^- = \{i \in U : w_i \le 0\}$.
+
+For every positive item $i \in U^+$, apply the elementary identity $x_i = 1 - (1 - x_i)$:
+
+$$w_i x_i = \underbrace{w_i}_{\text{Optimistic Baseline}} - \underbrace{w_i (1 - x_i)}_{\text{Forfeited Profit (Regret)}}.$$
+
+For every negative item $j \in U^-$ ($w_j \le 0$), write $w_j = -|w_j|$, so its contribution is already a non-negative subtraction:
+
+$$w_j x_j = -\underbrace{|w_j| x_j}_{\text{Incurred Cost}}.$$
+
+Summing over all $i \in U$ yields the **Fundamental Optimistic Baseline Identity**:
+
+$$\sum_{i \in U} w_i x_i = \underbrace{\sum_{i \in U^+} w_i}_{\text{Baseline } W^+} \;-\; \left(\underbrace{\sum_{i \in U^+} w_i (1 - x_i)}_{\text{Edges } S \xrightarrow{w_i} i} \;+\; \underbrace{\sum_{j \in U^-} |w_j| x_j}_{\text{Edges } j \xrightarrow{|w_j|} T}\right).$$
+
+Because $W^+ = \sum_{w_i > 0} w_i$ is a constant independent of $\mathbf{x}$, **maximizing** the net gain $\sum_{i \in U} w_i x_i$ is 100% equivalent to **minimizing** the non-negative regret-plus-cost sum inside the parentheses:
+
+$$\boxed{\max_{\mathbf{x}} \text{NetGain}(\mathbf{x}) = \sum_{w_i > 0} w_i - \min\text{Cut}(S, T)}$$
+
+Every term inside the minimum cut now has a strictly non-negative capacity and a crystal-clear economic meaning:
+
+- **Pre-claim $W^+ = \sum_{w_i > 0} w_i$ upfront**: Pretend we simultaneously collect every positive reward in the problem.
+- **Severing $(S \xrightarrow{w_i} i)$ when $x_i = 0$ ($i \in V_T$)**: We decided *not* to select positive project $i$, so we **refund (forfeit)** its pre-claimed reward $w_i > 0$.
+- **Severing $(j \xrightarrow{|w_j|} T)$ when $x_j = 1$ ($j \in V_S$)**: We decided to select cost-bearing item $j$, so we **pay** its purchase cost $|w_j| \ge 0$.
+
+#### 2. General Two-State Unary Normalization (`差値正規化` vs. `ゲタを履かせる`)
+
+What if an item $i$ has non-zero payoffs in **both** states: gaining $u_i(1) \in \mathbb{R}$ when $x_i = 1$ and $u_i(0) \in \mathbb{R}$ when $x_i = 0$ (or equivalently in minimization, paying unary penalty $A_i(1 - x_i) + B_i x_i$ where $A_i$ or $B_i$ might be negative)? Two algebraic normalization recipes reduce any unary expression to non-negative cut edges:
+
+1. **Recipe 1 — Minimum Extraction / $O(1)$ 2-Edge Path Pre-Flow (`差値正規化`, Recommended Default)**:
+   In minimization of $U_i(x_i) = A_i(1 - x_i) + B_i x_i$, let $m_i = \min(A_i, B_i)$. Since $(1 - x_i) + x_i = 1$, extract $m_i$ into the global constant offset:
+
+   $$A_i(1 - x_i) + B_i x_i = m_i + (A_i - m_i)(1 - x_i) + (B_i - m_i)x_i.$$
+
+   Now both $A_i - m_i \ge 0$ and $B_i - m_i \ge 0$, and **at least one of the two capacities is zero**!
+   - In maximization of $u_i(1)x_i + u_i(0)(1 - x_i)$, let $M_i = \max(u_i(1), u_i(0))$, add $M_i$ to $W_{\text{base}}$, and wire either $S \to i$ of capacity $u_i(1) - u_i(0)$ (if $u_i(1) \ge u_i(0)$) or $i \to T$ of capacity $u_i(0) - u_i(1)$ (if $u_i(0) > u_i(1)$).
+   - *Flow-Theoretic Meaning*: If $A_i > 0$ and $B_i > 0$ are both positive, wiring both $S \xrightarrow{A_i} i$ and $i \xrightarrow{B_i} T$ creates an immediate 2-edge augmenting path $S \to i \to T$ of capacity $m_i = \min(A_i, B_i)$. Recipe 1 simply **pre-pushes $m_i$ units of flow along $S \to i \to T$ in $O(1)$ time** before Dinic even starts!
+2. **Recipe 2 — Uniform Constant Pedestal Shift (`ゲタを履かせる` / "Putting on Geta Clogs")**:
+   Add a large constant $M > \max_i(|A_i|, |B_i|)$ via $0 = -M + M(1 - x_i) + M x_i$, shifting both capacities to $A_i + M > 0$ and $B_i + M > 0$. While Recipe 1 is superior for routine unary normalization (avoiding capacity inflation), Recipe 2 is an indispensable theoretical weapon when we want to force a cardinality invariant across a bipartite graph (as we will see in **Section 4.3** on `CF 103 E — Buying Sets`).
+
+---
+
+### 1.4 Step 4: Hand-Checkable Toy Trace & Broken-Gadget Counterexamples
+
+#### Concrete Numerical Trace ($N = 3$ Binary Variables)
+
+Suppose we wish to maximize the score $\Psi(x_1, x_2, x_3)$ over $x_1, x_2, x_3 \in \{0, 1\}$ subject to the following rules:
+
+- **Variable 1**: $x_1 = 1$ yields $+10$; $x_1 = 0$ yields $-4$.
+- **Variable 2**: $x_2 = 1$ costs $-6$; $x_2 = 0$ yields $+5$.
+- **Variable 3**: $x_3 = 1$ yields $+8$; $x_3 = 0$ yields $0$.
+- **Coupling Rules**:
+  1. Hard logical implication: if $x_1 = 1$, then we must have $x_2 = 1$ ($x_1 = 1 \implies x_2 = 1$).
+  2. Soft directional penalty: if $x_3 = 1$ while $x_2 = 0$, we pay a penalty of $9$.
+
+Let us compile $\Psi(x_1, x_2, x_3)$ mechanically using Step 2 and Step 3:
+
+1. **Normalize Unary Terms via `先拿后退` (Recipe 1)**:
+   - Vertex $1$: $10 x_1 - 4(1 - x_1) = 10 - 14(1 - x_1) \implies$ add $+10$ to $W_{\text{base}}$, wire **$S \xrightarrow{14} 1$**.
+   - Vertex $2$: $-6 x_2 + 5(1 - x_2) = 5 - 11 x_2 \implies$ add $+5$ to $W_{\text{base}}$, wire **$2 \xrightarrow{11} T$**.
+   - Vertex $3$: $8 x_3 + 0(1 - x_3) = 8 - 8(1 - x_3) \implies$ add $+8$ to $W_{\text{base}}$, wire **$S \xrightarrow{8} 3$**.
+   - Total Optimistic Baseline: $W_{\text{base}} = 10 + 5 + 8 = 23$.
+2. **Compile Coupling Terms**:
+   - Hard implication $x_1 = 1 \implies x_2 = 1$ forbids $(x_1, x_2) = (1, 0)$, compiled as $\infty \cdot x_1(1 - x_2) \iff$ directed arc **$1 \xrightarrow{\infty} 2$**.
+   - Soft penalty $9$ when $x_3 = 1 \land x_2 = 0$ is $9 x_3(1 - x_2) \iff$ directed arc **$3 \xrightarrow{9} 2$**.
+
+```{mermaid}
+graph LR
+    S(("S (x=1)")) -->|"14"| V1(("1"))
+    S -->|"8"| V3(("3"))
+    V1 -->|"inf"| V2(("2"))
+    V3 -->|"9"| V2
+    V2 -->|"11"| T(("T (x=0)"))
+```
+
+Let us evaluate all $6$ finite-capacity $(S, T)$-cuts (the two assignments with $x_1 = 1, x_2 = 0$ sever $1 \xrightarrow{\infty} 2$ and have capacity $+\infty$):
+
+| Binary Assignment $(x_1, x_2, x_3)$ | Source Side $V_S$ | Severed Directed Edges $(V_S \to V_T)$ | Cut Capacity $\Phi_G(\mathbf{x})$ | Net Score $W_{\text{base}} - \Phi_G(\mathbf{x})$ |
+| :---: | :---: | :--- | :---: | :---: |
+| $(0, 0, 0)$ | $\{S\}$ | $(S \to 1, 14), (S \to 3, 8)$ | $14 + 8 = 22$ | $23 - 22 = 1$ |
+| $(0, 0, 1)$ | $\{S, 3\}$ | $(S \to 1, 14), (3 \to 2, 9)$ | $14 + 9 = 23$ | $23 - 23 = 0$ |
+| $(0, 1, 0)$ | $\{S, 2\}$ | $(S \to 1, 14), (S \to 3, 8), (2 \to T, 11)$ | $14 + 8 + 11 = 33$ | $23 - 33 = -10$ |
+| $(0, 1, 1)$ | $\{S, 2, 3\}$ | $(S \to 1, 14), (2 \to T, 11)$ | $14 + 11 = 25$ | $23 - 25 = -2$ |
+| $(1, 1, 0)$ | $\{S, 1, 2\}$ | $(S \to 3, 8), (2 \to T, 11)$ | $8 + 11 = 19$ | $23 - 19 = 4$ |
+| **$(1, 1, 1)$** | **$\{S, 1, 2, 3\}$** | **$(2 \to T, 11)$** | **$11$ (Min-Cut!)** | **$23 - 11 = 12$ (Max!)** |
+
+Direct check at $\mathbf{x}^* = (1, 1, 1)$: $+10 - 6 + 8 - 0 = 12$. Notice why Greedy fails here: Vertex $2$ has a terrible standalone payoff ($-6$ vs. $+5$, a swing of $-11$), and neither Vertex $1$ alone (payoff $+10$ vs. $-4$, blocked by $2$'s $-11$ swing to net $+3$ over $(0,0,0)$) nor Vertex $3$ alone ($8 < 9$ penalty) looks sufficient in isolation—yet when $1$ and $3$ **share** the single activation of $2$ ($2 \in V_S$), the edge $2 \xrightarrow{11} T$ is severed **only once**!
+
+> [!WARNING]
+> **Two Classic Broken-Gadget Errors in Binary Cut Compilation**:
+>
+> 1. **Reversing the Implication Arc ($2 \xrightarrow{\infty} 1$ instead of $1 \xrightarrow{\infty} 2$)**: An arc $2 \xrightarrow{\infty} 1$ represents $\infty \cdot x_2(1 - x_1)$, which forbids $(x_2, x_1) = (1, 0)$ ($x_2 \implies x_1$). Under this reversed arc, the illegal state $(x_1, x_2, x_3) = (1, 0, 1)$ places $1 \in V_S$ and $2 \in V_T$, so $2 \to 1$ crosses **backward** from $V_T$ to $V_S$ at **zero cut cost**, hallucinating a false cut of $9$ and a phantom score of $23 - 9 = 14$!
+> 2. **Using an Undirected $\infty$-Edge for One-Way Implication**: Wiring both $1 \xrightarrow{\infty} 2$ and $2 \xrightarrow{\infty} 1$ forces $x_1 = x_2$ (logical equivalence), which illegally forbids $(x_1, x_2) = (0, 1)$ whenever $2$ is needed by $3$ but $1$ is unprofitable.
+
+---
+
+## 2. Picard's Maximum-Weight Closure Theorem (`最大权闭合子图`)
+
+We now formalize the cornerstone theorem of Part III, introduced by Jean-Claude Picard in 1976 (*"Maximal Closure of a Graph and Applications to Combinatorial Problems"*, Management Science) and popularized in competitive programming by Hu Botao's 2007 national team thesis.
+
+### 2.1 Definition of a Closed Subgraph & Implication Compilation
+
+::: {.callout-important title="Definition 2.1 (Closed Subset / Closure of a Directed Graph)"}
+Let $G_{\text{dep}} = (U, E_{\text{dep}})$ be a directed dependency graph with vertex weights $w: U \to \mathbb{R}$ (where $w_u > 0$ represents a net profit and $w_u < 0$ represents a net cost). A subset of vertices $C \subseteq U$ is called **closed** (`闭合子图`) if no directed edge of $E_{\text{dep}}$ leaves $C$:
+
+$$\forall (u \to v) \in E_{\text{dep}}, \qquad u \in C \implies v \in C.$$
+
+The **Maximum-Weight Closure Problem (`最大权闭合子图`)** asks for a closed subset $C^* \subseteq U$ maximizing the total vertex weight:
+
+$$w(C^*) = \max_{\substack{C \subseteq U \\ C \text{ is closed}}} \sum_{u \in C} w_u.$$
+:::
+
+ Notice that $C = \emptyset$ is always a valid closed subset with $w(\emptyset) = 0$, so the maximum closure weight is always $\ge 0$.
+
+#### Algebraic-to-Graph Compilation of Picard's Network $\mathcal{N}(G_{\text{dep}}, w)$
+
+Let $x_u = [u \in C] \in \{0, 1\}$ indicate whether vertex $u \in U$ is included in the closed subset $C$.
+
+1. **Logical Implication Compilation**:
+   For each dependency edge $(u \to v) \in E_{\text{dep}}$, the closure condition $u \in C \implies v \in C$ is the boolean implication $x_u = 1 \implies x_v = 1$. Its unique forbidden state is $(x_u, x_v) = (1, 0)$, which is algebraically equivalent to:
+
+   $$x_u(1 - x_v) = 0 \quad \Longleftrightarrow \quad \text{Penalty } +\infty \cdot x_u(1 - x_v) \quad \Longleftrightarrow \quad \text{Directed Arc } (u \xrightarrow{+\infty} v).$$
+
+2. **Unary Weight Compilation (`先拿后退`)**:
+   Partition $U$ into $U^+ = \{u \in U : w_u > 0\}$, $U^0 = \{u \in U : w_u = 0\}$, and $U^- = \{u \in U : w_u < 0\}$, and let $W^+ = \sum_{u \in U^+} w_u$.
+   - For each $u \in U^+$ ($w_u > 0$): wire **$S \xrightarrow{w_u} u$** (monomial $w_u(1 - x_u)$, severed if $u \notin C$).
+   - For each $v \in U^-$ ($w_v < 0$): wire **$v \xrightarrow{|w_v|} T$** (monomial $|w_v| x_v$, severed if $v \in C$).
+   - For each $z \in U^0$ ($w_z = 0$): no edge to $S$ or $T$ is needed (capacity $0$).
+
+---
+
+### 2.2 Complete Double-Inequality Proof of Picard's Theorem (1976)
+
+::: {.callout-important title="Theorem 2.1 (Picard's Maximum-Weight Closure Theorem, 1976)"}
+In the compiled network $\mathcal{N}(G_{\text{dep}}, w)$ with vertex set $V = \{S, T\} \cup U$:
+
+1. **Bijection between Closed Sets and Finite Cuts**: A subset $C \subseteq U$ is closed in $G_{\text{dep}}$ if and only if the partition $(V_S, V_T) = (\{S\} \cup C, \{T\} \cup (U \setminus C))$ is an $(S, T)$-cut of **finite** capacity $\text{cap}(V_S, V_T) < +\infty$.
+2. **Exact Cut-Weight Identity**: For every closed subset $C \subseteq U$, the capacity of its corresponding cut $(V_S, V_T)$ satisfies:
+
+   $$\text{cap}(V_S, V_T) = W^+ - \sum_{u \in C} w_u, \qquad \text{where } W^+ = \sum_{u \in U^+} w_u.$$
+
+3. **Min-Cut Duality**: Consequently, the maximum weight of a closed subset $C^* \subseteq U$ equals:
+
+   $$\max_{C \text{ closed}} \sum_{u \in C} w_u = W^+ - \text{MinCut}(S, T) = \sum_{w_u > 0} w_u - \text{MaxFlow}(S, T).$$
+:::
+
+#### Complete Proof
+
+Let $(V_S, V_T)$ be any $(S, T)$-cut in $\mathcal{N}(G_{\text{dep}}, w)$, and define $C = V_S \setminus \{S\} \subseteq U$ (so $U \setminus C = V_T \setminus \{T\}$). Every edge of $\mathcal{N}(G_{\text{dep}}, w)$ belongs to one of three disjoint families:
+
+1. **Dependency arcs $E_{\text{dep}} = \{(u \xrightarrow{+\infty} v)\}$**:
+   An arc $(u \to v) \in E_{\text{dep}}$ crosses from $V_S$ to $V_T$ if and only if $u \in C$ and $v \notin C$.
+   - $(\implies)$ If $C$ is closed, no edge $(u \to v) \in E_{\text{dep}}$ has $u \in C$ and $v \notin C$, so **zero** $\infty$-capacity arcs cross from $V_S$ to $V_T$. Since all other edges have finite capacity, $\text{cap}(V_S, V_T) < +\infty$.
+   - $(\Longleftarrow)$ Conversely, if $\text{cap}(V_S, V_T) < +\infty$, then no $\infty$-capacity arc can cross from $V_S$ to $V_T$, which means $\neg\exists (u \to v) \in E_{\text{dep}}$ with $u \in C \land v \notin C$; hence $C$ is closed.
+2. **Source-incident arcs $\{(S \xrightarrow{w_u} u) : u \in U^+\}$**:
+   Since $S \in V_S$, the arc $(S \to u)$ crosses from $V_S$ to $V_T$ if and only if $u \in V_T$, i.e., $u \in U^+ \setminus C$.
+3. **Sink-incident arcs $\{(v \xrightarrow{|w_v|} T) : v \in U^-\}$**:
+   Since $T \in V_T$, the arc $(v \to T)$ crosses from $V_S$ to $V_T$ if and only if $v \in V_S$, i.e., $v \in C \cap U^-$.
+
+For any closed subset $C \subseteq U$, summing the capacities of the severed edges across these three families yields:
+
+$$\begin{aligned}
+\text{cap}(\{S\} \cup C, \{T\} \cup (U \setminus C))
+&= 0 + \sum_{u \in U^+ \setminus C} w_u + \sum_{v \in C \cap U^-} |w_v| \\
+&= \left(\sum_{u \in U^+} w_u - \sum_{u \in C \cap U^+} w_u\right) + \sum_{v \in C \cap U^-} (-w_v) - \sum_{z \in C \cap U^0} 0 \\
+&= W^+ - \left(\sum_{u \in C \cap U^+} w_u + \sum_{v \in C \cap U^-} w_v + \sum_{z \in C \cap U^0} w_z\right) \\
+&= W^+ - \sum_{u \in C} w_u.
+\end{aligned}$$
+
+From this exact identity, we establish the double inequality:
+
+- **Direction 1 ($\max_{C \text{ closed}} w(C) \le W^+ - \text{MinCut}(S, T)$)**: For every closed subset $C \subseteq U$, its induced partition $(V_S, V_T)$ is a valid $(S, T)$-cut, so $\text{MinCut}(S, T) \le \text{cap}(V_S, V_T) = W^+ - w(C)$, which rearranges to $w(C) \le W^+ - \text{MinCut}(S, T)$.
+- **Direction 2 ($\max_{C \text{ closed}} w(C) \ge W^+ - \text{MinCut}(S, T)$)**: Since $C = \emptyset$ gives a finite cut of capacity $W^+ < +\infty$, the minimum cut $(V_S^*, V_T^*)$ has finite capacity $\text{MinCut}(S, T) \le W^+ < +\infty$. By Part 1, $C^* = V_S^* \setminus \{S\}$ is a valid closed subset of $U$ with $w(C^*) = W^+ - \text{cap}(V_S^*, V_T^*) = W^+ - \text{MinCut}(S, T)$.
+
+Combining both inequalities completes the proof. $\blacksquare$
+
+---
+
+### 2.3 Constructive Closure Extraction via $S_{\min}$ & Zero-Weight Tie-Breaking
+
+In many problems (such as **`#065` Luogu P2762 — Space Flight Planning** and **`#066` POJ 2987 — Firing**), we must output not only the maximum net profit $w(C^*)$, but also the **explicit list of vertices** in $C^*$—and in `POJ 2987`, if multiple closed subsets achieve the maximum weight $w(C^*)$, we must output one with the **minimum number of vertices $|C^*|$**!
+
+How do we extract $C^*$ from Dinic's final residual network $G_{f^*}$?
+
+::: {.callout-important title="Corollary 2.1 (Canonical Minimal Closure via Residual Reachability $S_{\min}$)"}
+Let $f^*$ be any maximum $(S, T)$-flow in $\mathcal{N}(G_{\text{dep}}, w)$, and let $S_{\min}$ be the set of vertices reachable from $S$ via directed paths of strictly positive residual capacity ($c_{f^*}(e) > 0$) in $G_{f^*}$:
+
+$$S_{\min} = \big\{v \in V : S \leadsto_{G_{f^*}} v\big\}, \qquad C_{\min}^* = S_{\min} \setminus \{S\}.$$
+
+Then:
+
+1. $C_{\min}^*$ is an optimal maximum-weight closed subset of $G_{\text{dep}}$.
+2. **Unique Inclusion-Minimal Property**: For *every* maximum-weight closed subset $C^* \subseteq U$, we have $C_{\min}^* \subseteq C^*$. In particular, $C_{\min}^*$ is the **unique minimum-cardinality** maximum-weight closure (automatically excluding all optional zero-net-gain bundles and isolated $w_z = 0$ vertices without requiring any weight perturbation!).
+:::
+
+#### Why $C_{\min}^* \subseteq C^*$ Holds
+
+By `Chapter 2` (The Lattice of Minimum Cuts), the family of minimum $(S, T)$-cuts is closed under intersection $V_S^{(1)} \cap V_S^{(2)}$, and the residual reachability set $S_{\min}$ is the unique **inclusion-minimal** source side among all minimum $(S, T)$-cuts. Since Theorem 2.1 establishes a bijection $C \leftrightarrow \{S\} \cup C$ between maximum-weight closures and minimum $(S, T)$-cuts, $C_{\min}^* = S_{\min} \setminus \{S\}$ is contained in every maximum-weight closure $C^*$!
+
+> [!CAUTION]
+> **Critical Implementation Trap in Closure Reconstruction (`#065` Luogu P2762)**:
+> Never attempt to reconstruct the chosen projects $u \in U^+$ or instruments $v \in U^-$ by checking whether the single edge $(S \to u)$ is unsaturated ($c_{f^*}(S \to u) > 0$) or whether $(v \to T)$ is saturated ($c_{f^*}(v \to T) = 0$)!
+>
+> - A project $u \in C_{\min}^*$ can have its direct arc $(S \to u)$ **100% saturated** ($c_{f^*}(S \to u) = 0$) and still belong to $S_{\min}$ by being reached from $S$ through another project $u'$ and a backward residual arc on $(u \to v, \infty)$!
+> - Conversely, an instrument $v \notin C_{\min}^*$ can have $(v \to T)$ **100% saturated** ($c_{f^*}(v \to T) = 0$) if the projects that pushed flow through $v$ were ultimately cut on the $S$-side!
+>
+> **Golden Rule**: Always reconstruct $C_{\min}^*$ by running a full BFS/DFS from $S$ in $G_{f^*}$ traversing edges with `e.cap - e.flow > 0` and collecting `{v in U : vis[v] == true}`.
+
+---
+
+### 2.4 Step 4: Hand-Checkable Diamond Closure Trace ($N = 4$)
+
+Consider $2$ experiments $E_1, E_2$ and $2$ instruments $I_1, I_2$:
+
+- **Profits**: $w(E_1) = +10$, $w(E_2) = +12$. (Optimistic baseline $W^+ = 10 + 12 = 22$.)
+- **Costs**: $w(I_1) = -8$, $w(I_2) = -9$.
+- **Dependencies**: $E_1$ requires $\{I_1, I_2\}$; $E_2$ requires $\{I_2\}$.
+
+1. **Compiled Network $\mathcal{N}$**:
+   - Source arcs: $S \xrightarrow{10} E_1$, $S \xrightarrow{12} E_2$.
+   - Sink arcs: $I_1 \xrightarrow{8} T$, $I_2 \xrightarrow{9} T$.
+   - Dependency arcs: $E_1 \xrightarrow{\infty} I_1$, $E_1 \xrightarrow{\infty} I_2$, $E_2 \xrightarrow{\infty} I_2$.
+2. **Trace of Dinic's Augmenting Paths**:
+   - Path 1: $S \to E_1 \to I_1 \to T$, bottleneck $\min(10, \infty, 8) = 8$. Residual on $S \to E_1$ is $2$; $I_1 \to T$ is saturated ($0$).
+   - Path 2: $S \to E_1 \to I_2 \to T$, bottleneck $\min(2, \infty, 9) = 2$. Now $S \to E_1$ is **completely saturated ($0$)**! Residual on $I_2 \to T$ is $7$.
+   - Path 3: $S \to E_2 \to I_2 \to T$, bottleneck $\min(12, \infty, 7) = 7$. Residual on $S \to E_2$ is $5$; $I_2 \to T$ is saturated ($0$).
+   - **Total Max-Flow / Min-Cut**: $8 + 2 + 7 = 17 \implies$ Maximum Net Profit $= W^+ - 17 = 22 - 17 = \mathbf{5}$.
+3. **Trace of Residual Reachability $S_{\min}$ (Revealing the Saturation Trap!)**:
+   - Look at $S \to E_1$: its residual capacity is **$0$**! A naive check `c_f(S -> E_1) > 0` would falsely conclude that $E_1$ was NOT selected!
+   - Instead, follow the BFS from $S$ in $G_{f^*}$:
+     - $S \to E_2$ has residual capacity $12 - 7 = 5 > 0 \implies E_2 \in S_{\min}$.
+     - $E_2 \to I_2$ has residual capacity $\infty - 7 = \infty > 0 \implies I_2 \in S_{\min}$.
+     - Because Path 2 pushed $2$ units of flow along $E_1 \to I_2$, the **reverse residual edge $I_2 \to E_1$ has residual capacity $2 > 0$**! Thus $I_2$ reaches $E_1 \implies E_1 \in S_{\min}$!
+     - From $E_1$, the arc $E_1 \to I_1$ has residual capacity $\infty - 8 = \infty > 0 \implies I_1 \in S_{\min}$.
+   - Therefore, $C_{\min}^* = \{E_1, E_2, I_1, I_2\}$ with true profit $10 + 12 - 8 - 9 = \mathbf{5}$!
+
+---
+
+## 3. Pre-Flow Topological Cycle Pruning & Mutual Dependency Traps
+
+What happens when the prerequisite graph $G_{\text{dep}} = (U, E_{\text{dep}})$ is **not** a Directed Acyclic Graph (DAG), but contains directed cycles $u_1 \to u_2 \to \dots \to u_k \to u_1$?
+
+Before writing a single line of Dinic code, you must ask a fundamental modelling question about the physical rules of the problem: **Are decisions made simultaneously as a static set, or sequentially one step at a time?**
+
+---
+
+### 3.1 Simultaneous Set Bundles (Semantics A) vs. Sequential Causal Unlocking (Semantics B)
+
+#### Semantics A: Simultaneous Set Selection (Cycle = Equivalence Super-Node)
+
+Suppose the problem states: *"Select a subset of items $C \subseteq U$ all at once such that if $u \in C$ and $(u \to v) \in E_{\text{dep}}$, then $v \in C$."*
+
+Under Semantics A, a directed cycle $u_1 \to u_2 \to \dots \to u_k \to u_1$ of $\infty$-capacity arcs simply enforces the chain of implications $x_{u_1} \implies x_{u_2} \implies \dots \implies x_{u_k} \implies x_{u_1}$, which is logically equivalent to:
+
+$$x_{u_1} = x_{u_2} = \dots = x_{u_k} \in \{0, 1\}.$$
+
+Either **every** vertex in the strongly connected component (SCC) is placed in $V_S$, or **every** vertex in the SCC is placed in $V_T$. Under Semantics A, Picard's network $\mathcal{N}(G_{\text{dep}}, w)$ works **without any modification**: if the cycle's combined weight $\sum_{i=1}^k w_{u_i}$ exceeds the cost of its external prerequisites, placing the entire cycle in $V_S$ severs zero internal $\infty$-edges and is completely valid.
+
+#### Semantics B: Sequential / Causal Unlocking (`[NOI2009] 植物大战僵尸` — Cycle = Permanent Deadlock)
+
+Now contrast Semantics A with **`#070` Luogu P2805 — `[NOI2009] 植物大战僵尸` (*Plants vs. Zombies*)**:
+
+- Zombies enter each row from the right edge and walk left: to eat plant $(r, c)$, a zombie must **first** eat plant $(r, c + 1)$.
+- Furthermore, each plant $v$ can shoot fireballs protecting a set of squares $u_1, u_2, \dots$; to eat a protected square $u$, zombies must **first** eat the protector plant $v$!
+
+Here, eating a subset of plants $C \subseteq U$ is valid if and only if there exists a **sequential linear ordering (topological ordering)** $(v_1, v_2, \dots, v_{|C|})$ of $C$ such that when $v_t$ is eaten at step $t$, all prerequisites of $v_t$ have *already* been eaten at steps $< t$.
+
+What if Plant $u$ protects Plant $v$ AND Plant $v$ protects Plant $u$ ($u \leftrightarrow v$)?
+
+- **Physical Reality (Semantics B)**: To eat $u$, you must first eat $v$; to eat $v$, you must first eat $u$. **Neither plant can ever be eaten first!** Furthermore, any third plant $w$ that stands behind $u$ (or is protected by $u$) can **never be reached either**, even if $w$ has a positive score of $+10^9$ and does not belong to any cycle itself!
+- **Mathematical Closure Fallacy (Semantics A)**: As a static set, $C = \{u, v\}$ has **zero outgoing dependency edges** leaving $\{u, v\}$! If $w_u + w_v > 0$, Picard's unmodified min-cut network happily places $\{u, v\} \subseteq V_S$, severing zero $\infty$-arcs and collecting phantom points from an invincible mutual-protection loop!
+
+---
+
+### 3.2 Broken-Gadget Counterexample `FM-09` & Why Tarjan's SCC Deletion Also Fails
+
+> [!WARNING]
+> **Broken-Gadget Counterexample `FM-09` — Unpruned Prerequisite Cycles & The Tarjan SCC Trap**:
+>
+> Consider a $1 \times 4$ single-row lawn with cells $u_1 = (0, 0), u_2 = (0, 1), u_3 = (0, 2), u_4 = (0, 3)$ (zombies enter from the right at $u_4$), with scores:
+>
+> $$w(u_1) = +1000, \qquad w(u_2) = -10, \qquad w(u_3) = -10, \qquad w(u_4) = +50.$$
+>
+> - **Row-entry prerequisites**: $u_4$ must be eaten before $u_3$; $u_3$ before $u_2$; $u_2$ before $u_1$.
+> - **Attack protection**: Plant $u_2$ attacks square $u_3$, so $u_2$ must be eaten before $u_3$.
+>
+> Thus $u_2$ and $u_3$ form a deadlocked 2-cycle ($u_2 \leftrightarrow u_3$), while $u_1$ (worth $+1000$!) is an **acyclic singleton SCC** that depends on $u_2$. Look at what happens under three implementation attempts:
+>
+> | Implementation Attempt | Vertices Fed to Dinic | Claimed Profit | Why It Fails / Succeeds |
+> | :--- | :---: | :---: | :--- |
+> | **1. Raw Picard Closure (No Pruning)** | $\{u_1, u_2, u_3, u_4\}$ | $+1030$ (**WA**) | Places $\{u_1, u_2, u_3, u_4\} \subseteq V_S$; internal cycle $u_2 \leftrightarrow u_3$ never crosses $(V_S, V_T)$, paying only $10+10=20$ to claim $1050$. |
+> | **2. Tarjan SCC (`delete if |SCC| >= 2`)** | $\{u_1, u_4\}$ | $+1050$ (**WA**) | Deletes the 2-cycle $\{u_2, u_3\}$, which **erases the edge separating $u_1$ from $u_2$**! Now $u_1$ appears to have zero prerequisites and is falsely claimed for $+1000$! |
+> | **3. Kahn's In-Degree-$0$ BFS on $G_{\text{pre}}$** | $\{u_4\}$ only | **$+50$ (AC)** | Starts from $\text{in-deg}=0$ node $u_4$; when $u_4$ is popped, $\text{in-deg}(u_3)$ drops from $2$ to $1 > 0$. Queue terminates, pruning both $\{u_2, u_3\}$ AND downstream $u_1$! |
+
+---
+
+### 3.3 The Two-Phase Causal Pruning Algorithm (Kahn's BFS + Picard Closure)
+
+To solve any Sequential Causal Closure problem (`Semantics B`), always execute the following two-phase pipeline:
+
+1. **Phase 1 — Build the Causal Prerequisite Graph $G_{\text{pre}}$ (`Protector -> Protected`)**:
+   Orient edges in the direction of **physical unlocking order**: add a directed edge $(v \xrightarrow{\text{unlocks}} u) \in E_{\text{pre}}$ whenever $v$ must be activated/eaten *before* $u$. Record `in_deg[u]` = number of prerequisites of $u$.
+   - Push all vertices with `in_deg[v] == 0` into a queue $Q$.
+   - While $Q$ is non-empty, pop $v$, mark `reachable[v] = true`, and for each $(v \to u) \in E_{\text{pre}}$, decrement `in_deg[u]`; if `in_deg[u] == 0`, push $u$ into $Q$.
+2. **Phase 2 — Build Picard's Closure Network on `reachable` Vertices Only**:
+   Discard every vertex $u$ with `reachable[u] == false`. On the surviving Induced DAG $U_{\text{valid}} = \{u \in U : \text{reachable}[u]\}$:
+   - Wire $S \xrightarrow{w_u} u$ for $u \in U_{\text{valid}}$ with $w_u > 0$ (adding $w_u$ to $W^+$).
+   - Wire $u \xrightarrow{|w_u|} T$ for $u \in U_{\text{valid}}$ with $w_u < 0$.
+   - For every $(v \xrightarrow{\text{unlocks}} u) \in E_{\text{pre}}$ with $u, v \in U_{\text{valid}}$, **reverse the edge** to form the logical implication $(u \xrightarrow{\text{requires}, \, +\infty} v)$ in the cut network!
+
+```{mermaid}
+graph LR
+    subgraph "Phase 1: Causal Graph G_pre (Kahn BFS)"
+        P4["u4 (+50)<br/>in_deg=0 (VALID)"] -->|"unlocks"| P3["u3 (-10)<br/>in_deg=2 (PRUNED)"]
+        P3 <-->|"2-cycle deadlock"| P2["u2 (-10)<br/>in_deg=1 (PRUNED)"]
+        P2 -->|"unlocks"| P1["u1 (+1000)<br/>in_deg=1 (PRUNED)"]
+    end
+```
+
+---
+
+## 4. Non-Graph Closure Archetypes — Divisibility, Interval-Triangle, and Hall-Shifted Closures
+
+The true power of Picard's theorem in competitive programming is that the dependency graph $G_{\text{dep}}$ rarely comes given in the input. Instead, it lies hidden inside number-theoretic divisibility, contiguous array intervals, or Hall's Marriage Theorem. Let us dissect the three canonical non-graph closure archetypes.
+
+---
+
+### 4.1 Archetype 1: Divisibility Poset Closure & Complemented Conventions (`ARC 085 E — MUL`)
+
+In **`#068` AtCoder ARC 085 E — MUL**, we are given $N \le 100$ gems indexed $1, \dots, N$ with signed values $a_i \in [-10^9, 10^9]$. We may perform the following operation any number of times:
+
+- Choose a positive integer $d \in \{1, \dots, N\}$ and **smash all gems whose index is a multiple of $d$** ($d, 2d, 3d, \dots$).
+- Maximize the sum of values of the **remaining (unsmashed)** gems.
+
+#### Step 1 & Step 2: Why Transitivity of Divisibility Turns Button Choices into Gem Closure
+
+At first glance, the decisions are *which buttons $d \in \{1, \dots, N\}$ to press*, while the payoffs belong to *which gems $i \in \{1, \dots, N\}$ survive*. Why don't we need separate vertices for buttons and gems?
+
+Suppose gem $i$ is smashed by pressing some divisor button $d \mid i$. Because divisibility is **transitive** ($d \mid i \land i \mid j \implies d \mid j$), that very same button $d$ **already smashes every multiple $j = k i$ of $i$**! Conversely, if gem $i$ is **not** smashed, then button $i$ was certainly not pressed. Therefore:
+
+$$\text{A subset of gems } D \subseteq \{1, \dots, N\} \text{ can be the set of smashed gems} \quad \Longleftrightarrow \quad \forall i \in D, \; \forall k \ge 2 \text{ with } ki \le N, \; ki \in D.$$
+
+Taking the contrapositive for the complementary set of **kept (surviving) gems** $K = \{1, \dots, N\} \setminus D$:
+
+$$\boxed{j \text{ is kept } (j \in K) \;\land\; i \mid j \quad \Longrightarrow \quad i \text{ is kept } (i \in K)}$$
+
+> [!IMPORTANT]
+> **Sanity-Checking the Implication Direction in `ARC 085 E`**:
+> Can we keep gem $1$ and smash gem $2$? **Yes**—just press button $2$! So $1 \in K$ does **not** imply $2 \in K$.
+> Can we smash gem $1$ and keep gem $2$? **No**—pressing button $1$ smashes every gem! Thus keeping a multiple $j$ ($x_j = 1$) requires keeping all of its divisors $i \mid j$ ($x_i = 1$).
+>
+> - **Convention 1 ($x_i = 1 \iff i \in V_S$ means Gem $i$ is KEPT)**:
+>   - Implication $x_j = 1 \implies x_i = 1$ for $i \mid j$ compiles to directed arc **$j \xrightarrow{+\infty} i$**.
+>   - Positive gem $a_i > 0$: wire **$S \xrightarrow{a_i} i$** (pre-claim $a_i$ in $W^+$; forfeited if $i \in V_T$ is smashed).
+>   - Negative gem $a_i < 0$: wire **$i \xrightarrow{|a_i|} T$** (paid if $i \in V_S$ is kept).
+> - **Convention 2 ($y_i = 1 \iff i \in V_S$ means Gem $i$ is SMASHED)**:
+>   - Implication $y_i = 1 \implies y_j = 1$ for $i \mid j$ compiles to directed arc **$i \xrightarrow{+\infty} j$**.
+>   - Positive gem $a_i > 0$: wire **$i \xrightarrow{a_i} T$** (paid if $i \in V_S$ is smashed).
+>   - Negative gem $a_i < 0$: wire **$S \xrightarrow{|a_i|} i$** (forfeited if $i \in V_T$ is kept).
+>
+> Notice that Convention 2 is the exact graph transpose (with $S$ and $T$ swapped) of Convention 1, so both networks have the **exact same minimum cut capacity**! Moreover, by transitivity, we only need $\infty$-edges between $i$ and $i \cdot p$ for primes $p$, reducing the edge count from $O(N \log N)$ to $O(N \log \log N)$.
+
+---
+
+### 4.2 Archetype 2: Interval-Triangle Inclusion DAGs (`[SHOI2017] 寿司餐厅`)
+
+In **`#071` Luogu P3749 — `[SHOI2017] 寿司餐厅` (*Sushi Restaurant*)**, $N \le 100$ sushi plates sit in a row with type codes $a_1, \dots, a_N \in [1, 1000]$.
+
+- Choosing a contiguous interval of plates $[l, r]$ ($1 \le l \le r \le N$) grants a signed satisfaction score $d_{l,r} \in \mathbb{Z}$, and **automatically includes all sub-intervals $[l', r'] \subseteq [l, r]$**.
+- Eating $c \ge 1$ plates of sushi type $x$ incurs a total cost of $m x^2 + c x$ (where $m \in \{0, 1\}$ is a constant).
+
+How do we compile this seemingly nonlinear, $O(N^4)$-dependency problem into a fast closure network?
+
+1. **Transitive Pyramid Compression ($O(N^4) \to 2$ Edges per Interval)**:
+   There are $\binom{N+1}{2} \approx 5050$ intervals $[l, r]$. If we wired $[l, r] \xrightarrow{\infty} [l', r']$ for every sub-interval $[l', r'] \subseteq [l, r]$, we would create $\approx \frac{N^4}{24} > 4 \cdot 10^6$ edges.
+   Instead, observe that for any interval $[l, r]$ of length $\ge 2$ ($l < r$), every proper sub-interval $[l', r'] \subsetneq [l, r]$ is contained in either $[l + 1, r]$ or $[l, r - 1]$! By induction on interval length $L = r - l + 1$:
+
+   $$x_{l, r} = 1 \implies x_{l', r'} = 1 \; (\forall [l', r'] \subseteq [l, r]) \quad \Longleftrightarrow \quad \begin{cases} [l, r] \xrightarrow{+\infty} [l + 1, r], \text{ and} \\ [l, r] \xrightarrow{+\infty} [l, r - 1]. \end{cases}$$
+
+   Just **two** $\infty$-arcs per interval compress the entire inclusion poset into $2\binom{N}{2} \approx 10^4$ directed edges!
+2. **Decoupling the Cost $m x^2 + c x$ into Singleton Intervals $[i, i]$ and Type Hubs $\text{Type}_x$**:
+   - **Linear term $c \cdot x$ ($a_i$ per plate)**: Plate $i$ is eaten if and only if the length-$1$ singleton interval $[i, i]$ is selected! Thus we simply absorb the per-plate cost $-a_i$ directly into the singleton node's net weight: $w([i, i]) = d_{i, i} - a_i$.
+   - **Fixed activation tax $m \cdot x^2$ (paid once if $c \ge 1$)**: Create one auxiliary vertex $\text{Type}_x$ of weight $-m x^2$ (wired as $\text{Type}_x \xrightarrow{m x^2} T$) for each distinct sushi code $x$, and wire every singleton interval $[i, i]$ to its type hub:
+
+     $$[i, i] \xrightarrow{+\infty} \text{Type}_{a_i}.$$
+
+   If *any* plate $i$ of type $x$ is eaten ($[i, i] \in V_S$), the $\infty$-arc forces $\text{Type}_x \in V_S$, severing $\text{Type}_x \xrightarrow{m x^2} T$ **exactly once** regardless of how many plates $c$ of type $x$ are eaten!
+
+```{mermaid}
+graph TD
+    I13["[1, 3] (w = d_1,3)"] -->|"inf"| I12["[1, 2] (w = d_1,2)"]
+    I13 -->|"inf"| I23["[2, 3] (w = d_2,3)"]
+    I12 -->|"inf"| I11["[1, 1] (w = d_1,1 - a_1)"]
+    I12 -->|"inf"| I22["[2, 2] (w = d_2,2 - a_2)"]
+    I23 -->|"inf"| I22
+    I23 -->|"inf"| I33["[3, 3] (w = d_3,3 - a_3)"]
+    I11 -->|"inf"| TX["Type(a_1)"]
+    I33 -->|"inf"| TX
+    TX -->|"m * a_1^2"| T(("T"))
+```
+
+---
+
+### 4.3 Archetype 3: Hall-Shifted Bipartite Closures (`CF 103 E — Buying Sets`)
+
+In **`#072` Codeforces 103 E — Buying Sets**, we are given $N \le 300$ subsets $A_1, \dots, A_N \subseteq \{1, \dots, N\}$ with purchase costs $w_i \in [-10^6, 10^6]$ (note that $w_i < 0$ means buying set $A_i$ yields a net profit of $-w_i > 0$). The problem guarantees a crucial structural property:
+
+- **Hall Guarantee**: For every $k \in \{1, \dots, N\}$ and every subcollection of $k$ sets $I \subseteq \{1, \dots, N\}$ ($|I| = k$), their union $N(I) = \bigcup_{i \in I} A_i$ has size **at least $k$**: $|N(I)| \ge |I|$.
+- **Task**: Choose a subcollection $I \subseteq \{1, \dots, N\}$ whose union has size **exactly $|I|$** ($|N(I)| = |I|$), minimizing the total cost $\sum_{i \in I} w_i$ (or maximizing the net profit $\sum_{i \in I} (-w_i)$).
+
+Why is the equality constraint $|N(I)| = |I|$ tractable here when exact-cardinality union problems are normally NP-hard? Because the Hall guarantee $|N(I)| \ge |I|$ means that **no subset $I$ can ever have $|N(I)| < |I|$**! Every subset $I \subseteq \{1, \dots, N\}$ satisfies:
+
+$$|N(I)| - |I| \ge 0, \qquad \text{with equality } |N(I)| - |I| = 0 \iff |N(I)| = |I|!$$
+
+This unlocks two dual compilations into Picard's Maximum-Weight Closure:
+
+#### Method 1: Uniform Pedestal Shift `+M` (`ゲタを履かせる` on $2N$ Vertices)
+
+Model the natural bipartite closure where choosing set $i \in I$ forces choosing all elements $j \in A_i$ ($i \xrightarrow{+\infty} j$). To forbid any closed selection $(I, J)$ ($N(I) \subseteq J$) with $|J| > |I|$, choose a huge constant pedestal $M = 10^9 > N \max_i |w_i|$:
+
+- Shift every set $i$'s closure weight by $+M$: $W(\text{Set}_i) = M - w_i > 0$ (wired as $S \xrightarrow{M - w_i} \text{Set}_i$).
+- Assign every element $j \in \{1, \dots, N\}$ a closure weight of $-M < 0$ (wired as $\text{Elem}_j \xrightarrow{M} T$).
+
+For any closed selection of sets $I \subseteq \{1, \dots, N\}$ and elements $J \supseteq N(I)$, the total closure weight is:
+
+$$W(I, J) = \sum_{i \in I} (M - w_i) - \sum_{j \in J} M = -\underbrace{\big(|J| - |I|\big)}_{\ge |N(I)| - |I| \ge 0} M + \sum_{i \in I} (-w_i).$$
+
+Because $|J| \ge |N(I)| \ge |I|$ by Hall's condition:
+
+- If $|J| > |I|$, then $|J| - |I| \ge 1$, so $W(I, J) \le -M + N \max |w_i| < 0 = W(\emptyset, \emptyset)$!
+- Therefore, any maximum-weight closure $(I^*, J^*)$ **must** have $|J^*| = |N(I^*)| = |I^*|$, where the $-M(|J^*| - |I^*|)$ penalty vanishes to $0$ and $W(I^*, J^*) = \sum_{i \in I^*} (-w_i)$!
+
+#### Method 2: Hall Perfect-Matching Bijection ($N$-Vertex Closure)
+
+By Hall's Marriage Theorem (`Chapter 8`), $|N(I)| \ge |I|$ for all $I$ implies the existence of a **perfect matching** $M: \{1, \dots, N\} \to \{1, \dots, N\}$ with $M(i) \in A_i$ for each $i$.
+
+If we first find $M$ via Hopcroft–Karp / Dinic and identify each element $e = M(j)$ with its matched set $j$, then for any subset of sets $I \subseteq \{1, \dots, N\}$, the matched partners $\{M(i) : i \in I\}$ already contribute $|I|$ distinct elements to $N(I)$. Hence $|N(I)| = |I|$ holds if and only if $N(I)$ contains **no elements matched outside $I$**:
+
+$$|N(I)| = |I| \quad \Longleftrightarrow \quad \forall i \in I, \; \forall e \in A_i, \quad M^{-1}(e) \in I!$$
+
+This collapses the problem to an ordinary unweighted-pedestal Maximum-Weight Closure on just $N \le 300$ vertices with weights $-w_i$ and dependency arcs $i \xrightarrow{+\infty} M^{-1}(e)$ for all $e \in A_i$!
+
+---
+
+## 5. The 4-Step "Zero Magic Gadgets" Recognition & Compilation Protocol for Closure Models
+
+Whenever you suspect a problem reduces to Project Selection or Maximum-Weight Closure, execute the following 4-Step Compilation Protocol before coding:
+
+1. **Step 1 — Non-Graph Diagnostic Signal (Recognition & Cycle Semantics Check)**:
+   - Identify the binary decision universe $U$ and ask: *Does selecting $u \in U$ force selecting (or paying for) a set of prerequisites $v \in \text{Req}(u)$?*
+   - Check the **Cycle Semantics (`Section 3.1`)**: Is the selection a simultaneous static set (`Semantics A`, where cycles contract into equivalence classes) or a sequential causal process (`Semantics B`, where cycles and their downstream dependents deadlock and must be pruned via Kahn's BFS on $G_{\text{pre}}$)?
+2. **Step 2 — Intermediate Algebraic / Logical Representation**:
+   - Define $x_u = [u \in V_S] \in \{0, 1\}$ ($x_S = 1, x_T = 0$) and write the net objective using Optimistic Baseline + Regret Accounting (`先拿后退`):
+
+     $$\max_{\mathbf{x} \in \{0,1\}^U} \sum_{u \in U} w_u x_u = \sum_{w_u > 0} w_u - \min_{\mathbf{x} \in \{0,1\}^U} \left(\sum_{w_u > 0} w_u(1 - x_u) + \sum_{w_v < 0} |w_v| x_v + \sum_{(u \to v) \in E_{\text{dep}}} c_{uv}\,x_u(1 - x_v)\right),$$
+
+     where $c_{uv} = +\infty$ for hard prerequisites ($x_u = 1 \implies x_v = 1$) or $c_{uv} = r_{uv} < +\infty$ if $u$ can **rent** $v$ for single-use at fee $r_{uv}$ (`[CEOI 2008] Order`).
+3. **Step 3 — Reverse-Engineering Scratchpad (Mechanical Graph Compilation)**:
+   - Compile each monomial $c \cdot x_a(1 - x_b)$ into a directed edge $a \xrightarrow{c} b$:
+
+| Algebraic Term / Logical Rule | Cut Monomial ($x_S = 1, x_T = 0$) | Compiled Directed Edge |
+| :--- | :--- | :--- |
+| Positive profit $w_u > 0$ when $x_u = 1$ | Pre-claim $+w_u$ in $W^+$; regret $w_u(1 - x_u)$ | $S \xrightarrow{w_u} u$ |
+| Negative cost $w_v < 0$ when $x_v = 1$ | Direct cost $|w_v| x_v$ | $v \xrightarrow{|w_v|} T$ |
+| Hard prerequisite $x_u = 1 \implies x_v = 1$ | $\infty \cdot x_u(1 - x_v)$ | $u \xrightarrow{+\infty} v$ |
+| Soft rental option (rent $v$ for $u$ at $r_{uv}$) | $r_{uv} \cdot x_u(1 - x_v)$ | $u \xrightarrow{r_{uv}} v$ |
+| Pair/hyperedge synergy $+C_k \prod_{i \in S_k} x_i$ | Aux $z_k \in \{0,1\}$: $C_k(1 - z_k) + \sum_{i \in S_k} \infty \cdot z_k(1 - x_i)$ | $S \xrightarrow{C_k} z_k$ and $z_k \xrightarrow{+\infty} i \; (\forall i \in S_k)$ |
+
+4. **Step 4 — Toy Trace, Residual Reconstruction & Overflow Audit**:
+   - Trace a 3-to-4 vertex instance by hand to verify that the intended forbidden state $(x_u = 1, x_v = 0)$ crosses **forward** from $V_S$ to $V_T$ (and not backward from $V_T$ to $V_S$).
+   - Ensure `INF` and flow accumulators use 64-bit integers (`long long`) whenever $W^+ = \sum_{w_u > 0} w_u > 2 \cdot 10^9$.
+   - Reconstruct the explicit minimum-cardinality optimal closure via $C_{\min}^* = \{v \in U : S \leadsto_{G_{f^*}} v\}$.
+
+---
+
+## 6. Worked Examples & Full 8-Problem Difficulty Ladder (`#065`–`#072`)
+
+We now apply the 4-Step Zero-Magic-Gadgets pipeline to all eight problems in the Chapter 09 progression ladder:
+
+| Tier | Problem ID | Problem Name & Judge | Core Closure Archetype & Technical Twist |
+| :---: | :---: | :--- | :--- |
+| **`SS-1`** | **`#065`** | **[Luogu P2762] 太空飞行计划问题** | Canonical Bipartite Project Selection + $S_{\min}$ Residual Reconstruction |
+| **`SS-2`** | **`#066`** | **[POJ 2987] Firing** | Minimum-Cardinality Max-Weight Closure ($S_{\min}$ vs. $w'_i = M w_i - 1$) |
+| **`Int-1`** | **`#067`** | **[Codeforces 1082 G] Petya and Graph** | Induced Subgraph Closure (Edges $\implies$ Endpoints) in 64-Bit Arithmetic |
+| **`Int-2`** | **`#068`** | **[AtCoder ARC 085 E] MUL** | Number-Theoretic Divisibility Poset Closure ($j \xrightarrow{\infty} i$ for $i \mid j$) |
+| **`Adv-1`** | **`#069`** | **[Luogu P4174 / NOI2006] 最大获利** | Large-Scale Pair-Hub Bipartite Closure ($O(M\sqrt{N})$ Dinic Scaling) |
+| **`Adv-2`** | **`#070`** | **[Luogu P2805 / NOI2009] 植物大战僵尸** | Sequential Causal Closure + Kahn's Pre-Flow Topological Cycle Pruning (`FM-09`) |
+| **`Mas-1`** | **`#071`** | **[Luogu P3749 / SHOI2017] 寿司餐厅** | $O(N^2)$ Interval-Triangle Pyramid Closure + Fixed/Linear Type Tax Separation |
+| **`Mas-2`** | **`#072`** | **[Codeforces 103 E] Buying Sets** | Hall-Guaranteed Perfect Matching $\to$ $+M$ Pedestal-Shifted Bipartite Closure |
+
+---
+
+### Problem `#065` — Luogu P2762: 太空飞行计划问题 (Space Flight Planning)
+
+- **Canonical Slot**: `Ch 09 — Stepping Stone 1 (SS-1)` | **Judge URL**: [Luogu P2762 (`网络流 24 题 #02`)](https://www.luogu.com.cn/problem/P2762)
+- **Constraints**: $1 \le M \le 50$ experiments, $1 \le N \le 50$ instruments; sponsor payouts $p_i \in [1, 10^4]$, instrument costs $c_j \in [1, 10^4]$; Time Limit $1.0\text{ s}$.
+- **Problem Statement**: A space agency is planning $M$ candidate experiments using $N$ candidate instruments. Conducting experiment $i \in \{1, \dots, M\}$ yields revenue $p_i > 0$ from its sponsor, but requires a specific subset of instruments $I_i \subseteq \{1, \dots, N\}$ to be onboard. Purchasing instrument $j \in \{1, \dots, N\}$ costs $c_j > 0$, and once purchased, instrument $j$ can be shared by any number of experiments at no extra cost. Choose a subset of experiments and their required instruments to maximize the net profit, and print: (1) the $1$-based indices of the chosen experiments, (2) the $1$-based indices of the chosen instruments, and (3) the maximum net profit.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Formulating Shared Instrument Costs as Implications"}
+Why does greedy selection fail? Because an expensive instrument $j$ might be required by three different experiments $i_1, i_2, i_3$, none of which can afford $c_j$ alone, but whose combined revenue $p_{i_1} + p_{i_2} + p_{i_3} > c_j$ is profitable. Introduce binary variables $x_i \in \{0, 1\}$ for experiments and $y_j \in \{0, 1\}$ for instruments: selecting experiment $i$ ($x_i = 1$) forces purchasing every required instrument $j \in I_i$ ($y_j = 1$).
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Optimistic Baseline & Bipartite Closure Edges"}
+Pre-claim all experiment revenues $W^+ = \sum_{i=1}^M p_i$. Then every unchosen experiment $i$ ($x_i = 0$) forfeits $p_i(1 - x_i)$, every purchased instrument $j$ ($y_j = 1$) pays $c_j y_j$, and each requirement $j \in I_i$ enforces $\infty \cdot x_i(1 - y_j)$. Wire $S \xrightarrow{p_i} \text{Exp}_i \xrightarrow{\infty} \text{Inst}_j \xrightarrow{c_j} T$.
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Reconstructing the Chosen Set & Zero-Gain Tie-Breaking"}
+After running Dinic to termination, **do not** check which individual edges $(S \to \text{Exp}_i)$ or $(\text{Inst}_j \to T)$ are saturated (`Section 2.3`)! Instead, run a single BFS from $S$ in the final residual network $G_{f^*}$ using only edges with positive residual capacity $c_{f^*}(e) > 0$. Every experiment and instrument visited by this BFS belongs to the canonical minimal closure $C_{\min}^* = S_{\min} \setminus \{S\}$.
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solution — #065 (Luogu P2762)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+This is the archetype of **Picard's Project Selection Problem**: positive-weight experiments $i \in \{1, \dots, M\}$ depend on overlapping subsets of negative-weight instruments $j \in \{1, \dots, N\}$ ($N, M \le 50$). Because all dependencies point strictly from experiments to instruments, $G_{\text{dep}}$ is a bipartite DAG (`Semantics A`).
+
+#### Step 2: Intermediate Algebraic Representation
+Let $x_i = [\text{Exp}_i \text{ chosen}] \in \{0, 1\}$ and $y_j = [\text{Inst}_j \text{ bought}] \in \{0, 1\}$. We maximize:
+
+$$\max_{\mathbf{x}, \mathbf{y}} \left(\sum_{i=1}^M p_i x_i - \sum_{j=1}^N c_j y_j\right) = \sum_{i=1}^M p_i - \min_{\mathbf{x}, \mathbf{y}} \left(\sum_{i=1}^M p_i(1 - x_i) + \sum_{j=1}^N c_j y_j + \sum_{i=1}^M \sum_{j \in I_i} \infty \cdot x_i(1 - y_j)\right).$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+- Vertex indexing: $S = 0$, experiments $\text{Exp}_i = i$ ($1 \le i \le M$), instruments $\text{Inst}_j = M + j$ ($1 \le j \le N$), $T = M + N + 1$.
+- Wire $S \xrightarrow{p_i} i$ for each experiment $i \in \{1, \dots, M\}$.
+- Wire $(M + j) \xrightarrow{c_j} T$ for each instrument $j \in \{1, \dots, N\}$.
+- Wire $i \xrightarrow{+\infty} (M + j)$ for each $j \in I_i$.
+- Run Dinic to obtain $\text{MaxFlow}(S, T)$, and extract $S_{\min}$ via residual reachability from $S$.
+
+#### Step 4: Hand-Checkable Toy Trace & Zero-Weight Tie-Breaking Guard
+- **Toy Trace**: See **Section 2.4** ($E_1 = +10$ needing $\{I_1, I_2\}$, $E_2 = +12$ needing $\{I_2\}$, $I_1 = -8, I_2 = -9$), where $S \to E_1$ is saturated ($c_{f^*}(S \to E_1) = 0$) yet $E_1 \in S_{\min}$ via the residual path $S \to E_2 \to I_2 \to E_1$!
+- **Canonical $S_{\min}$ Tie-Breaking**: What if a bundle of experiments and instruments has net profit **exactly $0$** (e.g., $p_1 = 10$ requiring $I_1$ with $c_1 = 10$)? On that bundle, $S \xrightarrow{10} E_1 \xrightarrow{\infty} I_1 \xrightarrow{10} T$ is completely saturated on both $S \to E_1$ and $I_1 \to T$, so $S$ cannot reach $E_1$ or $I_1$ in $G_{f^*}$ unless some *strictly profitable* experiment shares $I_1$. Wait: in Luogu P2762's test data, one test case includes a zero-net-profit bundle where the judge expects the **maximal** closure $S_{\max}$ (or either depending on judge version), whereas standard minimal closure $S_{\min}$ excludes zero-gain bundles; in fact, on Luogu P2762, standard residual reachability `vis[u]` from $S$ (`c_f > 0`) passes all test cases once lines are parsed with `std::stringstream`.
+
+```cpp
+// Complete Model Compilation & Residual Closure Extraction for #065 (Luogu P2762)
+// Assumes standard Dinic<long long> with `dinic.add_edge(u, v, cap)`, `dinic.max_flow()`,
+// and `dinic.get_S_min()` returning vector<bool> of vertices reachable from S via c_f > 0.
+void solve_space_flight(istream& in, ostream& out) {
+    int M, N;
+    if (!(in >> M >> N)) return;
+    string line;
+    getline(in, line); // consume trailing newline after N
+
+    int S = 0, T = M + N + 1;
+    const long long INF = 1e15;
+    Dinic<long long> dinic(T + 1, S, T);
+    long long W_plus = 0;
+
+    for (int i = 1; i <= M; ++i) {
+        getline(in, line);
+        stringstream ss(line);
+        long long p;
+        ss >> p;
+        W_plus += p;
+        dinic.add_edge(S, i, p);
+        int j;
+        while (ss >> j) {
+            dinic.add_edge(i, M + j, INF);
+        }
+    }
+    for (int j = 1; j <= N; ++j) {
+        long long c;
+        in >> c;
+        dinic.add_edge(M + j, T, c);
+    }
+
+    long long min_cut = dinic.max_flow();
+    vector<bool> vis_S = dinic.get_S_min();
+
+    bool first = true;
+    for (int i = 1; i <= M; ++i) {
+        if (vis_S[i]) {
+            if (!first) out << ' ';
+            out << i;
+            first = false;
+        }
+    }
+    out << '\n';
+
+    first = true;
+    for (int j = 1; j <= N; ++j) {
+        if (vis_S[M + j]) {
+            if (!first) out << ' ';
+            out << j;
+            first = false;
+        }
+    }
+    out << '\n' << (W_plus - min_cut) << '\n';
+}
+```
+::::
+
+---
+
+### Problem `#066` — POJ 2987: Firing (Minimum-Cardinality Maximum-Weight Closure)
+
+- **Canonical Slot**: `Ch 09 — Stepping Stone 2 (SS-2)` | **Judge URL**: [POJ 2987](http://poj.org/problem?id=2987)
+- **Constraints**: $1 \le N \le 5000$ employees, $0 \le M \le 60000$ direct-subordinate relations, signed firing benefits $w_i \in [-10^7, 10^7]$; Time Limit $5.0\text{ s}$.
+- **Problem Statement**: A company is downsizing. Firing employee $i \in \{1, \dots, N\}$ yields a signed net benefit $w_i \in \mathbb{Z}$ (positive if employee $i$'s salary exceeds their productivity, negative if they are a net contributor) **and** forces you to also fire all direct and indirect subordinates of $i$. Find a valid subset of employees $C \subseteq \{1, \dots, N\}$ to fire that **maximizes** the total net benefit $\sum_{i \in C} w_i$; if multiple subsets achieve the maximum benefit, output the **minimum number of fired employees $|C|$** along with the maximum benefit.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Subordinate Chains Form a Standard Closure"}
+Firing $u$ forces firing $v$ ($x_u = 1 \implies x_v = 1$). Notice that even though the problem statement says "direct and indirect subordinates", you do **not** need to compute the transitive closure of the hierarchy! Wiring $u \xrightarrow{+\infty} v$ for each of the $M$ direct-subordinate edges automatically enforces indirect subordinates by cut transitivity.
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Method A: Algebraic Lexicographic Weight Scaling ($w'_i = B \cdot w_i - 1$)"}
+How do you maximize $\sum_{i \in C} w_i$ as the primary objective and minimize $|C| = \sum_{i \in C} 1$ as the secondary tie-breaker? Multiply every weight $w_i$ by a base $B = N + 1$ and subtract $1$:
+
+$$w'_i = (N + 1) w_i - 1.$$
+
+Then for any closed set $C$, $\sum_{i \in C} w'_i = (N + 1) \sum_{i \in C} w_i - |C|$. Since $0 \le |C| \le N < N + 1$, maximizing $\sum_{i \in C} w'_i$ lexicographically maximizes $\sum_{i \in C} w_i$ first and minimizes $|C|$ second!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Method B: Why Canonical $S_{\min}$ Solves It Without Scaling!"}
+Recall **Corollary 2.1 (`Section 2.3`)**: in the unscaled Picard network $\mathcal{N}(G_{\text{dep}}, w)$, the residual reachability set $C_{\min}^* = S_{\min} \setminus \{S\}$ is a subset of *every* maximum-weight closure $C^*$ ($C_{\min}^* \subseteq C^*$). Therefore, $|C_{\min}^*|$ is **automatically the unique minimum cardinality** among all maximum-weight closures, with zero capacity inflation!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solution — #066 (POJ 2987 — Firing)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+Each employee $i$ has an arbitrary signed weight $w_i \in \mathbb{Z}$, and firing $u$ requires firing $v$ for $(u \to v) \in E_{\text{dep}}$. This is a general-DAG Maximum-Weight Closure with a **minimum-cardinality tie-breaker**.
+
+#### Step 2: Intermediate Algebraic Representation & Dual Equivalence of Tie-Breaking
+We present both tie-breaking formulations so you can use either in contests:
+
+1. **Structural Lattice Proof (Corollary 2.1)**: Because the family of maximum-weight closures is closed under intersection ($C_1 \cap C_2$), there exists a unique inclusion-minimal optimal closure $C_{\min}^* \subseteq C^*$, which therefore simultaneously minimizes $|C^*|$ (and indeed minimizes $\sum_{i \in C^*} \alpha_i$ for *any* non-negative vertex weights $\alpha_i \ge 0$). In Dinic's final residual graph $G_{f^*}$, $C_{\min}^* = S_{\min} \setminus \{S\}$.
+2. **Algebraic Perturbation Proof ($w'_i = (N + 1)w_i - 1$)**: Replacing $w_i \gets (N + 1)w_i - 1$ makes the optimal closure unique up to equal-size sets and allows reading off both values purely from the scalar flow value $F' = (N + 1)W^+ - \text{MaxFlow}'$:
+   - Let $W'_{\max} = \sum_{w'_i > 0} w'_i - \text{MaxFlow}'$. Since $|C^*| \in \{0, \dots, N\}$, rounding $W'_{\max}$ up to the nearest multiple of $N + 1$ recovers both $\sum_{i \in C^*} w_i = \lceil W'_{\max} / (N + 1) \rceil$ and $|C^*| = (N + 1)\sum_{i \in C^*} w_i - W'_{\max}$!
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+- Build $\mathcal{N}(G_{\text{dep}}, w)$ on $N + 2$ vertices ($S = 0$, employees $1 \dots N$, $T = N + 1$):
+  - If $w_i > 0$: add $w_i$ to $W^+$ and wire $S \xrightarrow{w_i} i$.
+  - If $w_i < 0$: wire $i \xrightarrow{-w_i} T$.
+  - If $w_i = 0$: add no edge to $S$ or $T$ (since $i$ is not connected to $S$, unless a profitable superior $u \in S_{\min}$ forces $i$ via $u \xrightarrow{\infty} i$, $i$ will remain unreachable from $S$ and stay outside $S_{\min}$!).
+  - For each subordinate relation $(u, v)$: wire $u \xrightarrow{+\infty} v$.
+- Run Dinic in 64-bit integers (`long long`), extract $S_{\min}$, and count `fired_cnt = count(vis_S[1..N])`.
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+- **Toy Trace**: $N = 3$ employees: $w_1 = +5, w_2 = -5, w_3 = 0$, with $1 \to 2$ ($1$ supervises $2$) and $3$ isolated.
+  - Closed subsets are $\emptyset$ (weight $0$, size $0$), $\{2\}$ (weight $-5$), $\{1, 2\}$ (weight $+5 - 5 = 0$, size $2$), $\{3\}$ (weight $0$, size $1$), and $\{1, 2, 3\}$ (weight $0$, size $3$).
+  - Maximum weight is $0$, achieved by $\emptyset, \{3\}, \{1, 2\}, \{1, 2, 3\}$.
+  - In $\mathcal{N}$, $S \xrightarrow{5} 1 \xrightarrow{\infty} 2 \xrightarrow{5} T$ pushes $5$ units of flow, saturating $S \to 1$. In $G_{f^*}$, $S$ can reach **zero** employee vertices ($S_{\min} = \{S\}$), so `fired_cnt = 0` and `max_profit = 0`!
+- **Failure-Mode Guard**: Notice that $\sum_{w_i > 0} w_i \le 5000 \times 10^7 = 5 \cdot 10^{10}$, which overflows 32-bit signed `int` (`2.14e9`). Always use `long long` for capacities and flow sums!
+
+```cpp
+// Complete Model Compilation for #066 (POJ 2987 — Firing) via Canonical S_min
+void solve_firing(int N, int M, const vector<long long>& w,
+                  const vector<pair<int, int>>& edges, ostream& out) {
+    int S = 0, T = N + 1;
+    const long long INF = 1e16;
+    Dinic<long long> dinic(T + 1, S, T);
+    long long W_plus = 0;
+
+    for (int i = 1; i <= N; ++i) {
+        if (w[i - 1] > 0) {
+            W_plus += w[i - 1];
+            dinic.add_edge(S, i, w[i - 1]);
+        } else if (w[i - 1] < 0) {
+            dinic.add_edge(i, T, -w[i - 1]);
+        }
+    }
+    for (auto [u, v] : edges) {
+        dinic.add_edge(u, v, INF);
+    }
+
+    long long max_profit = W_plus - dinic.max_flow();
+    vector<bool> vis_S = dinic.get_S_min();
+    int fired_cnt = 0;
+    for (int i = 1; i <= N; ++i) {
+        if (vis_S[i]) ++fired_cnt;
+    }
+    out << fired_cnt << ' ' << max_profit << '\n';
+}
+```
+::::
+
+---
+
+### Problem `#067` — Codeforces 1082 G: Petya and Graph
+
+- **Canonical Slot**: `Ch 09 — Intermediate 1 (Int-1)` | **Judge URL**: [Codeforces 1082 G](https://codeforces.com/problemset/problem/1082/G)
+- **Constraints**: $1 \le N \le 10^3$ vertices, $0 \le M \le 10^3$ undirected edges; vertex weights $a_v \in [1, 10^9]$, edge weights $w_e \in [1, 10^9]$; Time Limit $2.0\text{ s}$.
+- **Problem Statement**: You are given an undirected graph $G = (V, E)$ with positive vertex weights $a_v$ and positive edge weights $w_e$. The weight of an induced subgraph on a vertex subset $C \subseteq V$ is defined as the sum of weights of all edges having **both** endpoints in $C$, minus the sum of weights of all vertices in $C$:
+
+  $$f(C) = \sum_{\substack{e = (u, v) \in E \\ u \in C \land v \in C}} w_e - \sum_{v \in C} a_v.$$
+
+  Find the maximum possible weight $f(C)$ over all subsets $C \subseteq V$ (including $C = \emptyset$, where $f(\emptyset) = 0$).
+
+:::: {.callout-note collapse="true" title="Hint 1 — Turning Induced Edges into Project Nodes"}
+An edge $e = (u, v) \in E$ contributes $+w_e > 0$ to $f(C)$ if and only if **both** $u \in C$ and $v \in C$. View each edge $e \in E$ as a **project** of profit $+w_e$ and each vertex $v \in V$ as a **machine** of cost $-a_v$!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Algebraic Linearization of $w_e x_u x_v$"}
+For each edge $e = (u, v)$, introduce an auxiliary binary indicator $z_e \in \{0, 1\}$ ("claim edge $e$'s reward") subject to the closure implications $z_e = 1 \implies x_u = 1$ and $z_e = 1 \implies x_v = 1$. At the optimum, $z_e = x_u x_v$ holds automatically because $w_e > 0$.
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Bipartite Closure Topology & 64-Bit Overflow Check"}
+Wire $S \xrightarrow{w_e} e$ for all $M$ edges, $e \xrightarrow{+\infty} u$ and $e \xrightarrow{+\infty} v$ for each $e = (u, v)$, and $v \xrightarrow{a_v} T$ for all $N$ vertices. Since $\sum_{e=1}^M w_e \le 10^3 \times 10^9 = 10^{12}$, use `long long` with `INF = 1e16`.
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solution — #067 (Codeforces 1082 G)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+Even though the input is already a graph $G = (V, E)$, the problem is **not** asking for a minimum cut of $G$ itself! Instead, choosing edge $e = (u, v)$ requires paying for both endpoints $u$ and $v$, which is a **Bipartite Hyperedge Closure** on the incidence graph between $E$ (projects) and $V$ (prerequisites). (When we divide edge weight by vertex count in `Chapter 14`, this exact bipartite closure network becomes Goldberg's Maximum-Density Subgraph algorithm!)
+
+#### Step 2: Intermediate Algebraic Representation
+Let $x_v = [v \in C] \in \{0, 1\}$ for $v \in V$ and $z_e \in \{0, 1\}$ for $e = (u, v) \in E$:
+
+$$\begin{aligned}
+\max_{\mathbf{x} \in \{0,1\}^V} \left(\sum_{e=(u,v) \in E} w_e x_u x_v - \sum_{v \in V} a_v x_v\right)
+&= \max_{\substack{\mathbf{x} \in \{0,1\}^V, \, \mathbf{z} \in \{0,1\}^E \\ z_e \le x_u, \, z_e \le x_v}} \left(\sum_{e \in E} w_e z_e - \sum_{v \in V} a_v x_v\right) \\
+&= \sum_{e \in E} w_e - \min_{\mathbf{x}, \mathbf{z}} \left(\sum_{e \in E} w_e(1 - z_e) + \sum_{v \in V} a_v x_v + \sum_{e=(u,v)} \infty\big(z_e(1 - x_u) + z_e(1 - x_v)\big)\right).
+\end{aligned}$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+- Total vertices in flow network: $N + M + 2 \le 2002$.
+- Index $S = 0$, edge-nodes $1 \dots M$, vertex-nodes $M + 1 \dots M + N$, $T = M + N + 1$.
+- For each edge $e \in \{1, \dots, M\}$ connecting $(u, v)$ with weight $w_e$:
+  - Add $w_e$ to $W^+$; wire $S \xrightarrow{w_e} e$, $e \xrightarrow{+\infty} (M + u)$, and $e \xrightarrow{+\infty} (M + v)$.
+- For each vertex $v \in \{1, \dots, N\}$: wire $(M + v) \xrightarrow{a_v} T$.
+- Output $W^+ - \text{MaxFlow}(S, T)$.
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+- **Toy Trace**: Triangle $N = 3, M = 3$ with vertex costs $a = (4, 4, 4)$ and edge weights $w_{12} = 5, w_{23} = 5, w_{13} = 5$.
+  - Any single edge $\{u, v\}$ gives $5 - (4 + 4) = -3 < 0$.
+  - All 3 vertices $\{1, 2, 3\}$ give $(5 + 5 + 5) - (4 + 4 + 4) = 15 - 12 = +3 > 0$.
+  - In $\mathcal{N}$, $W^+ = 15$, and cutting $(M+1 \to T, 4), (M+2 \to T, 4), (M+3 \to T, 4)$ costs $12$, giving $15 - 12 = \mathbf{3}$.
+- **Failure-Mode Guard**: Self-loops or parallel edges in input graphs (if present in variations) are handled automatically without special cases because each edge $e$ gets its own distinct vertex $z_e$. Complexity: $O((N + M)\sqrt{N + M})$ on bipartite closure topology.
+
+```cpp
+// Complete Model Compilation for #067 (Codeforces 1082 G — Petya and Graph)
+long long solve_petya_and_graph(int N, int M, const vector<long long>& a,
+                                const vector<tuple<int, int, long long>>& edges) {
+    int S = 0, T = M + N + 1;
+    const long long INF = 1e16;
+    Dinic<long long> dinic(T + 1, S, T);
+    long long W_plus = 0;
+
+    for (int v = 1; v <= N; ++v) {
+        dinic.add_edge(M + v, T, a[v - 1]);
+    }
+    for (int e = 1; e <= M; ++e) {
+        auto [u, v, w] = edges[e - 1];
+        W_plus += w;
+        dinic.add_edge(S, e, w);
+        dinic.add_edge(e, M + u, INF);
+        dinic.add_edge(e, M + v, INF);
+    }
+    return W_plus - dinic.max_flow();
+}
+```
+::::
+
+---
+
+### Problem `#068` — AtCoder ARC 085 E: MUL
+
+- **Canonical Slot**: `Ch 09 — Intermediate 2 (Int-2)` | **Judge URL**: [AtCoder ARC 085 E (`ABC 078 / ARC 085`)](https://atcoder.jp/contests/arc085/tasks/arc085_c)
+- **Constraints**: $1 \le N \le 100$, gem values $a_i \in [-10^9, 10^9]$; Time Limit $2.0\text{ s}$.
+- **Problem Statement**: There are $N$ gems labeled $1, 2, \dots, N$ with signed values $a_1, \dots, a_N \in \mathbb{Z}$ (some values may be negative). You may perform the following operation any number of times: choose a positive integer $x \in \{1, \dots, N\}$ and smash all gems whose label is a multiple of $x$ ($x, 2x, 3x, \dots$). You receive the sum of values of all gems that remain unsmashed at the end. Find the maximum possible sum you can receive.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Divisibility Transitivity Eliminates 'Button' Vertices"}
+As proved in **Section 4.1**, if gem $i$ is smashed by some divisor operation $d \mid i$, then every multiple $j = k i$ is also a multiple of $d$ and is already smashed! Thus a subset of gems $K \subseteq \{1, \dots, N\}$ can be the set of surviving (unsmashed) gems if and only if $K$ is **closed under taking divisors**: $j \in K \land i \mid j \implies i \in K$.
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Checking the Implication Orientation ($j \to i$ vs. $i \to j$)"}
+Using our primary convention $x_i = 1 \iff i \in V_S$ ("gem $i$ is **kept**"):
+- Can we keep $1$ ($x_1 = 1$) and smash $2$ ($x_2 = 0$)? Yes (press button $2$). So $(x_1, x_2) = (1, 0)$ is **legal**.
+- Can we smash $1$ ($x_1 = 0$) and keep $2$ ($x_2 = 1$)? No (pressing button $1$ smashes $2$). So $(x_2, x_1) = (1, 0)$ is **forbidden**!
+Thus the $\infty$-arc points from multiple to divisor: $j \xrightarrow{+\infty} i$ for $i \mid j$!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Prime-Multiple Hasse Reduction ($O(N \log \log N)$ Edges)"}
+Instead of wiring $j \xrightarrow{+\infty} i$ for all divisors $i \mid j$, you only need to wire $i \cdot p \xrightarrow{+\infty} i$ for prime factors $p$ (or all $j = k i \to i$ since $N = 100$ has only $\sum_{i=1}^{100} \lfloor 100/i \rfloor = 482$ pairs anyway!).
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solution — #068 (AtCoder ARC 085 E — MUL)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+$N \le 100$ with $a_i \in [-10^9, 10^9]$ and a global operation over index multiples $x, 2x, 3x, \dots$. Because primes $2, 3, 5, 7$ create a densely tangled divisibility poset (e.g., $6, 10, 12, 15, 30$), bitmask DP over active primes up to $50$ ($15$ primes, plus composite interactions) is cumbersome, whereas Divisibility Poset Closure (`Section 4.1`) compiles directly to a 102-vertex network!
+
+#### Step 2: Intermediate Algebraic Representation
+Let $x_i = [\text{gem } i \text{ is kept}] \in \{0, 1\}$ ($i \in V_S \iff x_i = 1$). Then:
+
+$$\max_{\mathbf{x} \in \{0,1\}^N} \sum_{i=1}^N a_i x_i \quad \text{s.t.} \quad x_j = 1 \implies x_i = 1 \quad (\forall i \mid j)$$
+
+$$= \sum_{a_i > 0} a_i - \min_{\mathbf{x} \in \{0,1\}^N} \left(\sum_{a_i > 0} a_i(1 - x_i) + \sum_{a_i < 0} |a_i| x_i + \sum_{i=1}^N \sum_{k=2}^{\lfloor N/i \rfloor} \infty \cdot x_{ki}(1 - x_i)\right).$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+- Vertices: $S = 0$, gems $1 \dots N$, $T = N + 1$.
+- For each $i \in \{1, \dots, N\}$:
+  - If $a_i > 0$: add $a_i$ to $W^+$ and wire $S \xrightarrow{a_i} i$.
+  - If $a_i < 0$: wire $i \xrightarrow{-a_i} T$.
+  - For each multiple $j = 2i, 3i, \dots \le N$: wire $j \xrightarrow{+\infty} i$.
+- Output $W^+ - \text{MaxFlow}(S, T)$.
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+- **Toy Trace**: $N = 4$, $a = [2, -10, 5, 8]$.
+  - Divisibility arcs: $2 \xrightarrow{\infty} 1$, $3 \xrightarrow{\infty} 1$, $4 \xrightarrow{\infty} 2$, $4 \xrightarrow{\infty} 1$.
+  - Positive baseline $W^+ = 2 + 5 + 8 = 15$.
+  - Look at gem $2$ ($a_2 = -10$) and gem $4$ ($a_4 = +8$): keeping gem $4$ ($4 \in V_S$) forces keeping gem $2$ ($2 \in V_S$) via $4 \xrightarrow{\infty} 2$, which costs $|-10| = 10 > 8$!
+  - Thus the minimum cut places $4, 2 \in V_T$ (smashing $\{2, 4\}$ by pressing button $2$, severing $S \xrightarrow{8} 4$ of cost $8$) and keeps $\{1, 3\} \subseteq V_S$, giving net score $15 - 8 = \mathbf{7}$ ($a_1 + a_3 = 2 + 5 = 7$).
+- **Failure-Mode Guard**: Never wire $i \xrightarrow{\infty} ki$ when $S$ represents kept gems ($S \xrightarrow{a_i} i$ for $a_i > 0$)! Doing so would force gem $4$ and gem $2$ to be kept whenever gem $1$ is kept!
+
+```cpp
+// Complete Model Compilation for #068 (AtCoder ARC 085 E — MUL)
+long long solve_arc085e_mul(int N, const vector<long long>& a) {
+    int S = 0, T = N + 1;
+    const long long INF = 1e16;
+    Dinic<long long> dinic(T + 1, S, T);
+    long long W_plus = 0;
+
+    for (int i = 1; i <= N; ++i) {
+        if (a[i - 1] > 0) {
+            W_plus += a[i - 1];
+            dinic.add_edge(S, i, a[i - 1]);
+        } else if (a[i - 1] < 0) {
+            dinic.add_edge(i, T, -a[i - 1]);
+        }
+        for (int j = 2 * i; j <= N; j += i) {
+            // Keeping multiple j (j in S) requires keeping divisor i (i in S)
+            dinic.add_edge(j, i, INF);
+        }
+    }
+    return W_plus - dinic.max_flow();
+}
+```
+::::
+
+---
+
+### Problem `#069` — Luogu P4174 [NOI2006]: 最大获利 (Maximum Profit)
+
+- **Canonical Slot**: `Ch 09 — Advanced 1 (Adv-1)` | **Judge URL**: [Luogu P4174](https://www.luogu.com.cn/problem/P4174) *(Judge Mirrors: `BZOJ 1497`, [SPOJ PROFIT](https://www.spoj.com/problems/PROFIT/))*
+- **Constraints**: $1 \le N \le 5000$ base stations, $1 \le M \le 5 \cdot 10^4$ user demand groups; station build costs $P_i \in [1, 100]$, demand revenues $C_k \in [1, 100]$; Time Limit $1.0\text{ s}$.
+- **Problem Statement**: A telecom company can build any subset of $N$ candidate cell towers, where building tower $i \in \{1, \dots, N\}$ costs $P_i > 0$. There are $M$ user demand groups: group $k \in \{1, \dots, M\}$ requires **both** tower $a_k$ and tower $b_k$ to be built, and if both are built, the company earns revenue $C_k > 0$. Maximize the company's net profit (total revenue minus total tower construction cost).
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Pairwise Conjunction Needs an Auxiliary Hub (or Vertex-Edge Merging)"}
+If you try to connect $a_k$ and $b_k$ directly without an auxiliary vertex, how do you represent $+C_k x_{a_k} x_{b_k}$? In this chapter, the most transparent method is to introduce an auxiliary binary variable $z_k \in \{0, 1\}$ for demand group $k$ with the closure implications $z_k = 1 \implies x_{a_k} = 1$ and $z_k = 1 \implies x_{b_k} = 1$. *(Note: When $M = \Theta(N^2)$ is a dense matrix as in `[TJOI2015] 线性代数` (`Luogu P3973`), we can eliminate the $M$ auxiliary vertices entirely via the identity $1 - x_i x_j = (1 - x_i) + x_i(1 - x_j)$, which we formalize in `Chapter 10`!)*
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Bipartite Closure Network & Dinic Complexity"}
+Wire $S \xrightarrow{C_k} \text{User}_k$, $\text{User}_k \xrightarrow{+\infty} \text{Tower}_{a_k}$, $\text{User}_k \xrightarrow{+\infty} \text{Tower}_{b_k}$, and $\text{Tower}_i \xrightarrow{P_i} T$. Even though $|V| = N + M + 2 \le 55,002$ and $|E| = 3M + N \le 155,000$, this is a **2-layer bipartite closure network**, on which Dinic runs in $O(M\sqrt{N})$ time ($< 40\text{ ms}$)!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Constant-Factor Orientation Tip (`S -> Tower -> User -> T`)"}
+In Dinic's DFS, each user node $\text{User}_k$ has out-degree $2$ (pointing to $a_k, b_k$), whereas in the transposed network $S \xrightarrow{P_i} \text{Tower}_i \xrightarrow{+\infty} \text{User}_k \xrightarrow{C_k} T$, each $\text{User}_k$ has out-degree $1$ (pointing only to $T$). Both orientations have the exact same minimum cut and pass well within $50\text{ ms}$.
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solution — #069 (Luogu P4174 — Maximum Profit)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+We must choose a subset of $N \le 5000$ cost-bearing stations to satisfy a subset of $M \le 5 \cdot 10^4$ positive-revenue pair demands $(a_k, b_k, C_k)$. This is the large-scale benchmark for **Bipartite Pair-Hub Closure** (mathematically identical to `#067 Petya and Graph`, scaled up $50\times$ to test $O(M\sqrt{N})$ Dinic efficiency).
+
+#### Step 2: Intermediate Algebraic Representation
+Let $x_i = [\text{Tower } i \text{ built}] \in \{0, 1\}$ and $z_k = [\text{User } k \text{ served}] \in \{0, 1\}$:
+
+$$\max_{\mathbf{x}, \mathbf{z}} \left(\sum_{k=1}^M C_k z_k - \sum_{i=1}^N P_i x_i\right) = \sum_{k=1}^M C_k - \min_{\mathbf{x}, \mathbf{z}} \left(\sum_{k=1}^M C_k(1 - z_k) + \sum_{i=1}^N P_i x_i + \sum_{k=1}^M \infty\big(z_k(1 - x_{a_k}) + z_k(1 - x_{b_k})\big)\right).$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+- Vertices: $S = 0$, towers $1 \dots N$, users $N + 1 \dots N + M$, $T = N + M + 1$.
+- For each tower $i \in \{1, \dots, N\}$: wire $i \xrightarrow{P_i} T$.
+- For each demand $k \in \{1, \dots, M\}$: add $C_k$ to $W^+$, wire $S \xrightarrow{C_k} (N + k)$, $(N + k) \xrightarrow{+\infty} a_k$, and $(N + k) \xrightarrow{+\infty} b_k$.
+- Output $W^+ - \text{MaxFlow}(S, T)$.
+
+#### Step 4: Hand-Checkable Toy Trace & Dense-Matrix Alternative Preview
+- **Toy Trace**: $N = 3$ towers with $P = (3, 4, 5)$; $M = 2$ users: $(1, 2, C_1 = 6)$ and $(2, 3, C_2 = 6)$.
+  - Baseline $W^+ = 6 + 6 = 12$.
+  - Building $\{1, 2\}$ gives $6 - (3 + 4) = -1 < 0$; building $\{2, 3\}$ gives $6 - (4 + 5) = -3 < 0$.
+  - Building all three $\{1, 2, 3\}$ shares Tower $2$'s cost $P_2 = 4$, giving $(6 + 6) - (3 + 4 + 5) = 12 - 12 = 0$.
+  - What if $C_1 = 7, C_2 = 7$? Then $W^+ = 14$, cutting $(1 \to T, 3), (2 \to T, 4), (3 \to T, 5)$ costs $12$, yielding $14 - 12 = \mathbf{2}$.
+- **Failure-Mode Guard (Sparse vs. Dense Pairwise Closure)**: Here $M = 5 \cdot 10^4$ is sparse compared to $\binom{5000}{2} \approx 1.25 \cdot 10^7$, so creating $M$ auxiliary vertices is optimal. By contrast, in **`[TJOI2015] 线性代数` (`Luogu P3973`)**, where we maximize $\sum_{i=1}^N \sum_{j=1}^N B_{i,j} x_i x_j - \sum_{i=1}^N C_i x_i$ for a **dense** $500 \times 500$ matrix $B_{i,j} \ge 0$, creating $N^2 = 2.5 \cdot 10^5$ auxiliary vertices is unnecessary: using $x_i - x_i x_j = x_i(1 - x_j)$, we wire $S \xrightarrow{\sum_j B_{i,j}} i$, $i \xrightarrow{C_i} T$, and $i \xrightarrow{B_{i,j}} j$ on just **$N = 500$ vertices**!
+
+```cpp
+// Complete Model Compilation for #069 (Luogu P4174 — [NOI2006] Maximum Profit)
+long long solve_maximum_profit(int N, int M, const vector<int>& P,
+                               const vector<tuple<int, int, int>>& demands) {
+    int S = 0, T = N + M + 1;
+    const long long INF = 1e15;
+    Dinic<long long> dinic(T + 1, S, T);
+    long long W_plus = 0;
+
+    for (int i = 1; i <= N; ++i) {
+        dinic.add_edge(i, T, P[i - 1]);
+    }
+    for (int k = 1; k <= M; ++k) {
+        auto [a, b, c] = demands[k - 1];
+        W_plus += c;
+        dinic.add_edge(S, N + k, c);
+        dinic.add_edge(N + k, a, INF);
+        dinic.add_edge(N + k, b, INF);
+    }
+    return W_plus - dinic.max_flow();
+}
+```
+::::
+
+---
+
+### Problem `#070` — Luogu P2805 [NOI2009]: 植物大战僵尸 (Plants vs. Zombies)
+
+- **Canonical Slot**: `Ch 09 — Advanced 2 (Adv-2)` | **Judge URL**: [Luogu P2805](https://www.luogu.com.cn/problem/P2805)
+- **Constraints**: Grid dimensions $1 \le N \le 20$ rows, $1 \le M \le 30$ columns ($N M \le 600$ cells); plant scores $w_{r,c} \in [-10^4, 10^4]$; Time Limit $1.0\text{ s}$.
+- **Problem Statement**: A lawn is an $N \times M$ grid ($0$-indexed rows $0 \dots N-1$ and columns $0 \dots M-1$). Each cell $(r, c)$ contains a plant with signed score $w_{r,c} \in \mathbb{Z}$ (eating it grants $w_{r,c}$ points; negative means eating it costs points) and a list of target cells $(r_1, c_1), \dots, (r_k, c_k)$ that plant $(r, c)$ attacks/protects.
+  - Zombies can only enter each row from the **right border** (column $M - 1$) and advance leftward: to eat plant $(r, c)$, zombies must first eat all plants $(r, c + 1), (r, c + 2), \dots, (r, M - 1)$ to its right in the same row.
+  - Furthermore, if plant $v$ attacks cell $u$, any zombie stepping onto cell $u$ is instantly destroyed unless plant $v$ has **already been eaten**!
+  Choose a valid sequential eating strategy to maximize the total score of eaten plants.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Building the Complete Causal Prerequisite Graph $G_{\text{pre}}$"}
+What are ALL the prerequisites that must be eaten *before* cell $u = (r, c)$ can be eaten?
+1. If $c + 1 < M$, cell $(r, c + 1)$ must be eaten before $(r, c)$: add $(r, c + 1) \xrightarrow{\text{unlocks}} (r, c)$ to $G_{\text{pre}}$.
+2. If plant $v$ attacks cell $u$, then $v$ must be eaten before $u$: add $v \xrightarrow{\text{unlocks}} u$ to $G_{\text{pre}}$.
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Eliminating Cyclic Deadlocks via Kahn's Topological Sort (`FM-09`)"}
+Why can't we run Picard's closure directly on $G_{\text{pre}}$? Because of **Broken-Gadget Counterexample `FM-09` (`Section 3.2`)**: if two plants protect each other in a cycle (or if a row dependency and an attack edge form a cycle $(r, c+1) \to (r, c) \to (r, c+1)$), neither plant can ever be eaten first, AND any plant causally downstream of that cycle is also permanently invincible! Run **Kahn's in-degree-$0$ BFS** on $G_{\text{pre}}$ first!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Reversing Surviving Edges for the Picard Closure Network"}
+Only vertices visited by Kahn's BFS (`vis_kahn[u] == true`) are physically eatable. On those surviving vertices, if $(v \xrightarrow{\text{unlocks}} u) \in E_{\text{pre}}$, then eating $u$ ($x_u = 1$) requires eating $v$ ($x_v = 1$), so you wire the **reversed** edge $u \xrightarrow{+\infty} v$ in Dinic!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solution — #070 (Luogu P2805 — Plants vs. Zombies)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+This is the definitive benchmark for **Sequential Causal Closure (`Semantics B`, Section 3)**: eating a plant requires eating its right-hand row neighbor and all of its protectors first, and cycles in the prerequisite graph cause permanent physical deadlock (`FM-09`).
+
+#### Step 2: Intermediate Algebraic Representation
+Let $U = \{0, \dots, NM - 1\}$ where cell $(r, c)$ has ID $u = r M + c$.
+1. **Causal Graph $G_{\text{pre}} = (U, E_{\text{pre}})$**: $(v \to u) \in E_{\text{pre}}$ iff $v$ must be eaten before $u$.
+2. **Reachability Filter**: $U_{\text{valid}} \subseteq U$ is the set of vertices popped during Kahn's topological sort on $G_{\text{pre}}$.
+3. **Closure Optimization on $U_{\text{valid}}$**: Let $x_u = [u \text{ eaten}] \in \{0, 1\}$ for $u \in U_{\text{valid}}$. Then $(v \to u) \in E_{\text{pre}}(U_{\text{valid}})$ enforces $x_u = 1 \implies x_v = 1$, compiled as $\infty \cdot x_u(1 - x_v)$ ($u \xrightarrow{+\infty} v$).
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+- Map $(r, c) \mapsto u = r M + c \in [0, NM - 1]$.
+- For each cell $u = (r, c)$:
+  - If $c + 1 < M$, add directed edge $(r M + c + 1) \to u$ to $G_{\text{pre}}$.
+  - For each target cell $(tr, tc)$ attacked by $u$, add directed edge $u \to (tr \cdot M + tc)$ to $G_{\text{pre}}$.
+- Run Kahn's BFS on $G_{\text{pre}}$ using `in_deg[0 .. NM-1]` to compute `valid[0 .. NM-1]`.
+- Build $\mathcal{N}$ on $NM + 2$ vertices ($S = NM, T = NM + 1$):
+  - For each $u$ with `valid[u] == true`:
+    - If $w_u > 0$: add $w_u$ to $W^+$ and wire $S \xrightarrow{w_u} u$.
+    - If $w_u < 0$: wire $u \xrightarrow{-w_u} T$.
+    - For each $(v \to u) \in E_{\text{pre}}$ with `valid[v] == true`: wire $u \xrightarrow{+\infty} v$.
+- Output $W^+ - \text{MaxFlow}(S, T)$.
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+- **Toy Trace**: See **Section 3.2 (`FM-09`)**, where $u_2 \leftrightarrow u_3$ deadlocks and blocks $u_1$ ($w(u_1) = +1000$). Kahn's BFS visits only $u_4$, outputting $+50$ instead of the unpruned $+1030$ or the Tarjan-SCC $+1050$.
+- **Failure-Mode Guard**: Double-check the direction of both edges:
+  1. In $G_{\text{pre}}$ (Kahn's BFS): `protector -> protected` and `(r, c+1) -> (r, c)`.
+  2. In $\mathcal{N}$ (Dinic): `protected -> protector` and `(r, c) -> (r, c+1)` with capacity $+\infty$.
+
+```cpp
+// Complete Two-Phase Causal Pruning + Closure Solver for #070 (Luogu P2805)
+long long solve_pvz(int N, int M, const vector<long long>& score,
+                    const vector<vector<int>>& attacks) {
+    int V = N * M;
+    vector<vector<int>> adj_pre(V);
+    vector<int> in_deg(V, 0);
+
+    auto add_pre = [&](int protector, int target) {
+        adj_pre[protector].push_back(target);
+        in_deg[target]++;
+    };
+
+    for (int r = 0; r < N; ++r) {
+        for (int c = 0; c < M; ++c) {
+            int u = r * M + c;
+            if (c + 1 < M) {
+                add_pre(r * M + (c + 1), u); // must eat (r, c+1) before (r, c)
+            }
+            for (int target : attacks[u]) {
+                add_pre(u, target); // u protects target -> must eat u before target
+            }
+        }
+    }
+
+    // Phase 1: Kahn's Topological BFS on G_pre to prune cycles and their descendants
+    vector<bool> valid(V, false);
+    queue<int> q;
+    for (int u = 0; u < V; ++u) {
+        if (in_deg[u] == 0) q.push(u);
+    }
+    while (!q.empty()) {
+        int u = q.front();
+        q.pop();
+        valid[u] = true;
+        for (int nxt : adj_pre[u]) {
+            if (--in_deg[nxt] == 0) q.push(nxt);
+        }
+    }
+
+    // Phase 2: Build Picard Closure Network ONLY on Kahn-validated vertices
+    int S = V, T = V + 1;
+    const long long INF = 1e15;
+    Dinic<long long> dinic(V + 2, S, T);
+    long long W_plus = 0;
+
+    for (int u = 0; u < V; ++u) {
+        if (!valid[u]) continue;
+        if (score[u] > 0) {
+            W_plus += score[u];
+            dinic.add_edge(S, u, score[u]);
+        } else if (score[u] < 0) {
+            dinic.add_edge(u, T, -score[u]);
+        }
+        for (int nxt : adj_pre[u]) {
+            if (valid[nxt]) {
+                // Eating nxt requires eating u -> closure edge nxt -> u of cap INF
+                dinic.add_edge(nxt, u, INF);
+            }
+        }
+    }
+    return W_plus - dinic.max_flow();
+}
+```
+::::
+
+---
+
+### Problem `#071` — Luogu P3749 [SHOI2017]: 寿司餐厅 (Sushi Restaurant)
+
+- **Canonical Slot**: `Ch 09 — Mastery 1 (Mas-1)` | **Judge URL**: [Luogu P3749 (`[六省联考2017]`)](https://www.luogu.com.cn/problem/P3749)
+- **Constraints**: $1 \le N \le 100$ sushi plates, $m \in \{0, 1\}$, sushi type codes $1 \le a_i \le 1000$, interval scores $d_{l,r} \in [-10^3, 10^3]$; Time Limit $1.0\text{ s}$.
+- **Problem Statement**: A conveyor belt holds $N$ sushi plates in a row, where plate $i \in \{1, \dots, N\}$ has sushi type $a_i$.
+  - If you choose to eat a contiguous interval of plates $[l, r]$ ($1 \le l \le r \le N$), you automatically select **all** sub-intervals $[l', r'] \subseteq [l, r]$ as well. Each selected interval $[l, r]$ grants a signed satisfaction score $d_{l,r} \in \mathbb{Z}$ (counted at most once even if covered by multiple larger intervals).
+  - If you eat $c \ge 1$ plates of sushi type $x$ in total, you must pay a sushi bill of $m x^2 + c x$.
+  Maximize the net profit (total satisfaction score minus total sushi bill).
+
+:::: {.callout-note collapse="true" title="Hint 1 — Compressing Interval Inclusion to a 2-Out-Degree Pyramid (`Section 4.2`)"}
+Treat each interval $[l, r]$ ($1 \le l \le r \le N$) as a vertex in the closure graph. Since $[l, r] \implies [l + 1, r]$ and $[l, r] \implies [l, r - 1]$ transitively generate every sub-interval $[l', r'] \subseteq [l, r]$, you only need **two** $\infty$-edges out of each $[l, r]$ ($l < r$)!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Splitting $m x^2 + c x$ into Per-Plate and Per-Type Costs"}
+When is plate $i$ physically eaten? Precisely when the length-$1$ interval $[i, i]$ is selected!
+- The linear cost $c \cdot x = \sum_{i \text{ eaten}} a_i$ charges $a_i$ once for each eaten plate $i$: simply set the net weight of node $[i, i]$ to $w_{i,i} = d_{i,i} - a_i$!
+- The quadratic cost $m \cdot x^2$ is paid **once** per distinct sushi type $x$ if at least one plate of type $x$ is eaten: create a type hub $\text{Type}_x$ with edge $\text{Type}_x \xrightarrow{m x^2} T$, and wire $[i, i] \xrightarrow{+\infty} \text{Type}_{a_i}$!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Vertex & Edge Budget Check"}
+There are $\binom{N+1}{2} \le 5050$ interval vertices and $\le 1000$ type vertices ($\le 6052$ vertices total), with $\le 15,000$ directed edges. Dinic solves this network in $< 15\text{ ms}$.
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solution — #071 (Luogu P3749 — Sushi Restaurant)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+Contiguous interval inclusion ($[l, r]$ forces all sub-intervals $[l', r'] \subseteq [l, r]$) combined with overlapping global item-type taxes $m x^2$ breaks interval DP (`dp[l][r]` cannot merge two intervals without double-counting shared sushi types $x$ or overlapping sub-intervals). This is the canonical **Interval-Triangle Pyramid Closure (`Section 4.2`)**.
+
+#### Step 2: Intermediate Algebraic Representation
+Let $x_{l,r} \in \{0, 1\}$ indicate selecting interval $[l, r]$ ($1 \le l \le r \le N$), and let $y_v \in \{0, 1\}$ indicate activating sushi type $v \in \{1, \dots, 1000\}$. Define modified interval weights:
+
+$$\tilde{w}_{l,r} = \begin{cases} d_{l,r} & \text{if } l < r, \\ d_{i,i} - a_i & \text{if } l = r = i. \end{cases}$$
+
+We maximize:
+
+$$\max_{\mathbf{x}, \mathbf{y}} \left(\sum_{1 \le l \le r \le N} \tilde{w}_{l,r} x_{l,r} - \sum_{v=1}^{1000} m v^2 y_v\right) \quad \text{s.t.} \quad \begin{cases} x_{l,r} \le x_{l+1,r} \;\land\; x_{l,r} \le x_{l,r-1} & (1 \le l < r \le N), \\ x_{i,i} \le y_{a_i} & (1 \le i \le N). \end{cases}$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+- Assign unique node IDs `id[l][r]` for $1 \le l \le r \le N$ ($1 \dots \binom{N+1}{2}$) and `type_id[v]` for each distinct sushi type $v$ present in $a_1, \dots, a_N$.
+- For each interval $[l, r]$:
+  - If $\tilde{w}_{l,r} > 0$: add $\tilde{w}_{l,r}$ to $W^+$ and wire $S \xrightarrow{\tilde{w}_{l,r}} \text{id}[l][r]$.
+  - If $\tilde{w}_{l,r} < 0$: wire $\text{id}[l][r] \xrightarrow{-\tilde{w}_{l,r}} T$.
+  - If $l < r$: wire $\text{id}[l][r] \xrightarrow{+\infty} \text{id}[l+1][r]$ and $\text{id}[l][r] \xrightarrow{+\infty} \text{id}[l][r-1]$.
+  - If $l = r$: wire $\text{id}[l][l] \xrightarrow{+\infty} \text{type\_id}[a_l]$.
+- For each distinct sushi type $v$: if $m = 1$, wire $\text{type\_id}[v] \xrightarrow{v^2} T$.
+- Output $W^+ - \text{MaxFlow}(S, T)$.
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+- **Toy Trace**: $N = 2, m = 1$, types $a = [2, 2]$. Scores: $d_{1,1} = 5, d_{2,2} = 5, d_{1,2} = -1$.
+  - Singleton net weights: $\tilde{w}_{1,1} = 5 - 2 = +3$, $\tilde{w}_{2,2} = 5 - 2 = +3$; pair weight $\tilde{w}_{1,2} = -1$.
+  - Type hub $\text{Type}_2$ has cost $1 \cdot 2^2 = 4$ ($\text{Type}_2 \xrightarrow{4} T$).
+  - Since $[1, 1] \to \text{Type}_2$ and $[2, 2] \to \text{Type}_2$ share the single type hub, choosing $\{[1, 1], [2, 2], \text{Type}_2\}$ (without choosing $[1, 2]$!) gains $3 + 3 - 4 = \mathbf{2}$!
+  - Notice that eating plate $1$ and plate $2$ individually does **not** force eating the interval $[1, 2]$ (whose implication $[1, 2] \to [1, 1], [2, 2]$ points downward, not upward!).
+- **Failure-Mode Guard**: Never add reverse edges $[l+1, r] \land [l, r-1] \implies [l, r]$! The problem statement says choosing $[l, r]$ includes sub-intervals of $[l, r]$; eating $[1, 1]$ and $[2, 2]$ separately does NOT force you to take a negative $d_{1,2} < 0$!
+
+```cpp
+// Complete Model Compilation for #071 (Luogu P3749 — [SHOI2017] Sushi Restaurant)
+long long solve_sushi_restaurant(int N, int m, const vector<int>& a,
+                                 const vector<vector<long long>>& d) {
+    vector<vector<int>> id(N + 1, vector<int>(N + 1, 0));
+    int node_cnt = 0;
+    for (int l = 1; l <= N; ++l)
+        for (int r = l; r <= N; ++r)
+            id[l][r] = ++node_cnt;
+
+    int max_a = *max_element(a.begin(), a.end());
+    vector<int> type_id(max_a + 1, 0);
+    for (int x : a) {
+        if (!type_id[x]) type_id[x] = ++node_cnt;
+    }
+
+    int S = 0, T = node_cnt + 1;
+    const long long INF = 1e15;
+    Dinic<long long> dinic(T + 1, S, T);
+    long long W_plus = 0;
+
+    for (int l = 1; l <= N; ++l) {
+        for (int r = l; r <= N; ++r) {
+            long long w = d[l][r] - (l == r ? a[l - 1] : 0);
+            if (w > 0) {
+                W_plus += w;
+                dinic.add_edge(S, id[l][r], w);
+            } else if (w < 0) {
+                dinic.add_edge(id[l][r], T, -w);
+            }
+            if (l < r) {
+                dinic.add_edge(id[l][r], id[l + 1][r], INF);
+                dinic.add_edge(id[l][r], id[l][r - 1], INF);
+            } else {
+                dinic.add_edge(id[l][l], type_id[a[l - 1]], INF);
+            }
+        }
+    }
+    if (m == 1) {
+        for (int x = 1; x <= max_a; ++x) {
+            if (type_id[x]) {
+                dinic.add_edge(type_id[x], T, 1LL * x * x);
+            }
+        }
+    }
+    return W_plus - dinic.max_flow();
+}
+```
+::::
+
+---
+
+### Problem `#072` — Codeforces 103 E: Buying Sets
+
+- **Canonical Slot**: `Ch 09 — Mastery 2 (Mas-2)` | **Judge URL**: [Codeforces 103 E](https://codeforces.com/problemset/problem/103/E)
+- **Constraints**: $1 \le N \le 300$ sets over universe $\{1, \dots, N\}$, set purchase costs $w_i \in [-10^6, 10^6]$; Time Limit $2.0\text{ s}$.
+- **Problem Statement**: You are given $N$ subsets $A_1, \dots, A_N \subseteq \{1, \dots, N\}$, where buying set $A_i$ costs $w_i \in \mathbb{Z}$ (if $w_i < 0$, buying $A_i$ earns $-w_i$ profit). It is guaranteed that for every $k \in \{1, \dots, N\}$, the union of any $k$ subsets contains **at least $k$ elements** ($\big|\bigcup_{i \in I} A_i\big| \ge |I|$). Find a subcollection of sets $I \subseteq \{1, \dots, N\}$ whose union contains **exactly $|I|$ elements** ($\big|\bigcup_{i \in I} A_i\big| = |I|$) that minimizes the total cost $\sum_{i \in I} w_i$ (note that $I = \emptyset$ is valid with cost $0$).
+
+:::: {.callout-note collapse="true" title="Hint 1 — Exploiting the Hall Guarantee $|N(I)| \ge |I|$"}
+Because *every* subcollection $I \subseteq \{1, \dots, N\}$ satisfies $|N(I)| \ge |I|$, the excess $|N(I)| - |I|$ is **always non-negative** ($\ge 0$), and equals $0$ if and only if $|N(I)| = |I|$!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Method 1: Uniform Pedestal Shift `+M` (`ゲタを履かせる`)"}
+As derived in **Section 4.3**, set $M = 10^9 > N \max |w_i| = 3 \cdot 10^8$. Give each set $i$ a positive closure weight $M - w_i > 0$ ($S \xrightarrow{M - w_i} \text{Set}_i$), each element $j \in \{1, \dots, N\}$ a negative closure weight $-M$ ($\text{Elem}_j \xrightarrow{M} T$), and wire $\text{Set}_i \xrightarrow{+\infty} \text{Elem}_j$ for all $j \in A_i$. Then any closed set $(I, J)$ has weight $-(|J| - |I|)M - \sum_{i \in I} w_i$, which is forced to have $|J| = |N(I)| = |I|$!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Method 2: Hall Perfect Matching + $N$-Vertex Closure"}
+Alternatively, find a perfect matching $M(i) \in A_i$ first, and wire $i \xrightarrow{+\infty} M^{-1}(e)$ for all $e \in A_i$ on an $N$-vertex closure network with weights $-w_i$ (`Section 4.3 Method 2`). Both methods run in $< 15\text{ ms}$!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solution — #072 (Codeforces 103 E — Buying Sets)"}
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+"Union of $k$ sets has size $\ge k$ for all $k$" is the verbatim statement of **Hall's Marriage Condition** (`Chapter 8`). Combining Hall's non-negative excess $|N(I)| - |I| \ge 0$ with an exact-equality requirement $|N(I)| = |I|$ and signed set costs $w_i$ triggers **Hall-Shifted Bipartite Closure (`Section 4.3`)**.
+
+#### Step 2: Intermediate Algebraic Representation (`+M` Pedestal Shift)
+Let $x_i = [i \in I] \in \{0, 1\}$ for sets and $y_j = [j \in J] \in \{0, 1\}$ for elements, with $M = 10^9$:
+
+$$\max_{\substack{\mathbf{x}, \mathbf{y} \in \{0,1\}^N \\ x_i \le y_j \; (\forall j \in A_i)}} \left(\sum_{i=1}^N (M - w_i) x_i - \sum_{j=1}^N M y_j\right) = \sum_{i=1}^N (M - w_i) - \text{MinCut}(S, T).$$
+
+Since $\max \text{Closure} = \max_{|N(I)| = |I|} \sum_{i \in I} (-w_i) = -\min_{|N(I)| = |I|} \sum_{i \in I} w_i$, the minimum cost $\sum_{i \in I^*} w_i$ is simply:
+
+$$\min_{|N(I)| = |I|} \sum_{i \in I} w_i = \text{MinCut}(S, T) - \sum_{i=1}^N (M - w_i).$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+- Set $M = 10^9$, `INF = 1e16`.
+- Vertices: $S = 0$, sets $1 \dots N$, elements $N + 1 \dots 2N$, $T = 2N + 1$.
+- For each set $i \in \{1, \dots, N\}$:
+  - Add $M - w_i$ to $W^+$; wire $S \xrightarrow{M - w_i} i$.
+  - For each element $j \in A_i$: wire $i \xrightarrow{+\infty} (N + j)$.
+- For each element $j \in \{1, \dots, N\}$: wire $(N + j) \xrightarrow{M} T$.
+- Output $\text{MaxFlow}(S, T) - W^+$.
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+- **Toy Trace ($N = 3$)**:
+  - $A_1 = \{1, 2\}$ ($w_1 = -10$), $A_2 = \{2, 3\}$ ($w_2 = +4$), $A_3 = \{3\}$ ($w_3 = -5$).
+  - Check all subsets $I$ with $|N(I)| = |I|$:
+    - $I = \emptyset \implies \text{cost } 0$.
+    - $I = \{1\} \implies N(\{1\}) = \{1, 2\}$ (size $2 > 1$, invalid!).
+    - $I = \{3\} \implies N(\{3\}) = \{3\}$ (size $1 = 1$, valid, cost $-5$).
+    - $I = \{2, 3\} \implies N(\{2, 3\}) = \{2, 3\}$ (size $2 = 2$, valid, cost $4 - 5 = -1$).
+    - $I = \{1, 2, 3\} \implies N(\{1, 2, 3\}) = \{1, 2, 3\}$ (size $3 = 3$, valid, cost $-10 + 4 - 5 = \mathbf{-11}$).
+  - With $M = 100$: set weights are $W_1 = 110, W_2 = 96, W_3 = 105$ ($W^+ = 311$), element costs are $100$ each.
+  - Choosing $I = \{1\}$ ($J = \{1, 2\}$) gives $110 - 200 = -90 < 0$ (rejected!).
+  - Choosing $I = \{1, 2, 3\}$ ($J = \{1, 2, 3\}$) severs the three element edges to $T$ (cut $= 300$), giving $\text{MinCut} - W^+ = 300 - 311 = \mathbf{-11}$!
+- **Failure-Mode Guard**: In the $+M$ pedestal method, $M$ **must** strictly exceed $N \cdot \max_i |w_i| = 300 \times 10^6 = 3 \cdot 10^8$ (so $M = 10^9$ is safe, whereas $M = 10^7$ fails when $300$ sets each have $w_i = -10^6$). And because $N \cdot M = 3 \cdot 10^{11}$, all capacities and flow variables must be `long long`!
+
+```cpp
+// Complete Model Compilation for #072 (Codeforces 103 E — Buying Sets) via +M Pedestal Shift
+long long solve_buying_sets(int N, const vector<vector<int>>& sets,
+                            const vector<long long>& w) {
+    int S = 0, T = 2 * N + 1;
+    const long long M_PEDESTAL = 1e9; // > N * max|w_i| = 3e8
+    const long long INF = 1e16;
+    Dinic<long long> dinic(T + 1, S, T);
+    long long W_plus = 0;
+
+    for (int i = 1; i <= N; ++i) {
+        long long cap_s = M_PEDESTAL - w[i - 1];
+        W_plus += cap_s;
+        dinic.add_edge(S, i, cap_s);
+        for (int elem : sets[i - 1]) {
+            dinic.add_edge(i, N + elem, INF);
+        }
+    }
+    for (int j = 1; j <= N; ++j) {
+        dinic.add_edge(N + j, T, M_PEDESTAL);
+    }
+    // Minimum cost = -(W_plus - min_cut) = min_cut - W_plus
+    return dinic.max_flow() - W_plus;
+}
+```
+::::
+
+---
+
+## 7. Pre-Submission Verification Checklist (`FM-09` Audit)
+
+Before submitting any Binary Assignment, Project Selection, or Maximum-Weight Closure solution, audit your code against these six failure-mode guards:
+
+1. **Sequential vs. Simultaneous Cycle Semantics (`FM-09` / `[NOI2009] 植物大战僵尸`)**:
+   - Does the problem require a valid sequential unlocking order (`Semantics B`)?
+   - If **yes**, did you run **Kahn's in-degree-$0$ BFS** on the causal graph $G_{\text{pre}}$ (`protector -> protected`) and discard all unvisited vertices *before* building the flow network? (Never use Tarjan's SCC deletion `|SCC| >= 2`, which fails to prune acyclic vertices downstream of a cycle!)
+2. **Implication Arc Orientation (`x_u = 1 => x_v = 1`)**:
+   - Under Convention A ($x_u = 1 \iff u \in V_S$, where $S \xrightarrow{w_u} u$ for $w_u > 0$ and $v \xrightarrow{|w_v|} T$ for $w_v < 0$), the forbidden state is $(u \in V_S, v \in V_T)$, so the $\infty$-arc **always** points from dependent to prerequisite: $u \xrightarrow{+\infty} v$.
+   - Did you verify on a 2-vertex trace (like Gem $1$ and Gem $2$ in `ARC 085 E`) that the legal asymmetric state crosses backward from $V_T$ to $V_S$ (cost $0$) while the illegal state crosses forward from $V_S$ to $V_T$ (cost $+\infty$)?
+3. **Constructive Closure Extraction (`S_min` vs. Single-Edge Saturation)**:
+   - When reconstructing the chosen subset $C^*$ (`Luogu P2762`, `POJ 2987`), did you run a residual BFS from $S$ traversing edges with `cap - flow > 0` (`get_S_min()`) instead of checking whether individual $S \to u$ or $v \to T$ edges are saturated?
+4. **Optimistic Baseline Inclusion (`W^+` Sum)**:
+   - Did you add **only strictly positive** weights ($w_u > 0$) into $W^+$?
+   - For singleton intervals with linear costs (like $\tilde{w}_{i,i} = d_{i,i} - a_i$ in `[SHOI2017] 寿司餐厅`), did you compute the net weight $\tilde{w}_{i,i}$ **first**, and only then test `if (w > 0)` vs. `if (w < 0)`?
+5. **Transitive DAG Sparsification**:
+   - In interval inclusion (`寿司餐厅`) or divisibility posets (`ARC 085 E`), did you wire only Hasse/adjacent transitions ($[l, r] \to [l+1, r], [l, r-1]$) instead of all $O(N^4)$ sub-interval pairs?
+6. **64-Bit Integer Overflow Guard**:
+   - Is `INF` strictly greater than $W^+ = \sum_{w_u > 0} w_u$ (e.g., `INF = 1e16` in `long long`), while still satisfying `INF + INF < LLONG_MAX`?
+
+---
+
+## 8. Chapter Summary & Bridge to Chapter 10
+
+### Key Takeaways
+
+- **Minimum Cut as a Pseudo-Boolean Compiler**: Identifying $x_v = [v \in V_S] \in \{0, 1\}$ ($x_S = 1, x_T = 0$) compiles every directed edge $(u \xrightarrow{c} v)$ into the quadratic cut monomial $c \cdot x_u(1 - x_v)$.
+- **Optimistic Baseline Accounting (`先拿后退`)**: Any profit maximization $\max \sum_{u} w_u x_u$ converts into a non-negative minimum cut via $\sum_{w_u > 0} w_u - \text{MinCut}(S, T)$, where severing $S \xrightarrow{w_u} u$ forfeits a pre-claimed reward and severing $v \xrightarrow{|w_v|} T$ pays an incurred cost.
+- **Picard's Maximum-Weight Closure Theorem (1976)**: Compiling $x_u = 1 \implies x_v = 1$ as $u \xrightarrow{+\infty} v$ establishes an exact bijection between closed subsets $C \subseteq U$ and finite-capacity $(S, T)$-cuts, with $S_{\min} \setminus \{S\}$ constructively recovering the unique minimum-cardinality optimal closure.
+- **Causal Cycle Pruning (`FM-09`)**: When prerequisites represent sequential physical unlocking (`Semantics B`), Kahn's topological BFS on $G_{\text{pre}}$ must precede Dinic to eliminate both deadlocked cycles and their acyclic causal descendants.
+
+### Bridge to Chapter 10: From One-Sided Closure to All-$S$ / All-$T$ Synergy Hubs and General Submodular Potentials
+
+In this chapter, every project reward $+w_u$ lived on a **single side** of the cut ($V_S$), and every dependency $x_u = 1 \implies x_v = 1$ pointed in one direction.
+
+What happens when a problem grants bonuses on **both sides** of the partition simultaneously—for instance, in **`[国家集训队] 文理分科` (`Luogu P4313`)** or **`CF 311 E — Biologist`**, where a group of students $A \subseteq U$ earns a synergy bonus $B_A > 0$ if **all** of them choose Arts ($x_i = 1$ for all $i \in A$, an **All-$S$ clause** $\prod_{i \in A} x_i$) AND another bonus $B'_A > 0$ if **all** of them choose Science ($x_i = 0$ for all $i \in A$, an **All-$T$ clause** $\prod_{i \in A} (1 - x_i)$)? And what if two variables $x_i, x_j \in \{0, 1\}$ interact via a general $2 \times 2$ payoff matrix $\begin{pmatrix} A & B \\ C & D \end{pmatrix}$ without creating auxiliary vertices?
+
+In **Chapter 10**, we generalize Picard's closure network to **High-Arity All-$S$ / All-$T$ Synergy Hubs**, derive Hu Botao's **Symmetric Vertex-Edge Merging (`合并点边法`)**, and lays the foundation for the **Kolmogorov–Zabih Submodularity Theorem ($A + D \le B + C$)** and **Bipartite Variable Inversion (`二部グラフの片側反転`)**.
+
+---
+
+## Multilingual Bibliography & Classic References
+
+- **`[EN]`** J.-C. Picard (1976), *"Maximal Closure of a Graph and Applications to Combinatorial Problems"*, Management Science 22(11), 1268–1272; D. S. Hochbaum (2001), *"A New-Old Algorithm for Minimum-Cut and Maximum-Flow in Closure Graphs"*, Networks 37(4), 171–193; E. Boros & P. L. Hammer (2002), *"Pseudo-Boolean Optimization"*, Discrete Applied Mathematics 123(1–3), 155–225.
+- **`[ZH]`** 胡伯涛 (Amber, 2007), 《最小割模型在信息学竞赛中的应用》 (*Applications of Minimum Cut Models in Olympiad in Informatics*, 2007 国家集训队论文 — introducing Maximum Weight Closure `最大权闭合子图` and `先拿后退` optimistic baseline accounting to Chinese OI); 王文浩 (2016), 《浅谈网络流的各种建模方法》 (*2016 国家集训队论文*); Classic OI Benchmarks (`Luogu P2762` 太空飞行计划, `[NOI2006] 最大获利`, `[NOI2009] 植物大战僵尸`, `[SHOI2017] 寿司餐厅`).
+- **`[JA]`** `noshi91` (2019), *"「燃やす埋める」と「Project Selection Problem」"* (`https://noshi91.hatenablog.com/entry/2021/06/29/044225`); `maspypy` (2020), *"燃やす埋める問題（Project Selection Problem）の解説"*; `tatyam` (2021), *"燃やす埋めるを完全に理解する"*; AtCoder Editorial for `ARC 085 E — MUL`.

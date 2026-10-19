@@ -1,0 +1,710 @@
+---
+title: "Checkpoint VI — Data-Structure Graphs, General Blossom Matching, Simulated MCMF, and Isotonic Regression"
+subtitle: "Blind Diagnostic Recognition Across Virtual Hub Sparsification, Non-Bipartite Matching, Regret Heaps, Slope Trick, and Matroid Boundaries (Ch 22–Ch 24)"
+---
+
+## How to Use This Blind Recognition Checkpoint
+
+Chapters 22 through 24 sit at the architectural frontier of competitive programming network flows. At this level, an explicit graph is either **too dense to materialize** ($O(N^2)$ transitions across intervals, strings, or trees), **non-bipartite** (breaking standard flow reductions because odd cycles create half-integral LP vertices), **too large for polynomial-time graph augmentation** ($N \le 2 \times 10^5$ with total flow $F \le 10^{14}$, requiring regret-heap or slope-trick simulation of the residual network), or **disguised as an order-constrained regression or matroid intersection problem**.
+
+This checkpoint tests your ability to read an **untagged problem statement** and choose the exact structural compilation before writing a single line of code:
+
+1. **Read the untagged constraints and surface cues first.** Every problem below omits chapter tags in its statement. Ask yourself:
+   - *Does an explicit flow or matching network have $O(N^2)$ edges that factor through 1D ranges, 2D dominance boxes, bitwise prefixes, or Suffix Automaton subtrees (`Ch 22.1`)?*
+   - *Is the underlying pairing graph non-bipartite (`Ch 22.2–22.4`), and if so, are we seeking a maximum matching (`Edmonds' Blossom` / `Tutte Matrix`) or falling into an NP-hard vertex-cover / odd-cycle trap (`FM-22`)?*
+   - *Does $N \ge 10^5$ forbid explicit MCMF (`Ch 23`), meaning we must translate augmenting cycles and residual back-edges into priority-queue regret keys, RLE Leftist Heaps on trees, WQS penalty binary search, or convex cost-function ternary search (`FM-23`)?*
+   - *Is the objective a convex deviation $\sum w_v |x_v - y_v|^p$ subject to poset inequalities $x_u \le x_v$ (`Ch 24.1` Isotonic Regression), an intersection of two matroids (`Ch 24.2`), or a non-intersecting planar DAG path determinant (`Ch 24.3` LGV Lemma vs. `FM-24`)?*
+
+2. **Commit to a 4-Step Compilation Hypothesis** before opening any collapsible callout:
+   - **Step 1 (Diagnostic Signal)**: Pinpoint the constraint bound and structural invariant that rules out naive DP, greedy, or raw Dinic/MCMF.
+   - **Step 2 (Algebraic / Logical Model)**: Write the indicator variables, dual potentials, residual path cost equations, or level-set slice cuts.
+   - **Step 3 (Mechanical Compilation)**: Specify the virtual hub topology, regret-heap state transitions, or closure cut capacities.
+   - **Step 4 (Toy Trace & Failure Guard)**: Test a 3–4 element trace and verify the boundary conditions (`FM-22`–`FM-24`).
+
+3. **Use the Progressive Hints Sparingly**: Open **Hint 1** only if you cannot identify the target paradigm after 5 minutes; open **Hint 2** to verify the algebraic reduction or heap key formula; open the **Full 4-Step Compilation & Solution** to audit your complete derivation.
+
+---
+
+## 1. Rapid-Fire Diagnostic Triage Drills
+
+Before tackling the eight full-scale checkpoint problems, test your diagnostic instincts on these six rapid-fire triage scenarios. Each drill contains a genuine frontier reduction paired against a classic lookalike decoy or failure mode (`FM-22`–`FM-24`).
+
+### Drill 1.1 — Range-to-Range Virtual Hub Sparsification (`Ch 22.1`)
+
+> **Scenario**: You are given $N \le 5 \times 10^4$ weighted intervals $[l_i, r_i]$ with traversal cost $c_i$. From interval $i$, a path may transition to any interval $j$ whose index lies in $[L_i, R_i]$. Find $K \le 10$ vertex-disjoint paths from interval $1$ to interval $N$ of minimum total cost.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Structural Bottleneck"}
+Why does naive MCMF TLE, and why can you not simply run $K$ independent shortest-path passes without a residual network?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Hub Orientation"}
+Do you need a Segment Tree `Out-Tree` (root-to-leaves), an `In-Tree` (leaves-to-root), or both? Count the exact number of virtual vertices and edges.
+::::
+
+:::: {.callout-tip collapse="true" title="Triage Resolution & Compilation — Drill 1.1"}
+- **Verdict**: **Genuine `Ch 22.1 + Ch 17` (Segment Tree `Out-Tree` Sparsified Small-$K$ MCMF)**.
+- **Why Naive Fails**: Wiring $i_{\text{out}} \to j_{\text{in}}$ directly for all $j \in [L_i, R_i]$ creates $O(N^2) \approx 2.5 \times 10^9$ edges.
+- **Mechanical Compilation**:
+  1. Split each interval $i$ into $i_{\text{in}} \xrightarrow{\text{cap } 1, \text{ cost } c_i} i_{\text{out}}$ to enforce vertex-disjointness and charge $c_i$.
+  2. Build a Segment Tree `Out-Tree` over indices $1 \dots N$, where each internal node $u$ connects downward to its children $u \to \text{lc}(u)$ and $u \to \text{rc}(u)$ with capacity $\infty$ and cost $0$, and each leaf $j$ connects to $j_{\text{in}}$ with $(\text{cap } \infty, \text{cost } 0)$.
+  3. For each interval $i$, decompose $[L_i, R_i]$ into $O(\log N)$ canonical Segment Tree nodes $u_1, \dots, u_k$ and wire $i_{\text{out}} \to u_r$ with $(\text{cap } \infty, \text{cost } 0)$.
+  4. Because $K \le 10$ is tiny and initial edge costs $c_i \ge 0$ need no SPFA pass (or one DAG DP pass), run **at most $K = 10$ iterations of Primal–Dual Johnson Dijkstra** in $O(K \cdot N \log^2 N)$ time!
+- **Failure Mode Guard (`FM-22a`)**: Never give internal `Out-Tree` downward edges unit capacity ($1$); multiple paths from different intervals $i_1, i_2$ may share the same Segment Tree ancestor node $u$ on their way to distinct leaves in $u$'s subtree.
+::::
+
+### Drill 1.2 — Non-Bipartite Matching vs. Vertex Cover & Tutte Pfaffians (`Ch 22.2–22.4` & `FM-22`)
+
+> **Scenario A**: Given a general undirected graph $G = (V, E)$ with $N \le 500$ vertices and $M \le 10^4$ edges, find the minimum size of a vertex subset $S \subseteq V$ such that every edge $uv \in E$ has at least one endpoint in $S$.
+>
+> **Scenario B**: Given the same graph $G = (V, E)$ with $N \le 400, M \le 10^4$, find the size of a maximum matching $\nu(G)$ AND identify every vertex $v \in V$ that belongs to **every** maximum matching of $G$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Bipartite vs. Non-Bipartite Duality"}
+Does König's Theorem ($\tau(G) = \nu(G)$, minimum vertex cover equals maximum matching) hold when $G$ contains odd cycles?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Structural Characterization of Essential Vertices"}
+In Scenario B, how does the Gallai–Edmonds decomposition $V = D(G) \cup A(G) \cup C(G)$ (or the inverse of the symbolic skew-symmetric Tutte matrix $T(G)$) classify vertices that can avoid being matched in some maximum matching?
+::::
+
+:::: {.callout-tip collapse="true" title="Triage Resolution & Compilation — Drill 1.2"}
+- **Scenario A Verdict**: **DECOY / NP-Hard Trap (`FM-22`: General Graph Minimum Vertex Cover)**.
+  - **Diagnostic Proof**: On a general graph with odd cycles, the LP relaxation of Minimum Vertex Cover has half-integral extreme points ($x_v = 1/2$ on a triangle $K_3$, giving LP value $1.5$ while $\nu(K_3) = 1$ and $\tau(K_3) = 2$). Minimum Vertex Cover on general graphs is **NP-Complete**; neither Max-Flow nor Edmonds' Blossom can solve it!
+- **Scenario B Verdict**: **Genuine `Ch 22.3–22.4` (Gallai–Edmonds Decomposition / Tutte Matrix Inverse)**.
+  - **Method 1 (Combinatorial — Gallai–Edmonds Forest)**: Find one maximum matching $M^*$ via Edmonds' Blossom algorithm in $O(V^3)$. Build the alternating Blossom forest rooted at **all unmatched vertices** $R = V \setminus V(M^*)$ simultaneously. Every vertex $v$ reached at an **even** distance from $R$ (including $R$ itself and all vertices inside contracted blossoms at even levels) belongs to $D(G)$, meaning there exists an even-length alternating path from an unmatched vertex to $v$ that shifts the matching to leave $v$ exposed. Thus $v$ belongs to **every** maximum matching if and only if $v \notin D(G)$!
+  - **Method 2 (Algebraic — Tutte Matrix over $\mathbb{F}_p$)**: Construct the $N \times N$ skew-symmetric Tutte matrix $T_{uv} = \pm \xi_{uv}$ for random $\xi_{uv} \in \mathbb{F}_p$. By the Tutte–Berge and Schur-complement rank theorem, when $G$ has a perfect matching, $v$ can be exposed in a maximum matching of $G \setminus \{v\}$ only if $\operatorname{rank}(T) = N$ is impossible; in general, after augmenting $G$ with $\operatorname{def}(G) = N - 2\nu(G)$ universal dummy vertices connected to all $v \in V$ so the augmented graph $G'$ has a perfect matching, a vertex $v \in V$ is **inessential** ($v \in D(G)$) if and only if there exists a dummy vertex $d$ such that $(T(G')^{-1})_{v, d} \neq 0$ in a single $O(N^3)$ matrix inversion!
+::::
+
+### Drill 1.3 — 1D Transportation: Prefix Balance vs. Regret Heap vs. WQS (`Ch 23.1–23.2` & `FM-23`)
+
+> **Scenario A**: Given $N \le 10^5$ points on a 1D line at $x_1 < x_2 < \dots < x_N$ with supplies $a_i$ and demands $b_i$ such that $\sum_{i=1}^N a_i = \sum_{i=1}^N b_i$, route all supplies to demands minimizing $\sum_{i,j} f_{ij} |x_i - x_j|$.
+>
+> **Scenario B**: Given $N \le 2 \times 10^5$ stock prices $p_1, \dots, p_N$, perform **at most $K$** disjoint buy-then-sell transactions ($i < j$, profit $p_j - p_i$) maximizing total profit.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Conservation Across Cut Points"}
+In Scenario A, since total supply equals total demand, how much net flow must cross the segment $[x_i, x_{i+1}]$ in **every** feasible routing that has no opposing flows?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Concave Transaction Count"}
+In Scenario B, what is the shape of $f(k)$, the maximum profit using at most $k$ transactions, as $k$ varies from $0$ to $N/2$?
+::::
+
+:::: {.callout-tip collapse="true" title="Triage Resolution & Compilation — Drill 1.3"}
+- **Scenario A Verdict**: **DECOY ($O(N)$ Prefix Flow Conservation)**.
+  - **Diagnostic Proof**: When $\sum a_i = \sum b_i$ on a 1D line (or tree), any optimal routing never sends flow simultaneously left-to-right and right-to-left across the same segment $[x_i, x_{i+1}]$. Therefore, the exact flow across segment $i \leftrightarrow i+1$ is deterministically fixed as $\left|\sum_{k=1}^i (a_k - b_k)\right|$, giving total cost $\sum_{i=1}^{N-1} (x_{i+1} - x_i) \left|\sum_{k=1}^i (a_k - b_k)\right|$ in **$O(N)$ time with zero heaps**! Regret heaps (`Ch 23.3`) are only needed when $\sum_{\text{holes}} c_j > \sum_{\text{mice}} 1$ (unbalanced capacities where we must choose *which* holes absorb flow).
+- **Scenario B Verdict**: **Genuine `Ch 23.2` (WQS Binary Search + 1D Regret Heap / DP)**.
+  - **Mechanical Compilation**: In the MCMF model where source supplies $K$ units of flow along the time spine $1 \to 2 \to \dots \to N$, each augmenting path corresponds to one transaction $[i, j]$ (or merging two adjacent transactions $[i_1, j_1], [i_2, j_2]$ into $[i_1, j_2]$ by cancelling the middle sell-buy pair). By MCMF augmenting-path monotonicity (`Ch 17.2`), the maximum profit $f(k)$ is **concave** in $k$. Apply **WQS (Aliens) binary search** on a per-transaction penalty $\lambda \ge 0$, reducing the subproblem to unlimited transactions with fee $\lambda$ in $O(N \log(\max p_i))$ time!
+::::
+
+### Drill 1.4 — Tree $L_2$ Isotonic Regression: `整体二分` + Closure vs. Slope Merge (`Ch 24.1`)
+
+> **Scenario**: Given a rooted tree $T = (V, E)$ with $N \le 1000$ vertices, target values $y_v \in \mathbb{R}$, and positive weights $w_v > 0$, choose values $x_v \in \mathbb{R}$ satisfying $x_{\text{parent}(v)} \le x_v$ for every non-root vertex $v$, minimizing the weighted $L_2$ error $\sum_{v \in V} w_v (x_v - y_v)^2$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Poset vs. Tree Topology"}
+What is the directional derivative of $w_v (x_v - y_v)^2$ at $x_v = \lambda$, and why does thresholding $z_v = [x_v > \lambda]$ turn the recursion into Maximum Weight Closure (`Ch 09`)?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Exploiting Tree Structure"}
+Because the poset is a **tree** rather than a general DAG, can you bypass Dinic entirely?
+::::
+
+:::: {.callout-tip collapse="true" title="Triage Resolution & Compilation — Drill 1.4"}
+- **Verdict**: **Genuine `Ch 24.1` (Tree $L_2$ Isotonic Regression)**.
+- **General Poset Compilation (`整体二分` / Parallel Binary Search + Dinic)**:
+  - For any test threshold $\lambda$, an optimal block average $x_S^*$ exceeds $\lambda$ if and only if choosing $z_v = 1$ (meaning $x_v > \lambda$) subject to closure constraints $u \preceq v \implies (z_u = 1 \implies z_v = 1)$ yields negative directional derivative $\sum_{v: z_v=1} 2 w_v (\lambda - y_v) < 0$, i.e., positive weight $\sum_{v: z_v=1} w_v (y_v - \lambda) > 0$.
+  - For $L_2$ loss, the unconstrained optimum of a pooled component $S$ is the weighted mean $\bar{y}_S = \frac{\sum_{v \in S} w_v y_v}{\sum_{v \in S} w_v}$, which can also be found exactly by testing midpoints in `整体二分`.
+- **Tree-Specific Fast Compilation ($O(N \log N)$ Convex Piecewise-Quadratic Hull Merge)**:
+  - Because $T$ is a tree (not a general DAG), closure on a tree is solvable in linear time, and bottom-up **Slope Trick / Leftist Heap merging** maintains the derivative $F'_u(x)$ of the subtree convex cost function in $O(N \log N)$ time without any flow calls!
+::::
+
+### Drill 1.5 — Graphic $\cap$ Partition Matroid Intersection vs. Max-Flow Boundary (`Ch 24.2`)
+
+> **Scenario**: Given an undirected multigraph $G = (V, E)$ with $|V| \le 100$ and $M \le 500$ colored edges where color $k$ may be used at most $c_k$ times, find the maximum-cardinality subset $I \subseteq E$ that forms an **acyclic forest** in $G$ and obeys all color quotas (`Rainbow Spanning Forest`).
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Max-Flow Cannot Enforce Acyclicity"}
+Can an $S$-$T$ flow network enforce that a chosen subset of edges in a general graph $G$ contains no cycles?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — The Two Matroids"}
+Identify $\mathcal{M}_1 = (E, \mathcal{I}_1)$ and $\mathcal{M}_2 = (E, \mathcal{I}_2)$, and state how the bipartite exchange graph $\mathcal{D}(I)$ is constructed at each augmentation step.
+::::
+
+:::: {.callout-tip collapse="true" title="Triage Resolution & Compilation — Drill 1.5"}
+- **Verdict**: **Genuine `Ch 24.2` (Graphic Matroid $\cap$ Partition Matroid Intersection)**.
+- **Why Flow Fails**: A bipartite flow network can intersect **two Partition Matroids** (left degree quotas $\cap$ right degree quotas), because both rank functions factor through disjoint vertex stars. However, the **Graphic Matroid** $\mathcal{M}_1 = (E, \{I \subseteq E : I \text{ is a forest}\})$ has circuits equal to simple cycles of arbitrary length in $G$, which cannot be encoded as a flow conservation or min-cut constraint on a fixed network!
+- **Mechanical Compilation**:
+  - Maintain current independent set $I \in \mathcal{I}_1 \cap \mathcal{I}_2$.
+  - Build the bipartite exchange graph on $I \cup (E \setminus I)$:
+    1. Source set $X_1 = \{e \in E \setminus I : I \cup \{e\} \text{ is a forest}\}$; for $y \in (E \setminus I) \setminus X_1$, add directed edges $x \to y$ for every $x \in I$ on the fundamental tree cycle of $y$ in $I$.
+    2. Sink set $X_2 = \{e \in E \setminus I : \text{cnt}_I(\text{color}(e)) < c_{\text{color}(e)}\}$; for $y \in (E \setminus I) \setminus X_2$, add directed edges $y \to x$ for every $x \in I$ with $\text{color}(x) = \text{color}(y)$.
+  - Find a **shortest** $X_1 \to X_2$ path $P$ via BFS (shortest in hop count to prevent shortcutting chordal dependencies!) and update $I \gets I \triangle V(P)$ in $O(r \cdot M \cdot |V|)$ total time.
+::::
+
+### Drill 1.6 — Non-Intersecting Lattice Paths: LGV Determinant vs. MCMF (`Ch 24.3` & `FM-24`)
+
+> **Scenario**: Given an $N \times M$ grid ($N, M \le 1000$) with obstacles `#`, count the number of pairs of vertex-disjoint monotone right-down paths from $(1, 1)$ to $(N, M)$ (excluding the shared endpoints $(1,1)$ and $(N,M)$) **modulo $10^9 + 7$** (`Codeforces 348D — Turtles`).
+
+:::: {.callout-note collapse="true" title="Hint 1 — Counting vs. Optimization"}
+Max-Flow can decide if $2$ disjoint paths exist ($0$ or $1$), and MCMF can maximize weight along $2$ disjoint paths, but what tool **counts** the number of disjoint path tuples modulo $10^9 + 7$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Planar Non-Crossing Guarantee"}
+Why does every crossing permutation $\sigma = (2\;1)$ between sources $A_1 = (1, 2), A_2 = (2, 1)$ and sinks $B_1 = (N-1, M), B_2 = (N, M-1)$ force the two paths to intersect on the grid?
+::::
+
+:::: {.callout-tip collapse="true" title="Triage Resolution & Compilation — Drill 1.6"}
+- **Verdict**: **Genuine `Ch 24.3` ($2 \times 2$ Lindström–Gessel–Viennot Determinant)**.
+- **Mechanical Compilation**:
+  1. Any two internal-vertex-disjoint paths from $(1, 1)$ to $(N, M)$ must leave $(1, 1)$ via $A_1 = (1, 2)$ and $A_2 = (2, 1)$ and enter $(N, M)$ via $B_1 = (N-1, M)$ and $B_2 = (N, M-1)$.
+  2. By grid planarity, any path from $A_1 = (1, 2)$ (top-right) to $B_2 = (N, M-1)$ (bottom-left) must cross any path from $A_2 = (2, 1)$ (bottom-left) to $B_1 = (N-1, M)$ (top-right). Thus the non-crossing condition (`FM-24`) holds strictly!
+  3. Run two $O(NM)$ grid DPs from $A_1$ and $A_2$ to compute $e(A_i, B_j) \bmod (10^9 + 7)$, the total number of monotone paths from $A_i$ to $B_j$, and return the $2 \times 2$ LGV determinant:
+     $$\det \begin{pmatrix} e(A_1, B_1) & e(A_1, B_2) \\ e(A_2, B_1) & e(A_2, B_2) \end{pmatrix} = e(A_1, B_1)e(A_2, B_2) - e(A_1, B_2)e(A_2, B_1) \pmod{10^9 + 7}.$$
+- **Failure Mode Guard (`FM-24`)**: If the DAG is non-planar or $A_1 \to B_2$ and $A_2 \to B_1$ can bypass each other without sharing a vertex, $\det M$ computes the **signed sum** $N(\text{id}) - N((2\;1))$ rather than $N(\text{id})$!
+::::
+
+---
+
+## 2. Blind Checkpoint Problems (`#233`–`#240`)
+
+Each problem slot below presents the primary Part VI Blind Checkpoint problem (`CP-VI.1`–`CP-VI.8`) alongside its companion diagnostic variant from the 320-problem archive so you can test both structural forms under blind conditions.
+
+---
+
+### Problem `#233` (`CP-VI.1`) — Online Tree Dynamic Shortest Augmenting Path & 1D Spine Regret
+
+> **Primary Problem (`[NEERC 2016]` Mole Tunnels — Luogu P6122)**:
+> A complete binary tree has $N \le 10^5$ vertices numbered $1 \dots N$, where the parent of $v > 1$ is $\lfloor v/2 \rfloor$. Initially, vertex $v$ contains $c_v \ge 0$ units of food ($\sum c_v \ge M$). Then $M \le 10^5$ moles arrive **online one by one** at vertices $p_1, p_2, \dots, p_M$. Each mole must walk along tree edges to a distinct unit of food; every traversed tree edge costs $1$ unit of distance. After each mole $k = 1, \dots, M$ arrives, output the minimum total distance walked by the first $k$ moles.
+>
+> **Companion Variant (`Codeforces 802O` — April Fools' Problem Hard)**:
+> Over $N \le 5 \times 10^5$ days, preparing a problem on day $i$ costs $a_i$ and printing a prepared problem on day $j \ge i$ costs $b_j$ (at most one prepared and one printed per day). Prepare and print **exactly $K$** problems at minimum total cost.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Recognizing the Residual Network Structure"}
+- **For Mole Tunnels**: Notice that moles arrive online and each arrival corresponds to **one unit of flow augmentation** from $p_k$ to the sink $T$ in the tree network. Why can a new mole at $p_k$ traverse a tree edge $(u, \lfloor u/2 \rfloor)$ with cost $-1$ instead of $+1$? And what special property does a **complete binary tree** on $N \le 10^5$ nodes have regarding ancestor depth?
+- **For April Fools' Hard**: This is a 1D time-spine network where flow enters at day $i$ (cost $a_i$), travels rightward $i \to i+1$, and exits at day $j \ge i$ (cost $b_j$) with total flow fixed at $K$. How do you decouple the exact cardinality constraint $K$ before sweeping the 1D spine?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — State Maintenance & Regret Keys"}
+- **For Mole Tunnels**: Every simple augmenting path from $p_k$ to some available food node $v^*$ in the residual tree decomposes at its Lowest Common Ancestor $L = \operatorname{LCA}(p_k, v^*)$ into an upward walk $p_k \to L$ and a downward walk $L \to v^*$. Because tree height is $\lfloor \log_2 N \rfloor \le 17$, each node $u$ only needs to maintain the minimum residual cost $f[u]$ (and target leaf `best[u]`) to reach a node with $c_v > 0$ **inside $u$'s subtree**!
+- **For April Fools' Hard**: Binary search the WQS penalty $\lambda \in [0, 2\times 10^9]$ subtracted per printed problem. For fixed $\lambda$, sweep $j = 1 \dots N$ with a single min-heap storing both unmatched preparation costs `(a_i, NEW)` and matched printing regret keys `(-(b_{j'} - \lambda), REGRET)`.
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Problem #233"}
+#### Part A: `[NEERC 2016]` Mole Tunnels (Dynamic Tree Shortest Augmenting Path)
+
+1. **Step 1 — Non-Graph Diagnostic Signal**:
+   - We need the exact MCMF cost after **each** single unit of augmentation $k = 1 \dots M$ ($N, M \le 10^5$). Offline bottom-up tree merging (`Conquer the World`) cannot answer online prefix queries after every mole, while general SPFA takes $O(MN)$.
+   - **The Structural Escape Hatch**: The tree is a **complete binary tree** where parent is $\lfloor v/2 \rfloor$, so the depth of every node is at most $\lfloor \log_2 N \rfloor \le 17$!
+
+2. **Step 2 — Intermediate Algebraic / Residual Representation**:
+   - On each tree edge $e = (u, p(u))$ connecting $u$ to its parent $p(u) = \lfloor u/2 \rfloor$, maintain the signed net flow:
+     - $\text{flow}_{\text{up}}[u] \ge 0$: number of moles currently flowing **upward** $u \to p(u)$.
+     - $\text{flow}_{\text{down}}[u] \ge 0$: number of moles currently flowing **downward** $p(u) \to u$.
+   - Consequently, the **residual edge cost** for the next mole is:
+     $$w_{\text{up}}(u \to p(u)) = \begin{cases} -1 & \text{if } \text{flow}_{\text{down}}[u] > 0 \text{ (cancels downward flow)}, \\ +1 & \text{otherwise}, \end{cases}$$
+     $$w_{\text{down}}(p(u) \to u) = \begin{cases} -1 & \text{if } \text{flow}_{\text{up}}[u] > 0 \text{ (cancels upward flow)}, \\ +1 & \text{otherwise}. \end{cases}$$
+
+3. **Step 3 — Mechanical Compilation ($O(\log N)$ Ancestor LCA Scan)**:
+   - For each node $u$, maintain $f[u]$: the minimum residual distance from $u$ **strictly downward** into $u$'s subtree to reach a vertex $v$ with remaining food $c_v > 0$, along with `best[u] = v`.
+   - When mole $k$ arrives at $p_k$:
+     1. Walk upward through all $\le 18$ ancestors $L = p_k, \lfloor p_k/2 \rfloor, \dots, 1$, accumulating the residual upward distance $\text{dist}_{\text{up}}(p_k \to L)$ and picking the ancestor $L^*$ that minimizes $\text{dist}_{\text{up}}(p_k \to L) + f[L]$.
+     2. Let $v^* = \text{best}[L^*]$. Add $\text{dist}_{\text{up}}(p_k \to L^*) + f[L^*]$ to the running answer, and decrement $c_{v^*} \gets c_{v^*} - 1$.
+     3. Update residual flow counters along $p_k \to L^*$ (if $\text{flow}_{\text{down}}[u] > 0$, decrement it; else increment $\text{flow}_{\text{up}}[u]$) and along $L^* \to v^*$ (if $\text{flow}_{\text{up}}[u] > 0$, decrement it; else increment $\text{flow}_{\text{down}}[u]$).
+     4. Recompute $f[u]$ bottom-up along the $O(\log N)$ ancestors of $p_k$ and $v^*$ in $O(\log N)$ time!
+   - **Total Complexity**: $O((N + M) \log N)$ time, $O(N)$ space.
+
+4. **Step 4 — Toy Trace & Failure Guard**:
+   - Suppose $N = 3$ (root $1$, children $2, 3$), food $c_2 = 1, c_3 = 1$, and mole 1 arrives at $2$ (stays at $2$, cost $0$), wait—if food is at $c_3 = 1$ only, mole 1 at $2$ goes $2 \to 1 \to 3$ (cost $2$, $\text{flow}_{\text{up}}[2]=1, \text{flow}_{\text{down}}[3]=1$). If food at $2$ were available later or if a mole at $1$ reroutes, cancelling $2 \to 1$ has cost $w_{\text{down}}(1 \to 2) = -1$.
+   - **Failure Guard**: After augmenting $p_k \to L^* \to v^*$, you must update $f[u]$ for **both** the ancestors of $v^*$ (up to $L^*$) and the ancestors of $p_k$ (all the way to root $1$), because changing edge directions on $p_k \to L^*$ alters downward residual costs into $p_k$'s subtree for future moles!
+
+#### Part B: Companion Variant (`CF 802O` — WQS Binary Search + 1D Regret Heap)
+
+- By MCMF slope convexity (`Ch 17.2`), the minimum cost $C(k)$ to prepare and print $k$ problems is convex in $k$. Binary search the WQS penalty $\lambda \in [0, 2 \times 10^9]$ subtracted from each printed problem (`b_j' = b_j - \lambda`).
+- Sweep $j = 1 \dots N$: push `(a_j, type = NEW)` into a min-heap $H$. Let $(v, \text{type}) = \min(H)$. If $v + (b_j - \lambda) < 0$:
+  - Pop $(v, \text{type})$ from $H$, add $v + (b_j - \lambda)$ to total cost, increment matched count `cnt++` **only if `type == NEW`**, and push the regret key `(-(b_j - \lambda), type = REGRET)` into $H$ (so a future day $j'' > j$ can replace $b_j$ with $b_{j''}$ for net change $(b_{j''} - \lambda) - (b_j - \lambda)$ without changing `cnt`!).
+- Complexity: $O(N \log N \log(\max(a_i + b_i)))$.
+::::
+
+---
+
+### Problem `#234` (`CP-VI.2`) — Convex Cost Parametric Search vs. $k$-ary Priority Queue Merge
+
+> **Primary Problem (`[BJWC2018]` 餐巾计划问题 — Luogu P4480)**:
+> A restaurant needs $r_i$ clean napkins on day $i$ for $i = 1, \dots, N$ ($N \le 2 \times 10^5$, $r_i \le 10^7$). It can:
+>
+> - Buy new napkins at cost $p$ per napkin;
+> - Send used napkins from day $i$ to a fast laundry taking $m_1$ days (ready on day $i + m_1$) at cost $c_1$ per napkin;
+> - Send used napkins from day $i$ to a slow laundry taking $m_2$ days (ready on day $i + m_2$) at cost $c_2$ per napkin;
+> - Hold dirty napkins from day $i$ to day $i+1$ for free.
+>
+> Find the minimum total cost to satisfy all $N$ days of demand.
+>
+> **Companion Variant (`[NOI2015]` 荷马史诗 — Luogu P2168)**:
+> Given $N \le 10^5$ words with frequencies $w_i$, construct a prefix-free $k$-ary code ($2 \le k \le 9$) minimizing total encoded length $\sum w_i l_i$, and among all optimal codes, minimizing the maximum codeword length $\max l_i$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Raw MCMF and Regret Heaps Both Need Care"}
+- **For Napkin Planning ($N = 2 \times 10^5$)**: In the classic `[网络流24题]` version (`#156`), $N \le 2000$ allowed direct MCMF. At $N = 2 \times 10^5$, MCMF TLEs. Instead of simulating general residual cycles across two different jump lengths $m_1, m_2$, ask: if we fix the **total number of newly purchased napkins** $K \in [\max r_i, \sum r_i]$, what is the shape of the minimum cost function $C(K)$?
+- **For Homer's Epics ($k$-ary Huffman)**: Does merging the $k$ smallest frequencies ever require a residual "regret" undo step, or does the matroid/tree-exchange property make pure greedy optimal once a boundary condition on $(N - 1) \bmod (k - 1)$ is fixed?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Greedy Evaluation for Fixed $K$"}
+- **For Napkin Planning**: Without Loss of Generality, ensure $m_1 < m_2$ and $c_1 > c_2$ (if $m_1 \le m_2$ and $c_1 \le c_2$, fast laundry dominates slow laundry completely!). By MCMF augmenting-path convexity, $C(K)$ is a **convex function** of total purchased napkins $K$. For a fixed $K$ bought on day 1, how should day $i$ greedily choose between remaining clean napkins, slow-washing from $\le i - m_2$, and fast-washing from $(i - m_2, i - m_1]$?
+- **For Homer's Epics**: Each $k$-ary internal merge reduces the number of trees by $k - 1$. Pad $(k - 1 - (N - 1) \bmod (k - 1)) \bmod (k - 1)$ dummy leaves of weight $0$ before running the min-heap loop!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Problem #234"}
+#### Part A: `[BJWC2018]` 餐巾计划问题 ($N = 2 \times 10^5$ via Convex Ternary Search + Deque Greedy)
+
+1. **Step 1 — Non-Graph Diagnostic Signal**:
+   - This is the exact $N = 2 \times 10^5$ scaling of `[网络流24题] 餐巾计划问题` (`#156`). Explicit MCMF has $4 \times 10^5$ vertices and $\sum r_i \le 2 \times 10^{12}$ flow, which is impossible for graph augmentation.
+   - Preprocessing dominance: If $p \le \min(c_1, c_2)$, we simply buy every napkin new at cost $p \sum r_i$. Ensure $m_1 < m_2$; if $c_1 \le c_2$, the fast laundry is both faster and cheaper than the slow laundry, so discard the slow laundry option ($c_2 \gets c_1, m_2 \gets m_1$). Thus we now have $m_1 < m_2$ and $c_1 > c_2$.
+
+2. **Step 2 — Intermediate Algebraic / Convexity Model**:
+   - Let $K$ be the total number of brand-new napkins purchased across the entire $N$-day horizon. Because purchasing a new napkin on day $1$ is strictly more flexible than purchasing it on day $i > 1$, all $K$ new napkins may be assumed available from the start.
+   - In the MCMF formulation where new purchases are controlled by a source edge of capacity $K$ and cost $p$, minimum-cost flow theory (`Ch 17.2`) guarantees that the minimum total cost $C(K)$ as a function of $K \in [K_{\min}, \sum_{i=1}^N r_i]$ is **convex**!
+
+3. **Step 3 — Mechanical Compilation (Ternary Search on $K$ + $O(N)$ Two-Ended Queue Greedy)**:
+   - For a fixed total purchase $K$:
+     - Maintain a deque of available dirty napkin batches $(j, \text{rem}_j)$ generated after each day $j$ receives its $r_j$ clean napkins.
+     - Sweep day $i = 1 \dots N$ requiring $r_i$ napkins:
+       1. **Free initial clean napkins** (cost $0$, already paid in $K \cdot p$): use $\min(r_i, \text{free\_stock})$ first.
+       2. **Slow laundry** (cost $c_2$, cheaper than $c_1$): any dirty napkins from days $j \le i - m_2$ have already matured enough to use the cheaper slow wash $c_2$! Since they are all equally eligible for slow wash on all days $\ge i$, greedily take from the **earliest** available days $j \le i - m_2$ at the front of the slow-eligible queue.
+       3. **Fast laundry** (cost $c_1 > c_2$): if demand remains on day $i$, we must fast-wash dirty napkins from days $j \in (i - m_2, i - m_1]$. Which day $j$ in that window should we sacrifice to the expensive fast wash? The **latest** available day $j \le i - m_1$ (the back of the fast-eligible deque), because earlier days $j'$ are closer to maturing into the cheaper $i' - m_2$ slow-wash window on future days!
+     - If any day $i$ cannot satisfy $r_i$, then $K$ is infeasible (to the left of $K_{\min}$).
+   - Run integer ternary search over $K \in [1, \sum r_i]$ in $O(N \log(\sum r_i))$ time!
+
+4. **Step 4 — Toy Trace & Failure Guard**:
+   - Suppose $N = 4, r = [3, 2, 4, 3], m_1 = 1, c_1 = 6, m_2 = 2, c_2 = 3, p = 10$. On day 3 ($r_3 = 4$), dirty napkins from day 1 ($j = 1 \le 3 - 2$) can slow-wash at $c_2 = 3$, while dirty napkins from day 2 ($j = 2 \le 3 - 1$) can fast-wash at $c_1 = 6$.
+   - **Failure Guard**: During the fast-wash step ($j \in (i - m_2, i - m_1]$), popping from the **front** instead of the **back** of the window destroys dirty napkins that would become eligible for cheap slow-washing tomorrow, violating the MCMF residual cycle optimality condition!
+
+#### Part B: Companion Variant (`Luogu P2168` — $k$-ary Huffman vs. Regret Discrimination)
+
+- Unlike MCMF along a time spine, merging $k$ subtrees into a single parent node in a prefix-free $k$-ary tree has no capacity-conflict back-edges: by the Huffman exchange lemma, the $k$ lightest weights must always sit at the deepest level.
+- **Boundary Trap**: If $(N - 1) \not\equiv 0 \pmod{k - 1}$, the final root merge would combine fewer than $k$ nodes, wasting top-level code slots. Pad $z = (k - 1 - (N - 1) \bmod (k - 1)) \bmod (k - 1)$ dummy nodes with $(w = 0, h = 0)$ into the min-heap before merging, and order heap elements by `(weight, current_height)` in $O(N \log N)$ time.
+::::
+
+---
+
+### Problem `#235` (`CP-VI.3`) — Capacitated 1D Mouse-and-Hole Regret Heaps (`WC2019` 雪灾与外卖)
+
+> **Primary Problem (`[WC2019]` 雪灾与外卖 — UOJ #455)**:
+> On a 1D number line, there are $N \le 10^5$ mice at coordinates $x_1 \le x_2 \le \dots \le x_N$ and $M \le 10^5$ holes at coordinates $y_1 \le y_2 \le \dots \le y_M$. Hole $j$ can accommodate at most $c_j \le 10^9$ mice, and each mouse entering hole $j$ incurs an additional entry cost $w_j \ge 0$ on top of the walking distance $|x_i - y_j|$. Find the minimum total cost to match all $N$ mice into holes (or output $-1$ if $\sum_{j=1}^M c_j < N$).
+>
+> **Companion Variant (`Codeforces 3D` — Least Cost Bracket Sequence)**:
+> Given a string of `'('`, `')'`, and `'?'` of length $N \le 5 \times 10^4$, where replacing `'?'` at index $i$ costs $a_i$ for `'('` and $b_i$ for `')'`, find a valid bracket sequence of minimum total cost.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Absolute Value Unrolling & RLE Multiplicity"}
+- **For Mice & Holes (`UOJ #455`)**: Why can we not use the $O(N)$ prefix-balance formula from Drill 1.3A? Because $\sum c_j > N$ and holes have entry costs $w_j$! When sweeping mice and holes in sorted coordinate order $z$, a mouse $x_i$ matched to a hole $y_j$ on its left pays $(x_i - y_j) + w_j = x_i + (-y_j + w_j)$. What if a later hole $y_{j'} \ge x_i$ steals mouse $x_i$, or a later mouse $x_{i'} \ge y_j$ steals a slot in hole $y_j$?
+- **For Bracket Sequence (`CF 3D`)**: Assign every `'?'` initially to `')'` (cost $b_i$, balance $-1$). What is the net cost and balance change of upgrading `'?'` at $j \le i$ from `')'` to `'('`?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Dual Priority Queues with Run-Length Encoding"}
+- **For Mice & Holes (`UOJ #455`)**: Maintain two min-heaps $Q_{\text{mouse}}$ and $Q_{\text{hole}}$ storing `(key, count)` RLE pairs:
+  1. When visiting mouse $x_i$ (multiplicity $1$): match it to the best available hole key $k_h = \min(Q_{\text{hole}})$ (initially $\infty$ if none), adding $x_i + k_h$ to `ans`, and push the **mouse regret key** `-(x_i + (x_i + k_h)) = -2x_i - k_h` into $Q_{\text{mouse}}$!
+  2. When visiting hole $y_j$ with capacity $c_j$ and fee $w_j$: while $c_j > 0$ and $\min(Q_{\text{mouse}}) + y_j + w_j < 0$, pop bulk multiplicity $\Delta = \min(c_j, \text{cnt})$ from $Q_{\text{mouse}}$, add $\Delta \cdot (k_m + y_j + w_j)$ to `ans`, push $\Delta$ units of **hole regret key** `-2y_j - w_j - k_m` into $Q_{\text{hole}}$, and push the remaining unused capacity of hole $j$ with base key `-y_j + w_j` into $Q_{\text{hole}}$!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Problem #235"}
+#### Part A: `[WC2019]` 雪灾与外卖 (Two-Heap RLE Simulated MCMF on a 1D Line)
+
+1. **Step 1 — Non-Graph Diagnostic Signal**:
+   - $N, M \le 10^5$ with hole capacities $c_j \le 10^9$ and hole fees $w_j$ on a 1D line. Total capacity $\sum c_j$ exceeds $N$, so flow across each segment is not fixed. Moreover, because $c_j \le 10^9$, even unit-by-unit heap pushes when a hole steals mice would take $O(NM)$ time unless identical regret keys are coalesced via **Run-Length Encoding (RLE)**!
+
+2. **Step 2 — Intermediate Algebraic / Regret-Key Derivation**:
+   - Merge all mice $x_i$ and holes $y_j$ into a single left-to-right coordinate sweep:
+     - **Event Type 1 — Mouse at $x_i$**: Since every mouse **must** be matched, match mouse $x_i$ immediately to the cheapest available hole option $k_h$ in $Q_{\text{hole}}$ (pad an artificial hole at $-\infty$ with cost $+\infty$ so $Q_{\text{hole}}$ is never empty). The cost paid now is:
+       $$\Delta \text{cost} = x_i + k_h.$$
+       If a future hole $y_{j'} \ge x_i$ later **steals** mouse $x_i$ from its current match (which cost $x_i + k_h$), the new cost for mouse $x_i$ at hole $y_{j'}$ is $(y_{j'} - x_i) + w_{j'}$, so the net cost change is:
+       $$((y_{j'} - x_i) + w_{j'}) - (x_i + k_h) = (y_{j'} + w_{j'}) + (-2x_i - k_h).$$
+       Therefore, mouse $x_i$ inserts key $k_m = -2x_i - k_h$ (with count $1$) into $Q_{\text{mouse}}$!
+     - **Event Type 2 — Hole at $y_j$ (capacity $c_j$, fee $w_j$)**:
+       - While $c_j > 0$ and the smallest key $k_m \in Q_{\text{mouse}}$ satisfies $k_m + (y_j + w_j) < 0$:
+         - Let $\Delta = \min(c_j, \text{cnt}(k_m))$. Redirect $\Delta$ mice to hole $j$, updating:
+           $$\text{ans} \gets \text{ans} + \Delta \cdot (k_m + y_j + w_j), \qquad c_j \gets c_j - \Delta.$$
+         - What if a still-later mouse $x_{i'} \ge y_j$ **undoes** this redirection (taking the slot in hole $y_j$ for cost $x_{i'} - y_j + w_j$ and returning the redirected mouse to its previous state by subtracting $k_m + y_j + w_j$)? The net cost for $x_{i'}$ is:
+           $$x_{i'} + (-2y_j - w_j - k_m).$$
+           Notice that all $\Delta$ redirected mice share the **exact same** hole regret key $k_h^{\text{regret}} = -2y_j - w_j - k_m$! So we push a **single RLE pair** `(-2y_j - w_j - k_m, \Delta)` into $Q_{\text{hole}}$!
+       - Finally, if $c_j > 0$ unused capacity remains at hole $j$, push `(-y_j + w_j, c_j)` into $Q_{\text{hole}}$ as a single RLE pair.
+
+3. **Step 3 — Amortized Complexity Proof ($O((N + M) \log(N + M))$)**:
+   - Why can't the while-loop at hole $y_j$ pop $O(N)$ elements repeatedly for every hole?
+   - Every mouse event inserts at most **1** RLE node into $Q_{\text{mouse}}$. Every hole event inserts at most **1** unused-capacity RLE node into $Q_{\text{hole}}$, and during its while-loop, every **full pop** from $Q_{\text{mouse}}$ transfers one RLE node from $Q_{\text{mouse}}$ to $Q_{\text{hole}}$, while at most **1 partial pop** splits an RLE node.
+   - Wait: can a node bounce back and forth between $Q_{\text{mouse}}$ and $Q_{\text{hole}}$? No! Mouse events only have multiplicity $1$, so $Q_{\text{hole}} \to Q_{\text{mouse}}$ transfers only happen $N$ times in total across the entire sweep! Thus the total number of RLE nodes ever created in $Q_{\text{mouse}}$ is $\le N$, bounding total while-loop iterations across all $M$ holes by $O(N + M)$!
+
+4. **Step 4 — Toy Trace & Failure Guard**:
+   - Trace: Mouse at $x_1 = 2$, Hole 1 at $y_1 = 0$ ($c_1 = 1, w_1 = 5$), Hole 2 at $y_2 = 3$ ($c_2 = 1, w_2 = 0$).
+     - At $y_1 = 0$: $Q_{\text{hole}}$ gets `(-0 + 5 = 5, 1)`.
+     - At $x_1 = 2$: matches $k_h = 5$, $\text{ans} = 2 + 5 = 7$, pushes $k_m = -2(2) - 5 = -9$ to $Q_{\text{mouse}}$.
+     - At $y_2 = 3$: checks $k_m + y_2 + w_2 = -9 + 3 + 0 = -6 < 0$. Pops $k_m = -9$, updates $\text{ans} = 7 - 6 = 1$ (which equals $|2 - 3| + 0 = 1$!), pushes regret `-2(3) - 0 - (-9) = 3` into $Q_{\text{hole}}$.
+   - **Failure Guard**: Choose $M_{\text{inf}} = 10^{12}$ (fitting safely in `long long` without overflowing $-2x_i - k_h$) for the dummy initial hole at $-\infty$!
+
+#### Part B: Companion Variant (`CF 3D` — Prefix Balance Regret Heap)
+
+- Greedily set every `'?'` at $i$ to `')'` (paying $b_i$) and push its upgrade cost $(a_i - b_i, i)$ into a min-heap $H$ as you sweep $i = 1 \dots N$. Whenever prefix balance drops to $-1$, pop the minimum $a_j - b_j$ from $H$ ($j \le i$), flip $s[j] \gets \text{'('}$, add $a_j - b_j$ to cost, and add $+2$ to prefix balance in $O(N \log N)$ time.
+::::
+
+---
+
+### Problem `#236` (`CP-VI.4`) — 2D Poset Transitive Reduction & 5-Heap Coupled Selection
+
+> **Primary Problem (`[SHOI2003]` 吃豆豆 — BZOJ 1930)**:
+> There are $N \le 2000$ beans in the 2D plane at coordinates $(x_i, y_i)$. Two Pac-Men start at the bottom-left and walk simultaneously with non-decreasing $x$ and non-decreasing $y$ ($x_{i_1} \le x_{i_2}$ and $y_{i_1} \le y_{i_2}$). A bean at $(x_i, y_i)$ yields $+1$ point the first time it is visited (visiting the same bean twice yields only $+1$ point in total). Maximize the total number of beans collected by the two Pac-Men.
+>
+> **Companion Variant (`[NOI2019]` 序列 — Luogu P5470)**:
+> Given two arrays $A, B$ of length $N \le 2 \times 10^5$, choose a subset $I \subseteq \{1, \dots, N\}$ of size $K$ and a subset $J \subseteq \{1, \dots, N\}$ of size $K$ such that $|I \cap J| \ge L$ (at least $L$ shared indices), maximizing $\sum_{i \in I} a_i + \sum_{j \in J} b_j$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Naive Edge Wiring Fails in Both Problems"}
+- **For Pac-Man (`BZOJ 1930`)**: With $N = 2000$, wiring $i_{\text{out}} \to j_{\text{in}}$ for every pair $(i, j)$ with $x_i \le x_j$ and $y_i \le y_j$ creates up to $\binom{2000}{2} \approx 2 \times 10^6$ edges. How can you prune redundant transitive edges $(i \to j)$ when an intermediate bean $k$ satisfies $x_i \le x_k \le x_j$ and $y_i \le y_k \le y_j$?
+- **For Sequence (`NOI 2019`)**: At $N = 2 \times 10^5$, we cannot run MCMF. Notice that $|I \cap J| \ge L$ is equivalent to saying **at most $K - L$ matched pairs $(i, j)$ may have $i \neq j$**! Draw the MCMF network with a single shared capacity bottleneck $C_{\text{free}} = K - L$ for uncoupled pairs, and classify all augmenting paths!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Hasse Diagram Pruning & 5-Heap Residual Transitions"}
+- **For Pac-Man (`BZOJ 1930`)**: Split each bean $i$ into $i_{\text{in}} \to i_{\text{out}}$ with two parallel edges: $(\text{cap } 1, \text{cost } -1)$ and $(\text{cap } 1, \text{cost } 0)$, so the second Pac-Man can pass through bean $i$ for free without losing transitivity! Then sort beans by $(x_i, y_i)$ ascending; when scanning $j > i$, maintain $\text{min\_y}$, the minimum $y_k \ge y_i$ seen so far, and only add edge $i_{\text{out}} \to j_{\text{in}}$ if $y_i \le y_j < \text{min\_y}$!
+- **For Sequence (`NOI 2019`)**: When an unmatched $A_i$ joins an already-chosen $B_i$ (or vice versa) to form a coupled pair $(i, i)$, what happens to the free-pair bottleneck capacity $C_{\text{free}}$? It **increases by $+1$** (refunding the free slot previously used by $B_i$)!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Problem #236"}
+#### Part A: `[SHOI2003]` 吃豆豆 (2D Dominance Hasse Pruning + 2-Path MCMF)
+
+1. **Step 1 — Non-Graph Diagnostic Signal**:
+   - Finding $K = 2$ paths in a 2D dominance DAG maximizing the union of covered vertices is a canonical small-$K$ MCMF problem (`Ch 20`), but $N = 2000$ generates $O(N^2)$ dominance edges unless we exploit **2D Poset Transitive Reduction (Hasse Diagram Sparsification, `Ch 22.1`)**.
+
+2. **Step 2 — Intermediate Algebraic / Transitivity Model**:
+   - Because each bean $i$ has a zero-cost bypass edge $i_{\text{in}} \xrightarrow{\text{cap } 1, \text{cost } 0} i_{\text{out}}$ alongside its reward edge $i_{\text{in}} \xrightarrow{\text{cap } 1, \text{cost } -1} i_{\text{out}}$ (or capacity $\infty$ on the cost-$0$ bypass), any path $i \to k \to j$ with $x_i \le x_k \le x_j$ and $y_i \le y_k \le y_j$ can always pass through $k$ even if the other Pac-Man already collected bean $k$!
+   - Therefore, the direct edge $i_{\text{out}} \to j_{\text{in}}$ is **100% redundant** whenever there exists any intermediate bean $k$ in the rectangle $[x_i, x_j] \times [y_i, y_j]$.
+
+3. **Step 3 — Mechanical Compilation (Hasse Scan + 2-Augmentation MCMF)**:
+   - Sort all $N$ beans lexicographically by $x_i$ ascending, then $y_i$ ascending.
+   - For each bean $i = 1 \dots N$:
+     - Initialize $\text{min\_y} = +\infty$.
+     - Sweep $j = i + 1 \dots N$: if $y_j \ge y_i$ and $y_j < \text{min\_y}$:
+       - Add directed edge $i_{\text{out}} \to j_{\text{in}}$ with $(\text{cap } 2, \text{cost } 0)$, and update $\text{min\_y} \gets y_j$. (Note: if $y_k = y_j$ for a later $k$, $k$ is already reachable via $j_{\text{out}} \to k_{\text{in}}$, so strict inequality $y_j < \text{min\_y}$ is completely valid!)
+   - Run **exactly $2$ iterations** of DAG DP + Primal–Dual Dijkstra from $S$ to $T$. Because the Hasse diagram of random/worst-case 2D points has vastly fewer edges and only $2$ augmentations are performed, total runtime is $O((N + E_{\text{Hasse}}) \log N)$ (under 20 ms).
+
+4. **Step 4 — Toy Trace & Failure Guard**:
+   - **Failure Guard**: If you give $i_{\text{in}} \to i_{\text{out}}$ only a single capacity-$1$ edge of cost $-1$ (omitting the parallel capacity-$1$, cost-$0$ bypass edge) AND perform Hasse transitive reduction, then once Pac-Man 1 visits bean $k$, bean $k$ is blocked for Pac-Man 2, breaking the transitivity of $i \to k \to j$! You **must** include the cost-$0$ bypass edge so vertices never block transitive routing.
+
+#### Part B: Companion Variant (`[NOI2019]` 序列 — 5-Heap Simulated MCMF with Bottleneck Refund)
+
+1. **Step 1 & 2 — Residual State Classification**:
+   - Each index $i \in \{1, \dots, N\}$ is in one of 4 states: `(0,0)` neither chosen, `(1,0)` only $A_i$ chosen, `(0,1)` only $B_i$ chosen, `(1,1)` both chosen.
+   - Maintain remaining free budget `free_cap` $= K - L$ and 5 max-heaps (lazily deleting stale states):
+     - $H_A$: $a_i$ for $i$ in state `(0,0)` or `(0,1)` (Wait: keep $H_{A0}$ for $a_i$ in `(0,0)`, $H_{B0}$ for $b_i$ in `(0,0)`, $H_{AB}$ for $a_i + b_i$ in `(0,0)`, $H_{A\text{ in }B\text{ out}}$ for $b_i$ in `(1,0)`, and $H_{B\text{ in }A\text{ out}}$ for $a_i$ in `(0,1)`).
+2. **Step 3 — The $K$ Augmentation Steps**:
+   - At each step $t = 1 \dots K$, we must add $+1$ to $|I|$ and $+1$ to $|J|$:
+     - **Case 1 (`free_cap > 0`)**: Simply pick the maximum available $a_i$ (from `(0,0)` or `(0,1)`) and the maximum available $b_j$ (from `(0,0)` or `(1,0)`). Decrement `free_cap--`, then **for each endpoint that just transitioned into `(1,1)`** (or if $i == j$), increment `free_cap++`!
+     - **Case 2 (`free_cap == 0`)**: Compare the 3 zero-net-free-capacity augmenting paths:
+       - **Option 1 (Coupled Pair)**: Pick $i$ in `(0,0)` maximizing $a_i + b_i$ from $H_{AB}$.
+       - **Option 2 (Complete $B$ at an $A$-used index + Pick best $A$)**: Pick $i$ in `(1,0)` (adding $b_i$, which turns $i$ into `(1,1)` and refunds $+1$ free slot) and $j$ in `(0,0)` (adding $a_j$, which consumes that $1$ free slot), total gain $\max(H_{A\text{ in }B\text{ out}}) + \max(H_{A0})$.
+       - **Option 3 (Complete $A$ at a $B$-used index + Pick best $B$)**: Symmetric to Option 2, total gain $\max(H_{B\text{ in }A\text{ out}}) + \max(H_{B0})$.
+     - Execute the best option; if the two chosen indices in Option 2 or 3 happen to collide or complete a second `(1,1)` pair, remember to increment `free_cap++`! Total complexity: $O(N \log N)$.
+::::
+
+---
+
+### Problem `#237` (`CP-VI.5`) — 0-1 Trie `Out-Tree` XOR Closure & 3-Group Assignment Split
+
+> **Primary Problem (0-1 Trie `Out-Tree` XOR Threshold Closure — `CF 1906J` / `4B-P23`)**:
+> You are given $N \le 5 \times 10^4$ items with 30-bit integer keys $a_i \in [0, 2^{30})$ and signed weights $w_i \in [-10^9, 10^9]$ (some positive, some negative), along with a threshold $K \in [0, 2^{30})$. Choosing item $i$ forces you to also choose **every** item $j$ whose bitwise XOR with $a_i$ satisfies $a_i \oplus a_j \ge K$. Find the maximum total weight of a valid subset of items.
+>
+> **Companion Variant (`AtCoder AGC 018 C` — Coins)**:
+> There are $N = X + Y + Z \le 10^5$ people. Person $i$ holds $A_i$ gold coins, $B_i$ silver coins, and $C_i$ bronze coins. Partition the $N$ people into exactly $X$ who contribute gold, $Y$ who contribute silver, and $Z$ who contribute bronze, maximizing the total number of coins collected.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Recognizing Closure Sparsification vs. 3-Group Matching"}
+- **For XOR Threshold Closure**: Having $i$ force $j$ with weight $w_i \in \mathbb{R}$ is a textbook **Maximum Weight Closure (`Ch 09`)** problem! Why can we not wire $i \xrightarrow{\infty} j$ directly? Because up to $O(N^2)$ pairs satisfy $a_i \oplus a_j \ge K$. What data structure decomposes the set $\{a_j : a_i \oplus a_j \ge K\}$ into at most $30$ disjoint subtrees?
+- **For Coins (`AGC 018 C`)**: First subtract $C_i$ from everyone (base sum $= \sum C_i$), reducing the problem to choosing $X$ people for Gold gain $A'_i = A_i - C_i$ and $Y$ disjoint people for Silver gain $B'_i = B_i - C_i$. Can you either simulate the 3-group MCMF with regret heaps OR sort by a single difference key so Gold and Silver become prefix/suffix disjoint?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Bitwise Subtree Wiring & Exchange-Argument Sorting"}
+- **For XOR Threshold Closure**: Insert all $a_j$ into a 30-bit **0-1 Trie `Out-Tree`** where every parent node $u$ has directed edges $u \xrightarrow{\infty} \text{ch}(u, 0)$ and $u \xrightarrow{\infty} \text{ch}(u, 1)$, and each leaf $u$ connects with capacity $\infty$ to the items $j$ having $a_j = u$. For each $i$, walk down the Trie comparing the bits of $K$ from MSB ($b = 29$) to LSB ($b = 0$): whenever bit $b$ of $K$ is $0$, the Trie branch where $(a_i \oplus a_j)$ has bit $b$ equal to $1$ automatically satisfies $a_i \oplus a_j > K$, so wire $i \xrightarrow{\infty}$ to that entire Trie child node and continue walking down the other branch!
+- **For Coins (`AGC 018 C`)**: Suppose $i$ is assigned Gold and $j$ is assigned Silver. By exchange optimality, $(A'_i + B'_j) \ge (A'_j + B'_i) \iff A'_i - B'_i \ge A'_j - B'_j$. Sort all $N$ people by $A'_i - B'_i$ descending!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Problem #237"}
+#### Part A: 0-1 Trie `Out-Tree` XOR Threshold Closure (`Ch 09 + Ch 22.1`)
+
+1. **Step 1 — Non-Graph Diagnostic Signal**:
+   - "Choosing $i$ forces choosing all $j$ with $a_i \oplus a_j \ge K$" + signed weights $w_i \in \mathbb{R}$ is a pure **Maximum Weight Closure (Project Selection, `Ch 09`)** instance.
+   - However, $N = 5 \times 10^4$ makes explicit pairwise implication edges $O(N^2)$ impossible. Because the condition $a_i \oplus a_j \ge K$ is defined by the longest common prefix of $a_i \oplus a_j$ and $K$ in binary, we compile the implication graph through a **30-bit 0-1 Trie `Out-Tree` (`Ch 22.1`)**.
+
+2. **Step 2 — Intermediate Algebraic / Cut Model**:
+   - Let $x_i \in \{0, 1\}$ indicate whether item $i$ is selected ($x_i = 1 \iff i \in S_{\text{cut}}$).
+   - Standard `Ch 09` source-sink wiring:
+     - If $w_i > 0$, add $S \xrightarrow{w_i} i$ and add $w_i$ to `pos_sum`.
+     - If $w_i < 0$, add $i \xrightarrow{-w_i} T$.
+   - Let $T_{\text{trie}}$ be the 0-1 Trie containing all keys $a_1, \dots, a_N$. Associate each Trie node $u$ with an auxiliary flow vertex $v(u)$ Representing the logical proposition: "$v(u) \in S_{\text{cut}} \implies \text{every item } j \text{ in the subtree of } u \text{ is in } S_{\text{cut}}$."
+
+3. **Step 3 — Mechanical Graph Compilation**:
+   - **Internal Trie `Out-Tree` Edges**: For every Trie node $u$ and existing child $c \in \{\text{ch}(u, 0), \text{ch}(u, 1)\}$, add a directed edge $v(u) \xrightarrow{\infty} v(c)$. At depth $30$ (leaf $u$ corresponding to value $a_j$), add $v(u) \xrightarrow{\infty} j$ (or merge the leaf with $j$, and if multiple items share the same $a_j$, wire $v(u) \xrightarrow{\infty} j$ for each).
+   - **Per-Item XOR Walk**: For each item $i$, walk down the Trie from the root along $b = 29, 28, \dots, 0$:
+     - Let $\text{bit}_i = (a_i \gg b) \ \& \ 1$ and $\text{bit}_K = (K \gg b) \ \& \ 1$.
+     - If $\text{bit}_K == 0$:
+       - Any key $a_j$ in the child branch $c_{\text{strict}} = \text{ch}(u, \text{bit}_i \oplus 1)$ produces $(a_i \oplus a_j)$ with bit $b$ equal to $1 > \text{bit}_K$, so **every** element in $c_{\text{strict}}$'s subtree satisfies $a_i \oplus a_j > K$! If $c_{\text{strict}}$ exists, add a single edge $i \xrightarrow{\infty} v(c_{\text{strict}})$.
+       - Then step into $u \gets \text{ch}(u, \text{bit}_i \oplus 0)$ to continue matching the prefix of $K$.
+     - If $\text{bit}_K == 1$:
+       - Keys in $\text{ch}(u, \text{bit}_i \oplus 0)$ have bit $b$ of $(a_i \oplus a_j)$ equal to $0 < 1$, so they fail $a_i \oplus a_j \ge K$. Simply step into $u \gets \text{ch}(u, \text{bit}_i \oplus 1)$.
+     - If $u$ reaches depth $30$ (where $a_i \oplus a_j == K$ exactly), add $i \xrightarrow{\infty} v(u_{\text{leaf}})$.
+   - **Scale**: At most $30 N$ Trie vertices and $\le 60 N$ edges! Run Dinic and return $\text{pos\_sum} - \text{MaxFlow}(S, T)$.
+
+4. **Step 4 — Toy Trace & Failure Guard**:
+   - Suppose 2-bit keys ($B = 2$), $K = 2 = (10)_2$, $a_1 = (01)_2 = 1$ ($w_1 = +10$), $a_2 = (11)_2 = 3$ ($w_2 = -4$). For $i = 1$ ($a_1 = 01_2$): at $b = 1$, $\text{bit}_K = 1$, step to branch $\text{bit}_1 \oplus 1 = 1$; at $b = 0$, $\text{bit}_K = 0$, wire $1 \xrightarrow{\infty} \text{ch}(u, 1 \oplus 1 = 0)$ and step to $\text{ch}(u, 1 \oplus 0 = 1) = (11)_2$ (leaf of $a_2$), wiring $1 \xrightarrow{\infty} 2$. Indeed $1 \oplus 3 = 2 \ge K$, so choosing $1$ forces $2$ for net weight $10 - 4 = 6$.
+   - **Failure Guard**: Even though $(a_i \oplus a_j \ge K)$ is a symmetric relation ($a_i \oplus a_j = a_j \oplus a_i$), **never** use undirected $\infty$-edges or connect $v(c_{\text{strict}}) \to i$! The Trie `Out-Tree` edges are strictly one-way (root $\to$ leaves $\to$ items $j$); making them bidirectional would merge the entire Trie into a single strongly connected component!
+
+#### Part B: Companion Variant (`AGC 018 C` — Coins via Exchange Split + Heaps vs. 3-Heap Simulated MCMF)
+
+- **Method 1 (Exchange Split + Prefix/Suffix Min-Heaps)**: After subtracting $C_i$ (so Gold pays $A'_i = A_i - C_i$, Silver pays $B'_i = B_i - C_i$, Bronze pays $0$), sort all $N$ people by $A'_i - B'_i$ descending. Every optimal assignment has a split point $k \in [X, N - Y]$ such that all $X$ Gold people lie in prefix $[1 \dots k]$ and all $Y$ Silver people lie in suffix $[k+1 \dots N]$. Sweep a min-heap of size $X$ left-to-right to compute `pref[k]` (sum of top $X$ values of $A'_i$ in $[1 \dots k]$) and a min-heap of size $Y$ right-to-left to compute `suf[k+1]` (sum of top $Y$ values of $B'_i$ in $[k+1 \dots N]$), then output $\sum C_i + \max_{X \le k \le N-Y} (\text{pref}[k] + \text{suf}[k+1])$ in $O(N \log N)$ time.
+- **Method 2 (3-Group Simulated MCMF)**: Start with the first $X$ people in Gold, next $Y$ in Silver, rest in Bronze, and relax residual cycles across the 3 groups using 6 priority queues (`Gold->Silver`, `Gold->Bronze`, `Silver->Gold`, etc.)—which reduces directly to Method 1 because any crossing pair in $A'_i - B'_i$ order forms a positive cycle!
+::::
+
+---
+
+### Problem `#238` (`CP-VI.6`) — Suffix Automaton + Segment Tree Graph & Slope Trick vs. Minkowski Convolution
+
+> **Primary Problem (`[十二省联考2019]` 字符串问题 — Luogu P5284)**:
+> Given a string $S$ of length $|S| \le 2 \times 10^5$, $N_a \le 2 \times 10^5$ substrings of class $A$ ($A_i = S[l_{a,i} \dots r_{a,i}]$), and $N_b \le 2 \times 10^5$ substrings of class $B$ ($B_j = S[l_{b,j} \dots r_{b,j}]$):
+>
+> - There are $M \le 2 \times 10^5$ explicit directed transitions $A_i \to B_j$;
+> - Every $B_j$ can transition to **any** $A_k$ such that $B_j$ is a **prefix** of $A_k$;
+> - Choosing $A_i$ adds $|A_i|$ (its length) to the path weight, while $B_j$ adds $0$.
+>
+> Find the maximum total weight of a path in this transition graph, or output $-1$ if there is an infinitely long path (a reachable cycle).
+>
+> **Companion Variant (`Codeforces 1534G` — A New Beginning / Slope Trick & Minkowski Sum Discrimination)**:
+> Maintain a piecewise-linear convex cost function $F(x)$ on trees/intervals under two operations: (1) **Pointwise Addition** $F(x) \gets F_1(x) + F_2(x)$, and (2) **Infimal Convolution (Minkowski Sum)** $F(x) \gets \min_{x_1 + x_2 = x} (F_1(x_1) + F_2(x_2))$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Turning Prefix Containment into a Tree Subtree Range"}
+- **For String Problem (`Luogu P5284`)**: Why is "$B_j$ is a prefix of $A_k$" equivalent to a subtree relation on the Suffix Automaton (`SAM`) of the **reversed** string $S^R$ (or the Suffix Tree of $S$)? Wait: what if $B_j$ and $A_k$ map to the **exact same** SAM parent-link tree node $u$?
+- **For Slope Trick vs. Minkowski (`CF 1534G`)**: How do the derivative slope-change breakpoints behave under Pointwise Addition $F_1(x) + F_2(x)$ versus under Infimal Convolution $\min_{x_1 + x_2 = x} (F_1(x_1) + F_2(x_2))$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Intra-Node Length Sorting + `Out-Tree` Wiring"}
+- **For String Problem (`Luogu P5284`)**: Build the SAM of the reversed string $S^R$ (so the SAM parent-link tree is the prefix tree of $S^R$, i.e., the **Suffix Tree of $S$** where $B_j$ is a prefix of $A_k$ iff $A_k$'s node is in the subtree of $B_j$'s node AND $|B_j| \le |A_k|$!). Locate each substring $S[l \dots r]$ on the SAM link tree via binary lifting from the prefix node of $l$. If multiple $A_k$ and $B_j$ land on the **same** SAM node $u$, sort them by length ascending (placing $B_j$ before $A_k$ on ties $|B_j| = |A_k|$)!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Problem #238"}
+#### Part A: `[十二省联考2019]` 字符串问题 (`Ch 22.1` SAM Link-Tree + Intra-Node Chain Sparsification)
+
+1. **Step 1 — Non-Graph Diagnostic Signal**:
+   - The transition graph has $N_a + N_b \le 4 \times 10^5$ nodes, $M \le 2 \times 10^5$ explicit edges $A_i \to B_j$, and up to $N_a N_b = 4 \times 10^{10}$ implicit prefix edges $B_j \to A_k$.
+   - Once the implicit edges $B_j \to A_k$ are compiled through virtual hubs of weight $0$, finding the longest path (or detecting a positive cycle) reduces to **Kahn's Topological Sort + DAG Longest-Path DP** in $O(V_{\text{hub}} + E_{\text{hub}})$ time!
+
+2. **Step 2 — Intermediate String-to-Tree Representation**:
+   - Build the Suffix Automaton (`SAM`) on the **reversed** string $S^R = S[|S| \dots 1]$ so that a substring $S[l \dots r]$ corresponds to a prefix of the suffix $S[l \dots |S|]$ (which is a suffix of a prefix of $S^R$).
+   - Specifically, in the SAM parent-link tree $T_{\text{SAM}}$ of $S^R$:
+     - First find the SAM state $\text{pos}[l]$ corresponding to the full reversed suffix $S^R[1 \dots |S| - l + 1] = S[l \dots |S|]$.
+     - Use binary lifting (`up[u][19]`) on $T_{\text{SAM}}$ to jump from $\text{pos}[l]$ to the highest ancestor $u$ satisfying $\text{len}[u] \ge r - l + 1$. This locates every $A_k$ and $B_j$ at its exact locus node $u \in T_{\text{SAM}}$ in $O(\log |S|)$ time!
+   - Now, "$B_j$ is a prefix of $A_k$" holds if and only if:
+     1. $u(A_k)$ is in the **strict subtree** of $u(B_j)$ in $T_{\text{SAM}}$, OR
+     2. $u(A_k) = u(B_j)$ and $|B_j| \le |A_k|$.
+
+3. **Step 3 — Mechanical Hub Compilation (Zero Segment Tree Overhead via Node Split + Chain)**:
+   - Even simpler and faster than a full Segment Tree over DFS order:
+     - Inside each SAM node $u \in T_{\text{SAM}}$, collect all $A_k$ and $B_j$ mapped to $u$ and sort them by **length ascending**, placing $B_j$ **before** $A_k$ when $|B_j| == |A_k|$.
+     - Create a **chain of auxiliary `Out-Chain` hub nodes** $h_1 \to h_2 \to \dots \to h_m \to u_{\text{out}}$ along this sorted list at node $u$, plus an entry hub $u_{\text{in}} \to h_1$ (all with weight $0$):
+       - If the $t$-th item in $u$'s sorted list is $B_j$, wire $B_j \to h_t$.
+       - If the $t$-th item in $u$'s sorted list is $A_k$, wire $h_t \to A_k$ (with edge weight $|A_k|$ on $A_k$'s outgoing or vertex weight).
+       - For every SAM tree child $v$ of $u$, wire $u_{\text{out}} \to v_{\text{in}}$!
+   - Verify: From $B_j$ at position $t$ in node $u$, following $B_j \to h_t \to h_{t+1} \to \dots \to u_{\text{out}} \to \text{descendants}$ reaches **precisely** all $A_k$ at node $u$ with $|A_k| \ge |B_j|$ AND all $A_k$ in strict descendant nodes of $u$!
+   - Add the $M$ explicit edges $A_i \to B_j$. Run topological sort (`indeg == 0` queue): if any vertex remains unvisited (`visited < V_total`), a cycle exists—output `-1`! Otherwise output the maximum DP value in $O((|S| + N_a + N_b) \log |S| + M)$ time!
+
+4. **Step 4 — Toy Trace & Failure Guard**:
+   - **Failure Guard 1 (Same-Node Length Order)**: If $B_j$ and $A_k$ land on the same SAM node $u$ (because every occurrence of $B_j$ in $S$ is immediately extended to $A_k$), routing $B_j$ to the **entire** node $u$ without sorting by length would falsely allow a longer $B_j$ to transition to a shorter $A_k$ on the same SAM edge!
+   - **Failure Guard 2 (Tie-Breaking $|B_j| == |A_k|$)**: Since a string is a prefix of itself, when $|B_j| = |A_k|$ at the same SAM node $u$, $B_j$ **can** transition to $A_k$, so $B_j$ must be sorted **before** $A_k$!
+
+#### Part B: Companion Variant (`CF 1534G` — Slope Trick vs. Minkowski Convolution Duality)
+
+- **Pointwise Addition** $F(x) = F_1(x) + F_2(x)$ preserves $x$-coordinates and adds slopes: $(F_1 + F_2)'(x) = F'_1(x) + F'_2(x)$. Therefore, in **Slope Trick** representation (storing the multiset of $x$-coordinates where the integer slope increases by $+1$), Pointwise Addition is simply the **multiset union of breakpoint $x$-coordinates** (merging two Leftist Heaps)!
+- **Infimal Convolution (Minkowski Sum)** $F(x) = \min_{x_1 + x_2 = x} (F_1(x_1) + F_2(x_2))$ is the Legendre–Fenchel dual: it adds horizontal segment lengths of equal slope, which corresponds to **taking the sorted sequence of slopes** (or in Slope Trick on an interval `[x - d, x + d]`, shifting the left heap by $-d$ and the right heap by $+d$)! Never confuse merging breakpoint coordinates (Pointwise Sum) with merging slope segments (Minkowski Sum).
+::::
+
+---
+
+### Problem `#239` (`CP-VI.7`) — Tree $L_1$ Isotonic Regression: `整体二分` + Dinic vs. Leftist-Heap Slope Trick
+
+> **Primary Problem (Tree $L_1$ Isotonic Regression Benchmark — `Ch 23 + Ch 24.1`)**:
+> Given a rooted tree $T = (V, E)$ with $N \le 2 \times 10^5$ vertices, initial values $y_v \in [0, 10^9]$, and positive weights $w_v \in [1, 10^4]$, choose real (or integer) values $x_v$ for all $v \in V$ such that
+> $$x_{\operatorname{parent}(v)} \le x_v \quad \forall v \neq \text{root},$$
+> minimizing the weighted $L_1$ isotonic error:
+> $$\sum_{v \in V} w_v |x_v - y_v|.$$
+>
+> **Companion Variant (`Codeforces 884F` — Anti-Palindromize)**:
+> Given a string $s$ of even length $N \le 100$ and beauty values $b_1, \dots, b_N$, rearrange $s$ into $s'$ such that $s'[i] \neq s'[N + 1 - i]$ for all $1 \le i \le N$, maximizing the sum of $b_i$ over indices where $s'[i] == s[i]$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Comparing General-DAG Coarea Slicing Against Tree Slope Trick"}
+- **For Tree $L_1$ Isotonic Regression**: In `Ch 24.1`, a general poset DAG with $N \le 1000$ uses **Parallel Binary Search (`整体二分`) + Maximum Weight Closure (`Ch 09`)** in $O(M \sqrt{N} \log V_{\max})$. At $N = 2 \times 10^5$ on a **tree**, Dinic is too slow—how can we maintain the convex piecewise-linear subtree cost function $F_u(z) = \min_{x_u = z, \, x_{\text{sub}} \text{ valid}} \sum_{v \in T_u} w_v |x_v - y_v|$ bottom-up using mergeable priority queues?
+- **For Anti-Palindromize (`CF 884F`)**: Both an explicit $O(26 N)$ MCMF gadget (`Ch 20`) and an $O(N)$ majority-collision closed-form simulation (`Ch 23`) solve this! How does the MCMF network enforce $s'[i] \neq s'[N + 1 - i]$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Prefix-Minimum Truncation via Max-Heap Slope Trick"}
+- **For Tree $L_1$ Isotonic Regression**: When passing a child $c$'s convex function $F_c(x_c)$ up to its parent $u$ under the constraint $x_u \le x_c$, we need the **suffix minimum** $\tilde{F}_c(x_u) = \min_{x_c \ge x_u} F_c(x_c)$! What does $\tilde{F}_c(x_u)$ do to the derivative $\tilde{F}'_c(x)$? It **zeros out all positive slopes** ($F'_c(x) > 0 \implies \tilde{F}'_c(x) = 0$)! So we only need a **mergeable max-heap (Leftist Heap)** storing the slope-change breakpoints where the slope is $\le 0$, popping from the right until the rightmost slope becomes $0$!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Problem #239"}
+#### Part A: Tree $L_1$ Isotonic Regression ($O(N \log N)$ Leftist-Heap Slope Trick vs. `整体二分` + Dinic)
+
+1. **Step 1 — Non-Graph Diagnostic Signal & Dual-Perspective Comparison**:
+   - **Perspective 1 (`Ch 24.1` General Poset `整体二分` + Dinic)**: By the Coarea / Threshold Theorem (`Ch 24.1`), $|x_v - y_v| = \int_{-\infty}^{\infty} |[x_v > \lambda] - [y_v > \lambda]| \, d\lambda$. Slicing at midpoint $\lambda = \text{mid}$ assigns weight $+w_v$ if $y_v > \text{mid}$ and $-w_v$ if $y_v \le \text{mid}$, solving Maximum Weight Closure on the active subgraph. This works for **any** DAG poset, taking $O(M \sqrt{N} \log V_{\max})$.
+   - **Perspective 2 (`Ch 23 / Ch 24.1` Tree Slope Trick via Leftist Heap Merging)**: Because $T$ is a **tree** with $N = 2 \times 10^5$, we can eliminate Dinic and the $\log V_{\max}$ factor entirely by maintaining the exact convex piecewise-linear subtree cost function bottom-up in $O(N \log N)$!
+
+2. **Step 2 — Intermediate Algebraic / Derivative Representation**:
+   - For each vertex $u$, define the convex piecewise-linear function:
+     $$F_u(x_u) = w_u |x_u - y_u| + \sum_{c \in \text{children}(u)} \tilde{F}_c(x_u), \qquad \text{where } \tilde{F}_c(x_u) = \min_{x_c \ge x_u} F_c(x_c).$$
+   - Look at the effect of $\tilde{F}_c(x_u) = \min_{x_c \ge x_u} F_c(x_c)$ on the right-derivative $\tilde{F}'_c(x)$:
+     - Wherever $F'_c(x) < 0$ (to the left of the minimizer of $F_c$), $\tilde{F}_c(x) = F_c(x)$ has the exact same negative slope $F'_c(x) < 0$.
+     - Wherever $F'_c(x) \ge 0$ (to the right of the minimizer of $F_c$), choosing $x_c$ at the minimizer of $F_c$ flattens $\tilde{F}_c(x)$ to a constant horizontal line of **slope $0$**!
+
+3. **Step 3 — Mechanical Compilation (Leftist Max-Heap with Multiplicity)**:
+   - At each node $u$, maintain:
+     - `R_slope[u]`: the asymptotic slope of $F_u(x)$ as $x \to +\infty$, initialized to $+w_u$ (from $w_u |x - y_u|$).
+     - A mergeable **max-heap (Leftist Heap)** $H_u$ storing pairs `(breakpoint_x, delta_slope)`, where `delta_slope` $> 0$ is the increase in slope at `breakpoint_x`. Initially for node $u$'s own term $w_u |x - y_u|$, insert `(y_u, 2 * w_u)` into $H_u$ (since the slope jumps from $-w_u$ to $+w_u$ at $x = y_u$).
+   - **Merging Children**: For each child $c$ of $u$, after converting $F_c \to \tilde{F}_c$ (so `R_slope[c] == 0`), merge $H_c$ into $H_u$ in $O(\log N)$ time (and add `R_slope[c] = 0` to `R_slope[u]`).
+   - **Suffix-Minimum Truncation ($F_u \to \tilde{F}_u$)**: To flatten all positive slopes on the right of $F_u(x)$ so that `R_slope[u]` becomes $0$:
+     - While `R_slope[u] > 0`:
+       - Pop the largest breakpoint $(x_{\max}, \Delta)$ from the max-heap $H_u$.
+       - If $\text{R\_slope}[u] \ge \Delta$: subtract $\text{R\_slope}[u] \gets \text{R\_slope}[u] - \Delta$ (discarding this breakpoint completely).
+       - Else ($\text{R\_slope}[u] < \Delta$): reduce $\Delta \gets \Delta - \text{R\_slope}[u]$, set $\text{R\_slope}[u] \gets 0$, push $(x_{\max}, \Delta)$ back into $H_u$, and break!
+   - At the root $r$, after computing $\tilde{F}_r(x)$, evaluate $\tilde{F}_r(-\infty)$ by summing the intercept at $+\infty$ (or accumulating the cost shift during each slope truncation: truncating $\delta$ units of positive slope at $x_{\max}$ shifts the left asymptote or accumulates exact minimum value!) in $O(N \log N)$ total time!
+
+4. **Step 4 — Toy Trace & Failure Guard**:
+   - Suppose parent $1$ ($y_1 = 10, w_1 = 1$) has child $2$ ($y_2 = 4, w_2 = 1$) with constraint $x_1 \le x_2$.
+     - Child $2$: $F_2(x) = |x - 4|$ has `R_slope = 1` and $H_2 = \{(4, 2)\}$. Truncating $F_2 \to \tilde{F}_2$ reduces `(4, 2)` to `(4, 1)` and sets `R_slope[2] = 0` (representing $\tilde{F}_2(x_1) = \max(4 - x_1, 0)$).
+     - Parent $1$: merges $H_2 = \{(4, 1)\}$ with its own $\{(10, 2)\}$ and `R_slope[1] = 1`. Truncating $1$ unit of positive slope at $x_{\max} = 10$ leaves $H_1 = \{(4, 1), (10, 1)\}$, meaning any $x_1 = x_2 \in [4, 10]$ achieves the minimum cost $10 - 4 = 6$!
+   - **Failure Guard**: If the constraint were reversed ($x_{\text{parent}(v)} \ge x_v$), we would need the **prefix minimum** $\min_{x_c \le x_u} F_c(x_c)$, which flattens **negative** slopes on the left using a **min-heap** instead of a max-heap!
+
+#### Part B: Companion Variant (`CF 884F` — Anti-Palindromize MCMF vs. Majority Greedy)
+
+- **MCMF Model (`Ch 20`)**: Source $S \to \text{char}_c$ `(cap cnt[c], cost 0)`. For each mirror pair $p = \{i, N + 1 - i\}$ ($1 \le i \le N/2$) and letter $c \in \text{'a'} \dots \text{'z'}$, create hub $(p, c)$ with $\text{char}_c \to (p, c)$ of **capacity $1$**, cost $0$ (forcing at most one position in pair $p$ to receive letter $c$!), and wire $(p, c) \to i$ `(cap 1, cost (s[i]==c ? -b_i : 0))` and $(p, c) \to N+1-i$ `(cap 1, cost (s[N+1-i]==c ? -b_{N+1-i} : 0))`.
+- **$O(N)$ Simulated Flow**: Initially keep $s'[k] = s[k]$ everywhere ($\text{ans} = \sum b_k$). Every mirror pair with $s[i] == s[N + 1 - i]$ is a collision that loses $\min(b_i, b_{N + 1 - i})$. Count collisions per letter $c$: if no letter $c^*$ exceeds half of total collisions ($2 \cdot \text{col}[c^*] \le \text{total\_col}$), the collisions can pair up and swap among themselves with zero extra loss! If $2 \cdot \text{col}[c^*] > \text{total\_col}$, pair the remaining $2 \cdot \text{col}[c^*] - \text{total\_col}$ excess $c^*$-collisions with the cheapest positions $k$ from non-colliding pairs where $s[k] \neq c^*$ and $s[N + 1 - k] \neq c^*$!
+::::
+
+---
+
+### Problem `#240` (`CP-VI.8`) — General Graph Vertex Deletion Game & Tree RLE Leftist-Heap MCMF
+
+> **Primary Problem (Joyner–Edmonds General Graph Vertex Deletion Game — `Ch 06 + Ch 22.2–22.4`)**:
+> Given a **general undirected graph** $G = (V, E)$ with $N \le 500$ vertices (containing arbitrary odd cycles) and a starting vertex $v_0 \in V$, a token is placed at $v_0$. Two players (Alice and Bob) alternate moving the token along an edge of $G$ to an **unvisited** vertex (equivalently, deleting the previous vertex after each move). The last player able to move wins. Determine for **every** starting vertex $v_0 \in \{1, \dots, N\}$ whether the first player (Alice) has a winning strategy.
+>
+> **Companion Variant (`[ICPC WF 2018]` Conquer the World — LOJ #6405 / `Ch 23.4`)**:
+> Given a weighted tree $T = (V, E)$ with $N \le 2.5 \times 10^5$ vertices, initial army counts $x_u \ge 0$, and required army counts $y_u \ge 0$ ($\sum x_u \ge \sum y_u$, $x_u, y_u \le 10^6$), move armies along tree edges to satisfy all $y_u$ at minimum total distance cost.
+
+:::: {.callout-note collapse="true" title="Hint 1 — From Bipartite Matching Games (`Ch 06`) to Non-Bipartite Games (`Ch 22`)"}
+- **For General Graph Game**: In `Ch 06.3`, we proved on bipartite graphs that Alice wins from $v_0$ if and only if $v_0$ belongs to **every** maximum matching of $G$ ($\nu(G \setminus \{v_0\}) = \nu(G) - 1$). Does the exact same theorem hold on a **general non-bipartite graph** with odd cycles? And how do you classify all $N$ starting vertices $v_0$ in $O(N^3)$ total time rather than running Blossom $N$ separate times in $O(N^4)$?
+- **For Conquer the World (`LOJ #6405`)**: How do you combine the 1D RLE mouse-and-hole regret keys from `#235` with the subtree depth $d(u)$ and LCA merging on a general tree?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Gallai–Edmonds Alternating Forest & LCA Regret Formula"}
+- **For General Graph Game**: Yes—the augmenting-path strategy proof (`Alice plays along $M^*$, Bob cannot reach an unmatched vertex without creating an $M^*$-augmenting path in $G$`) uses **zero bipartite assumptions**! To classify all $v_0 \in V$ in $O(N^3)$ after finding one maximum matching $M^*$ via Edmonds' Blossom algorithm: root a single alternating Blossom forest simultaneously at **all unmatched vertices** $R = V \setminus V(M^*)$. Which vertices in this forest can be exposed by an even-length alternating path from $R$?
+- **For Conquer the World (`LOJ #6405`)**: Using $\text{dist}(u, v) = d(u) + d(v) - 2 d(\operatorname{LCA}(u, v))$, push supply keys `(d(u), x_u)` into $Q_X(u)$ and mandatory demand keys `(d(u) - M_inf, y_u)` into $Q_Y(u)$. At LCA $l$, whenever $\min Q_X(l) + \min Q_Y(l) - 2 d(l) < 0$, match $\Delta$ units and push regret keys `2 d(l) - b` into $Q_X(l)$ and `2 d(l) - a` into $Q_Y(l)$!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Problem #240"}
+#### Part A: Joyner–Edmonds General Graph Vertex Deletion Game (`Ch 06.3 + Ch 22.2–22.4`)
+
+1. **Step 1 — Non-Graph Diagnostic Signal**:
+   - Impartial token-movement games without vertex repetition are isomorphic to testing whether $v_0$ is an **essential (critical) vertex** of maximum matching:
+     $$\text{Alice wins from } v_0 \iff \nu(G \setminus \{v_0\}) = \nu(G) - 1 \iff v_0 \notin D(G).$$
+   - Because $G$ is a **general undirected graph** ($N \le 500$), bipartite flow fails (`FM-22`), requiring **Edmonds' Blossom + Gallai–Edmonds Decomposition (`Ch 22.2–22.3`)** or **Tutte Matrix Inversion (`Ch 22.4`)**.
+
+2. **Step 2 — Proof That the Matching Game Theorem Holds on Non-Bipartite Graphs**:
+   - **Case 1 ($v_0$ belongs to every maximum matching of $G$)**: Fix any maximum matching $M^*$ of $G$. Alice's first move goes along the matched edge $(v_0, u_1) \in M^*$. If Bob ever moves from $u_k$ to an $M^*$-unmatched vertex $w$, then the trajectory $v_0 - u_1 - v_1 - \dots - u_k - w$ is an even-length $M^*$-alternating path from $v_0$ to an unmatched vertex $w$; flipping $M^*$ along this path produces a new maximum matching $M'$ of the **same size** $|M^*|$ that leaves $v_0$ unmatched, contradicting the hypothesis that $v_0$ belongs to every maximum matching! Thus Bob is forced to always move into $M^*$-matched vertices, and Alice can always reply along $M^*$.
+   - **Case 2 ($v_0$ is omitted by some maximum matching $M^*$ of $G$)**: Then $M^*$ is a maximum matching of $G \setminus \{v_0\}$. Wherever Alice moves first ($v_0 \to u_1$), $u_1$ must be matched in $M^*$ (otherwise $M^* \cup \{(v_0, u_1)\}$ would be a larger matching in $G$!). Thus Bob steals the $M^*$-strategy on $G \setminus \{v_0\}$ and wins!
+
+3. **Step 3 — Mechanical $O(N^3)$ Compilation for All $N$ Vertices Simultaneously**:
+   - **Approach 1 (Gallai–Edmonds Alternating Blossom Forest)**:
+     1. Compute one maximum matching $M^*$ of $G$ using Edmonds' Blossom algorithm in $O(N^3)$.
+     2. Initialize a BFS queue with **all unmatched vertices** $R = V \setminus V(M^*)$ labeled as `EVEN` (`type = 0`).
+     3. Run one pass of Blossom alternating-forest expansion from $R$ (contracting odd cycles whenever two `EVEN` vertices share an edge, which marks **all** vertices inside the contracted blossom as `EVEN`!).
+     4. A vertex $v \in V$ can be left unmatched in some maximum matching ($v \in D(G)$, so **Bob wins**) if and only if $v$ is reached with label `EVEN`! Otherwise (`ODD` or unvisited, $v \in A(G) \cup C(G)$), **Alice wins**!
+   - **Approach 2 (Randomized Tutte Matrix over $\mathbb{F}_p$, $p = 10^9 + 7$)**:
+     1. Compute $\nu(G) = \frac{1}{2} \operatorname{rank}(T(G))$ via Gaussian elimination.
+     2. Add $d = N - 2\nu(G)$ dummy vertices connected to all $v \in V$ with random skew-symmetric entries to form an $(N + d) \times (N + d)$ invertible Tutte matrix $T'$, and invert $(T')^{-1}$ in $O(N^3)$.
+     3. Alice wins from $v_0$ iff $(T')^{-1}_{v_0, u} = 0$ for all $d$ dummy vertices $u \in \{N+1, \dots, N+d\}$!
+
+4. **Step 4 — Toy Trace & Failure Guard**:
+   - Trace on a **Paw Graph**: triangle $\{1, 2, 3\}$ plus pendant edge $(3, 4)$. Here $\nu(G) = 2$ (unique maximum matching structure leaves one of $\{1, 2\}$ unmatched while matching $3 - 4$ and the other of $\{1, 2\}$).
+     - Unmatched vertex in $M^* = \{(1, 2), (3, 4)\}$? None—$G$ has a perfect matching of size $2$! Thus $R = \emptyset$, $D(G) = \emptyset$, and **Alice wins from every vertex $1, 2, 3, 4$**!
+     - What if we delete vertex $4$, leaving just the triangle $K_3 = \{1, 2, 3\}$? Then $\nu(K_3) = 1$, say $M^* = \{(1, 2)\}$ with $R = \{3\}$ (`EVEN`). Edge $(3, 1)$ makes $1$ `ODD` with mate $2$ `EVEN`, and edge $(3, 2)$ closes an odd cycle $\{1, 2, 3\}$, contracting the entire triangle into a single `EVEN` blossom! Thus $D(K_3) = \{1, 2, 3\}$, and **Bob wins from every vertex** (Alice moves $1 \to 2$, Bob moves $2 \to 3$, Alice has no moves!).
+   - **Failure Guard**: In Approach 1, when running the final Gallai–Edmonds forest pass from $R = V \setminus V(M^*)$, you **must still contract blossoms**! On $K_3$ with $M^* = \{(1, 2)\}$ and $R = \{3\}$, a naive alternating BFS without blossom contraction would mark $3$ as `EVEN`, $1$ as `ODD`, $2$ as `EVEN`, and miss that $1$ also becomes `EVEN` around the odd cycle $3 - 2 - 1$!
+
+#### Part B: Companion Variant (`[ICPC WF 2018]` Conquer the World — RLE Leftist Heaps on Trees)
+
+- At each tree node $u$ with root distance $d(u)$:
+  1. Insert `(d(u), x_u)` into Leftist Min-Heap $Q_X(u)$ and `(d(u) - M_inf, y_u)` into Leftist Min-Heap $Q_Y(u)$ (where $M_{\text{inf}} = 10^{12} > 2 \max d(v)$ forces all mandatory demand $y_u$ to be matched).
+  2. Merge children's heaps $Q_X(c), Q_Y(c)$ into $Q_X(u), Q_Y(u)$.
+  3. While $\min Q_X(u) + \min Q_Y(u) - 2 d(u) < 0$: pop `(a, cnt_a)` from $Q_X(u)$ and `(b, cnt_b)` from $Q_Y(u)$, let $k = \min(\text{cnt}_a, \text{cnt}_b)$, add `__int128(k) * (a + b - 2 * d(u))` to `ans`, and push the two simultaneous RLE regret pairs `(2 * d(u) - b, k)` into $Q_X(u)$ and `(2 * d(u) - a, k)` into $Q_Y(u)$!
+  4. Output `ans + (__int128(sum_y) * M_inf)` in $O(N \log N)$ time.
+::::
+
+---
+
+## 3. Part VI Diagnostic Mastery Rubric & Failure Mode Self-Audit (`FM-22`–`FM-24`)
+
+Use the following diagnostic routing matrix and failure-mode checklist to audit your Part VI mastery before advancing to the Grand Synthesis Reserve (`Syn-01`–`Syn-16`).
+
+### 3.1 Blind Symptom-to-Paradigm Routing Matrix (`Ch 22`–`Ch 24`)
+
+| Surface Symptom in Problem Statement | Constraint Regime | Target Chapter & Paradigm | Key Algebraic / Data-Structure Invariant |
+| :--- | :--- | :--- | :--- |
+| Dense transitions $i \to j$ over 1D intervals, 2D boxes, tree paths, bit-prefixes, or substring prefixes | $N \le 10^5$ (Topological DP / Closure) or $N \le 2 \times 10^4$ (Flow / MCMF) | **`Ch 22.1`** Virtual Hub Sparsification (`Out-Tree` / `In-Tree`) | Internal hub tree edges have capacity $\infty$, cost $0$, and strictly one-way orientation (`Out-Tree` vs. `In-Tree`) |
+| Pairing on a **general undirected graph** (odd cycles permitted) + essential vertices / game winning states | $N \le 500, M \le 1.25 \times 10^5$ | **`Ch 22.2–22.4`** Edmonds' Blossom, Gallai–Edmonds $D \cup A \cup C$, Tutte Matrix | $v \in D(G) \iff \nu(G \setminus \{v\}) = \nu(G) \iff v$ is reachable at `EVEN` distance in the Blossom forest from $V \setminus V(M^*)$ |
+| Capacitated matching, $k$-group assignment, or coupled selection at $N \ge 10^5$ where explicit MCMF TLEs | $N \le 2 \times 10^5$, $F \le 10^{14}$ | **`Ch 23.1–23.2`** Regret Heaps (`反悔贪心`), Multi-Heap State Machine, WQS Binary Search | Every priority-queue pop corresponds to augmenting along a shortest residual path or cancelling a back-edge via regret key $-2x - k$ |
+| 1D or Tree transportation $\sum f_{uv} \operatorname{dist}(u, v)$ with unbalanced capacities $c_v \le 10^9$ | $N \le 2.5 \times 10^5$, $c_v \le 10^9$ | **`Ch 23.3–23.4`** RLE Two-Heap Sweep / Tree Leftist-Heap Merging at LCA | At LCA $l$: match `(a, b)` when $a + b - 2 d(l) < 0$ and push simultaneous RLE regret pairs `(2 d(l) - b, k)` and `(2 d(l) - a, k)` |
+| Order-constrained deviation $\min \sum w_v |x_v - y_v|^p$ subject to DAG poset inequalities $x_u \le x_v$ | $N \le 1000$ (General DAG) or $N \le 2 \times 10^5$ (Tree Poset) | **`Ch 24.1`** Isotonic Regression (`保序回归`) via `整体二分` + `Ch 09` Closure or Tree Slope Trick | Coarea threshold slice $z_v = [x_v > \lambda]$ reduces to Max-Weight Closure with vertex weight $w_v \cdot (-\nabla_+ f_v(\lambda))$ |
+| Independence under **two non-flow constraints** (e.g., Acyclic Forest $\cap$ Color Quotas, Linear $\cap$ Graphic) | $N \le 100, M \le 500$ | **`Ch 24.2`** Weighted / Unweighted Matroid Intersection | Augment along the **shortest** path (in edge count, breaking ties by weight) in the bipartite exchange graph $\mathcal{D}(I)$ |
+| **Counting** (modulo $p$) tuples of $K$ vertex-disjoint paths from $A_1 \dots A_K$ to $B_1 \dots B_K$ in a planar DAG | $N, M \le 1000$ or $K \le 300$ | **`Ch 24.3`** Lindström–Gessel–Viennot (LGV) Determinant | Non-crossing planarity guarantees $\sigma \neq \text{id} \implies \text{paths intersect}$, so $N_{\text{disjoint}} = \det_{i,j}[e(A_i, B_j)]$ |
+
+---
+
+### 3.2 Part VI Failure Mode Self-Audit (`FM-22`–`FM-24`)
+
+Before concluding Part VI, verify that you can immediately spot and defuse each of the following fatal failure modes:
+
+- **`FM-22a` (Bidirectional or Unit-Capacity Hub Short-Circuiting in `Ch 22.1`)**:
+  - *The Trap*: Wiring a single Segment Tree with undirected edges (or wiring both $i \to \text{SegTree}$ and $\text{SegTree} \to j$ on the **same** Segment Tree copy), or assigning capacity $1$ to internal Segment Tree edges.
+  - *The Fix*: Always build **two separate trees**—an `In-Tree` (leaves $\to$ root) and an `Out-Tree` (root $\to$ leaves)—and assign internal tree edges capacity $\infty$ and cost $0$.
+
+- **`FM-22b` (Applying Bipartite Duality or Max-Flow to Odd Cycles in `Ch 22.2–22.4`)**:
+  - *The Trap*: Assuming Minimum Vertex Cover equals Maximum Matching on a general graph, or running a naive alternating BFS without blossom contraction when computing the Gallai–Edmonds set $D(G)$.
+  - *The Fix*: On non-bipartite graphs, Vertex Cover is NP-Complete; use **Gallai–Edmonds Decomposition** ($V = D(G) \cup A(G) \cup C(G)$) with full odd-cycle blossom contraction (or Tutte Matrix inverse over $\mathbb{F}_p$) to identify essential vertices and maximum matchings.
+
+- **`FM-23a` (Missing the Simultaneous Dual-Heap Regret Push in `Ch 23.3–23.4`)**:
+  - *The Trap*: When matching a supply node $a \in Q_X(l)$ and a demand node $b \in Q_Y(l)$ at LCA $l$ on a tree, pushing a regret key into only one heap (or forgetting to coalesce multiplicities $k = \min(\text{cnt}_a, \text{cnt}_b)$ via RLE).
+  - *The Fix*: Because a later ancestor $l'$ of $l$ can steal **either** the supply endpoint (cancelling $b$) **or** the demand endpoint (cancelling $a$), you must push `(2 d(l) - b, k)` into $Q_X(l)$ **and** `(2 d(l) - a, k)` into $Q_Y(l)$ simultaneously as single RLE pairs!
+
+- **`FM-23b` (Confusing Pointwise Sum with Minkowski Sum in Slope Trick `Ch 23 / Ch 24.1`)**:
+  - *The Trap*: Merging breakpoint $x$-coordinates when computing $\min_{x_1 + x_2 = x} (F_1(x_1) + F_2(x_2))$.
+  - *The Fix*: Merging breakpoint coordinates computes **Pointwise Addition** $F_1(x) + F_2(x)$; **Infimal Convolution (Minkowski Sum)** merges horizontal slope segments (or shifts breakpoints by interval bounds).
+
+- **`FM-24a` (Shortcut Augmentation in Matroid Intersection `Ch 24.2`)**:
+  - *The Trap*: Augmenting along an arbitrary $X_1 \to X_2$ path in the exchange graph $\mathcal{D}(I)$ instead of a **shortest** path.
+  - *The Fix*: Chordal edges in $\mathcal{D}(I)$ correspond to coupled dependencies in the circuits of $\mathcal{M}_1$ or $\mathcal{M}_2$; only a path with the **minimum number of edges** (or minimum `(cost, edge_count)` in weighted matroid intersection) is guaranteed to preserve independence in $\mathcal{I}_1 \cap \mathcal{I}_2$ after symmetric difference $I \triangle V(P)$!
+
+- **`FM-24b` (Non-Planar Crossing Cancellation in LGV Determinant `Ch 24.3`)**:
+  - *The Trap*: Using $\det[e(A_i, B_j)]$ to count vertex-disjoint path tuples on a DAG where a twisted permutation $\sigma \neq \text{id}$ can route $A_i \to B_{\sigma(i)}$ without sharing any vertices.
+  - *The Fix*: The Gessel–Viennot involution cancels **intersecting** path tuples of opposite parity; it equals the count of non-intersecting identity tuples $N(\text{id})$ **if and only if** every non-identity permutation $\sigma \neq \text{id}$ is topologically forced to intersect!
+
+---
+
+## 4. Readiness Bridge to the Grand Synthesis Reserve (`Syn-01`–`Syn-16`) & 320-Problem Archive Guide
+
+Congratulations on completing all 24 chapters and all 6 Blind Diagnostic Checkpoints (`CP-I` through `CP-VI`, spanning problems `#001`–`#240`) of the Network Flows & Combinatorial Optimization curriculum!
+
+### 4.1 Scoring Your `CP-VI` Performance
+
+- **7–8 Correct Diagnoses (First-Try Unassisted)**: You have achieved grandmaster-level fluency across virtual data-structure graphs, non-bipartite matching, simulated MCMF, isotonic regression, and matroid boundaries. Proceed directly to the **16 Grandmaster Multi-Chapter Synthesis Capstones (`Syn-01`–`Syn-16`, `#241`–`#256`)** and the **14 Dual-Perspective Revisited Capstones (`Rev-01`–`Rev-14`)**.
+- **5–6 Correct Diagnoses**: Review the specific sub-chapter corresponding to any missed problem before entering the capstone reserve:
+  - Missed `#233` or `#235` or `#240B` $\implies$ Review [Chapter 23 — Simulated Flow, Regret Heaps & Tree Leftist-Heap MCMF](../chapters/ch23-simulated-mcmf-regret-greedy-heap-segtree.qmd).
+  - Missed `#234` or `#236` $\implies$ Review [Chapter 20 — MCMF Modelling Archetypes](../chapters/ch20-cycle-covers-dynamic-scheduling-resource-reuse-hubs.qmd) and `Ch 23.2`.
+  - Missed `#237` or `#238` $\implies$ Review [Chapter 22 — Data-Structure Sparsification & Blossom Matching](../chapters/ch22-ds-accelerated-flow-graphs-blossom-matching.qmd) (`§22.1`).
+  - Missed `#239` $\implies$ Review [Chapter 24 — Isotonic Regression, Matroid Intersection & LGV](../chapters/ch24-isotonic-regression-matroid-intersection-synthesis.qmd) (`§24.1`).
+  - Missed `#240A` $\implies$ Review `Ch 06.3` and `Ch 22.2–22.4` (Gallai–Edmonds Decomposition & Tutte Matrix).
+- **$\le 4$ Correct Diagnoses**: Re-work the 4-Step Compilation traces in Chapters 22–24 with paper and pencil before attempting the multi-paradigm synthesis problems.
+
+### 4.2 Roadmap to the Grand Synthesis Reserve (`#241`–`#320`)
+
+The remaining 80 problems of the 320-problem curriculum serve as your long-term post-textbook training ground:
+
+1. **The 16 Multi-Chapter Synthesis Capstones (`Syn-01`–`Syn-16`, `#241`–`#256`)**:
+   - Each problem fuses **two or three distinct paradigms** from across Parts I–VI—such as **Persistent Treap Virtual-Hub Closure** (`Syn-04`, `[NOI2019] 弹跳` / `#244`), **2D KD-Tree + Hall Marriage Verification** (`Syn-07`), **0-1 Fractional Programming + Dinic Closure + Segment Tree Sparsification** (`Syn-09`), **WQS Aliens Penalty + Tree Simulated MCMF** (`Syn-12`), and **$L_p$ Isotonic Regression on Project-Selection Posets** (`Syn-15`).
+2. **The 14 Multi-Resolution "Revisited" Dual-Perspective Capstones (`Rev-01`–`Rev-14`)**:
+   - Side-by-side structural comparisons showing how a single combinatorial problem evolves as $N$ scales from $N \le 300$ (explicit Dinic / MCMF) to $N \le 5 \times 10^4$ (virtual hub sparsification / `整体二分`) and finally to $N \le 2.5 \times 10^5$ (LP Duality / Regret Heaps / Slope Trick).
+3. **Quarantined Template & Verification Benchmarks (`#257`–`#320`)**:
+   - Use the verification index only to benchmark raw library speed (Push–Relabel HLPP, Primal–Dual Johnson MCMF, ZKW Cost Scaling, Edmonds' Blossom, Weighted Matroid Intersection) after your 4-Step English-to-Graph modelling instincts are rock solid.

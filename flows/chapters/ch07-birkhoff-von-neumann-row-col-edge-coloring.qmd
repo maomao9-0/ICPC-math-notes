@@ -1,0 +1,1188 @@
+---
+title: "Chapter 7 — Row–Column Grid Duality, Birkhoff–von Neumann Decomposition, and Bipartite Edge Coloring"
+subtitle: "From Coordinate Incidence and Degree-Constrained b-Matchings to Regular Matrix Decomposition and Kempe-Chain Edge Coloring"
+---
+
+## Prerequisites & Learning Objectives
+
+::: {.callout-note title="Prerequisites"}
+
+- **Chapter 2**: Dinic's algorithm on unit networks ($O(E\sqrt{V})$ complexity) and capacity-constrained $S$-$T$ flow compilation.
+- **Chapter 5**: Maximum Bipartite Matching, König's Minimum Vertex Cover Theorem ($\tau(G) = \nu(G)$), Maximum Independent Set ($\alpha(G) = |V| - \nu(G)$), and Minimum Edge Cover ($\rho(G) = |V| - \nu(G)$).
+- **Chapter 6**: Weighted König duality, Dulmage–Mendelsohn canonical decomposition, and alternating-path reachability.
+:::
+
+::: {.callout-tip title="Learning Objectives"}
+
+After completing this chapter, you will be able to:
+
+1. **Compile 2D grids and dual-attribute systems into Row–Column bipartite graphs**: Recognize when grid cells $(r, c)$ or two-attribute items must be modeled as *edges* between row vertices $L = \{R_1, \dots, R_H\}$ and column vertices $R = \{C_1, \dots, C_W\}$ rather than as spatial vertices.
+2. **Handle obstacle segmentation, shared-border dualization, and 3D slice collapse**: Split rows and columns at hard obstacles (`#`) while ignoring soft obstacles (`*`), dualize unit grid borders for rectangular brick tilings (`CF 1404E`), and collapse NP-hard 3D plane-cover instances ($A \cdot B \cdot C \le 5000$) into $O(2^{\min(A,B,C)})$ 2D König instances (`[HNOI2013] 消毒`).
+3. **Model degree-constrained $b$-matchings and degree-regularity subgraphs**: Compile per-vertex degree bounds $b_v$ and fixed-center degree constraints (`Luogu P2071`, `CF 387D`) into capacitated bipartite networks without vertex-cloning blowup.
+4. **Apply the Birkhoff–von Neumann Theorem to $k$-regular bipartite multigraphs**: Prove via Hall's condition that every $k$-regular bipartite multigraph decomposes into $k$ edge-disjoint perfect matchings, and apply iterative matching peeling to multi-phase matrix routing (`ABC 317 G`, `AGC 037 D`).
+5. **Color bipartite multigraph edges using $\Delta$ colors via König's Line Coloring Theorem**: Choose the right algorithmic engine for $\chi'(G) = \Delta$—from $O(\Delta E\sqrt{V})$ Dinic peeling to **$O(VE)$ online Kempe-chain recoloring** (`CF 600 F`) and **$O(E \log \Delta)$ Eulerian circuit halving**.
+:::
+
+---
+
+## 1. Motivation: When Grid Cells Are Edges, Not Vertices
+
+When a competitive programmer sees an $H \times W$ grid, the most natural reflex is **spatial graph compilation**: treat every cell $(r, c)$ as a vertex and connect up/down/left/right neighbors $(r \pm 1, c), (r, c \pm 1)$, using chessboard parity $(r + c) \bmod 2$ to form a bipartite graph.
+
+That spatial reflex works when operations are **local**—dominoes covering adjacent cells $(r, c)$ and $(r, c+1)$, knights jumping by $(\pm 1, \pm 2)$, or a game token sliding to an orthogonal neighbor. However, a huge class of grid, matrix, and permutation problems features **non-local, axis-aligned interactions**:
+
+- Selecting at most one cell per row and at most one cell per column (rooks, permutation transversals, or matrix diagonalization).
+- Paying cost $1$ to clear an entire row $r$ or an entire column $c$.
+- Rearranging elements within rows so that every column becomes a permutation of $\{1, \dots, H\}$.
+- Pairing elements that simultaneously belong to one equivalence class in structure $\mathcal{A}$ and another equivalence class in structure $\mathcal{B}$ (such as cycle decompositions of two permutations $a$ and $b$).
+
+In all of these problems, two cells $(r, c_1)$ and $(r, c_2)$ in the same row interact even when $|c_1 - c_2| = W - 1$. If you treat cells as vertices, every row becomes a clique $K_W$ and every column becomes a clique $K_H$, destroying bipartiteness and blowing the edge count up to $O(HW(H + W))$.
+
+The cure is **Row–Column Incidence Duality**:
+
+$$\boxed{\text{Row } r \;\longleftrightarrow\; \text{Left Vertex } R_r \in L, \qquad \text{Column } c \;\longleftrightarrow\; \text{Right Vertex } C_c \in R, \qquad \text{Cell } (r, c) \;\longleftrightarrow\; \text{Edge } e_{r,c} = (R_r, C_c) \in E.}$$
+
+Under this primal-dual lens, a grid of $H W$ cells is not a planar graph on $HW$ vertices—it is a **bipartite graph on only $H + W$ vertices** with at most $HW$ edges!
+
+```
++---------------------------------------------------------------------------------------------------+
+|                   SPATIAL PARITY GRAPH vs. ROW-COLUMN INCIDENCE DUALITY                           |
+|                                                                                                   |
+|   [A] Spatial Grid Graph (Local Adjacency)         [B] Row-Column Bipartite Graph (Global Axis)   |
+|       Vertices: Cells (r, c)  (|V| = H*W)              Vertices: Rows R_r in L, Cols C_c in R     |
+|       Bipartition: (r + c) mod 2 in {0, 1}             (|V| = H + W, |E| <= H*W)                  |
+|       Edges: 4-neighbors (|r1-r2| + |c1-c2| = 1)       Edges: Active cells e_{r,c} = (R_r, C_c)   |
+|       Use when: Dominoes, knight jumps, grid walk      Use when: Rooks, line covers, row/col      |
+|                 games, local cell-to-cell conflicts.             swaps, matrix decompositions.    |
++---------------------------------------------------------------------------------------------------+
+```
+
+---
+
+## 2. Row–Column Bipartite Duality & Degree-Constrained $b$-Matchings
+
+### 2.1 The Four Step-by-Step Compilations of Row–Column Duality
+
+Let us systematically apply our **4-Step Zero-Magic-Gadgets Compilation** to the four foundational variations of Row–Column Duality.
+
+#### Archetype 2.1A: Matrix Permutation Invariance & The Conjugation Trap (`[ZJOI2007] 矩阵游戏`)
+
+- **Step 1 — Non-Graph Diagnostic Signal**:
+  We are given an $N \times N$ binary matrix $A_{r,c} \in \{0, 1\}$ ($N \le 200$) and may swap any two rows or swap any two columns any number of times. We want to know whether we can make all main-diagonal entries $A_{i,i} = 1$ for $1 \le i \le N$.
+  Notice that swapping rows or columns permutes the row indices and column indices globally. We are looking for $N$ cells containing $1$s that can be moved simultaneously onto the positions $(1, 1), (2, 2), \dots, (N, N)$—meaning no two chosen $1$-cells may share a row or share a column.
+
+- **Step 2 — Intermediate Algebraic Representation**:
+  Applying a row permutation $\sigma \in S_N$ and an independent column permutation $\tau \in S_N$ transforms $A$ into $A'_{i,j} = A_{\sigma(i), \tau(j)}$ (matrix equivalence $P A Q$). Achieving $A'_{i,i} = 1$ for all $i \in \{1, \dots, N\}$ is equivalent to finding a binary selection matrix $x_{r,c} \in \{0, 1\}$ such that:
+
+  $$x_{r,c} \le A_{r,c}, \qquad \sum_{c=1}^N x_{r,c} = 1 \;\; (\forall r), \qquad \sum_{r=1}^N x_{r,c} = 1 \;\; (\forall c).$$
+
+- **Step 3 — Mechanical Graph Compilation**:
+  Introduce left vertices $L = \{R_1, \dots, R_N\}$ and right vertices $R = \{C_1, \dots, C_N\}$. For each $(r, c)$ with $A_{r,c} = 1$, add edge $(R_r, C_c)$ carrying decision variable $x_{r,c} \in \{0, 1\}$. The degree constraints $\sum_c x_{r,c} = 1$ and $\sum_r x_{r,c} = 1$ define a **Perfect Matching** ($\nu(G) = N$). Row and column swaps merely relabel the vertices in $L$ and $R$, which is a graph isomorphism preserving $\nu(G)$!
+
+- **Step 4 — Concrete Toy Trace & The Conjugation Counterexample**:
+  Consider the $2 \times 2$ anti-diagonal matrix:
+
+  $$A = \begin{pmatrix} 0 & 1 \\ 1 & 0 \end{pmatrix}.$$
+
+  In $G = (L \sqcup R, E)$, we have edges $(R_1, C_2)$ and $(R_2, C_1)$, forming a perfect matching of size $\nu(G) = 2$. Swapping row $1$ and row $2$ ($\sigma = (1\;2), \tau = \mathrm{id}$) yields $A' = I_2$ with ones on the main diagonal.
+
+::: {.callout-warning title="Broken-Gadget Counterexample — Decoupled Swaps ($PAQ$) vs. Coupled Conjugation ($PAP^T$)"}
+
+What if a problem modifies the operation so that whenever you swap row $i$ and row $j$, you are **forced to simultaneously swap column $i$ and column $j$** ($\sigma = \tau$, i.e., symmetric conjugation $A' = P A P^T$)?
+
+In that coupled setting, the new diagonal entries are $A'_{i,i} = A_{\sigma(i), \sigma(i)}$—which is simply a permutation of the **original diagonal entries** $\{A_{1,1}, \dots, A_{N,N}\}$! On $A = \begin{pmatrix} 0 & 1 \\ 1 & 0 \end{pmatrix}$, $\nu(G) = 2$, yet coupled swaps leave the diagonal $(0, 0)$ forever. **Rule**: Row–Column bipartite matching applies if and only if row operations and column operations are **decoupled** ($\sigma$ and $\tau$ chosen independently).
+:::
+
+---
+
+#### Archetype 2.1B: Hard vs. Soft Obstacles & Maximal Strip Segmentation (`POJ 2226`, `[HEOI2016] 游戏`)
+
+- **Step 1 — Non-Graph Diagnostic Signal**:
+  Suppose a grid contains three types of cells:
+
+  1. **Active / Target cells (`.` or `*`)**: cells where a rook may be placed (or muddy cells that must be covered by planks).
+  2. **Soft obstacles (`x` or grass)**: cells where a rook *cannot* be placed (or planks *may* pass through / cannot cover), **without blocking line-of-sight** (or Conversely, in `POJ 2226 Muddy Fields`, grass `.` **blocks** planks while mud `*` must be covered!).
+  3. **Hard walls (`#`)**: impenetrable barriers that terminate a rook's attack ray or a plank's span.
+
+  Whenever an obstacle breaks a row or column into independent line-of-sight zones, a single row $r$ can now hold *multiple* non-attacking rooks (one in each zone separated by `#`).
+
+- **Step 2 — Intermediate Algebraic Representation**:
+  Instead of indexing constraints by full rows $r$ and full columns $c$, decompose every row into **maximal contiguous `#`-free horizontal segments** $\mathcal{H} = \{H_1, \dots, H_p\}$ and every column into **maximal contiguous `#`-free vertical segments** $\mathcal{V} = \{V_1, \dots, V_q\}$.
+  Each active cell $(r, c)$ belongs to a unique horizontal segment $\mathrm{id}_H(r, c) \in \mathcal{H}$ and a unique vertical segment $\mathrm{id}_V(r, c) \in \mathcal{V}$:
+
+  - **Non-Attacking Rook Placement (`[HEOI2016] 游戏`)**: Select maximum active cells $x_{r,c} \in \{0, 1\}$ such that each $H_i$ and each $V_j$ contains at most one selected cell ($\implies$ **Maximum Matching** $\nu(G)$).
+  - **Minimum Plank / Laser Cover (`POJ 2226 Muddy Fields`)**: Select minimum segments $u_{H_i}, v_{V_j} \in \{0, 1\}$ such that $u_{\mathrm{id}_H(r,c)} + v_{\mathrm{id}_V(r,c)} \ge 1$ for every muddy cell $(r, c)$ ($\implies$ **Minimum Vertex Cover** $\tau(G) = \nu(G)$).
+
+- **Step 3 — Mechanical Graph Compilation**:
+  Put $L = \mathcal{H}$ and $R = \mathcal{V}$. Iterate over all cells $(r, c)$:
+
+  - If $(r, c)$ is a **hard wall `#`**: it already served to split segments during preprocessing; add **no edge**.
+  - If $(r, c)$ is a **soft obstacle `x`** (in rook placement, cannot hold a rook but doesn't split segments): add **no edge**, and **do not split** the current segment!
+  - If $(r, c)$ is an **active cell `.`**: add a unit edge $(\mathrm{id}_H(r, c), \mathrm{id}_V(r, c))$ between $L$ and $R$.
+
+```
++---------------------------------------------------------------------------------------------------+
+|          OBSTACLE-SPLIT MAXIMAL SEGMENTS: HARD WALL '#' vs. SOFT OBSTACLE 'x'                     |
+|                                                                                                   |
+|   Row r:   [  .  |  x  |  .  |  #  |  .  ]                                                        |
+|            \_______ H_1 _______/     \_H_2_/                                                      |
+|                                                                                                   |
+|   * Soft obstacle 'x' at (r, 2): DOES NOT split H_1, and adds NO EDGE at (r, 2).                  |
+|     Cells (r, 1) and (r, 3) still share vertex H_1 in L (cannot both hold rooks!).                |
+|   * Hard wall '#' at (r, 4): SPLITS row r into H_1 = {(r,1)..(r,3)} and H_2 = {(r,5)}.            |
+|     Cells (r, 3) and (r, 5) have DIFFERENT left vertices H_1 != H_2 (can both hold rooks!).       |
++---------------------------------------------------------------------------------------------------+
+```
+
+---
+
+#### Archetype 2.1C: Shared-Border Dualization for Rectangular Brick Tilings (`CF 1404E — Bricks`)
+
+- **Step 1 — Non-Graph Diagnostic Signal**:
+  We are given an $N \times M$ grid ($N, M \le 200$) of black (`#`) and white (`.`) cells. We want to partition all black `#` cells into the **minimum number of non-overlapping $1 \times k$ or $k \times 1$ rectangular bricks** ($k \ge 1$).
+  Why does standard cell-as-edge compilation fail here? Because a $1 \times k$ brick covers $k$ cells at once ($k$ can be $1, 2, 3, \dots$), and bricks may not overlap!
+
+- **Step 2 — Intermediate Algebraic Representation**:
+  Count **merges across shared unit borders** instead of bricks!
+  Initially, treat every black `#` cell as an isolated $1 \times 1$ brick, giving $|\#|$ bricks.
+
+  - Whenever we glue two horizontally adjacent black cells $(r, c)$ and $(r, c+1)$ across their vertical unit border $h_{r,c}$, the number of bricks decreases by $1$.
+  - Whenever we glue two vertically adjacent black cells $(r, c)$ and $(r+1, c)$ across their horizontal unit border $v_{r,c}$, the number of bricks decreases by $1$.
+
+  When is a subset of chosen glues valid (producing only $1 \times k$ and $k \times 1$ rectangles, never an L-shaped tromino)?
+  **If and only if no black cell $(r, c)$ participates in BOTH a horizontal glue ($h_{r,c-1}$ or $h_{r,c}$) AND a vertical glue ($v_{r-1,c}$ or $v_{r,c}$)!**
+  Thus, if $x_h \in \{0, 1\}$ and $y_v \in \{0, 1\}$ indicate chosen horizontal and vertical glues:
+
+  $$\text{Min Bricks} = |\#| - \max \left( \sum_{h \in L} x_h + \sum_{v \in R} y_v \right) \quad \text{s.t.} \quad x_h + y_v \le 1 \;\;\text{whenever } h \text{ and } v \text{ touch the same cell } (r, c).$$
+
+- **Step 3 — Mechanical Graph Compilation**:
+  - **Left Vertices $L$**: All horizontal glues $h_{r,c}$ between $(r, c) = \text{'\#'}$ and $(r, c+1) = \text{'\#'}$.
+  - **Right Vertices $R$**: All vertical glues $v_{r,c}$ between $(r, c) = \text{'\#'}$ and $(r+1, c) = \text{'\#'}$.
+  - **Conflict Edges $E$**: For each black cell $(r, c)$, connect each incident horizontal glue in $\{h_{r,c-1}, h_{r,c}\} \cap L$ to each incident vertical glue in $\{v_{r-1,c}, v_{r,c}\} \cap R$ (at most $2 \times 2 = 4$ conflict edges per cell).
+  - By König's Maximum Independent Set formula, the maximum number of compatible glues is $\alpha(G) = |L| + |R| - \nu(G)$, so:
+
+    $$\boxed{\text{Min Bricks} = |\#| - \Big(|L| + |R| - \operatorname{MaxMatching}(G)\Big).}$$
+
+- **Step 4 — Concrete Toy Trace**:
+  Consider a $2 \times 2$ all-`#` square ($|\#| = 4$). There are $|L| = 2$ horizontal glues ($h_{1,1}, h_{2,1}$) and $|R| = 2$ vertical glues ($v_{1,1}, v_{1,2}$). Every $h_i$ shares a corner cell with every $v_j$, so $G = K_{2,2}$ with $\nu(G) = 2$. Then $\alpha(G) = 2 + 2 - 2 = 2$ glues, and $\text{Min Bricks} = 4 - 2 = 2$ (either two $1 \times 2$ horizontal bricks or two $2 \times 1$ vertical bricks).
+
+---
+
+#### Archetype 2.1D: 3D Grid NP-Hardness vs. Pigeonhole Dimension Collapse (`[HNOI2013] 消毒`)
+
+- **Step 1 — Non-Graph Diagnostic Signal**:
+  Suppose we must cover all marked cells $(x, y, z)$ in an $A \times B \times C$ 3D grid using axis-aligned planes $x = x_0$, $y = y_0$, or $z = z_0$ of cost $1$ each, given the volume constraint **$A \cdot B \cdot C \le 5000$**.
+  In 3D, each marked cell $(x, y, z)$ requires $u_x + v_y + w_z \ge 1$. This is **Minimum Vertex Cover on a 3-Partite 3-Uniform Hypergraph**, which is dual to 3-Dimensional Matching (`3DM`) and is **NP-hard**! Why is this problem solvable in polynomial/exponential-slice time?
+  Because $A \cdot B \cdot C \le 5000$ forces the shortest dimension to satisfy:
+
+  $$\min(A, B, C) \le \lfloor 5000^{1/3} \rfloor = 17!$$
+
+- **Step 2 — Intermediate Algebraic Representation**:
+  Assume without loss of generality that $A = \min(A, B, C) \le 17$ (rotate axes if necessary). Any optimal cover chooses some subset $M \subseteq \{1, \dots, A\}$ of $x$-planes (paying $|M| = \operatorname{popcount}(M)$), and must cover all remaining marked cells $(x, y, z)$ with $x \notin M$ using only $y$-planes and $z$-planes:
+
+  $$\min_{M \subseteq \{1, \dots, A\}} \left( |M| + \min_{\substack{v_y, w_z \in \{0, 1\} \\ v_y + w_z \ge 1 \;\forall (x, y, z) \text{ with } x \notin M}} \left( \sum_{y=1}^B v_y + \sum_{z=1}^C w_z \right) \right).$$
+
+- **Step 3 — Mechanical Graph Compilation**:
+  For each fixed bitmask $M \in [0, 2^A)$, the inner minimization has **eliminated $x$ completely**: projecting all surviving marked cells $\{(y, z) : \exists x \notin M \text{ s.t. } (x, y, z) \text{ is marked}\}$ onto the 2D $(y, z)$ plane yields a standard 2D bipartite graph $G_M = (Y \sqcup Z, E_M)$ whose Minimum Vertex Cover is $\nu(G_M)$ by König's Theorem! Total runtime: $O(2^{\min(A,B,C)} \cdot \text{Matching}(B, C))$.
+
+---
+
+### 2.2 Degree-Constrained $b$-Matchings & Capacitated Bipartite Networks
+
+In standard bipartite matching, every vertex $u \in L$ and $v \in R$ can be incident to at most $1$ matched edge. In **Degree-Constrained $b$-Matching**, each left vertex $u \in L$ can match up to $a_u \ge 1$ edges (or must match within $[l_u, u_u]$), and each right vertex $v \in R$ can match up to $b_v \ge 1$ edges:
+
+$$\max_{x_e \in \{0, 1\}} \sum_{e=(u,v) \in E} x_e \quad \text{subject to} \quad \sum_{v \in N(u)} x_{u,v} \le a_u \;\; (\forall u \in L), \qquad \sum_{u \in N(v)} x_{u,v} \le b_v \;\; (\forall v \in R).$$
+
+- **Compilation Rule (Direct Terminal Capacities vs. Vertex Cloning)**:
+  Never clone a vertex $v \in R$ into $b_v$ separate copies if $b_v$ is large—that multiplies the edge count by $b_v$! Instead, in your Dinic network:
+
+  1. Wire $S \xrightarrow{\text{cap } a_u} u$ for all $u \in L$.
+  2. Wire $u \xrightarrow{\text{cap } 1} v$ for all $(u, v) \in E$ (or capacity $c_{uv}$ if multiple parallel edges between the same $(u, v)$ are allowed).
+  3. Wire $v \xrightarrow{\text{cap } b_v} T$ for all $v \in R$.
+
+  Because all middle edges $(u \to v)$ have unit capacity $1$, the network is a **unit-edge-capacity network** (even when $a_u, b_v > 1$), on which Dinic's algorithm still runs in $O(E\sqrt{V})$ time (or $O(E \sqrt{\sum b_v})$)!
+
+---
+
+## 3. The Birkhoff–von Neumann Theorem & $k$-Regular Bipartite Decomposition
+
+What happens when every vertex on both sides of a bipartite multigraph has the **exact same degree $k$**? This structure arises whenever an $N \times M$ grid contains each of $N$ labels (or target row destinations) exactly $M$ times.
+
+### 3.1 Hall's Regularity Guarantee & Inductive Matching Peeling
+
+::: {.callout-important title="Theorem 7.1 — Regular Bipartite Decomposition & Birkhoff–von Neumann Theorem"}
+
+1. **Discrete $k$-Regular Decomposition (König 1916)**: Every $k$-regular bipartite multigraph $G = (L \sqcup R, E)$ ($k \ge 1$) has a **perfect matching** $M_1$ with $|L| = |R| = N$. Consequently, peeling $M_1, M_2, \dots, M_k$ one by one decomposes the edge set $E$ into **$k$ edge-disjoint perfect matchings**:
+
+   $$E(G) = M_1 \sqcup M_2 \sqcup \dots \sqcup M_k.$$
+
+2. **Continuous Polyhedral Form (Birkhoff 1946, von Neumann 1953)**: An $N \times N$ non-negative real matrix $X \in \mathbb{R}_{\ge 0}^{N \times N}$ is **doubly stochastic** (all row sums equal $1$ and all column sums equal $1$) if and only if $X$ is a convex combination of $N \times N$ **permutation matrices** $P_\sigma$:
+
+   $$X = \sum_{i=1}^m \lambda_i P_{\sigma_i}, \qquad \lambda_i \ge 0, \quad \sum_{i=1}^m \lambda_i = 1.$$
+:::
+
+#### Proof of Discrete Decomposition via Double Counting (Cut / Hall Argument)
+
+First, count total edges from both sides: $|E| = \sum_{u \in L} \deg(u) = k|L|$ and $|E| = \sum_{v \in R} \deg(v) = k|R|$, which immediately forces $|L| = |R| = N$.
+
+To prove that a perfect matching exists (equivalently, that the maximum $S$-$T$ flow in the unit-capacity network equals $N$), consider any subset $A \subseteq L$ and let $N(A) \subseteq R$ be the set of neighbors of $A$ in $R$. Let $E(A, N(A))$ be the multiset of all edges incident to $A$.
+
+- **Exact count from $A \subseteq L$**: Since every vertex $u \in A$ has degree exactly $k$ and all its incident edges land inside $N(A)$ by definition of $N(A)$, we have:
+
+  $$|E(A, N(A))| = \sum_{u \in A} \deg_G(u) = k |A|.$$
+
+- **Upper bound from $N(A) \subseteq R$**: Every edge in $E(A, N(A))$ is incident to some vertex $v \in N(A)$, and each $v \in N(A)$ has total degree $k$ in $G$ (some of its edges might even go to $L \setminus A$). Therefore:
+
+  $$|E(A, N(A))| \le \sum_{v \in N(A)} \deg_G(v) = k |N(A)|.$$
+
+Combining the two relations and dividing by $k \ge 1$ yields Hall's Marriage Condition for every $A \subseteq L$:
+
+$$k |A| = |E(A, N(A))| \le k |N(A)| \implies \boxed{|N(A)| \ge |A| \quad \forall A \subseteq L.}$$
+
+In the standard $S$-$T$ flow network (Chapter 5), any finite $S$-$T$ cut $(S_{\text{cut}}, T_{\text{cut}})$ with $A = L \cap S_{\text{cut}}$ must satisfy $N(A) \subseteq R \cap S_{\text{cut}}$ to avoid cutting $\infty$-capacity middle edges, so its cut capacity is at least $|L \setminus A| + |N(A)| = N - |A| + |N(A)| \ge N$. By the Max-Flow Min-Cut Theorem, a perfect matching $M_1$ of size $N$ exists!
+
+Deleting the $N$ edges of $M_1$ reduces the degree of every vertex in $L \cup R$ by exactly $1$, leaving a $(k - 1)$-regular bipartite multigraph. By induction on $k$, $E(G)$ partitions into $k$ edge-disjoint perfect matchings $M_1, \dots, M_k$. $\blacksquare$
+
+*(For the continuous Birkhoff–von Neumann theorem, build the bipartite support graph with edge $(r, c)$ whenever $X_{r,c} > 0$. By the exact same sum argument $\sum_{r \in A} 1 = |A| = \sum_{r \in A, c \in N(A)} X_{r,c} \le \sum_{c \in N(A)} 1 = |N(A)|$, the support graph has a perfect matching $P_{\sigma_1}$. Letting $\lambda_1 = \min_{(r,c) \in P_{\sigma_1}} X_{r,c} > 0$ and subtracting $\lambda_1 P_{\sigma_1}$ zeroes out at least one positive entry while keeping row and column sums equal to $1 - \lambda_1$, terminating in at most $N^2 - N + 1$ steps!)*
+
+---
+
+### 3.2 Worked Flagship 1: `AtCoder ABC 317 G — Rearranging`
+
+- **Judge URL**: [https://atcoder.jp/contests/abc317/tasks/abc317_g](https://atcoder.jp/contests/abc317/tasks/abc317_g)
+- **Constraints**: $N, M \le 100$. Given an $N \times M$ grid $A$ where each integer $1, 2, \dots, N$ appears **exactly $M$ times** across the entire grid, permute the elements within each row independently so that **every column becomes a permutation of $\{1, 2, \dots, N\}$**.
+
+#### 4-Step Compilation
+
+1. **Step 1 — Non-Graph Diagnostic Signal**:
+   We may reorder elements arbitrarily within each row $r \in \{1, \dots, N\}$. Thus row $r$ is simply a **multiset of $M$ available values**. Placing one value from each row into Column $1$ so that Column $1$ contains $\{1, \dots, N\}$ is choosing one value per row to cover all $N$ values—a **Perfect Matching between Rows and Values**!
+
+2. **Step 2 — Intermediate Algebraic Representation**:
+   Construct a bipartite multigraph $G = (L \sqcup R, E)$ where:
+
+   - $L = \{\text{Row}_1, \dots, \text{Row}_N\}$ represents the $N$ rows.
+   - $R = \{\text{Val}_1, \dots, \text{Val}_N\}$ represents the $N$ distinct values $\{1, \dots, N\}$.
+   - Each cell $(r, c)$ of the input matrix with value $v = A_{r,c}$ creates one multigraph edge $e_{r,c} = (\text{Row}_r, \text{Val}_v)$.
+
+   Look at the degrees in $G$:
+
+   - Every row $r \in L$ has $M$ cells $\implies \deg_G(\text{Row}_r) = M$.
+   - Every value $v \in R$ appears $M$ times in $A \implies \deg_G(\text{Val}_v) = M$.
+
+   Hence $G$ is an **$M$-regular bipartite multigraph**!
+
+3. **Step 3 — Mechanical Graph Compilation**:
+   By Theorem 7.1, $G$ decomposes into $M$ edge-disjoint perfect matchings $M_1, M_2, \dots, M_M$.
+   For $c = 1, 2, \dots, M$:
+
+   - Run Dinic / Hopcroft–Karp on the remaining edges of $G$ to find a perfect matching $M_c$ of size $N$.
+   - For each matched edge $(\text{Row}_r, \text{Val}_v) \in M_c$, set the output cell $B_{r, c} = v$ and delete that single edge instance from $G$.
+
+4. **Step 4 — Concrete Toy Trace**:
+   Take $N = 3, M = 2$ with input matrix:
+
+   $$A = \begin{pmatrix} 1 & 1 \\ 2 & 3 \\ 2 & 3 \end{pmatrix}.$$
+
+   - $\text{Row}_1$ has edges to $\{1, 1\}$; $\text{Row}_2$ has edges to $\{2, 3\}$; $\text{Row}_3$ has edges to $\{2, 3\}$. Every vertex in $L \cup R$ has degree $2$.
+   - **Column 1 ($c = 1$)**: Peel perfect matching $M_1 = \{(\text{Row}_1, 1), (\text{Row}_2, 2), (\text{Row}_3, 3)\}$, setting Column 1 of $B$ to $[1, 2, 3]^T$.
+   - **Column 2 ($c = 2$)**: The remaining edges form $M_2 = \{(\text{Row}_1, 1), (\text{Row}_2, 3), (\text{Row}_3, 2)\}$, setting Column 2 of $B$ to $[1, 3, 2]^T$.
+   - Output $B = \begin{pmatrix} 1 & 1 \\ 2 & 3 \\ 3 & 2 \end{pmatrix}$: each row is a rearrangement of $A$'s row, and both columns are permutations of $\{1, 2, 3\}$.
+   - **Complexity**: $M$ calls to Dinic on $2N$ vertices and $\le NM$ edges takes $O(M \cdot NM\sqrt{N}) = O(N^{1.5} M^2) \approx 10^7$ operations ($< 0.05\text{ s}$).
+
+---
+
+### 3.3 Worked Flagship 2: `AtCoder AGC 037 D — Sorting a Grid` (3-Phase Row–Col–Row Benes Routing)
+
+- **Judge URL**: [https://atcoder.jp/contests/agc037/tasks/agc037_d](https://atcoder.jp/contests/agc037/tasks/agc037_d)
+- **Constraints**: $N, M \le 100$. You are given an $N \times M$ matrix $A$ containing a permutation of $\{1, 2, \dots, NM\}$. You must sort $A$ into standard row-major order $D_{r,c} = (r - 1)M + c$ in **three phases**:
+
+  - **Phase 1 ($A \to B$)**: Permute elements within each **row** independently.
+  - **Phase 2 ($B \to C$)**: Permute elements within each **column** independently.
+  - **Phase 3 ($C \to D$)**: Permute elements within each **row** independently.
+
+  Output the intermediate matrices $B$ and $C$.
+
+#### 4-Step Compilation
+
+1. **Step 1 — Non-Graph Diagnostic Signal (Working Backwards from Phase 3)**:
+   Why can any permutation of $1 \dots NM$ be routed to its exact destination in `Row -> Col -> Row` (the classic 3-stage Clos / Beneš network architecture)?
+   Work backwards from the final sorted matrix $D$:
+
+   - **Phase 3 ($C \to D$) only permutes within rows**. Therefore, at the end of Phase 2 (in matrix $C$), every number $x \in \{1, \dots, NM\}$ **must already sit in its final target row**:
+
+     $$\operatorname{dest}(x) := \left\lceil \frac{x}{M} \right\rceil \in \{1, \dots, N\}!$$
+
+   - **Phase 2 ($B \to C$) only permutes within columns**. For column $c$ of $B$ to be rearranged into column $c$ of $C$ where every element sits in its target row $\operatorname{dest}(x)$, the $N$ numbers placed into column $c$ of $B$ during Phase 1 **must have $N$ pairwise distinct target rows $\{1, 2, \dots, N\}$**!
+
+2. **Step 2 — Intermediate Algebraic Representation**:
+   Replace each number $x$ in the initial matrix $A$ by its target row color $\operatorname{dest}(x) \in \{1, \dots, N\}$.
+
+   - Each current row $r \in \{1, \dots, N\}$ contains $M$ numbers.
+   - Across the entire matrix $A$, exactly $M$ numbers belong to each target row $d \in \{1, \dots, N\}$ (namely $(d-1)M + 1, \dots, dM$).
+
+   This reduces Phase 1 ($A \to B$) to **the exact same problem as `ABC 317 G`**!
+
+3. **Step 3 — Mechanical Graph Compilation**:
+   - Build a bipartite multigraph $G = (L \sqcup R, E)$ between **Current Rows** $L = \{1, \dots, N\}$ and **Target Rows** $R = \{1, \dots, N\}$.
+   - For each cell $(r, c)$ of $A$ with value $x = A_{r,c}$, add a labelled edge $e_x = (r, \operatorname{dest}(x))$ carrying payload $x$.
+   - Since $\deg_G(r) = M$ for all $r \in L$ and $\deg_G(d) = M$ for all $d \in R$, $G$ is **$M$-regular**.
+   - Peel $M$ perfect matchings $M_1, \dots, M_M$ from $G$:
+
+     1. **Matrix $B$ (after Phase 1)**: For each column $c \in \{1, \dots, M\}$ and each edge $e_x = (r, \operatorname{dest}(x)) \in M_c$, set $B_{r, c} = x$.
+     2. **Matrix $C$ (after Phase 2)**: Within each column $c \in \{1, \dots, M\}$, sort the $N$ elements $x = B_{1,c}, \dots, B_{N,c}$ by their target row by setting $C_{\operatorname{dest}(x), c} = x$.
+     3. *(Phase 3 then sorts each row of $C$ into $D$ automatically!)*
+
+4. **Step 4 — Concrete Toy Trace**:
+   Take $N = 2, M = 2$ with reversed matrix $A = \begin{pmatrix} 4 & 3 \\ 2 & 1 \end{pmatrix}$.
+
+   - Target rows: $\operatorname{dest}(1) = \operatorname{dest}(2) = 1$, and $\operatorname{dest}(3) = \operatorname{dest}(4) = 2$.
+   - In $G$: Current Row $1$ has two edges to Target Row $2$ (payloads $4, 3$); Current Row $2$ has two edges to Target Row $1$ (payloads $2, 1$).
+   - **Matching $M_1$ (Column 1)**: Picks $e_4 = (1 \to 2)$ and $e_2 = (2 \to 1) \implies$ Col 1 of $B$ is $[4, 2]^T$.
+   - **Matching $M_2$ (Column 2)**: Picks $e_3 = (1 \to 2)$ and $e_1 = (2 \to 1) \implies$ Col 2 of $B$ is $[3, 1]^T$.
+   - **Construct $B$ and $C$**:
+
+     $$A = \begin{pmatrix} 4 & 3 \\ 2 & 1 \end{pmatrix} \xrightarrow{\text{Phase 1 (Rows)}} B = \begin{pmatrix} 4 & 3 \\ 2 & 1 \end{pmatrix} \xrightarrow{\text{Phase 2 (Cols)}} C = \begin{pmatrix} 2 & 1 \\ 4 & 3 \end{pmatrix} \xrightarrow{\text{Phase 3 (Rows)}} D = \begin{pmatrix} 1 & 2 \\ 3 & 4 \end{pmatrix}.$$
+
+---
+
+## 4. König's Line Coloring Theorem ($\chi'(G) = \Delta$): $O(VE)$ Kempe-Chain Augmentation & $O(E \log \Delta)$ Eulerian Halving
+
+In a general multigraph $G$, Vizing's Theorem bounds the edge chromatic number $\chi'(G)$ (the minimum number of colors needed so no two adjacent edges share a color) between $\Delta(G)$ and $\Delta(G) + \mu(G)$. In a **bipartite multigraph**, however, there is **zero gap** between the trivial lower bound $\Delta(G)$ and the chromatic index!
+
+### 4.1 König's Line Coloring Theorem via $\Delta$-Regularization
+
+::: {.callout-important title="Theorem 7.2 — König's Line Coloring Theorem (1916)"}
+
+For every bipartite multigraph $G = (L \sqcup R, E)$ with maximum vertex degree $\Delta = \max_{v \in L \cup R} \deg_G(v)$, the minimum number of colors required to properly edge-color $G$ (equivalently, to partition $E$ into matchings) is:
+
+$$\chi'(G) = \Delta(G).$$
+:::
+
+#### Proof via $\Delta$-Regular Embedding
+
+We can embed any bipartite multigraph $G = (L \sqcup R, E)$ of maximum degree $\Delta$ into a $\Delta$-regular bipartite multigraph $G_{\text{reg}}$ as follows:
+
+1. Pad the smaller side with isolated dummy vertices until $|L| = |R| = N$.
+2. While there exists a vertex $u \in L$ with $\deg(u) < \Delta$, the sum of degrees satisfies $\sum_{v \in R} \deg(v) = \sum_{x \in L} \deg(x) < \Delta N$, so by the Pigeonhole Principle there must also exist some $v \in R$ with $\deg(v) < \Delta$. Add a dummy edge $(u, v)$ and repeat until every vertex has degree $\Delta$.
+3. By **Theorem 7.1 (Birkhoff–von Neumann)**, $G_{\text{reg}}$ decomposes into $\Delta$ edge-disjoint perfect matchings $M_1, \dots, M_\Delta$. Restricting each $M_c$ to the original edges $E(G)$ partitions $E(G)$ into $\Delta$ matchings (color classes)! $\blacksquare$
+
+---
+
+### 4.2 Engine 2: Online $O(VE)$ Kempe-Chain Augmentation (`CF 600 F — Edge Coloring of Bipartite Graph`)
+
+- **Judge URL**: [https://codeforces.com/problemset/problem/600/F](https://codeforces.com/problemset/problem/600/F)
+- **Constraints**: $|L| = a \le 1000$, $|R| = b \le 1000$, $M \le 10^5$ edges, Time Limit $1.0\text{ s}$. Color all $M$ edges using the minimum number of colors $D = \Delta$.
+
+#### 1. Why Iterative Dinic Peeling TLEs Here
+
+If we embed $G$ into a $\Delta$-regular graph and run Hopcroft–Karp $\Delta \le 1000$ times on $M = 10^5$ edges, the total work is $O(\Delta \cdot M \sqrt{V}) \approx 1000 \times 10^5 \times 45 \approx 4.5 \times 10^9$ operations—a guaranteed **Time Limit Exceeded**!
+
+Instead, we can color the edges **online one by one** in $O(|L| + |R|)$ time per edge ($O(VE)$ total) using **Kempe-Chain Alternating Paths**.
+
+#### 2. 4-Step Compilation of Online Kempe-Chain Recoloring
+
+- **Step 1 — Algebraic State Invariant**:
+  Fix the palette of colors $\{1, 2, \dots, \Delta\}$. Maintain a lookup table $\text{who}[z][c]$ storing the neighbor of vertex $z$ along the unique incident edge of color $c$ (or $0$ if color $c$ is currently free at $z$).
+  Before inserting a new edge $e = (u, v)$ ($u \in L, v \in R$), both $u$ and $v$ have current degree $\le \Delta - 1$ in the already-colored subgraph. Therefore:
+
+  - $u$ is missing at least one free color $c_u \in \{1, \dots, \Delta\}$ ($\text{who}[u][c_u] = 0$).
+  - $v$ is missing at least one free color $c_v \in \{1, \dots, \Delta\}$ ($\text{who}[v][c_v] = 0$).
+
+- **Step 2 — Easy Case vs. Kempe-Chain Conflict**:
+  - If color $c_u$ is also free at $v$ ($\text{who}[v][c_u] = 0$), simply color $e = (u, v)$ with $c_u$ in $O(1)$ time!
+  - Otherwise, $v$ already has an incident edge of color $c_u$, while $c_v$ is free at $v$. Consider the subgraph $H(c_u, c_v)$ formed by all currently colored edges of colors **$c_u$ and $c_v$**. Because every vertex has at most one incident edge of color $c_u$ and at most one of color $c_v$, every vertex in $H(c_u, c_v)$ has degree $\le 2$, so $H(c_u, c_v)$ is a collection of disjoint paths and even cycles!
+
+- **Step 3 — Why the Kempe Chain from $v$ Can Never Fail on a Bipartite Graph**:
+  Start at $v \in R$ (where $c_v$ is free and $c_u$ is present) and walk the unique maximal alternating path $P$ of colors $c_u, c_v, c_u, c_v, \dots$:
+
+  $$v \xrightarrow{c_u} u_1 \xrightarrow{c_v} v_1 \xrightarrow{c_u} u_2 \xrightarrow{c_v} \dots$$
+
+  Could this path $P$ ever cycle back to $v$? No, because $v$ has degree $1$ in $H(c_u, c_v)$ ($c_v$ is free at $v$).
+  Could $P$ ever terminate at $u \in L$ and accidentally bring color $c_u$ into $u$?
+  **Never in a bipartite graph!** Observe the parity of the bipartite sides along $P$:
+
+  - Every move $R \to L$ traverses an edge of color **$c_u$**.
+  - Every move $L \to R$ traverses an edge of color **$c_v$**.
+
+  Thus, if $P$ ever reached $u \in L$, it would have to arrive at $u$ from $R$ via an edge of color **$c_u$**—which is impossible because **color $c_u$ is free at $u$** ($\text{who}[u][c_u] = 0$)!
+  *(Note: $P$ might reach $u$? No, it can't even reach $u$ at all, because $u$ has no incident edge of color $c_u$!)*
+  Therefore, $P$ is a simple path of length $\le |L| + |R|$ that never touches $u$. Swapping colors $c_u \leftrightarrow c_v$ on every edge of $P$ preserves validity everywhere, leaves $c_u$ free at $u$, and **frees color $c_u$ at $v$**! We then color $(u, v)$ with $c_u$.
+
+```cpp
+// Online O((|L| + |R|) * E) Bipartite Edge Coloring with Delta colors (1..Delta).
+// who[z][c] = neighbor of z along color c (0 if free); edge_id[z][c] = index of that edge.
+void color_bipartite_edge(int u, int v, int e_idx,
+                          vector<vector<int>>& who, vector<vector<int>>& edge_id,
+                          vector<int>& ans_color) {
+    int cu = 1, cv = 1;
+    while (who[u][cu] != 0) ++cu;
+    while (who[v][cv] != 0) ++cv;
+    ans_color[e_idx] = cu;
+    if (who[v][cu] == 0) {
+        who[u][cu] = v; who[v][cu] = u;
+        edge_id[u][cu] = edge_id[v][cu] = e_idx;
+        return;
+    }
+    // Walk the (cu, cv)-Kempe chain starting from v with color cu:
+    vector<int> path_verts = {u, v};
+    vector<int> path_edges = {e_idx};
+    int cur = v, col = cu;
+    while (who[cur][col] != 0) {
+        int nxt = who[cur][col];
+        int eid = edge_id[cur][col];
+        path_verts.push_back(nxt);
+        path_edges.push_back(eid);
+        who[cur][col] = 0;
+        edge_id[cur][col] = 0;
+        cur = nxt;
+        col ^= (cu ^ cv);
+    }
+    // Re-link the chain with swapped alternating colors cu, cv, cu, ...
+    int assign_col = cu;
+    for (size_t i = 0; i < path_edges.size(); ++i) {
+        int a = path_verts[i], b = path_verts[i + 1], eid = path_edges[i];
+        ans_color[eid] = assign_col;
+        who[a][assign_col] = b; who[b][assign_col] = a;
+        edge_id[a][assign_col] = edge_id[b][assign_col] = eid;
+        assign_col ^= (cu ^ cv);
+    }
+}
+```
+
+- **Step 4 — Non-Bipartite Odd-Cycle Counterexample**:
+  Why does this proof fail on a non-bipartite graph such as the triangle $C_3 = \{1, 2, 3\}$ where $\Delta = 2$?
+  Suppose $(1, 2)$ has color $1$ and $(2, 3)$ has color $2$, and we insert edge $(1, 3)$. At vertex $1$, color $c_1 = 2$ is free; at vertex $3$, color $c_3 = 1$ is free. Starting at $3$ and walking colors $(2, 1)$ goes $3 \xrightarrow{2} 2 \xrightarrow{1} 1$—arriving at vertex $1$ via an edge of color $1$ because the odd cycle broke the $(R \to L \implies c_u)$ parity invariant! Swapping $1 \leftrightarrow 2$ on $3 - 2 - 1$ makes $c_1 = 2$ free at $3$, but simultaneously occupies color $2$ at $1$, getting us nowhere (indeed, $\chi'(C_3) = 3 = \Delta + 1$).
+
+---
+
+### 4.3 Engine 3: $O(E \log \Delta)$ Divide-and-Conquer via Eulerian Circuit Halving
+
+When $V, E \le 10^5$ and $\Delta \le 10^5$, even $O(VE)$ Kempe-chain recoloring is too slow. For any $k$-regular bipartite multigraph where $k = 2^r$ is a power of $2$ (or for general $\Delta$ by pairing odd-degree vertices at each recursion level):
+
+1. Every vertex has even degree $2d$, so every connected component has an **Eulerian circuit** computable in $O(E)$ linear time via Hierholzer's algorithm.
+2. Because $G$ is bipartite, every cycle—and therefore every Eulerian circuit—has **even length**!
+3. Traverse the Eulerian circuit and place odd-indexed edges into $E_{\text{odd}}$ and even-indexed edges into $E_{\text{even}}$. Every time the circuit enters a vertex $z$ and immediately leaves $z$, one edge goes to $E_{\text{odd}}$ and one edge goes to $E_{\text{even}}$ (and at the start/end vertex of the circuit, the very first edge is odd and the very last edge is even because the total length is even!).
+4. Thus $E = E_{\text{odd}} \sqcup E_{\text{even}}$ splits a $2d$-regular bipartite multigraph into **two edge-disjoint $d$-regular bipartite multigraphs** in $O(E)$ time! Recursing $\log_2 \Delta$ levels yields all $\Delta$ matchings in **$O(E \log \Delta)$** time.
+
+---
+
+## 5. Black-Box Contract & Recognition Table
+
+| Surface Problem Signature | Bipartite Compilation ($L, R, E$) | Target Graph Invariant & Solver Engine | Time Complexity |
+| :--- | :--- | :--- | :--- |
+| **Matrix / Grid Row–Column Selection** (`#049 [ZJOI2007] 矩阵游戏`, Rook Placement) | $L = \text{Rows}$, $R = \text{Cols}$, $E = \text{Active cells } (r, c)$ | **Maximum Matching** $\nu(G)$ (`Hopcroft–Karp / Dinic`) | $O(E\sqrt{V})$ |
+| **Grid with Hard `#` & Soft `x` Obstacles** (`POJ 2226`, `[HEOI2016] 游戏`) | $L = \text{Maximal }\#\text{-free row strips}$, $R = \text{Maximal }\#\text{-free col strips}$; `x` ignored | **Max Matching** $\nu(G)$ (Rooks) or **Min Vertex Cover** $\tau(G) = \nu(G)$ (Planks) | $O(HW\sqrt{HW})$ |
+| **Rectangular $1 \times k$ / $k \times 1$ Brick Tiling** (`CF 1404E — Bricks`) | $L = \text{Horiz unit glues}$, $R = \text{Vert unit glues}$, $E = \text{Shared `#` corner conflicts}$ | **Max Independent Set**: $\text{Bricks} = |\#| - (|L| + |R| - \nu(G))$ | $O(HW\sqrt{HW})$ |
+| **3D Box Plane Cover $ABC \le 5000$** (`#052 [HNOI2013] 消毒`) | Branch $2^{\min(A,B,C)}$ masks on shortest axis; project surviving $(y, z)$ to 2D | **2D König MVC** per bitmask (`Kuhn / Dinic` with branch pruning) | $O(2^{\min(A,B,C)} \cdot BC\sqrt{B+C})$ |
+| **Degree-Constrained $b$-Matching** (`#050 Luogu P2071`, `#051 CF 387D`) | $S \xrightarrow{a_u} u \xrightarrow{1} v \xrightarrow{b_v} T$ (no vertex cloning!) | **Capacitated Max Flow** (`Dinic`) | $O(E\sqrt{V})$ |
+| **$k$-Regular Grid / Benes Routing** (`ABC 317 G`, `AGC 037 D`) | $L = \text{Current Rows}$, $R = \text{Values / Target Rows}$ ($k$-regular multigraph) | **Birkhoff–von Neumann Peeling** ($k$ perfect matchings) | $O(k E\sqrt{V})$ or $O(E \log k)$ |
+| **Bipartite Edge Coloring ($\chi'(G) = \Delta$)** (`CF 600 F`) | $G = (L \sqcup R, E)$ with max degree $\Delta$ | **Online Kempe-Chain Recoloring** ($O(VE)$) or **Eulerian Halving** ($O(E \log \Delta)$) | $O(VE)$ or $O(E \log \Delta)$ |
+| **Dual Equivalence Class / Cycle Pairing** (`#056 CF 1783F Double Sort II`) | $L = \text{Cycles of } a$, $R = \text{Cycles of } b$, edge $e_v = (\text{cyc}_a(v), \text{cyc}_b(v))$ | **Max Matching** $\nu(G)$ = untouched elements; answer $N - \nu(G)$ | $O(N\sqrt{N})$ |
+
+---
+
+## 6. Curated 4-Tier Practice Ladder
+
+Every problem below is compiled using the **4-Step Zero-Magic-Gadgets Protocol**: (1) Non-Graph Diagnostic Signal, (2) Intermediate Algebraic Representation, (3) Mechanical Graph Compilation, and (4) Toy Trace & Failure-Mode Guard.
+
+---
+
+### `#049` — [ZJOI2007] 矩阵游戏 (Matrix Game)
+
+- **Tier**: `Stepping Stone 1 (SS-1)` | **Judge URL**: [https://www.luogu.com.cn/problem/P1129](https://www.luogu.com.cn/problem/P1129)
+- **Constraints**: $T \le 20$ test cases; $N \times N$ binary matrix $A_{r,c} \in \{0, 1\}$ with $N \le 200$; Time Limit $1.0\text{ s}$.
+- **Problem Summary**: Given an $N \times N$ chessboard of black ($1$) and white ($0$) cells, you may swap any two rows or swap any two columns any number of times. Determine whether it is possible to place $N$ black cells on the main diagonal $(1, 1), (2, 2), \dots, (N, N)$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — What Invariant Survives Row and Column Swaps?"}
+
+Suppose two black cells start in the same row. Can any sequence of row swaps or column swaps ever place them in *different* rows? What must be true of the $N$ black cells that eventually land on $(1, 1), (2, 2), \dots, (N, N)$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Bipartite Incidence Graph"}
+
+Row swaps and column swaps preserve "same row" and "same column" relationships—they simply relabel the rows and columns! Build a bipartite graph between Rows $L = \{1, \dots, N\}$ and Columns $R = \{1, \dots, N\}$ with an edge $(r, c)$ whenever $A_{r,c} = 1$. What does a transversal of $N$ diagonal ones correspond to?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #049 [ZJOI2007] 矩阵游戏"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+The operations act globally on entire rows and entire columns ($A \mapsto P A Q$ for permutation matrices $P, Q$). Placing $N$ ones onto the main diagonal $(1, 1), \dots, (N, N)$ requires selecting $N$ ones from $A$ such that no two share a row and no two share a column.
+
+#### Step 2: Intermediate Algebraic Representation
+
+Let $x_{r,c} \in \{0, 1\}$ indicate whether cell $(r, c)$ is selected to become one of the $N$ final main-diagonal entries. Since row and column permutations are independent, such a permutation pair $(\sigma, \tau) \in S_N \times S_N$ exists if and only if there is a feasible solution to:
+
+$$x_{r,c} \le A_{r,c} \;\; (\forall r, c), \qquad \sum_{c=1}^N x_{r,c} = 1 \;\; (\forall r \in \{1, \dots, N\}), \qquad \sum_{r=1}^N x_{r,c} = 1 \;\; (\forall c \in \{1, \dots, N\}).$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+- **Left Vertices $L$**: $\{R_1, \dots, R_N\}$ (one per row).
+- **Right Vertices $R$**: $\{C_1, \dots, C_N\}$ (one per column).
+- **Edges $E$**: Add undirected matching edge $(R_r, C_c)$ iff $A_{r,c} = 1$.
+- **Target Invariant**: Output `Yes` if and only if $\nu(G) = N$ (a perfect matching exists).
+
+```cpp
+// Core Modelling Snippet for #049 ([ZJOI2007] Matrix Game)
+bool solve_matrix_game(int N, const vector<vector<int>>& A) {
+    Dinic Flow(2 * N + 2);
+    int S = 0, T = 2 * N + 1;
+    for (int r = 1; r <= N; ++r) Flow.add_edge(S, r, 1);
+    for (int c = 1; c <= N; ++c) Flow.add_edge(N + c, T, 1);
+    for (int r = 1; r <= N; ++r) {
+        for (int c = 1; c <= N; ++c) {
+            if (A[r - 1][c - 1] == 1) {
+                Flow.add_edge(r, N + c, 1);
+            }
+        }
+    }
+    return Flow.max_flow(S, T) == N;
+}
+```
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+
+- **Toy Trace ($N = 2$)**: For $A = \begin{pmatrix} 1 & 1 \\ 0 & 0 \end{pmatrix}$, row $2$ has degree $0$, so $\nu(G) = 1 < 2$ (`No`). For $A = \begin{pmatrix} 0 & 1 \\ 1 & 0 \end{pmatrix}$, edges $(R_1, C_2)$ and $(R_2, C_1)$ give $\nu(G) = 2$ (`Yes`).
+- **Failure-Mode Guard**:
+  1. Remember to clear the graph / adjacency lists between the $T \le 20$ test cases.
+  2. Do **not** assume that finding $\nu(G) = N$ requires only row swaps or only column swaps—in fact, either row swaps *alone* or column swaps *alone* already suffice once a perfect matching exists, because $\sigma \circ \tau^{-1}$ can be absorbed into one side!
+- **Complexity**: $O(T \cdot N^{2.5})$ via Dinic or $O(T \cdot N^3)$ via Kuhn's algorithm.
+::::
+
+---
+
+### `#050` — Luogu P2071: 座位安排 (Seat Arrangement)
+
+- **Tier**: `Stepping Stone 2 (SS-2)` | **Judge URL**: [https://www.luogu.com.cn/problem/P2071](https://www.luogu.com.cn/problem/P2071)
+- **Constraints**: $N \le 2000$ rows of seats ($2N$ passengers total); each row holds at most $2$ passengers; Time Limit $1.0\text{ s}$.
+- **Problem Summary**: An airplane has $N$ rows of seats, with $2$ seats per row, and $2N$ passengers boarding. Each passenger $i \in \{1, \dots, 2N\}$ is willing to sit only in row $r_{i,1}$ or row $r_{i,2}$. Compute the maximum number of passengers who can be seated.
+
+:::: {.callout-note collapse="true" title="Hint 1 — From Unit Matching to Capacitated b-Matching"}
+
+Each passenger $i \in L$ can take at most $1$ seat, while each row $r \in R$ can accept up to $b_r = 2$ passengers. How can you represent $b_r = 2$ in an $S$-$T$ flow network without cloning vertices?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Direct Terminal Capacity vs. Seat Cloning"}
+
+In Dinic's algorithm, wire $S \to \text{Passenger}_i$ with capacity $1$, $\text{Passenger}_i \to \text{Row}_{r}$ with capacity $1$, and $\text{Row}_r \to T$ with capacity $2$! (Alternatively, in Kuhn's algorithm, represent each row $r$ as two seat vertices $\text{Seat}_{r,1}$ and $\text{Seat}_{r,2}$.)
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #050 Luogu P2071: 座位安排"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+Each passenger has two allowable row choices $(r_{i,1}, r_{i,2})$ and unit demand ($a_i = 1$), while each row $r \in \{1, \dots, N\}$ has capacity $b_r = 2$. This is a $(1, 2)$-capacitated **bipartite $b$-matching**.
+
+#### Step 2: Intermediate Algebraic Representation
+
+Let $x_{i, r} \in \{0, 1\}$ indicate whether passenger $i \in \{1, \dots, 2N\}$ is assigned to row $r \in \{r_{i,1}, r_{i,2}\}$. We maximize:
+
+$$\max \sum_{i=1}^{2N} \sum_{r \in \{r_{i,1}, r_{i,2}\}} x_{i,r} \quad \text{subject to} \quad \sum_{r} x_{i,r} \le 1 \;\; (\forall i \in \{1, \dots, 2N\}), \qquad \sum_{i} x_{i,r} \le 2 \;\; (\forall r \in \{1, \dots, N\}).$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+- **Vertices**: Source $S = 0$, Passengers $L = \{1, \dots, 2N\}$, Rows $R = \{2N + 1, \dots, 3N\}$, Sink $T = 3N + 1$.
+- **Edges**:
+  - $S \xrightarrow{\text{cap } 1} i$ for each passenger $i \in \{1, \dots, 2N\}$.
+  - $i \xrightarrow{\text{cap } 1} (2N + r_{i,1})$ and (if $r_{i,2} \neq r_{i,1}$) $i \xrightarrow{\text{cap } 1} (2N + r_{i,2})$.
+  - $(2N + r) \xrightarrow{\text{cap } 2} T$ for each row $r \in \{1, \dots, N\}$.
+
+```cpp
+// Core Modelling Snippet for #050 (Luogu P2071 Seat Arrangement)
+int solve_seats(int N, const vector<pair<int, int>>& prefs) {
+    int S = 0, T = 3 * N + 1;
+    Dinic Flow(T + 1);
+    for (int i = 1; i <= 2 * N; ++i) {
+        Flow.add_edge(S, i, 1);
+        auto [r1, r2] = prefs[i - 1];
+        Flow.add_edge(i, 2 * N + r1, 1);
+        if (r2 != r1) {
+            Flow.add_edge(i, 2 * N + r2, 1);
+        }
+    }
+    for (int r = 1; r <= N; ++r) {
+        Flow.add_edge(2 * N + r, T, 2);
+    }
+    return Flow.max_flow(S, T);
+}
+```
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+
+- **Toy Trace ($N = 1$, $2$ passengers)**: Both passengers prefer row $(1, 1)$. Passenger $1$ sends $1$ unit of flow $S \to 1 \to \text{Row}_1 \to T$, and Passenger $2$ sends $1$ unit $S \to 2 \to \text{Row}_1 \to T$, saturating the capacity-$2$ arc $\text{Row}_1 \to T$ for a total of $2$ seated passengers.
+- **Failure-Mode Guard (`Duplicate Row Preferences`)**:
+  What if a passenger lists the same row twice ($r_{i,1} = r_{i,2}$)? In our Dinic network, even if you forgot the `if (r2 != r1)` check, the capacity-$1$ bottleneck on $S \to i$ prevents passenger $i$ from taking both seats in row $r_{i,1}$. However, if you invert the formulation or use degree-counting arrays, duplicate edges between $(i, r)$ can corrupt degree bounds—always deduplicate $(r_{i,1}, r_{i,2})$ on input!
+- **Complexity**: $|V| = 3N + 2 \le 6002$, $|E| \le 7N \le 14000$. Dinic runs in $O(N\sqrt{N})$ time ($< 0.02\text{ s}$).
+::::
+
+---
+
+### `#051` — Codeforces 387D: George and Interesting Graph
+
+- **Tier**: `Intermediate 1 (Int-1)` | **Judge URL**: [https://codeforces.com/problemset/problem/387/D](https://codeforces.com/problemset/problem/387/D)
+- **Constraints**: $N \le 500$ vertices, $M \le 1000$ directed edges (self-loops $u \to u$ allowed, no parallel edges); Time Limit $1.0\text{ s}$.
+- **Problem Summary**: A directed graph is called *interesting* if there exists a center vertex $c \in \{1, \dots, N\}$ such that:
+
+  1. For every vertex $u \in \{1, \dots, N\}$ (including $u = c$), both directed edges $c \to u$ and $u \to c$ exist (note that for $u = c$, this is a single self-loop $c \to c$).
+  2. Every non-center vertex $u \neq c$ has total in-degree $2$ and total out-degree $2$ in the entire graph.
+
+  Compute the minimum number of edge additions and edge deletions needed to make the given graph interesting.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Fix the Center Vertex c First"}
+
+Since $N \le 500$ and $M \le 1000$ are small, we can afford to test all $N$ candidates for the center vertex $c \in \{1, \dots, N\}$. Once $c$ is fixed, all edges incident to $c$ are completely determined! What condition must the remaining edges on $V \setminus \{c\}$ satisfy?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Residual 1-Factor on Non-Center Vertices"}
+
+Once $c \to u$ and $u \to c$ are present for every $u \neq c$, each $u \in V \setminus \{c\}$ already has $1$ incoming edge from $c$ and $1$ outgoing edge to $c$. To reach total in-degree $2$ and out-degree $2$, the subgraph on $V \setminus \{c\}$ must have **in-degree $1$ and out-degree $1$ at every vertex**—which is a **Perfect Matching** between $(V \setminus \{c\})_{\text{out}}$ and $(V \setminus \{c\})_{\text{in}}$!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #051 CF 387D: George and Interesting Graph"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+The problem couples a global star vertex $c$ with a uniform degree-$2$ constraint on all other vertices. Because $N \le 500$ and $M \le 1000$, enumerating the center $c$ decouples the star edges from the remaining $(N - 1)$ vertices, where in-degree $1$ and out-degree $1$ is a standard bipartite matching between out-ports and in-ports!
+
+#### Step 2: Intermediate Algebraic Representation
+
+Fix a candidate center $c \in \{1, \dots, N\}$:
+
+1. **Center Star Edges**: There are exactly $2N - 1$ required edges incident to $c$: the self-loop $(c \to c)$ plus $(c \to u)$ and $(u \to c)$ for the $N - 1$ vertices $u \neq c$. Let $k_c$ be the number of these $2N - 1$ edges that already exist in $E$. We must **add** $(2N - 1) - k_c$ missing center edges.
+2. **Non-Center Matching Edges**: There are $M_{\text{rem}} = M - k_c$ existing edges in $E$ that have neither endpoint equal to $c$. In the final graph, the edges on $V \setminus \{c\}$ must form a directed $1$-factor ($N - 1$ edges with out-degree $1$ and in-degree $1$ on $V \setminus \{c\}$).
+   If the maximum bipartite matching inside the existing $M_{\text{rem}}$ edges has size $\nu_c$, we keep those $\nu_c$ edges, **delete** the remaining $M_{\text{rem}} - \nu_c$ unused existing edges, and **add** $(N - 1) - \nu_c$ new edges to complete the perfect matching!
+
+Summing additions and deletions for fixed $c$ gives:
+
+$$\operatorname{Cost}(c) = \underbrace{(2N - 1 - k_c)}_{\text{add center edges}} + \underbrace{(M - k_c - \nu_c)}_{\text{delete extra non-center edges}} + \underbrace{(N - 1 - \nu_c)}_{\text{add missing matching edges}} = 3N + M - 2 - 2k_c - 2\nu_c.$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+For each $c \in \{1, \dots, N\}$:
+
+- Build bipartite graph $B_c = (L \sqcup R, E_c)$ with $L = \{u_{\text{out}} : u \neq c\}$ and $R = \{v_{\text{in}} : v \neq c\}$.
+- Scan all $M$ input edges $(u \to v)$:
+  - If $u = c$ or $v = c$, increment $k_c$.
+  - Otherwise ($u \neq c$ and $v \neq c$), add bipartite edge $(u_{\text{out}}, v_{\text{in}})$ to $B_c$.
+- Compute $\nu_c = \operatorname{MaxMatching}(B_c)$ via Dinic / Hopcroft–Karp and minimize $3N + M - 2 - 2k_c - 2\nu_c$.
+
+```cpp
+// Core Modelling Snippet for #051 (CF 387D George and Interesting Graph)
+int solve_interesting_graph(int N, const vector<pair<int, int>>& edges) {
+    int M = edges.size(), best_cost = 1e9;
+    for (int c = 1; c <= N; ++c) {
+        int kc = 0, S = 0, T = 2 * N + 1;
+        Dinic Flow(T + 1);
+        for (int u = 1; u <= N; ++u) {
+            if (u == c) continue;
+            Flow.add_edge(S, u, 1);
+            Flow.add_edge(N + u, T, 1);
+        }
+        for (auto [u, v] : edges) {
+            if (u == c || v == c) {
+                ++kc;
+            } else {
+                Flow.add_edge(u, N + v, 1);
+            }
+        }
+        int nu_c = Flow.max_flow(S, T);
+        int cost = (2 * N - 1 - kc) + (M - kc - nu_c) + (N - 1 - nu_c);
+        best_cost = min(best_cost, cost);
+    }
+    return best_cost;
+}
+```
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+
+- **Toy Trace ($N = 2$, $M = 1$ edge $1 \to 2$)**:
+  - Test $c = 1$: edge $1 \to 2$ has $u = 1 = c$, so $k_1 = 1$, $M_{\text{rem}} = 0$, $\nu_1 = 0$. Cost $= (3 - 1) + (0 - 0) + (1 - 0) = 3$ (add $1 \to 1, 2 \to 1, 2 \to 2$).
+- **Failure-Mode Guard (`The Self-Loop Double-Count Trap`)**:
+  1. Notice that for $u = c$, the edges $c \to u$ and $u \to c$ are the **same single self-loop** $c \to c$! Thus there are $2N - 1$ required center edges, **not** $2N$. Using `if (u == c || v == c) ++kc;` (with `||`, not two separate `if`s!) correctly counts $c \to c$ once.
+  2. Notice that a non-center vertex $u \neq c$ is **allowed** to have a self-loop $u \to u$ as its matched edge $(u_{\text{out}}, u_{\text{in}})$ in $B_c$! Do not filter out self-loops $u \to u$ when $u \neq c$.
+- **Complexity**: $N$ runs of Hopcroft–Karp on $M \le 1000$ edges takes $O(N \cdot M\sqrt{N}) \approx 500 \times 1000 \times 22 \approx 1.1 \times 10^7$ operations ($< 0.1\text{ s}$).
+::::
+
+---
+
+### `#052` — [HNOI2013] 消毒 (Disinfection)
+
+- **Tier**: `Intermediate 2 (Int-2)` | **Judge URL**: [https://www.luogu.com.cn/problem/P3231](https://www.luogu.com.cn/problem/P3231)
+- **Constraints**: $T \le 3$ test cases; 3D box dimensions $A \times B \times C$ with **$A \cdot B \cdot C \le 5000$**; Time Limit $1.0\text{ s}$.
+- **Problem Summary**: An $A \times B \times C$ 3D grid contains infected unit cells $(x, y, z)$. In one operation, you may choose any sub-box of dimensions $a \times b \times c$ and sterilize all cells inside it at a cost of $\min(a, b, c)$ units of chemical. Find the minimum total cost to sterilize all infected cells.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Every Optimal Operation Is a Thickness-1 Plane"}
+
+If you pay $\min(a, b, c)$ to sterilize an $a \times b \times c$ box, why would you ever choose $\min(a, b, c) > 1$? And if one dimension of your box is $1$ (say $a = 1$), why not extend the other two dimensions to the full grid $1 \times B \times C$ for the exact same cost of $\min(1, B, C) = 1$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Exploiting A * B * C <= 5000"}
+
+Every operation is simply a full axis-aligned plane ($x = x_0$, $y = y_0$, or $z = z_0$) of cost $1$. Covering points in 3D with planes is NP-hard in general, but $A \cdot B \cdot C \le 5000$ guarantees $\min(A, B, C) \le \lfloor 5000^{1/3} \rfloor = 17$! Brute-force the bitmask of planes along the shortest dimension, and project the remaining uncovered cells onto the other two dimensions!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #052 [HNOI2013] 消毒"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+1. **Cost Reduction to Thickness-1 Planes**: Since $\min(a, b, c)$ can be decomposed into $\min(a, b, c)$ slices of thickness $1$ along the shortest side of the sub-box, and expanding a $1 \times b \times c$ slice to $1 \times B \times C$ never increases its cost $\min(1, B, C) = 1$, every operation is an axis-aligned plane $x = x_0$, $y = y_0$, or $z = z_0$ of cost $1$.
+2. **Dimension Collapse via Pigeonhole Bound**: Since $A \cdot B \cdot C \le 5000$, permuting coordinates so $A = \min(A, B, C)$ guarantees $A \le 17$ ($2^{17} = 131,072$).
+
+#### Step 2: Intermediate Algebraic Representation
+
+Let $M \subseteq \{1, \dots, A\}$ be the subset of $x$-planes purchased directly (cost $|M|$). Every infected cell $(x, y, z)$ with $x \in M$ is already sterilized. The remaining infected cells with $x \notin M$ must satisfy $v_y + w_z \ge 1$, which is a 2D Minimum Vertex Cover on $Y \times Z$:
+
+$$\text{Ans} = \min_{M \subseteq \{1, \dots, A\}} \Big( |M| + \nu(G_M) \Big), \qquad E(G_M) = \big\{ (y, z) \in Y \times Z : \exists x \notin M \text{ s.t. } (x, y, z) \text{ is infected} \big\}.$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+1. Reorient $(A, B, C)$ so $A \le B \le C$ (giving $A \le 17$ and $B \le \lfloor \sqrt{5000} \rfloor = 70$).
+2. For each unique $(y, z)$ pair that contains at least one infected cell, precompute a bitmask $\text{x\_mask}(y, z) \in [1, 2^A)$ whose $x$-th bit is $1$ iff $(x, y, z)$ is infected.
+3. For each bitmask $M \in [0, 2^A)$:
+   - **Pruning**: If $\operatorname{popcount}(M) \ge \text{best\_ans}$, skip $M$ immediately.
+   - Build the 2D bipartite graph $G_M$ on $L = \{1, \dots, B\}$ and $R = \{1, \dots, C\}$ by adding edge $(y, z)$ iff $(\text{x\_mask}(y, z) \mathbin{\&} \sim M) \neq 0$.
+   - Run Kuhn's algorithm (or Dinic), aborting early if $\operatorname{popcount}(M) + \text{current\_matching} \ge \text{best\_ans}$.
+
+```cpp
+// Core Modelling Snippet for #052 ([HNOI2013] Disinfection)
+// Assumes coordinates are rotated so A <= B <= C (A <= 17, B <= 70).
+// items = list of (y, z, x_bitmask) for all non-empty (y, z) columns.
+int solve_disinfection(int A, int B, int C, const vector<tuple<int, int, int>>& items) {
+    int best_ans = A; // Purchasing all A x-planes is always a valid cover of cost A!
+    vector<vector<int>> adj(B + 1);
+    vector<int> matchR(C + 1, 0), vis(C + 1, 0);
+    int timer = 0;
+
+    auto dfs = [&](auto& self, int u) -> bool {
+        for (int v : adj[u]) {
+            if (vis[v] == timer) continue;
+            vis[v] = timer;
+            if (!matchR[v] || self(self, matchR[v])) {
+                matchR[v] = u;
+                return true;
+            }
+        }
+        return false;
+    };
+
+    for (int mask = 0; mask < (1 << A); ++mask) {
+        int cost = __builtin_popcount(mask);
+        if (cost >= best_ans) continue;
+        for (int y = 1; y <= B; ++y) adj[y].clear();
+        for (auto [y, z, x_bits] : items) {
+            if (x_bits & ~mask) adj[y].push_back(z);
+        }
+        fill(matchR.begin(), matchR.end(), 0);
+        for (int y = 1; y <= B; ++y) {
+            ++timer;
+            if (dfs(dfs, y)) {
+                if (++cost >= best_ans) break; // Early branch-and-bound abort!
+            }
+        }
+        best_ans = min(best_ans, cost);
+    }
+    return best_ans;
+}
+```
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+
+- **Toy Trace**: Infected cells at $(1, 1, 1), (1, 2, 2), (2, 1, 2)$.
+  - Mask $M = \{1\}$ (sterilize plane $x = 1$, cost $1$): only $(2, 1, 2)$ survives, projecting to a single edge $(y=1, z=2)$ with $\nu = 1$, total cost $1 + 1 = 2$.
+- **Failure-Mode Guard**:
+  Initialize `best_ans = A` (since buying all $A$ planes along the $x$-axis costs $A$) and abort Kuhn's loop as soon as `cost >= best_ans`. Without rotating the axes so $A = \min(A, B, C) \le 17$ and $B \le 70$, $2^A$ can be $2^{5000}$!
+- **Complexity**: $O(2^{\min(A,B,C)} \cdot BC)$ with strong branch-and-bound pruning ($\approx 0.15\text{ s}$ for $T = 3$).
+::::
+
+---
+
+### `#053` — Codeforces 512E: Fox And Polygon
+
+- **Tier**: `Advanced 1 (Adv-1)` | **Judge URL**: [https://codeforces.com/problemset/problem/512/E](https://codeforces.com/problemset/problem/512/E)
+- **Constraints**: $N \le 1000$ vertices on a convex $N$-gon; $N - 3$ initial diagonals $T_1$ and $N - 3$ target diagonals $T_2$; at most $20,000$ diagonal flips allowed (tight bound $\le 2N - 6$); Time Limit $2.0\text{ s}$.
+- **Problem Summary**: Given two triangulations $T_1$ and $T_2$ of a convex $N$-gon, you can perform **diagonal flips**: pick a diagonal $(a, c)$ shared by two triangles $(a, b, c)$ and $(a, c, d)$, remove $(a, c)$, and insert the cross-diagonal $(b, d)$. Output a sequence of at most $20,000$ flips transforming $T_1$ into $T_2$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Meet in the Middle at a Canonical Hub Triangulation"}
+
+Instead of trying to morph $T_1$ directly into $T_2$, choose a single canonical triangulation $T_{\text{fan}(1)}$—the **Fan Triangulation centered at vertex $1$**, where all $N - 3$ diagonals are $(1, 3), (1, 4), \dots, (1, N - 1)$. If you can reduce any triangulation $T \to T_{\text{fan}(1)}$ in $\le N - 3$ flips, how do you combine $T_1 \to T_{\text{fan}(1)}$ and $T_2 \to T_{\text{fan}(1)}$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Greedy Fan Degree Augmentation & Reverse Flip Polarity"}
+
+Whenever vertex $1$ has degree $< N - 1$ in the current triangulation, there exists some triangle $(1, a, c)$ where $(a, c)$ is a **non-fan diagonal** ($1 < a < c$). If $(a, b, c)$ is the unique other triangle sharing $(a, c)$ ($a < b < c$), flipping $(a, c) \mapsto (1, b)$ strictly increases the degree of vertex $1$ by $+1$! When reversing the path $T_2 \to T_{\text{fan}(1)}$, remember that a forward step `flip (a, c) -> creates (1, b)` becomes the backward step `flip (1, b) -> creates (a, c)`!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #053 CF 512E: Fox And Polygon"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+The space of triangulations of a convex $N$-gon (the $N-2$-dimensional associahedron) is connected by diagonal flips, and every triangulation has a hub-star canonical form $T_{\text{fan}(1)}$ where vertex $1$ is connected to every vertex $3, 4, \dots, N - 1$.
+
+#### Step 2: Intermediate Algebraic Representation
+
+Maintain the $N \times N$ boolean adjacency matrix `adj[u][v]` of polygon boundary edges plus current diagonals.
+
+- A triangulation equals $T_{\text{fan}(1)}$ iff $\deg(1) = N - 1$ (vertex $1$ is adjacent to all $v \in \{2, \dots, N\}$).
+- Whenever $\deg(1) < N - 1$, there exist two consecutive neighbors $a < c$ of vertex $1$ in clockwise order ($c > a + 1$) such that $(a, c)$ is a diagonal (so $(1, a, c)$ is a triangle, and no $b \in (a, c)$ is currently connected to $1$).
+- Inside the arc $[a, c]$, there is a unique vertex $b \in (a, c)$ such that `adj[a][b] && adj[b][c]`. Flipping $(a, c) \mapsto (1, b)$ replaces `adj[a][c] = 0` with `adj[1][b] = 1`, increasing $\deg(1)$ by $+1$.
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Compilation)
+
+Write a helper `to_fan(adj)` that returns the list of flipped pairs `((a, c), (1, b))`:
+
+1. Compute `ops1 = to_fan(T1)` and `ops2 = to_fan(T2)`.
+2. Reverse `ops2`.
+3. Output the **old** diagonal `(a, c)` for each step in `ops1` (as required by $T_1 \to T_{\text{fan}(1)}$), followed by the **new** diagonal `(1, b)` for each reversed step in `ops2` (which is the diagonal currently present in $T_{\text{fan}(1)} \to T_2$!).
+
+```cpp
+// Core Modelling Snippet for #053 (CF 512E Fox And Polygon)
+// Returns vector of {old_diag, new_diag} transforming adj into Fan(1).
+vector<pair<pair<int,int>, pair<int,int>>> to_fan(int N, vector<vector<int>> adj) {
+    vector<pair<pair<int,int>, pair<int,int>>> ops;
+    while (true) {
+        int a = -1, c = -1;
+        // Find two consecutive neighbors a < c of vertex 1 with c > a + 1
+        int prev_nb = 2;
+        for (int v = 3; v <= N; ++v) {
+            if (adj[1][v]) {
+                if (v > prev_nb + 1) { a = prev_nb; c = v; break; }
+                prev_nb = v;
+            }
+        }
+        if (a == -1) break; // All fan diagonals (1, 3)..(1, N-1) are present!
+        int b = -1;
+        for (int k = a + 1; k < c; ++k) {
+            if (adj[a][k] && adj[k][c]) { b = k; break; }
+        }
+        adj[a][c] = adj[c][a] = 0;
+        adj[1][b] = adj[b][1] = 1;
+        ops.push_back({{a, c}, {1, b}});
+    }
+    return ops;
+}
+```
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+
+- **Toy Trace ($N = 4$)**: $T_1$ has diagonal $(2, 4)$ and $T_2$ has diagonal $(1, 3)$.
+  - `to_fan(T1)`: neighbors of $1$ are $2, 4$ ($4 > 2 + 1$), with $b = 3$ satisfying `adj[2][3] && adj[3][4]`. Flip $(2, 4) \mapsto (1, 3)$ in $1$ step.
+  - `to_fan(T2)`: $1$ is already connected to $2, 3, 4$, so $0$ steps.
+- **Failure-Mode Guard (`Reverse-Phase Diagonal Swap`)**:
+  In `CF 512E`, each operation in the output is specified by printing the two endpoints of the diagonal **currently being removed**. During Phase 1 ($T_1 \to T_{\text{fan}(1)}$), you print `op.first = (a, c)`. During Phase 2 ($T_{\text{fan}(1)} \to T_2$, iterating through `ops2` in reverse), the diagonal currently present on the board is `op.second = (1, b)`! Printing `op.first` in Phase 2 is the #1 WA bug on this problem.
+- **Complexity**: At most $2(N - 3) \le 1994$ flips; each step scans $O(N)$, totaling $O(N^2)$ time ($< 0.03\text{ s}$).
+::::
+
+---
+
+### `#054` — AtCoder AGC 029 F: Construction of a Tree
+
+- **Tier**: `Advanced 2 (Adv-2)` | **Judge URL**: [https://atcoder.jp/contests/agc029/tasks/agc029_f](https://atcoder.jp/contests/agc029/tasks/agc029_f)
+- **Constraints**: $N \le 10^5$ vertices; $N - 1$ subsets $E_1, \dots, E_{N-1} \subseteq \{1, \dots, N\}$ with $\sum_{i=1}^{N-1} |E_i| \le 2 \cdot 10^5$; Time Limit $2.0\text{ s}$.
+- **Problem Summary**: You are given $N - 1$ vertex subsets $E_1, \dots, E_{N-1}$. For each $i \in \{1, \dots, N - 1\}$, choose two distinct vertices $u_i, v_i \in E_i$ and add the undirected edge $(u_i, v_i)$ so that the resulting $N - 1$ edges form a **spanning tree** on $\{1, \dots, N\}$, or output `-1` if no such tree exists.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Root the Tree at Vertex 1 to Create a Bijection"}
+
+Suppose a valid spanning tree $T$ exists. Root $T$ at vertex $r = 1$. Then every non-root vertex $v \in \{2, \dots, N\}$ has a **unique parent edge** $e_i = (u_i \to v)$ entering $v$! What does the correspondence $E_i \longleftrightarrow v_i$ form in the bipartite incidence graph between $\{E_1, \dots, E_{N-1}\}$ and $\{2, \dots, N\}$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Matching Gives the Child v_i; BFS from Root 1 Gives the Parent u_i"}
+
+First find a perfect matching $M$ of size $N - 1$ between $\{E_1, \dots, E_{N-1}\}$ and $\{2, \dots, N\}$ (excluding root $1$!). Let $v_i = M(E_i) \in E_i \setminus \{1\}$ be the matched child for hyperedge $E_i$. To avoid cycles, start a BFS queue with visited set $V_{\text{vis}} = \{1\}$: whenever a visited vertex $u$ belongs to an unused hyperedge $E_i$, set $E_i$'s edge to $(u, M(E_i))$ and push $M(E_i)$ into the queue!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #054 AGC 029 F: Construction of a Tree"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+By Rado's Theorem / Hall's Condition on Graphic Matroids, $N - 1$ hyperedges $E_1, \dots, E_{N-1}$ can realize a spanning tree if and only if every non-empty subset $S \subseteq \{1, \dots, N-1\}$ spans at least $|S| + 1$ vertices:
+
+$$\forall \emptyset \neq S \subseteq \{1, \dots, N - 1\}, \qquad \left| \bigcup_{i \in S} E_i \right| \ge |S| + 1.$$
+
+Rooting at vertex $1$ turns this $+1$ surplus into a **standard bipartite perfect matching** on $V \setminus \{1\}$ plus a **single BFS connectivity sweep**!
+
+#### Step 2: Intermediate Algebraic Representation
+
+1. Build bipartite graph $G = (L \sqcup R, E_{\text{bip}})$ with $L = \{E_1, \dots, E_{N-1}\}$ ($N - 1$ hyperedges) and $R = \{2, 3, \dots, N\}$ ($N - 1$ non-root vertices), connecting $(E_i, v)$ whenever $v \in E_i$ and $v \ge 2$.
+2. If $\nu(G) < N - 1$, no tree can exist (output `-1`).
+3. Otherwise, let $M(E_i) = v_i \in \{2, \dots, N\}$ be the perfect matching. Seed a BFS queue at $u = 1$. Whenever $u$ is popped, for every unused hyperedge $E_i \ni u$, orient $E_i$ as $(u, v_i)$, mark $E_i$ used, and push $v_i = M(E_i)$ into the BFS queue.
+
+#### Step 3: Reverse-Engineering Scratchpad (Proof that BFS Never Lies)
+
+Wait—what if our BFS stalls before visiting all $N - 1$ hyperedges, even though *some other* perfect matching $M'$ might have worked?
+**Theorem**: If the BFS stalls with unvisited hyperedge set $S_{\text{unvis}} \neq \emptyset$, then **no spanning tree exists for ANY matching**!
+*Proof*: Since $M$ is a bijection between $L$ and $R$, the set of unvisited vertices $V_{\text{unvis}} = \{ M(E_i) : i \in S_{\text{unvis}} \}$ has size $|V_{\text{unvis}}| = |S_{\text{unvis}}|$. Because the BFS stalled, **no** hyperedge $E_i$ ($i \in S_{\text{unvis}}$) contains any visited vertex in $V \setminus V_{\text{unvis}}$. Therefore:
+
+$$\bigcup_{i \in S_{\text{unvis}}} E_i \subseteq V_{\text{unvis}} \implies \left| \bigcup_{i \in S_{\text{unvis}}} E_i \right| \le |V_{\text{unvis}}| = |S_{\text{unvis}}| < |S_{\text{unvis}}| + 1,$$
+
+which directly violates Rado's tree condition ($|S_{\text{unvis}}|$ edges confined inside $\le |S_{\text{unvis}}|$ vertices *must* contain a cycle)!
+
+```cpp
+// Core Modelling Snippet for #054 (AGC 029 F Construction of a Tree)
+// Sets E_sets[1..N-1] contain vertices in 1..N.
+bool solve_agc029f(int N, const vector<vector<int>>& E_sets, vector<pair<int,int>>& ans) {
+    int S = 0, T = 2 * N - 1;
+    Dinic Flow(T + 1);
+    vector<vector<int>> belongs_to(N + 1);
+    for (int i = 1; i <= N - 1; ++i) {
+        Flow.add_edge(S, i, 1);
+        for (int v : E_sets[i]) {
+            belongs_to[v].push_back(i);
+            if (v >= 2) Flow.add_edge(i, (N - 1) + (v - 1), 1);
+        }
+    }
+    for (int v = 2; v <= N; ++v) Flow.add_edge((N - 1) + (v - 1), T, 1);
+    if (Flow.max_flow(S, T) < N - 1) return false;
+
+    vector<int> match_v(N, 0);
+    for (int i = 1; i <= N - 1; ++i) {
+        for (auto& e : Flow.adj[i]) {
+            if (e.to >= N && e.to < T && e.cap == 0) {
+                match_v[i] = (e.to - (N - 1)) + 1;
+            }
+        }
+    }
+    ans.resize(N);
+    vector<int> used_set(N, 0);
+    queue<int> q;
+    q.push(1);
+    int used_cnt = 0;
+    while (!q.empty()) {
+        int u = q.front(); q.pop();
+        for (int i : belongs_to[u]) {
+            if (!used_set[i]) {
+                used_set[i] = 1;
+                ++used_cnt;
+                int v = match_v[i];
+                ans[i] = {u, v};
+                q.push(v);
+            }
+        }
+    }
+    return used_cnt == N - 1;
+}
+```
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+
+- **Toy Trace ($N = 3$, $E_1 = \{2, 3\}, E_2 = \{2, 3\}$)**:
+  - Matching $M$ pairs $E_1 \leftrightarrow 2$ and $E_2 \leftrightarrow 3$ ($\nu = 2 = N - 1$).
+  - However, vertex $1$ belongs to zero hyperedges (`belongs_to[1]` is empty), so the BFS queue pops $1$ and immediately terminates with `used_cnt = 0 < 2`, outputting `-1`!
+- **Failure-Mode Guard**:
+  Never add bipartite matching edges to vertex $1$! Vertex $1$ must remain unmatched in $R$ so that it acts as the root of the tree and seeds the BFS.
+- **Complexity**: $O(\sum |E_i| \sqrt{N})$ for Hopcroft–Karp / Dinic + $O(\sum |E_i|)$ for the BFS ($\approx 0.15\text{ s}$).
+::::
+
+---
+
+### `#055` — Codeforces 1592F1: Alice and Recoloring 1 *(with Bridge to `CF 1592F2`)*
+
+- **Tier**: `Mastery 1 (Mas-1)` | **Judge URL**: [https://codeforces.com/problemset/problem/1592/F1](https://codeforces.com/problemset/problem/1592/F1)
+- **Constraints**: $N, M \le 500$; $N \times M$ grid of `W` ($0$) and `B` ($1$) cells; Time Limit $2.0\text{ s}$.
+- **Problem Summary**: You want to turn all `B` ($1$) cells into `W` ($0$) cells using four types of subgrid bit-flip (XOR $1$) operations:
+
+  - **Op 1 (Cost 1)**: Flip top-left prefix rectangle $[1..r] \times [1..c]$.
+  - **Op 2 (Cost 2)**: Flip bottom-left rectangle $[r..N] \times [1..c]$.
+  - **Op 3 (Cost 4)**: Flip top-right rectangle $[1..r] \times [c..M]$.
+  - **Op 4 (Cost 3 in F1; Cost 2 in F2)**: Flip bottom-right suffix rectangle $[r..N] \times [c..M]$.
+
+  Find the minimum total cost to make all cells $0$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Eliminate Redundant Operations & Apply 2D XOR Difference"}
+
+First, notice that Op 2 (cost $2$) is equivalent to two Op 1 flips ($[1..N, 1..c] \oplus [1..r-1, 1..c]$, cost $1+1=2$), and Op 3 (cost $4$) is equivalent to two Op 1 flips (cost $2 < 4$), so **Op 2 and Op 3 are completely useless**! Now apply the **2D Suffix XOR Difference Transform** $c_{r,c} = a_{r,c} \oplus a_{r+1,c} \oplus a_{r,c+1} \oplus a_{r+1,c+1}$ (where $a_{r,c} = 0$ outside $[1..N] \times [1..M]$). What do Op 1 and Op 4 do to the matrix $c$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Single-Cell Toggle vs. 4-Corner Rectangle Toggle in c"}
+
+In the transformed matrix $c$:
+
+- **Op 1 at $(r, c)$** (cost $1$) toggles **only the single entry $c_{r,c}$**!
+- **Op 4 at $(r+1, c+1)$** ($1 \le r < N, 1 \le c < M$) toggles the **four corners** $c_{r,c}, c_{r,M}, c_{N,c}, c_{N,M}$!
+
+In **F1** (where Op 4 costs $3$), when does Op 4 beat Op 1, and why can you never profitably use Op 4 *twice*? (And what happens in **F2** when Op 4 costs $2$?)
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #055 CF 1592F1 (& F2 Bridge)"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+Whenever operations toggle prefix/suffix rectangles on a binary matrix, apply the **2D XOR Difference Transform**:
+
+$$c_{r,c} := a_{r,c} \oplus a_{r+1,c} \oplus a_{r,c+1} \oplus a_{r+1,c+1} \qquad (1 \le r \le N, \; 1 \le c \le M),$$
+
+with boundary convention $a_{r,c} = 0$ for $r > N$ or $c > M$. Notice that $a \equiv 0 \iff c \equiv 0$.
+
+#### Step 2: Intermediate Algebraic Representation
+
+Under this bijection between $a$ and $c$:
+
+1. **Op 1 on $[1..r] \times [1..c]$ (cost $1$)** flips **only the single cell $c_{r,c}$**! Thus, using only Op 1, the exact cost to clear $c$ is $\text{BaseCost} = \sum_{r=1}^N \sum_{c=1}^M c_{r,c}$.
+2. **Op 4 on $[r+1..N] \times [c+1..M]$** ($1 \le r < N, 1 \le c < M$) simultaneously flips the **four entries**:
+
+   $$c_{r,c}, \quad c_{r,M}, \quad c_{N,c}, \quad c_{N,M}.$$
+
+Now compare **F1 (Op 4 costs $3$)** and **F2 (Op 4 costs $2$)**:
+
+- **In F1 (Op 4 costs $3$)**:
+  - One Op 4 at $(r, c)$ can flip at most $4$ ones in $c$ for cost $3$, saving at most $4 - 3 = 1$ compared to four Op 1s—and it saves $+1$ **if and only if all four entries $c_{r,c} = c_{r,M} = c_{N,c} = c_{N,M} = 1$**!
+  - What if we use Op 4 **twice**, at $(r_1, c_1)$ and $(r_2, c_2)$? Both operations flip $c_{N,M}$, so they cancel out on $c_{N,M}$ and flip at most $6$ distinct cells for cost $3 + 3 = 6$—saving $6 - 6 = 0$! In general, $k \ge 2$ uses of Op 4 never save more than $1$. Thus in **F1**, we use Op 4 **at most once** ($O(NM)$ scan)!
+- **Bridge to F2 (`CF 1592F2`, where Op 4 costs $2$)**:
+  - When Op 4 costs $2$, if $c_{r,c} = c_{r,M} = c_{N,c} = 1$, applying Op 4 at $(r, c)$ clears the $3$ cells $c_{r,c}, c_{r,M}, c_{N,c}$ (and toggles $c_{N,M}$), reducing the sum $c_{r,c} + c_{r,M} + c_{N,c}$ from $3$ to $0$ at cost $2$ (**saving $+1$ per operation**), provided no two chosen $(r, c)$ share a row $r$ or column $c$!
+  - Thus in **F2**, we build a bipartite graph between Rows $L = \{1, \dots, N-1\}$ and Columns $R = \{1, \dots, M-1\}$ with edge $(r, c)$ iff $c_{r,c} = c_{r,M} = c_{N,c} = 1$, find $\nu = \operatorname{MaxMatching}(G)$, and update $c_{N,M} \gets c_{N,M} \oplus (\nu \bmod 2)$!
+
+#### Step 3: Reverse-Engineering Scratchpad (Code for Both F1 and F2)
+
+```cpp
+// Core Modelling Snippet for #055 (CF 1592F1 in O(NM) & CF 1592F2 via Bipartite Matching)
+int solve_f1(int N, int M, const vector<string>& grid) {
+    vector<vector<int>> a(N + 2, vector<int>(M + 2, 0));
+    for (int r = 1; r <= N; ++r)
+        for (int c = 1; c <= M; ++c)
+            a[r][c] = (grid[r - 1][c - 1] == 'B');
+
+    vector<vector<int>> diff(N + 1, vector<int>(M + 1, 0));
+    int base_cost = 0;
+    for (int r = 1; r <= N; ++r) {
+        for (int c = 1; c <= M; ++c) {
+            diff[r][c] = a[r][c] ^ a[r + 1][c] ^ a[r][c + 1] ^ a[r + 1][c + 1];
+            base_cost += diff[r][c];
+        }
+    }
+    for (int r = 1; r < N; ++r) {
+        for (int c = 1; c < M; ++c) {
+            if (diff[r][c] && diff[r][M] && diff[N][c] && diff[N][M]) {
+                return base_cost - 1; // At most one cost-3 op can ever save +1!
+            }
+        }
+    }
+    return base_cost;
+}
+```
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+
+- **Toy Trace ($2 \times 2$ all-`B` grid)**: Only $a_{1,1}=a_{1,2}=a_{2,1}=a_{2,2}=1$, so $c_{2,2} = 1$ and all other $c_{r,c} = 0$. Base cost $= 1$ (one Op 1 on $[1..2] \times [1..2]$).
+- **Failure-Mode Guard**:
+  Note index shift: Op 4 on suffix $[r+1..N] \times [c+1..M]$ toggles row $r$ (not $r+1$!) and column $c$ (not $c+1$!) in the bottom-right difference array $c_{r,c} = a_{r,c} \oplus a_{r+1,c} \oplus a_{r,c+1} \oplus a_{r+1,c+1}$.
+- **Complexity**: $O(NM)$ for F1; $O(NM\sqrt{N + M})$ via Hopcroft–Karp for F2.
+::::
+
+---
+
+### `#056` — Codeforces 1783F: Double Sort II
+
+- **Tier**: `Mastery 2 (Mas-2)` | **Judge URL**: [https://codeforces.com/problemset/problem/1783/F](https://codeforces.com/problemset/problem/1783/F)
+- **Constraints**: $N \le 3000$; two permutations $a, b$ of $\{1, \dots, N\}$; Time Limit $2.0\text{ s}$.
+- **Problem Summary**: Given two permutations $a$ and $b$ of $\{1, \dots, N\}$, in one operation you may choose a value $v \in \{1, \dots, N\}$ and simultaneously swap $a_v$ with the current position of $v$ in $a$, **and** swap $b_v$ with the current position of $v$ in $b$ (placing $v$ into its home position $a_v = v$ and $b_v = v$ in both permutations!). Minimize the number of operations needed to sort both $a$ and $b$, and print the chosen values $v$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Maximize Untouched Elements Instead of Minimizing Operations"}
+
+Notice that operating on value $v$ immediately puts $v$ into its sorted slot $a_v = v, b_v = v$ and splices $v$ out of its permutation cycle in both $a$ and $b$. In a single permutation $a$ with a cycle $C$ of length $L$, you only need $L - 1$ operations to sort the cycle—leaving **$1$ element of $C$ completely untouched**!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Cycle-to-Cycle Bipartite Matching"}
+
+Decompose $a$ into disjoint cycles $A_1, \dots, A_{p}$ and $b$ into disjoint cycles $B_1, \dots, B_{q}$. A subset of values $U \subseteq \{1, \dots, N\}$ can be left **untouched** if and only if $U$ contains **at most $1$ element from each cycle $A_i$** and **at most $1$ element from each cycle $B_j$**! What is each element $v \in \{1, \dots, N\}$ in the bipartite graph between $\{A_1, \dots, A_p\}$ and $\{B_1, \dots, B_q\}$?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — #056 CF 1783F: Double Sort II"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+Each element $v \in \{1, \dots, N\}$ belongs to a unique cycle $\operatorname{cyc}_a(v)$ in permutation $a$ and a unique cycle $\operatorname{cyc}_b(v)$ in permutation $b$. Leaving an element $v$ untouched requires it to be the unique surviving representative of $\operatorname{cyc}_a(v)$ **and** of $\operatorname{cyc}_b(v)$—a **Dual Equivalence-Class Incidence** ($\implies$ Bipartite Matching where elements $v$ are edges!).
+
+#### Step 2: Intermediate Algebraic Representation
+
+Let $x_v \in \{0, 1\}$ indicate whether element $v \in \{1, \dots, N\}$ is left **untouched** (never operated on). Because operating on all elements of a cycle except at most one automatically places the last element into its correct home position, a choice of untouched elements $x_v$ sorts both $a$ and $b$ if and only if:
+
+$$\sum_{v \in A_i} x_v \le 1 \quad (\forall \text{ cycle } A_i \text{ of } a), \qquad \sum_{v \in B_j} x_v \le 1 \quad (\forall \text{ cycle } B_j \text{ of } b).$$
+
+Therefore, the minimum number of operations is:
+
+$$\text{Min Ops} = N - \max \sum_{v=1}^N x_v = N - \nu(G).$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+1. Decompose $a$ into cycles $A_1, \dots, A_p$ ($L$) and $b$ into cycles $B_1, \dots, B_q$ ($R$).
+2. For each value $v \in \{1, \dots, N\}$, add a bipartite edge $e_v = (\operatorname{cyc}_a(v), \operatorname{cyc}_b(v))$ with label $v$.
+3. Run Dinic / Hopcroft–Karp to find a maximum matching $M^*$ of size $\nu(G)$.
+4. The matched edges $e_v \in M^*$ are the elements we **never touch**. Output the remaining $N - |M^*|$ **unmatched** values $v$ in any order!
+
+```cpp
+// Core Modelling Snippet for #056 (CF 1783F Double Sort II)
+vector<int> solve_double_sort(int N, const vector<int>& a, const vector<int>& b) {
+    vector<int> cycA(N + 1, 0), cycB(N + 1, 0);
+    int cntA = 0, cntB = 0;
+    for (int i = 1; i <= N; ++i) {
+        if (!cycA[i]) {
+            ++cntA;
+            for (int cur = i; !cycA[cur]; cur = a[cur - 1]) cycA[cur] = cntA;
+        }
+        if (!cycB[i]) {
+            ++cntB;
+            for (int cur = i; !cycB[cur]; cur = b[cur - 1]) cycB[cur] = cntB;
+        }
+    }
+    int S = 0, T = cntA + cntB + 1;
+    Dinic Flow(T + 1);
+    for (int i = 1; i <= cntA; ++i) Flow.add_edge(S, i, 1);
+    for (int j = 1; j <= cntB; ++j) Flow.add_edge(cntA + j, T, 1);
+
+    vector<int> edge_idx(N + 1);
+    for (int v = 1; v <= N; ++v) {
+        edge_idx[v] = Flow.add_edge(cycA[v], cntA + cycB[v], 1);
+    }
+    Flow.max_flow(S, T);
+
+    vector<int> ops;
+    for (int v = 1; v <= N; ++v) {
+        // If edge for v was NOT saturated in the matching, we must operate on v!
+        if (Flow.edges[edge_idx[v]].cap == 1) {
+            ops.push_back(v);
+        }
+    }
+    return ops;
+}
+```
+
+#### Step 4: Hand-Checkable Toy Trace & Failure-Mode Guard
+
+- **Toy Trace ($N = 3$, $a = [2, 1, 3]$, $b = [1, 3, 2]$)**:
+  - Cycles of $a$: $A_1 = \{1, 2\}$, $A_2 = \{3\}$. Cycles of $b$: $B_1 = \{1\}$, $B_2 = \{2, 3\}$.
+  - Edges: $e_1 = (A_1, B_1)$, $e_2 = (A_1, B_2)$, $e_3 = (A_2, B_2)$.
+  - Maximum matching $M^* = \{e_1, e_3\}$ has size $2$, leaving $\{1, 3\}$ untouched and operating only on $v = 2$ ($3 - 2 = 1$ operation!).
+- **Failure-Mode Guard**:
+  1. Do **not** output the matched edges—the matched edges are the untouched elements, so you must output the $N - |M^*|$ **unmatched** elements!
+  2. Notice that the order in which you operate on the $N - |M^*|$ unmatched elements does **not** matter, because each operation on $v$ swaps $v$ with whatever element currently sits at index $v$, splicing $v$ into a 1-cycle $(v)$ while preserving the cycle structure of all remaining elements!
+- **Complexity**: $|V| \le 2N + 2$, $|E| = 3N$. Dinic runs in $O(N\sqrt{N})$ time ($< 0.03\text{ s}$).
+::::
+
+---
+
+## 7. Chapter 7 Verification Checklist & Failure Mode Summary
+
+Before submitting any Row–Column, $b$-Matching, Birkhoff–von Neumann, or Bipartite Edge Coloring solution, run through this 6-point verification checklist:
+
+1. **Decoupled vs. Coupled Permutation Check (`FM-07A`, `#049`)**:
+   Are row permutations $\sigma$ and column permutations $\tau$ chosen independently ($P A Q$), or are they locked together ($\sigma = \tau$, $P A P^T$)? Bipartite Row–Column matching applies only when row and column operations are decoupled.
+2. **Hard (`#`) vs. Soft (`x`) Obstacle Segmentation (`FM-07B`, `POJ 2226`, `[HEOI2016] 游戏`)**:
+   Did you split row/column segments **only** at hard obstacles `#` that block line-of-sight, while merely omitting edges (without splitting segments!) at soft obstacles `x`?
+3. **Cell-as-Edge vs. Shared-Border-as-Vertex (`FM-07C`, `CF 1404E — Bricks`)**:
+   When covering `#` cells with variable-length $1 \times k$ and $k \times 1$ bricks, did you place **shared unit borders** (glues) as vertices in $L$ and $R$ and L-shaped corner intersections as conflict edges, rather than trying to match cells directly?
+4. **3D Axis Rotation & Branch-and-Bound Pruning (`FM-07D`, `#052 [HNOI2013] 消毒`)**:
+   When $A \cdot B \cdot C \le 5000$, did you sort $(A, B, C)$ so $A = \min(A, B, C) \le 17$ before running the $2^A$ bitmask loop, and prune whenever $\operatorname{popcount}(\text{mask}) + \text{current\_matching} \ge \text{best\_ans}$?
+5. **Self-Loop & Complement Extraction Guards (`FM-07E`, `#051 CF 387D`, `#056 CF 1783F`)**:
+   In `CF 387D`, did you count the center self-loop $c \to c$ once ($2N - 1$ center edges, not $2N$) while keeping self-loops $u \to u$ ($u \neq c$) in the bipartite matching? In `CF 1783F`, did you output the $N - \nu(G)$ **unmatched** elements rather than the matched ones?
+6. **Edge Coloring Complexity Engine Selection (`FM-07F`, `CF 600 F`, `AGC 037 D`)**:
+   - If $N, M, \Delta \le 100$ (`ABC 317 G`, `AGC 037 D`): $O(\Delta E\sqrt{V})$ iterative Dinic peeling is simplest and fast enough.
+   - If $V \le 2000, E \le 10^5$ (`CF 600 F`): Dinic peeling TLEs; use **$O(VE)$ online Kempe-chain recoloring**.
+   - If $V, E, \Delta \le 10^5$: use **$O(E \log \Delta)$ Eulerian circuit halving**.
+
+---
+
+## 8. Chapter Revision Summary
+
+- **Row–Column Incidence Duality**: An $H \times W$ grid or binary matrix compiles to a bipartite graph on $H + W$ vertices where active cells $(r, c)$ are edges $(R_r, C_c)$. Non-attacking rooks correspond to matchings $\nu(G)$; minimum row/column line covers correspond to König vertex covers $\tau(G) = \nu(G)$.
+- **Degree-Constrained $b$-Matchings**: Assign terminal capacities $S \xrightarrow{a_u} u \xrightarrow{1} v \xrightarrow{b_v} T$ directly in Dinic rather than cloning vertices.
+- **Birkhoff–von Neumann Theorem**: Every $k$-regular bipartite multigraph satisfies Hall's condition $|N(A)| \ge \frac{k|A|}{k} = |A|$ and decomposes into $k$ edge-disjoint perfect matchings, enabling 3-phase Clos/Beneš grid sorting (`Row -> Col -> Row` in `AGC 037 D`).
+- **König's Line Coloring Theorem ($\chi'(G) = \Delta$)**: Every bipartite multigraph with maximum degree $\Delta$ is $\Delta$-edge-colorable in $O(VE)$ time via online Kempe-chain alternating paths or $O(E \log \Delta)$ time via Eulerian circuit halving.

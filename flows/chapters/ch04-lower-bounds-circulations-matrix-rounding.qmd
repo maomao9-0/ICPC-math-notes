@@ -1,0 +1,903 @@
+---
+title: "Chapter 4 — Flows with Demands, Lower-Bound Circulations, Hoffman's Theorem, and Matrix Rounding"
+subtitle: "The Affine Slack Shift $f(e) = l(e) + \\tilde{f}(e)$, Pre-Injected Nodal Imbalances $M(v)$, the Four Variants of Bounded Flows (`上下界网络流`), Constructive Hoffman Violation Certificates, and Contingency-Table Rounding"
+---
+
+## Prerequisites & Learning Objectives
+
+- **Prerequisites**: Chapter 1 (Kirchhoff conservation, residual networks, Dinic's algorithm, Integrality Theorem), Chapter 2 (residual reachability $S_{\min}^*$, minimum cut extraction), and Chapter 3 (vertex splitting, time-expanded DAGs, and Rank-2 bipartite factorization).
+- **Learning Objectives**:
+  1. Derive the **Affine Slack Shift** $f(e) = l(e) + \tilde{f}(e)$ from first principles, transforming box-constrained flows $l(e) \le f(e) \le u(e)$ with vertex demands $b(v)$ into standard $[0, u(e) - l(e)]$ flows with pre-injected nodal excess $M(v) = \sum_{e \in \delta^-(v)} l(e) - \sum_{e \in \delta^+(v)} l(e) - b(v)$.
+  2. Master the exact **2-Phase Compilation Protocols** for all four lower-bound flow variants (`上下界网络流`):
+     - **Variant 1**: Sourceless Feasible Circulation (`无源汇上下界可行流`, `LOJ #115`).
+     - **Variant 2**: Feasible $s$-$t$ Flow with Lower Bounds (`有源汇上下界可行流`) via the feedback arc $e_{\text{fb}} = (t \to s, [0, \infty))$.
+     - **Variant 3**: Maximum $s$-$t$ Flow with Lower Bounds (`有源汇上下界最大流`, `LOJ #116`) via $F_{\max} = f_0 + \text{MaxFlow}_{\tilde{\mathcal{N}}}(s, t)$.
+     - **Variant 4**: Minimum $s$-$t$ Flow with Lower Bounds (`有源汇上下界最小流`, `LOJ #117`) via backward residual cancellation $F_{\min} = f_0 - \text{MaxFlow}_{\tilde{\mathcal{N}}}(t, s)$.
+  3. Prove **Hoffman's Circulation Theorem (1960)** using Max-Flow Min-Cut duality on the auxiliary network $\tilde{\mathcal{N}}$, and extract an explicit **maximum-violation witness subset** $X^* = S_{\min}^* \setminus \{S^*\}$ whenever Phase 1 fails.
+  4. Compile three major non-graph problem families—**Real-Valued Matrix / Contingency-Table Rounding** (`Baranyai's Rounding Lemma`), **Mixed-Graph Eulerian Circuit Orientation**, and **DAG Minimum Path/Fleet Cover**—into lower-bound circulations without guesswork.
+  5. Guard against the canonical implementation bugs: **Lower-Bound Sign Inversion** ($M(v)$ direction swap), **Feedback-Edge Leakage** (failing to zero out both half-edges of $t \to s$ before Phase 2), **Slack Offset Omission (`FM-05`)**, and **Mixed Eulerian Parity Omission (`FM-06`)**.
+
+---
+
+## 1. Motivation: When Edges Have Minimum Quotas and Vertices Have Mandatory Balances
+
+In Chapters 1 through 3, every capacity constraint had the one-sided box form $0 \le f(e) \le u(e)$ and every interior vertex obeyed homogeneous conservation $\text{div}_f(v) = 0$. Crucially, the all-zero flow $f \equiv 0$ was always a valid starting point in the feasible polytope, allowing Dinic's algorithm to start at $f = 0$ and greedily augment towards optimality.
+
+In many contest and operations-research models, however, $f \equiv 0$ is **strictly infeasible**:
+
+1. **Pressurized Cooling Pipes & Supply Contracts (`ZOJ 2314`)**: Every pipe $e = (u \to v)$ in a closed nuclear reactor loop must carry at least $l(e) > 0$ liters/sec of coolant to prevent overheating, while never exceeding its burst limit $u(e)$.
+2. **Mandatory Edge/Vertex Coverage on a DAG (`Luogu P4843 清理雪道`)**: A fleet of snowplows must traverse a mountain trail network so that *every* ski trail $e$ is cleared **at least once** ($1 \le f(e) \le \infty$), using the **minimum** possible number of snowplow runs from the summit $s$ to the base lodge $t$.
+3. **Matrix & Statistical Table Rounding (`POJ 2396`, `BZOJ 3698`)**: Each cell $X_{i,j}$ of an integer matrix must lie in a prescribed interval $[L_{i,j}, R_{i,j}]$ (or $\{\lfloor A_{i,j} \rfloor, \lceil A_{i,j} \rceil\}$), while row and column sums must fall into target intervals $[\underline{r}_i, \overline{r}_i]$ and $[\underline{c}_j, \overline{c}_j]$.
+4. **Daily and Cumulative Quotas (`[ZJOI2010] Shoot the Bullet`)**: On day $i$, a photographer takes between $L_{i,j}$ and $R_{i,j}$ photos of subject $j$, capped at $D_i$ total photos on day $i$, while guaranteeing at least $G_j$ cumulative photos of subject $j$ across the entire season.
+
+Whenever decision variables are bounded from **both below and above** ($l(e) \le f(e) \le u(e)$ with $l(e) > 0$) or vertices have mandatory net demands $b(v) \neq 0$, a single call to standard `dinic(s, t)` cannot even start: the zero flow violates every positive lower bound. Nor can we simply run standard Max-Flow with capacities $u(e)$ and "hope" the flow on $e$ exceeds $l(e)$—maximizing total throughput frequently starves side branches that have mandatory minimum quotas.
+
+To compile lower-bound constraints into a standard Dinic solver, we need an algebraic transformation that shifts the origin of the flow polytope from $0$ to $l(e)$.
+
+---
+
+## 2. The Affine Slack Shift $f(e) = l(e) + \tilde{f}(e)$ and the Four Lower-Bound Flow Variants (`上下界网络流`)
+
+### 2.1 Step 1 & Step 2: Algebraic Derivation of Pre-Injected Nodal Excess $M(v)$
+
+Consider a directed network $\mathcal{N} = (V, E, l, u, b)$ where:
+
+- Each directed edge $e = (u \to v) \in E$ has an integer lower bound $l(e)$ and upper bound $u(e)$ satisfying $0 \le l(e) \le u(e)$. (If $l(e) > u(e)$ for any edge, the system is immediately infeasible.)
+- Each vertex $v \in V$ has a prescribed **net demand/divergence** $b(v) \in \mathbb{Z}$, defined as mandatory net outflow minus inflow:
+  $$\text{div}_f(v) \triangleq \sum_{e \in \delta^+(v)} f(e) - \sum_{e \in \delta^-(v)} f(e) = b(v) \qquad \forall v \in V$$
+  In a pure sourceless circulation, $b(v) = 0$ for all $v \in V$. When $b(v) > 0$, vertex $v$ is a net producer (must inject $b(v)$ units into the network); when $b(v) < 0$, vertex $v$ is a net consumer (must absorb $-b(v)$ units from the network). Since every edge $e = (u \to v)$ contributes $+f(e)$ to $\text{div}_f(u)$ and $-f(e)$ to $\text{div}_f(v)$, summing over all $v \in V$ yields the necessary global conservation check:
+  $$\sum_{v \in V} b(v) = \sum_{v \in V} \text{div}_f(v) = 0.$$
+
+#### The Affine Slack Shift
+
+To restore standard zero-lower-bound box constraints, we decompose the physical flow $f(e)$ on each edge $e \in E$ into its mandatory **baseline quota** $l(e)$ plus a non-negative **free slack flow** $\tilde{f}(e)$:
+$$f(e) = l(e) + \tilde{f}(e), \qquad 0 \le \tilde{f}(e) \le u(e) - l(e) \triangleq \tilde{c}(e).$$
+
+Now substitute $f(e) = l(e) + \tilde{f}(e)$ directly into the vertex balance equation $\sum_{e \in \delta^+(v)} f(e) - \sum_{e \in \delta^-(v)} f(e) = b(v)$:
+$$\sum_{e \in \delta^+(v)} \big(l(e) + \tilde{f}(e)\big) - \sum_{e \in \delta^-(v)} \big(l(e) + \tilde{f}(e)\big) = b(v).$$
+
+Separate the unknown slack variables $\tilde{f}(e)$ on the left-hand side and move all known constants $l(e)$ and $b(v)$ to the right-hand side:
+$$\underbrace{\sum_{e \in \delta^+(v)} \tilde{f}(e) - \sum_{e \in \delta^-(v)} \tilde{f}(e)}_{\text{div}_{\tilde{f}}(v) \text{ (Net Slack Outflow from } v\text{)}} = \underbrace{\sum_{e \in \delta^-(v)} l(e) - \sum_{e \in \delta^+(v)} l(e) - b(v)}_{M(v) \text{ (Pre-Injected Net Excess at } v\text{)}}.$$
+
+We call $M(v)$ the **Pre-Injected Net Excess** (or **Mandatory Baseline Imbalance**) at vertex $v$:
+$$M(v) \triangleq \text{in}_l(v) - \text{out}_l(v) - b(v) = \sum_{e \in \delta^-(v)} l(e) - \sum_{e \in \delta^+(v)} l(e) - b(v).$$
+
+Notice that as long as $\sum_{v \in V} b(v) = 0$, the sum of $M(v)$ across all vertices identically vanishes:
+$$\sum_{v \in V} M(v) = \sum_{e \in E} l(e) - \sum_{e \in E} l(e) - \sum_{v \in V} b(v) = 0.$$
+
+---
+
+### 2.2 Step 3: Mechanical Graph Compilation into Super-Terminals $S^*$ and $T^*$
+
+How do we enforce $\text{div}_{\tilde{f}}(v) = M(v)$ for every $v \in V$ using a standard zero-divergence max-flow solver? Let us trace the physical meaning of $\text{div}_{\tilde{f}}(v) = M(v)$:
+
+1. **Case 1: $M(v) > 0$ (Pre-Injected Surplus at $v$)**:
+   Pre-sending $l(e)$ along every edge delivers $M(v)$ *more* mandatory units into $v$ than are required to leave $v$. To balance the books at $v$, the slack flow $\tilde{f}$ must satisfy $\sum_{e \in \delta^+(v)} \tilde{f}(e) - \sum_{e \in \delta^-(v)} \tilde{f}(e) = M(v) > 0$—that is, **$v$ must emit a net surplus of $M(v)$ units of slack flow out into the rest of the network**.
+   - **Gadget Compilation**: Create an auxiliary **Super-Source $S^*$** and add a directed companion arc $S^* \to v$ with capacity $M(v)$. If this arc is saturated ($\tilde{f}(S^* \to v) = M(v)$), standard conservation at $v$ in the augmented network forces $\sum_{e \in \delta^+(v)} \tilde{f}(e) - \sum_{e \in \delta^-(v)} \tilde{f}(e) = \tilde{f}(S^* \to v) = M(v)$!
+
+2. **Case 2: $M(v) < 0$ (Pre-Injected Deficit at $v$)**:
+   Pre-sending $l(e)$ along every edge drains $|M(v)| = -M(v)$ *more* mandatory units out of $v$ than arrive at $v$. To replenish this deficit, the slack flow $\tilde{f}$ must satisfy $\sum_{e \in \delta^-(v)} \tilde{f}(e) - \sum_{e \in \delta^+(v)} \tilde{f}(e) = -M(v) > 0$—that is, **$v$ must absorb a net inflow of $-M(v)$ units of slack flow from the rest of the network**.
+   - **Gadget Compilation**: Create an auxiliary **Super-Sink $T^*$** and add a directed companion arc $v \to T^*$ with capacity $-M(v) = |M(v)|$. If this arc is saturated ($\tilde{f}(v \to T^*) = -M(v)$), standard conservation at $v$ forces $\sum_{e \in \delta^-(v)} \tilde{f}(e) - \sum_{e \in \delta^+(v)} \tilde{f}(e) = \tilde{f}(v \to T^*) = -M(v)$!
+
+3. **Case 3: $M(v) = 0$ (Pre-Balanced Vertex)**:
+   The mandatory baseline flows already balance at $v$; no companion arc to $S^*$ or $T^*$ is needed.
+
+Define the **Total Mandatory Positive Imbalance**:
+$$\Sigma^+ \triangleq \sum_{v \in V : M(v) > 0} M(v) = \sum_{v \in V : M(v) < 0} \big(-M(v)\big).$$
+
+ Since no companion arc can carry flow exceeding its capacity, $\tilde{f}$ saturates **every** companion arc out of $S^*$ (and consequently **every** companion arc into $T^*$) if and only if the maximum $S^*$-$T^*$ flow in the auxiliary network $\tilde{\mathcal{N}}$ equals $\Sigma^+$.
+
+```{mermaid}
+flowchart LR
+    Sstar["Super-Source S*"] -->|"cap = M(v) (when M(v) > 0)"| v["Surplus Node v\nin_l(v) - out_l(v) > 0"]
+    v -->|"slack cap = u(e) - l(e)"| u["Deficit Node u\nin_l(u) - out_l(u) < 0"]
+    u -->|"cap = -M(u) (when M(u) < 0)"| Tstar["Super-Sink T*"]
+    u -.->|"baseline l(e) pre-sent"| v
+```
+
+> [!CAUTION]
+> **Broken-Gadget Counterexample — Reversing the Sign of $M(v)$**:
+> The single most frequent error in `上下界网络流` is defining $M(v) = \text{out}_l(v) - \text{in}_l(v)$ and wiring $S^* \to v$ when $\text{out}_l(v) > \text{in}_l(v)$.
+>
+> **1-Second Mnemonic Check on a 2-Node Loop**:
+> Suppose $u \to v$ has mandatory bounds $[1, 1]$ (slack capacity $1 - 1 = 0$) and $v \to u$ has free bounds $[0, 1]$ (slack capacity $1$).
+>
+> - Because $1$ mandatory unit is pre-sent along $u \to v$, vertex $v$ receives $1$ unit of baseline flow and **must push $1$ unit of slack flow back from $v$ to $u$** along the free return pipe $v \to u$.
+> - For slack flow in $\tilde{\mathcal{N}}$ to travel from $v$ to $u$, **$S^*$ must inject flow into $v$** ($S^* \to v$, where $\text{in}_l(v) - \text{out}_l(v) = 1 - 0 = +1 > 0$) and **$u$ must drain into $T^*$** ($u \to T^*$, where $\text{in}_l(u) - \text{out}_l(u) = 0 - 1 = -1 < 0$).
+
+---
+
+### 2.3 Complete 2-Phase Protocols for the Four Lower-Bound Flow Variants
+
+When the original network has a designated source $s$ and sink $t$ (`Variants 2, 3, 4`), conservation holds at all interior vertices $v \in V \setminus \{s, t\}$, while $s$ emits net flow $|f|$ and $t$ absorbs net flow $|f|$. How do we reduce an $s$-$t$ flow to a sourceless circulation (`Variant 1`)?
+
+**The Feedback Arc Reduction**: Add a single virtual **feedback arc** $e_{\text{fb}} = (t \to s)$ with lower bound $l(e_{\text{fb}}) = 0$ and upper bound $u(e_{\text{fb}}) = \infty$. Any flow $f_0$ arriving at $t$ from the physical network can now return from $t$ to $s$ along $e_{\text{fb}}$, restoring strict conservation $\text{div}_f(v) = 0$ at **every** vertex $v \in V$ (including $s$ and $t$)! Moreover, the flow carried by the feedback arc is equal to the net $s$-$t$ throughput of the physical network:
+$$|f| = f(e_{\text{fb}}) = \tilde{f}(t \to s) = c_{\tilde{f}}(s \to t)$$
+where $c_{\tilde{f}}(s \to t) = \text{cap}[e_{\text{fb}} \oplus 1]$ is the residual capacity of the reverse half-edge of $e_{\text{fb}}$ after Phase 1.
+
+| Variant | Problem Specification | Phase 1: Feasibility Setup on $\tilde{\mathcal{N}}$ | Phase 2: Optimization & Physical Flow Reconstruction |
+| :--- | :--- | :--- | :--- |
+| **Variant 1: Feasible Circulation** (`无源汇上下界可行流`, `LOJ #115`) | $\text{div}_f(v) = b(v) \;\;\forall v \in V$, $l(e) \le f(e) \le u(e)$. | Add each $e = (u \to v)$ with cap $u(e) - l(e)$; add $S^* \to v$ (cap $M(v)$ if $M(v)>0$) and $v \to T^*$ (cap $-M(v)$ if $M(v)<0$). Run $F_1 = \text{MaxFlow}_{\tilde{\mathcal{N}}}(S^*, T^*)$. | Feasible $\iff F_1 = \Sigma^+$. Physical flow on edge $e_k$ is $f(e_k) = l(e_k) + \tilde{f}(e_k) = l(e_k) + \text{cap}[\text{rev}(e_k)]$. |
+| **Variant 2: Feasible $s$-$t$ Flow** (`有源汇上下界可行流`) | $\text{div}_f(v) = 0 \;\;\forall v \notin \{s, t\}$, $l(e) \le f(e) \le u(e)$. | Add feedback arc $e_{\text{fb}} = (t \to s)$ with $[l, u] = [0, \infty)$ and run Variant 1 Phase 1: $F_1 = \text{MaxFlow}_{\tilde{\mathcal{N}}}(S^*, T^*)$. | Feasible $\iff F_1 = \Sigma^+$. Initial feasible $s$-$t$ flow value is $f_0 = \tilde{f}(e_{\text{fb}}) = \text{cap}[e_{\text{fb}} \oplus 1]$ (**not** $F_1$!). |
+| **Variant 3: Maximum $s$-$t$ Flow** (`有源汇上下界最大流`, `LOJ #116`) | Maximize $|f|$ subject to Variant 2 constraints. | Run Variant 2 Phase 1 (`MaxFlow(S*, T*)` with $t \xrightarrow{[0, \infty)} s$). If $F_1 < \Sigma^+$, return `INFEASIBLE`. | Read $f_0 = \text{cap}[e_{\text{fb}} \oplus 1]$. **Zero out both half-edges of $e_{\text{fb}}$** (`cap[e_fb] = cap[e_fb ^ 1] = 0`). Run $f_{\text{add}} = \text{MaxFlow}_{\tilde{\mathcal{N}}_{\tilde{f}}}(s, t)$. Return **$F_{\max} = f_0 + f_{\text{add}}$**. |
+| **Variant 4: Minimum $s$-$t$ Flow** (`有源汇上下界最小流`, `LOJ #117`) | Minimize $|f|$ subject to Variant 2 constraints. | Run Variant 2 Phase 1 (`MaxFlow(S*, T*)` with $t \xrightarrow{[0, \infty)} s$). If $F_1 < \Sigma^+$, return `INFEASIBLE`. | Read $f_0 = \text{cap}[e_{\text{fb}} \oplus 1]$. **Zero out both half-edges of $e_{\text{fb}}$** (`cap[e_fb] = cap[e_fb ^ 1] = 0`). Push flow **backward from $t$ to $s$**: $f_{\text{sub}} = \text{MaxFlow}_{\tilde{\mathcal{N}}_{\tilde{f}}}(t, s)$. Return **$F_{\min} = f_0 - f_{\text{sub}}$**. |
+
+#### Proving the Three Structural Invariants of Phase 2
+
+1. **Why does Phase 2 preserve every lower bound and interior conservation without touching $S^*$ and $T^*$?**
+   When Phase 1 succeeds ($F_1 = \Sigma^+$), **every** companion arc $S^* \to v$ is completely saturated (forward residual capacity $0$, and no edge enters $S^*$), and **every** companion arc $v \to T^*$ is completely saturated (forward residual capacity $0$, and no edge leaves $T^*$). Thus in the residual network $\tilde{\mathcal{N}}_{\tilde{f}}$, no directed path from $s$ to $t$ (or from $t$ to $s$) can ever visit $S^*$ or $T^*$! Furthermore, every physical edge $e$ has forward residual capacity $u(e) - f(e)$ and reverse residual capacity $f(e) - l(e)$, so augmenting in $\tilde{\mathcal{N}}_{\tilde{f}}$ keeps $f(e) \in [l(e), u(e)]$ invariant.
+2. **Why MUST we zero out BOTH half-edges of $e_{\text{fb}} = (t \to s)$ before Phase 2?**
+   After Phase 1, the forward arc $t \to s$ has residual capacity $\infty$, and the reverse arc $s \to t$ has residual capacity $f_0$.
+   - If we leave `cap[e_fb] = inf` during Variant 4 (`MaxFlow(t, s)`), Dinic will immediately push $\infty$ units directly along $t \to s$, yielding $F_{\min} = -\infty$!
+   - If we leave `cap[e_fb ^ 1] = f_0` during Variant 3 (`MaxFlow(s, t)`), Dinic will push $f_0$ units along the reverse arc $s \to t$, double-counting $f_0$ if we compute $f_0 + \text{MaxFlow}(s, t)$. Zeroing out both `cap[e_fb] = 0` and `cap[e_fb ^ 1] = 0` locks $f_0$ in place so $F_{\max} = f_0 + \text{MaxFlow}(s, t)$ and $F_{\min} = f_0 - \text{MaxFlow}(t, s)$ hold symmetrically.
+3. **Why does $F_{\min} = f_0 - \text{MaxFlow}_{\tilde{\mathcal{N}}_{\tilde{f}}}(t, s)$ find the exact minimum feasible $s$-$t$ flow?**
+   Any augmenting path from $t$ to $s$ in the residual network $\tilde{\mathcal{N}}_{\tilde{f}}$ reduces the net $s \to t$ flow by $1$ unit per unit pushed while keeping $l(e) \le f(e) \le u(e)$ and $\text{div}_f(v) = 0$ ($\forall v \notin \{s, t\}$). By applying the Max-Flow Min-Cut Theorem to $(t, s)$ on $\tilde{\mathcal{N}}_{\tilde{f}}$, no further reduction is possible once $t \not\leadsto s$ in $\tilde{\mathcal{N}}_{\tilde{f}}$, reaching the global minimum:
+   $$F_{\min}(s, t) = \max_{(S, T) \text{ an } s\text{-}t \text{ cut}} \left( \sum_{e \in \delta^+(S)} l(e) - \sum_{e \in \delta^-(S)} u(e) \right).$$
+
+---
+
+### 2.4 Step 4: Worked Numerical Trace (`Variants 2, 3, and 4`) & `FM-05` Trap
+
+Let us trace all three $s$-$t$ variants by hand on a 4-vertex network $V = \{s, a, b, t\}$ with 5 bounded edges:
+
+- $e_1 = (s \to a)$ with $[l_1, u_1] = [2, 5]$ (slack capacity $\tilde{c}_1 = 3$)
+- $e_2 = (s \to b)$ with $[l_2, u_2] = [1, 4]$ (slack capacity $\tilde{c}_2 = 3$)
+- $e_3 = (a \to b)$ with $[l_3, u_3] = [1, 3]$ (slack capacity $\tilde{c}_3 = 2$)
+- $e_4 = (a \to t)$ with $[l_4, u_4] = [1, 4]$ (slack capacity $\tilde{c}_4 = 3$)
+- $e_5 = (b \to t)$ with $[l_5, u_5] = [2, 6]$ (slack capacity $\tilde{c}_5 = 4$)
+
+#### Phase 1: Pre-Injected Imbalances $M(v)$ and Feasibility (`MaxFlow(S*, T*)`)
+
+Add feedback arc $e_{\text{fb}} = (t \to s)$ with $[0, \infty)$. Compute $M(v) = \text{in}_l(v) - \text{out}_l(v)$ from $l = (2, 1, 1, 1, 2, 0)$:
+
+- $M(s) = 0 - (2 + 1) = -3 < 0 \implies$ add companion arc $s \to T^*$ with capacity $3$.
+- $M(a) = 2 - (1 + 1) = 0 \implies$ balanced ($0$).
+- $M(b) = (1 + 1) - 2 = 0 \implies$ balanced ($0$).
+- $M(t) = (1 + 2) - 0 = +3 > 0 \implies$ add companion arc $S^* \to t$ with capacity $3$.
+- Total positive imbalance: $\Sigma^+ = 3$.
+
+Suppose during `MaxFlow(S*, T*)`, Dinic first explores an interior path $S^* \xrightarrow{2} t \xrightarrow{e_{\text{fb}}} s \xrightarrow{e_1} a \xrightarrow{e_4} t$ (Wait—actually $t$ is already near $S^*$, or suppose $M(a)$ had surplus, or suppose we had an extra edge). Here, `MaxFlow(S*, T*)` pushes $3$ units along $S^* \xrightarrow{3} t \xrightarrow{e_{\text{fb}}} s \xrightarrow{3} T^*$, achieving $F_1 = 3 = \Sigma^+$.
+
+- **Feasible $s$-$t$ Flow (`Variant 2`)**: $f_0 = \tilde{f}(e_{\text{fb}}) = 3$, with physical flows $f^{(0)} = l + \tilde{f} = (2, 1, 1, 1, 2)$.
+- **Lock the Feedback Arc**: Set `cap[e_fb] = cap[e_fb ^ 1] = 0`.
+
+#### Phase 2A: Maximum Flow (`Variant 3`)
+
+From $f^{(0)} = (2, 1, 1, 1, 2)$, the remaining forward slack capacities are $\tilde{c} = (3, 3, 2, 3, 4)$. Running `MaxFlow(s, t)` on $\tilde{\mathcal{N}}_{\tilde{f}}$ pushes:
+
+- $3$ units along $s \xrightarrow{e_1} a \xrightarrow{e_4} t$, and
+- $3$ units along $s \xrightarrow{e_2} b \xrightarrow{e_5} t$,
+
+giving $f_{\text{add}} = 6$ and **$F_{\max} = f_0 + f_{\text{add}} = 3 + 6 = 9$**, with physical flows $f^{\max} = l + \tilde{f} = (2+3, 1+3, 1+0, 1+3, 2+3) = (5, 4, 1, 4, 5)$.
+
+#### Phase 2B: Minimum Flow (`Variant 4`)
+
+What if Phase 1 had instead routed $1$ extra unit through the interior (for instance, if an edge had forced $f^{(0)} = (3, 1, 1, 2, 2)$ with $f_0 = 4$)? Then in $\tilde{\mathcal{N}}_{\tilde{f}}$, the reverse arcs $(t \to a)$ and $(a \to s)$ would both have residual capacity $1$. Running `MaxFlow(t, s)` would push $f_{\text{sub}} = 1$ unit backward along $t \to a \to s$, peeling the excess flow back and recovering **$F_{\min} = f_0 - f_{\text{sub}} = 4 - 1 = 3$**!
+
+> [!WARNING]
+> **Broken-Gadget Counterexample `FM-05` — Lower-Bound Slack Offset Omission Trap**:
+> After Dinic finishes on $\tilde{\mathcal{N}}$, the reverse half-edge `cap[rev(e)]` stores only the **slack flow** $\tilde{f}(e) \in [0, u(e) - l(e)]$, **not** the physical flow $f(e)$!
+>
+> - **Edge Reconstruction Trap**: Printing `cap[rev(e)]` directly instead of $l(e) + \text{cap}[\text{rev}(e)]$ under-reports every edge flow by $l(e)$ (`ZOJ 2314`, `POJ 2396`).
+> - **Source-Cut / Total-Flow Offset Trap**: If you compute the $s$-$t$ flow value by summing `cap[rev(e)]` over edges leaving $s$ without adding $\sum_{e \in \delta^+(s)} l(e) - \sum_{e \in \delta^-(s)} l(e)$, your answer omits the pre-sent baseline flow! Reading $f_0 = \text{cap}[e_{\text{fb}} \oplus 1]$ directly from the feedback arc's reverse edge avoids this bug because $l(e_{\text{fb}}) = 0$, so $f(e_{\text{fb}}) = 0 + \tilde{f}(e_{\text{fb}})$ already includes all baseline flow cycling through $t \to s$.
+
+---
+
+## 3. Hoffman's Circulation Theorem & Extracting Infeasibility Certificates from $S_{\min}^*$
+
+When does a sourceless network $\mathcal{N} = (V, E, l, u)$ with $0 \le l(e) \le u(e)$ admit a feasible circulation ($\text{div}_f(v) = 0 \;\;\forall v \in V$)? And when Phase 1 fails ($F_1 < \Sigma^+$), can we extract a concrete **combinatorial witness** proving to the user *why* no circulation exists?
+
+### 3.1 Theorem 3.1 (Hoffman's Circulation Theorem, 1960)
+
+A network $\mathcal{N} = (V, E, l, u)$ with $0 \le l(e) \le u(e)$ admits a feasible circulation $f: E \to \mathbb{R}$ satisfying $l(e) \le f(e) \le u(e)$ and $\text{div}_f(v) = 0$ ($\forall v \in V$) **if and only if** for every vertex subset $X \subseteq V$, the total mandatory lower bound entering $X$ does not exceed the total upper-bound capacity leaving $X$:
+$$\sum_{e \in \delta^-(X)} l(e) \le \sum_{e \in \delta^+(X)} u(e) \qquad \forall X \subseteq V$$
+(or equivalently, replacing $X$ by its complement $V \setminus X$, $\sum_{e \in \delta^+(Y)} l(e) \le \sum_{e \in \delta^-(Y)} u(e)$ for all $Y \subseteq V$). Moreover, if $l$ and $u$ are integral and the condition holds, an **integral** circulation $f: E \to \mathbb{Z}$ exists.
+
+#### Proof via Max-Flow Min-Cut Duality on $\tilde{\mathcal{N}}$
+
+1. **Necessity ($\implies$)**: Suppose $f$ is a valid circulation. Summing vertex conservation $\sum_{e \in \delta^+(v)} f(e) - \sum_{e \in \delta^-(v)} f(e) = 0$ over all $v \in X$ cancels all internal edges with both endpoints in $X$, leaving boundary conservation:
+   $$\sum_{e \in \delta^-(X)} l(e) \le \sum_{e \in \delta^-(X)} f(e) = \sum_{e \in \delta^+(X)} f(e) \le \sum_{e \in \delta^+(X)} u(e).$$
+
+2. **Sufficiency ($\impliedby$) & Exact Cut Identity**: By Section 2.2, a feasible circulation exists if and only if $\text{MaxFlow}_{\tilde{\mathcal{N}}}(S^*, T^*) = \Sigma^+$. By the Max-Flow Min-Cut Theorem (Chapter 1), this holds if and only if every $S^*$-$T^*$ cut $(S^* \sqcup X, T^* \sqcup \bar{X})$ in $\tilde{\mathcal{N}}$ (where $\bar{X} = V \setminus X$) has cut capacity $\kappa_{\tilde{\mathcal{N}}}(S^* \sqcup X) \ge \Sigma^+$.
+   Let us expand $\kappa_{\tilde{\mathcal{N}}}(S^* \sqcup X)$ explicitly. An arc of $\tilde{\mathcal{N}}$ crosses from $S^* \sqcup X$ to $T^* \sqcup \bar{X}$ in one of three ways:
+   - From $S^*$ to a vertex $v \in \bar{X}$ with $M(v) > 0$, contributing $M(v)$;
+   - From a vertex $v \in X$ with $M(v) < 0$ to $T^*$, contributing $-M(v)$;
+   - An original network edge $e \in \delta^+(X)$ crossing from $X$ to $\bar{X}$, contributing its slack capacity $u(e) - l(e)$.
+
+   Summing these three contributions gives:
+   $$\kappa_{\tilde{\mathcal{N}}}(S^* \sqcup X) = \sum_{v \in \bar{X} : M(v) > 0} M(v) + \sum_{v \in X : M(v) < 0} \big(-M(v)\big) + \sum_{e \in \delta^+(X)} \big(u(e) - l(e)\big).$$
+   Subtracting $\kappa_{\tilde{\mathcal{N}}}(S^* \sqcup X)$ from $\Sigma^+ = \sum_{v \in X : M(v) > 0} M(v) + \sum_{v \in \bar{X} : M(v) > 0} M(v)$ cancels the $\bar{X}$ sum and combines the two $X$ sums into $\sum_{v \in X} M(v)$:
+   $$\Sigma^+ - \kappa_{\tilde{\mathcal{N}}}(S^* \sqcup X) = \sum_{v \in X} M(v) - \sum_{e \in \delta^+(X)} \big(u(e) - l(e)\big).$$
+   Now substitute $\sum_{v \in X} M(v) = \sum_{v \in X} \big(\text{in}_l(v) - \text{out}_l(v)\big) = \sum_{e \in \delta^-(X)} l(e) - \sum_{e \in \delta^+(X)} l(e)$. The $-\sum_{e \in \delta^+(X)} l(e)$ terms cancel identically, revealing the **Fundamental Duality Identity of Lower-Bound Flows**:
+   $$\boxed{\Sigma^+ - \kappa_{\tilde{\mathcal{N}}}(S^* \sqcup X) = \sum_{e \in \delta^-(X)} l(e) - \sum_{e \in \delta^+(X)} u(e) \qquad \forall X \subseteq V.}$$
+   Therefore, $\kappa_{\tilde{\mathcal{N}}}(S^* \sqcup X) \ge \Sigma^+$ holds for all $X \subseteq V$ if and only if $\sum_{e \in \delta^-(X)} l(e) \le \sum_{e \in \delta^+(X)} u(e)$ holds for all $X \subseteq V$! Calling $Y = \bar{X} = V \setminus X$ reverses $\delta^-(X) = \delta^+(Y)$ and $\delta^+(X) = \delta^-(Y)$, giving the dual form $\sum_{e \in \delta^-(Y)} u(e) \ge \sum_{e \in \delta^+(Y)} l(e)$ for all $Y \subseteq V$. $\blacksquare$
+
+---
+
+### 3.2 Theorem 3.2 (Constructive Infeasibility Certificate from $S_{\min}^*$)
+
+Suppose Phase 1 fails with $\text{MaxFlow}_{\tilde{\mathcal{N}}}(S^*, T^*) = F_1 < \Sigma^+$. Let $S_{\min}^*$ be the set of vertices reachable from $S^*$ in the final residual network $\tilde{\mathcal{N}}_{\tilde{f}^*}$ (found by a single forward BFS/DFS from $S^*$, as in Chapter 2). Define:
+$$X^* \triangleq S_{\min}^* \setminus \{S^*\} \subseteq V, \qquad Y^* \triangleq V \setminus X^*.$$
+
+Then:
+
+1. **Exact Certificate of Violation**: The subset $X^*$ violates Hoffman's inflow-lower-bound inequality (and $Y^*$ violates Hoffman's outflow-lower-bound inequality) by **strictly $\Sigma^+ - F_1 > 0$**:
+   $$\sum_{e \in \delta^-(X^*)} l(e) - \sum_{e \in \delta^+(X^*)} u(e) = \sum_{e \in \delta^+(Y^*)} l(e) - \sum_{e \in \delta^-(Y^*)} u(e) = \Sigma^+ - F_1 > 0.$$
+2. **Maximum-Violation Optimality**: Among all $2^{|V|}$ subsets $X \subseteq V$, $X^*$ **maximizes** the Hoffman violation $\sum_{e \in \delta^-(X)} l(e) - \sum_{e \in \delta^+(X)} u(e)$.
+
+#### Worked Numerical Trace: Extracting $X^*$ When Phase 1 Fails
+
+Suppose in our 4-vertex network $V = \{s, a, b, t\}$ from Section 2.4, we raise the lower bound of $e_1 = (s \to a)$ to $[l_1, u_1] = [4, 5]$, tighten $e_3 = (a \to b)$ to $[1, 2]$, and tighten $e_4 = (a \to t)$ to $[1, 1]$, keeping $e_2 = (s \to b, [1, 4])$, $e_5 = (b \to t, [2, 6])$, and $e_{\text{fb}} = (t \to s, [0, \infty))$.
+
+1. **Pre-Injected Imbalances $M(v)$**:
+   - $M(s) = 0 - (4 + 1) = -5 \implies s \to T^*$ (cap $5$).
+   - $M(a) = 4 - (1 + 1) = +2 \implies S^* \to a$ (cap $2$).
+   - $M(b) = (1 + 1) - 2 = 0$.
+   - $M(t) = (1 + 2) - 0 = +3 \implies S^* \to t$ (cap $3$).
+   - Total positive imbalance: $\Sigma^+ = 2 + 3 = 5$.
+2. **Slack Capacities Leaving $a$**:
+   - $\tilde{c}(a \to b) = u_3 - l_3 = 2 - 1 = 1$, and $\tilde{c}(a \to t) = u_4 - l_4 = 1 - 1 = 0$.
+3. **Phase 1 Execution (`MaxFlow(S*, T*)`)**:
+   - All $3$ units from $S^* \to t$ reach $T^*$ via $t \xrightarrow{e_{\text{fb}}} s \to T^*$.
+   - Only $1$ unit from $S^* \to a$ reaches $T^*$ via $a \xrightarrow{e_3} b \xrightarrow{e_5} t \xrightarrow{e_{\text{fb}}} s \to T^*$.
+   - Total Phase 1 flow is $F_1 = 4 < \Sigma^+ = 5$ (`INFEASIBLE`).
+4. **Extracting $X^* = S_{\min}^* \setminus \{S^*\}$**:
+   - In the final residual network $\tilde{\mathcal{N}}_{\tilde{f}^*}$, the arc $S^* \to a$ still has residual capacity $2 - 1 = 1 > 0$, whereas all arcs leaving $a$ ($a \to b$ and $a \to t$) have residual capacity $0$.
+   - A forward BFS from $S^*$ visits $S_{\min}^* = \{S^*, a\}$, yielding the witness subset:
+     $$X^* = S_{\min}^* \setminus \{S^*\} = \{a\}.$$
+   - Checking Hoffman's inequality on $X^* = \{a\}$: mandatory inflow into $\{a\}$ is $l(s \to a) = 4$, whereas maximum possible outflow from $\{a\}$ is $u(a \to b) + u(a \to t) = 2 + 1 = 3$, giving an exact violation of $4 - 3 = 1 = \Sigma^+ - F_1$!
+
+---
+
+## 4. Three Non-Graph Archetypes That Compile to Lower-Bound Flows
+
+Following our **Zero Magic Gadgets Mandate**, we now derive the complete 4-step compilation for the three most important non-graph problem families that compile to lower-bound circulations.
+
+### 4.1 Archetype A: Matrix & Contingency-Table Rounding (`Baranyai's Rounding Lemma`, `POJ 2396`, `BZOJ 3698`)
+
+- **Step 1 (Non-Graph Diagnostic Signal)**: You are given an $R \times C$ matrix where each cell $X_{i,j}$ has box bounds $[L_{i,j}, U_{i,j}]$, each row $i$ has row-sum bounds $[\underline{r}_i, \overline{r}_i]$, and each column $j$ has column-sum bounds $[\underline{c}_j, \overline{c}_j]$. (In **Real-Valued Matrix Rounding**, you are given real numbers $A_{i,j} \in \mathbb{R}_{\ge 0}$ with row sums $r_i = \sum_j A_{i,j}$ and column sums $c_j = \sum_i A_{i,j}$, and must round every entry and margin to either $\lfloor \cdot \rfloor$ or $\lceil \cdot \rceil$ while preserving all row and column sums.)
+- **Step 2 (Intermediate Algebraic Representation)**: The unknown integer matrix $X_{i,j} \in \mathbb{Z}$ must satisfy:
+  $$\underline{r}_i \le \sum_{j=1}^C X_{i,j} \le \overline{r}_i \quad (\forall i), \qquad \underline{c}_j \le \sum_{i=1}^R X_{i,j} \le \overline{c}_j \quad (\forall j), \qquad L_{i,j} \le X_{i,j} \le U_{i,j} \quad (\forall i, j).$$
+  Introduce slack row-sum variables $R_i \triangleq \sum_{j=1}^C X_{i,j}$ and column-sum variables $C_j \triangleq \sum_{i=1}^R X_{i,j}$. Then every row $i$ satisfies homogeneous conservation $R_i - \sum_{j=1}^C X_{i,j} = 0$, and every column $j$ satisfies $\sum_{i=1}^R X_{i,j} - C_j = 0$!
+- **Step 3 (Mechanical Graph Compilation)**: By the Rank-2 Factorization Principle (Chapter 3.3), create source $s$, sink $t$, row vertices $\text{Row}_1, \dots, \text{Row}_R$, and column vertices $\text{Col}_1, \dots, \text{Col}_C$:
+  1. For each row $i$, add directed edge $s \to \text{Row}_i$ with bounds $[\underline{r}_i, \overline{r}_i]$ (carrying flow $R_i$).
+  2. For each cell $(i, j)$, add directed edge $\text{Row}_i \to \text{Col}_j$ with bounds $[L_{i,j}, U_{i,j}]$ (carrying flow $X_{i,j}$).
+  3. For each column $j$, add directed edge $\text{Col}_j \to t$ with bounds $[\underline{c}_j, \overline{c}_j]$ (carrying flow $C_j$).
+  4. Add feedback arc $t \to s$ with bounds $[\underline{\Sigma}, \overline{\Sigma}]$ (or $[0, \infty)$ if total matrix sum is unconstrained).
+
+> [!TIP]
+> **Theorem 4.1 (Baranyai's Consistent Matrix Rounding Theorem)**:
+> For **any** real matrix $A \in \mathbb{R}_{\ge 0}^{R \times C}$ with row sums $r_i = \sum_j A_{i,j}$, column sums $c_j = \sum_i A_{i,j}$, and grand total $S = \sum_{i,j} A_{i,j}$, setting $[l, u] = [\lfloor x \rfloor, \lceil x \rceil]$ on every row arc, column arc, cell arc, and feedback arc $t \to s$ is **always feasible**!
+>
+> *Proof*: The original real numbers $f(s \to \text{Row}_i) = r_i$, $f(\text{Row}_i \to \text{Col}_j) = A_{i,j}$, $f(\text{Col}_j \to t) = c_j$, and $f(t \to s) = S$ already form a **valid real-valued circulation** satisfying all integer box bounds $\lfloor x \rfloor \le x \le \lceil x \rceil$. By the **Integrality Theorem** on the slack network $\tilde{\mathcal{N}}$, because a real-valued feasible circulation exists and all bounds $\lfloor x \rfloor, \lceil x \rceil$ are integers, an **integral** circulation $X_{i,j} \in \{\lfloor A_{i,j} \rfloor, \lceil A_{i,j} \rceil\}$ is guaranteed to exist!
+
+---
+
+### 4.2 Archetype B: Mixed-Graph Eulerian Circuit Orientation (`POJ 1637`) & `FM-06` Parity Trap
+
+- **Step 1 (Non-Graph Diagnostic Signal)**: A connected **mixed graph** $G = (V, E_D \cup E_U)$ contains both fixed directed edges $E_D$ and reversible undirected edges $E_U$. We must orient every undirected edge $e \in E_U$ so that the resulting fully directed graph has an **Eulerian circuit** ($\text{in}(v) = \text{out}(v)$ for every $v \in V$).
+- **Step 2 (Intermediate Algebraic Representation)**: Assign every undirected edge $e \in E_U$ an **arbitrary initial orientation** $u \to v$. Now let $\text{in}_0(v)$ and $\text{out}_0(v)$ denote the initial in-degree and out-degree of vertex $v$ across all edges $E_D \cup E_U$.
+  For each undirected edge $e = (u \to v) \in E_U$, introduce a binary decision variable $x_e \in \{0, 1\}$, where $x_e = 1$ means we **reverse** $e$ to $(v \to u)$ and $x_e = 0$ means we keep $(u \to v)$.
+  How does setting $x_e = 1$ change the net degree discrepancy $\text{out}(v) - \text{in}(v)$?
+  - At the tail $u$, reversing $u \to v$ into $v \to u$ decreases $\text{out}(u)$ by $1$ and increases $\text{in}(u)$ by $1$, reducing $\text{out}(u) - \text{in}(u)$ by **$2$**!
+  - At the head $v$, it increases $\text{out}(v) - \text{in}(v)$ by **$2$**!
+  Therefore, achieving $\text{out}(v) - \text{in}(v) = 0$ at every vertex $v \in V$ is equivalent to:
+  $$\big(\text{out}_0(v) - \text{in}_0(v)\big) - 2 \sum_{e \in \delta^+_U(v)} x_e + 2 \sum_{e \in \delta^-_U(v)} x_e = 0 \qquad \forall v \in V.$$
+  Divide the entire equation by $2$:
+  $$\underbrace{\sum_{e \in \delta^+_U(v)} x_e - \sum_{e \in \delta^-_U(v)} x_e}_{\text{div}_x(v)} = \underbrace{\frac{\text{out}_0(v) - \text{in}_0(v)}{2}}_{D(v)} \qquad \forall v \in V.$$
+- **Step 3 (Mechanical Graph Compilation)**:
+  1. **Parity Pre-Check**: If $\text{out}_0(v) - \text{in}_0(v)$ is **odd** for any $v \in V$, then $D(v) \notin \mathbb{Z}$, so the equation has no solution—return `impossible` immediately!
+  2. **Flow Network**: Build a standard $[0, 1]$ flow network with source $S^*$ and sink $T^*$:
+     - For each **undirected** edge $e \in E_U$ (initially oriented $u \to v$), add directed arc $u \to v$ with capacity $1$ (representing $x_e \in [0, 1]$). **Do not add fixed directed edges $e \in E_D$ to the flow network!**
+     - If $D(v) > 0$ ($\text{out}_0(v) > \text{in}_0(v)$), vertex $v$ must emit $D(v)$ units of reversal flow: add $S^* \to v$ with capacity $D(v)$.
+     - If $D(v) < 0$ ($\text{in}_0(v) > \text{out}_0(v)$), vertex $v$ must absorb $-D(v)$ units of reversal flow: add $v \to T^*$ with capacity $-D(v)$.
+  3. **Existence Criterion**: An Eulerian orientation exists if and only if $\text{MaxFlow}(S^*, T^*) = \sum_{v : D(v) > 0} D(v)$.
+
+> [!WARNING]
+> **Broken-Gadget Counterexample `FM-06` — Mixed Eulerian Parity Omission & Integer Division Truncation**:
+> In C++, writing `int D = (out[v] - in[v]) / 2;` **without first checking `(out[v] - in[v]) % 2 != 0`** silently truncates odd discrepancies toward zero (e.g., `1 / 2 == 0` and `-1 / 2 == 0`)!
+>
+> **Counterexample**: Consider $V = \{1, 2\}$ connected by a single fixed directed edge $1 \to 2$ ($E_U = \emptyset$). Here $\text{out}_0(1) - \text{in}_0(1) = +1$ and $\text{out}_0(2) - \text{in}_0(2) = -1$. If you omit the parity check, C++ integer division computes `D[1] = 1 / 2 = 0` and `D[2] = -1 / 2 = 0`, builds an empty flow network with $\Sigma^+ = 0$, and falsely reports that a single directed edge $1 \to 2$ has an Eulerian circuit! Always verify `(out[v] - in[v]) & 1` for every vertex before dividing by $2$.
+
+---
+
+### 4.3 Archetype C: DAG Minimum Path / Fleet Cover with Mandatory Coverage (`Luogu P4843 清理雪道`)
+
+- **Step 1 (Non-Graph Diagnostic Signal)**: Given a directed acyclic graph (or general directed network) $G = (V, E)$, find the **minimum number of paths** (starting at any valid start vertices and ending at any valid end vertices) such that **every required edge $e \in E_{\text{req}}$** (or every required vertex $v \in V_{\text{req}}$) is traversed **at least once**.
+  - *Why Ch 01 Bipartite Path Cover Fails*: In Chapter 1's Minimum Path Cover on a DAG (`|V| - MaxMatching`), vertices could be visited **at most once** ($[0, 1]$) and edges could not be reused. When paths are allowed to share vertices and edges freely (`At Least Once`, $[1, \infty)$), either transitive closure + Dilworth (`Ch 08`) or **Variant 4 (`有源汇上下界最小流`)** is required—and when edges have finite upper capacities $[l(e), u(e)]$ or costs, Variant 4 is the *only* method that generalizes!
+- **Step 2 & Step 3 (Algebraic & Graph Compilation)**:
+  Let $f(e) \in \mathbb{Z}_{\ge 0}$ count how many paths traverse edge $e$.
+  1. Create a virtual source $s$ (fleet depot) and virtual sink $t$ (fleet terminal). For every vertex $v$ where a path may start, add $s \to v$ with $[0, \infty)$; for every vertex $v$ where a path may terminate, add $v \to t$ with $[0, \infty)$.
+  2. For every required edge $e \in E_{\text{req}}$, set lower bound $l(e) = 1$ and upper bound $u(e) = \infty$. (If a vertex $v$ must be visited at least $k_v$ times, split $v \mapsto v_{\text{in}} \xrightarrow{[k_v, \infty)} v_{\text{out}}$ as in Chapter 3.1.)
+  3. Solve **Variant 4 (Minimum $s$-$t$ Flow with Lower Bounds)**: add feedback arc $t \to s$ with $[0, \infty)$, run Phase 1 `MaxFlow(S*, T*)` to get initial flow $f_0 = \tilde{f}(t \to s)$, zero out both half-edges of $t \to s$, and return $F_{\min} = f_0 - \text{MaxFlow}_{\tilde{\mathcal{N}}_{\tilde{f}}}(t, s)$.
+
+---
+
+## 5. Black-Box Contract & Recognition Decision Table
+
+| Problem Pattern & Surface Clues | Algebraic Formulation | Target Variant & Graph Gadget | Complexity |
+| :--- | :--- | :--- | :--- |
+| **Closed pipe loop with min/max flow limits** (`ZOJ 2314`) | $\text{div}_f(v) = 0 \;\;\forall v$, $l(e) \le f(e) \le u(e)$ | **Variant 1 (`Feasible Circulation`)**: $M(v) = \text{in}_l(v) - \text{out}_l(v)$; check $\text{MaxFlow}(S^*, T^*) = \Sigma^+$; output $l(e) + \tilde{f}(e)$ | $O(E\sqrt{V})$ or $O(V^2 E)$ |
+| **Matrix reconstruction with row/col/cell inequalities** (`POJ 2396`) | $\underline{r}_i \le \sum_j X_{i,j} \le \overline{r}_i$, $L_{i,j} \le X_{i,j} \le U_{i,j}$ | **Variant 2 (`Feasible s-t Flow`)**: $s \to R_i \to C_j \to t$ + feedback arc $t \xrightarrow{[0, \infty)} s$ | $O((RC)\sqrt{R+C})$ |
+| **Maximize total throughput under daily + cumulative quotas** (`Luogu P5192`) | $\max |f|$ s.t. $l(e) \le f(e) \le u(e)$ | **Variant 3 (`Max s-t Flow`)**: Phase 1 `MaxFlow(S*, T*)`, lock $t \to s$, Phase 2 $f_0 + \text{MaxFlow}(s, t)$ | $O(E\sqrt{V})$ |
+| **Cover all DAG edges/nodes using fewest routes** (`Luogu P4843`) | $\min |f|$ s.t. $f(e) \ge 1 \;\;\forall e \in E_{\text{req}}$ | **Variant 4 (`Min s-t Flow`)**: Phase 1 `MaxFlow(S*, T*)`, lock $t \to s$, Phase 2 $f_0 - \text{MaxFlow}(t, s)$ | $O(E\sqrt{V})$ |
+| **Mixed graph Eulerian circuit orientation** (`POJ 1637`) | $\text{div}_x(v) = \frac{\text{out}_0(v) - \text{in}_0(v)}{2}$, $x_e \in \{0, 1\}$ | Check $(\text{out}_0 - \text{in}_0) \equiv 0 \pmod 2$; run $[0, 1]$ deficit flow on undirected edges $E_U$ | $O(E\sqrt{V})$ |
+| **2-coloring grid points with line discrepancy $|\#R - \#B| \le d$** (`CF 704D`) | $\lceil \frac{c_v - d_v}{2} \rceil \le k_v \le \lfloor \frac{c_v + d_v}{2} \rfloor$ | **Variant 3 on Bipartite Unit Graph**: rows $x_i \to$ cols $y_i$ with $[0, 1]$, line bounds on $s \to x_i$ and $y_i \to t$ | $O((N+M)\sqrt{N})$ |
+| **Real matrix rounding to $\{\lfloor A \rfloor, \lceil A \rceil\}$** (`BZOJ 3698`) | $B_{i,j} \in [\lfloor A_{i,j} \rfloor, \lceil A_{i,j} \rceil]$, row/col sums preserved | **Baranyai Matrix Rounding (`Variant 2/3`)**: set $[l, u] = [\lfloor A \rfloor, \lceil A \rceil]$ on all cell and margin arcs | $O(N^3)$ |
+| **Extract witness subset when circulation is infeasible** | $\max_{X \subseteq V} \big(\sum_{\delta^-(X)} l - \sum_{\delta^+(X)} u\big)$ | **Hoffman Certificate (`Thm 3.2`)**: forward BFS from $S^*$ in $\tilde{\mathcal{N}}_{\tilde{f}^*}$; return $X^* = S_{\min}^* \setminus \{S^*\}$ | $O(V + E)$ post-Phase 1 |
+
+---
+
+## 6. Curated 4-Tier Practice Ladder (`#025`–`#032`)
+
+| Tier | Global ID | Problem & Judge URL | Core Technique & Compilation Target |
+| :---: | :---: | :--- | :--- |
+| **Stepping Stone 1** | `#025` | [ZOJ 2314 / ASC 1 — Reactor Cooling](https://zoj.pintia.cn/problem-sets/91827364500/problems/91827365813) | **Variant 1 (`Feasible Circulation`)**: $f_e = l_e + \tilde{f}_e$, $M(v) = \text{in}_l(v) - \text{out}_l(v)$, physical flow recovery. |
+| **Stepping Stone 2** | `#026` | [POJ 2396 — Budget](http://poj.org/problem?id=2396) | **Variant 2 (`Feasible s-t Flow`)**: Matrix reconstruction under row sums, col sums, and wildcard cell inequalities. |
+| **Intermediate 1** | `#027` | [Luogu P4843 / AHOI2014 — 清理雪道 (Cleaning Snow Tracks)](https://www.luogu.com.cn/problem/P4843) | **Variant 4 (`Min s-t Flow`)**: Minimum DAG path cover with mandatory edge lower bounds $[1, \infty)$ via $f_0 - \text{MaxFlow}(t, s)$. |
+| **Intermediate 2** | `#028` | [POJ 1637 / UVa 10735 — Sightseeing Tour](http://poj.org/problem?id=1637) | **Mixed-Graph Eulerian Circuit**: Parity pre-check $(\text{out}_0 - \text{in}_0) \equiv 0 \pmod 2$ + half-discrepancy $[0, 1]$ flow. |
+| **Advanced 1** | `#029` | [Luogu P5192 / ZJOI2010 — Shoot the Bullet 东方文花帖](https://www.luogu.com.cn/problem/P5192) | **Variant 3 (`Max s-t Flow`)**: Daily caps $[0, D_i]$, daily girl intervals $[L_{i,j}, R_{i,j}]$, and cumulative quotas $[G_j, \infty)$. |
+| **Advanced 2** | `#030` | [Codeforces 704D — Captain America](https://codeforces.com/problemset/problem/704/D) | **Bipartite Parity-Discrepancy Compilation**: $|2k_v - c_v| \le d_v \iff k_v \in [\lceil \frac{c_v - d_v}{2} \rceil, \lfloor \frac{c_v + d_v}{2} \rfloor]$ + Variant 3 in $O(E\sqrt{V})$. |
+| **Mastery 1** | `#031` | [Codeforces 628F — Bear and Fair Set](https://codeforces.com/problemset/problem/628/F) | **Prefix-Difference Interval Quotas & Hoffman/Hall Certificate**: Disjoint intervals $(u_{i-1}, u_i]$ with $\bmod 5$ remainder quotas. |
+| **Mastery 2** | `#032` | [BZOJ 3698 — XWW 的难题](https://darkbzoj.cc/problem/3698) | **Baranyai Matrix Rounding (`Variant 3`)**: Real matrix rounding to $\{0, 1\}$ / $\{\lfloor A \rfloor, \lceil A \rceil\}$ maximizing rounded-up entries. |
+
+---
+
+### Tier 1: Stepping Stone Problems
+
+#### Problem `#025` — `[ZOJ 2314 / ASC 1]` Reactor Cooling (`[EN]`)
+
+- **Judge URL**: [ZOJ 2314](https://zoj.pintia.cn/problem-sets/91827364500/problems/91827365813) / [SGU 194](https://codeforces.com/problemsets/acmsguru/problem/99999/194)
+- **Constraints**: $N \le 200$ cooling nodes, $M \le 20000$ directed pipes. Each pipe $e_k = (u_k \to v_k)$ has mandatory minimum flow $l_k \ge 0$ and maximum capacity $u_k \ge l_k$ ($0 \le l_k \le u_k \le 10^5$). Determine whether a valid closed circulation exists ($\text{div}_f(v) = 0$ at every node $v = 1, \dots, N$), and if so, print the exact flow $f(e_k)$ on each pipe $k = 1, \dots, M$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Standard Max-Flow Fails & How to Shift the Origin"}
+There is no source $s$ or sink $t$ in the reactor—every node must have total inflow equal to total outflow, and $f \equiv 0$ violates $l_k > 0$. Substitute $f(e_k) = l_k + \tilde{f}(e_k)$ where $0 \le \tilde{f}(e_k) \le u_k - l_k$ into $\sum_{e \in \delta^-(v)} f(e) = \sum_{e \in \delta^+(v)} f(e)$ and isolate the known constants $l_k$ on one side.
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Wiring the Nodal Imbalances to Super-Terminals"}
+Define $M(v) = \sum_{e \in \delta^-(v)} l(e) - \sum_{e \in \delta^+(v)} l(e)$. If $M(v) > 0$, node $v$ receives $M(v)$ more baseline flow than it sends out, so the free slack flow $\tilde{f}$ must carry $M(v)$ units *away* from $v$: wire $S^* \to v$ with capacity $M(v)$. If $M(v) < 0$, wire $v \to T^*$ with capacity $-M(v)$. What must $\text{MaxFlow}(S^*, T^*)$ equal for all nodes to balance?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — ZOJ 2314"}
+
+##### Step 1: Non-Graph Diagnostic Signal
+Every pipe has a two-sided box constraint $l_k \le f(e_k) \le u_k$ and every vertex satisfies strict sourceless conservation $\text{div}_f(v) = 0$. This is the canonical **Variant 1 (`无源汇上下界可行流`)** problem.
+
+##### Step 2: Intermediate Algebraic Representation
+Write $f(e_k) = l_k + \tilde{f}(e_k)$ with $0 \le \tilde{f}(e_k) \le u_k - l_k$. Conservation at vertex $v$ becomes:
+$$\sum_{e \in \delta^+(v)} \tilde{f}(e) - \sum_{e \in \delta^-(v)} \tilde{f}(e) = \sum_{e \in \delta^-(v)} l(e) - \sum_{e \in \delta^+(v)} l(e) \triangleq M(v).$$
+
+##### Step 3: Reverse-Engineering Scratchpad (Graph Compilation)
+1. Create auxiliary network $\tilde{\mathcal{N}}$ with vertices $\{1, \dots, N\} \cup \{S^*, T^*\}$.
+2. For each pipe $k = 1, \dots, M$ from $u_k$ to $v_k$:
+   - Add directed edge $u_k \to v_k$ with capacity $u_k - l_k$, recording the index `rev_idx[k]` of its reverse residual half-edge.
+   - Update $M(u_k) \gets M(u_k) - l_k$ and $M(v_k) \gets M(v_k) + l_k$.
+3. Accumulate $\Sigma^+ = 0$. For each $v \in \{1, \dots, N\}$:
+   - If $M(v) > 0$: add $S^* \to v$ with capacity $M(v)$, and add $M(v)$ to $\Sigma^+$.
+   - If $M(v) < 0$: add $v \to T^*$ with capacity $-M(v)$.
+4. Run `F1 = dinic(S*, T*)`. If $F_1 < \Sigma^+$, output `NO`. Otherwise output `YES`, and for each pipe $k$, reconstruct the physical flow via `FM-05` guard:
+   $$f(e_k) = l_k + \tilde{f}(e_k) = l_k + \text{cap}[\text{rev\_idx}[k]].$$
+
+##### Step 4: Toy Trace & Failure-Mode Guard
+On a 3-node cycle $1 \xrightarrow{[2, 4]} 2 \xrightarrow{[1, 5]} 3 \xrightarrow{[3, 4]} 1$:
+- $M(1) = 3 - 2 = +1 \implies S^* \to 1$ (cap $1$); $M(2) = 2 - 1 = +1 \implies S^* \to 2$ (cap $1$); $M(3) = 1 - 3 = -2 \implies 3 \to T^*$ (cap $2$); $\Sigma^+ = 2$.
+- `dinic(S*, T*)` pushes $1$ unit along $S^* \to 1 \to 2 \to 3 \to T^*$ and $1$ unit along $S^* \to 2 \to 3 \to T^*$, giving $\tilde{f} = (1, 2, 0)$ and physical flow $f = l + \tilde{f} = (2+1, 1+2, 3+0) = (3, 3, 3)$.
+- **Complexity**: $O(M\sqrt{N})$ or $O(N^2 M)$ time, $O(N + M)$ space.
+::::
+
+---
+
+#### Problem `#026` — `[POJ 2396]` Budget (`[EN]`)
+
+- **Judge URL**: [POJ 2396](http://poj.org/problem?id=2396)
+- **Constraints**: Reconstruct a non-negative integer matrix $X \in \mathbb{Z}_{\ge 0}^{R \times C}$ ($R \le 200, C \le 20$) given exact row sums $r_1, \dots, r_R$, exact column sums $c_1, \dots, c_C$, and $K$ inequality constraints of the form `(p, q, op, v)` where `op` $\in \{\text{`<'}, \text{`='}, \text{`>'}\}$, $p \in [0, R]$ ($p = 0$ means **all** rows), and $q \in [0, C]$ ($q = 0$ means **all** columns). Output a valid matrix $X$ or `IMPOSSIBLE`.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Normalizing Wildcard Inequalities into Cell Box Bounds"}
+Before building any graph, initialize every cell $(i, j)$ ($1 \le i \le R, 1 \le j \le C$) with box bounds $L_{i,j} = 0, U_{i,j} = \infty$. How does each constraint `(p, q, op, v)` tighten $[L_{i,j}, U_{i,j}]$ for the affected cells?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Rank-2 Factorization into Variant 2"}
+Each cell $X_{i,j}$ contributes to both row sum $i$ and column sum $j$. Model $X_{i,j}$ as the flow on edge $\text{Row}_i \to \text{Col}_j$ with bounds $[L_{i,j}, U_{i,j}]$. What are the lower and upper bounds on $s \to \text{Row}_i$ and $\text{Col}_j \to t$? Don't forget the feedback arc $t \to s$!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — POJ 2396"}
+
+##### Step 1: Non-Graph Diagnostic Signal
+We have a 2D table of integer variables $X_{i,j}$ constrained by cell intervals $[L_{i,j}, U_{i,j}]$ and exact 1D marginal sums $\sum_j X_{i,j} = r_i$, $\sum_i X_{i,j} = c_j$. By Archetype A (Section 4.1), this compiles directly to **Variant 2 (`有源汇上下界可行流`)**.
+
+##### Step 2: Intermediate Algebraic Representation
+1. Initialize $L_{i,j} = 0, U_{i,j} = \infty$ for all $1 \le i \le R, 1 \le j \le C$.
+2. For each constraint `(p, q, op, v)`, iterate over $i \in (p = 0 ? [1..R] : \{p\})$ and $j \in (q = 0 ? [1..C] : \{q\})$:
+   - If `op == '>'`: $L_{i,j} \gets \max(L_{i,j}, v + 1)$.
+   - If `op == '<'`: $U_{i,j} \gets \min(U_{i,j}, v - 1)$.
+   - If `op == '='`: $L_{i,j} \gets \max(L_{i,j}, v)$ and $U_{i,j} \gets \min(U_{i,j}, v)$.
+3. Pre-check: if $\sum_{i=1}^R r_i \neq \sum_{j=1}^C c_j$ or if $L_{i,j} > U_{i,j}$ for any $(i, j)$, return `IMPOSSIBLE` immediately.
+
+##### Step 3: Reverse-Engineering Scratchpad (Graph Compilation)
+Build a bounded $s$-$t$ network with vertices $s$, $t$, $\text{Row}_1 \dots \text{Row}_R$, and $\text{Col}_1 \dots \text{Col}_C$:
+- Add $s \to \text{Row}_i$ with exact bounds $[l, u] = [r_i, r_i]$ (so slack capacity is $r_i - r_i = 0$!).
+- Add $\text{Col}_j \to t$ with exact bounds $[l, u] = [c_j, c_j]$ (slack capacity $0$).
+- Add $\text{Row}_i \to \text{Col}_j$ with bounds $[L_{i,j}, U_{i,j}]$ (slack capacity $U_{i,j} - L_{i,j}$).
+- Add feedback arc $t \to s$ with bounds $[0, \infty)$.
+Compile all bounded edges into $\tilde{\mathcal{N}}$ with super-terminals $(S^*, T^*)$ and run `dinic(S*, T*)`. If $F_1 = \Sigma^+$, reconstruct $X_{i,j} = L_{i,j} + \tilde{f}(\text{Row}_i \to \text{Col}_j)$; otherwise print `IMPOSSIBLE`.
+
+##### Step 4: Toy Trace & Failure-Mode Guard
+- **Failure-Mode Guard**: Notice that because $s \to \text{Row}_i$ has $[r_i, r_i]$ and $\text{Col}_j \to t$ has $[c_j, c_j]$, their slack capacities in $\tilde{\mathcal{N}}$ are $0$! In fact, even if you forgot the feedback arc $t \to s$ here, $M(s) = - \sum r_i$ and $M(t) = + \sum c_j$ would need $t \to s$ to balance unless you wire $t \to s$ with $[0, \infty)$. Always include $t \xrightarrow{[0, \infty)} s$ in Variant 2 so that $S^* \to t \to s \to T^*$ can route the global throughput $\sum r_i$.
+- **Complexity**: $|V| = R + C + 4 \le 224$, $|E| = O(RC) \le 4500$; Dinic runs in $O(RC\sqrt{R+C}) < 5\text{ ms}$.
+::::
+
+---
+
+### Tier 2: Intermediate Problems
+
+#### Problem `#027` — `[Luogu P4843 / AHOI2014 / LOJ #2042]` 清理雪道 (Cleaning Snow Tracks) (`[ZH]`)
+
+- **Judge URL**: [Luogu P4843](https://www.luogu.com.cn/problem/P4843) / [LOJ #2042](https://loj.ac/p/2042)
+- **Constraints**: Given a directed acyclic graph (DAG) with $N \le 100$ viewpoints and $M \le \binom{N}{2}$ directed ski trails. A snowplow can be helicopter-dropped at **any** viewpoint $u$, drive along any directed path of ski trails, and be picked up at **any** viewpoint $v$. Find the **minimum number of snowplow runs** required so that **every directed ski trail is traversed at least once**.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Translating 'Cover Every Edge at Least Once' into Flow Bounds"}
+If $f(e)$ denotes the number of snowplows that traverse ski trail $e = (u \to v)$, then "every trail is traversed at least once" means $1 \le f(e) \le \infty$. Since a snowplow can start at any node $u$ and stop at any node $v$, how should we wire the fleet depot $s$ and fleet terminal $t$ to the viewpoints $1, \dots, N$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Minimizing Total Fleet Size via Variant 4"}
+The total number of snowplows deployed equals the net $s$-$t$ flow $|f|$. Once Phase 1 (`dinic(S*, T*)` with feedback arc $t \xrightarrow{[0, \infty)} s$) finds an initial feasible flow $f_0 = \tilde{f}(t \to s)$, how do we **reduce** $f_0$ as much as possible without violating any lower bound $l(e) = 1$?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Luogu P4843"}
+
+##### Step 1: Non-Graph Diagnostic Signal
+We want to cover every directed edge of a DAG at least once ($l(e) = 1, u(e) = \infty$) using the minimum number of $s \leadsto t$ paths. By Archetype C (Section 4.3), this is **Variant 4 (`有源汇上下界最小流`)**.
+
+##### Step 2: Intermediate Algebraic Representation
+Minimize $|f| = \sum_{u=1}^N f(s \to u)$ subject to:
+- $\text{div}_f(v) = 0$ for all $v \in \{1, \dots, N\}$;
+- $1 \le f(e) \le \infty$ for all $e \in E_{\text{DAG}}$;
+- $0 \le f(s \to u) \le \infty$ and $0 \le f(v \to t) \le \infty$ for all $u, v \in \{1, \dots, N\}$.
+
+##### Step 3: Reverse-Engineering Scratchpad (Graph Compilation & 2-Phase Code)
+```cpp
+// Build Variant 4 network for Luogu P4843 (N <= 100)
+int s = 0, t = N + 1, S_star = N + 2, T_star = N + 3;
+vector<long long> M(N + 4, 0);
+for (int i = 1; i <= N; ++i) {
+    add_edge(s, i, INF); // s -> i with [0, INF)
+    add_edge(i, t, INF); // i -> t with [0, INF)
+    for (int v : adj[i]) {
+        // Ski trail i -> v has [l, u] = [1, INF)
+        add_edge(i, v, INF);
+        M[i] -= 1;
+        M[v] += 1;
+    }
+}
+int e_fb = add_edge(t, s, INF); // Feedback arc t -> s with [0, INF)
+for (int i = 1; i <= N; ++i) {
+    if (M[i] > 0) add_edge(S_star, i, M[i]);
+    if (M[i] < 0) add_edge(i, T_star, -M[i]);
+}
+// Phase 1: Establish feasible circulation
+dinic(S_star, T_star);
+long long f0 = edges[e_fb ^ 1].cap; // Initial feasible s-t flow
+// Lock feedback arc before Phase 2!
+edges[e_fb].cap = edges[e_fb ^ 1].cap = 0;
+// Phase 2: Push excess flow backward from t to s
+long long f_min = f0 - dinic(t, s);
+```
+
+##### Step 4: Toy Trace & Failure-Mode Guard
+Consider a 3-node diamond DAG $1 \to 2$, $2 \to 3$, and $1 \to 3$.
+- $M(1) = -2$, $M(2) = 0$, $M(3) = +2$.
+- Suppose Phase 1 routes $2$ units from $S^* \to 3 \xrightarrow{\text{via } t \to s} 1 \to T^*$ plus $1$ unit through $s \to 2 \to t$, giving $f_0 = 3$.
+- In Phase 2, after zeroing out $t \to s$ and $s \to t$, `dinic(t, s)` pushes $1$ unit backward along $t \to 3 \to 2 \to 1 \to s$ (using the reverse residual edge of $2 \to 3$ or excess slack), leaving $F_{\min} = 2$ snowplows: path $1 \to 2 \to 3$ and path $1 \to 3$.
+- **Failure-Mode Guard**: Never forget `edges[e_fb].cap = edges[e_fb ^ 1].cap = 0;` before `dinic(t, s)`! If `edges[e_fb].cap` remains `INF`, `dinic(t, s)` pushes `INF` directly along $t \to s$.
+- **Complexity**: $O(M\sqrt{N})$ time, $< 5\text{ ms}$ for $N = 100$.
+::::
+
+---
+
+#### Problem `#028` — `[POJ 1637 / UVa 10735]` Sightseeing Tour (`[EN]`)
+
+- **Judge URL**: [POJ 1637](http://poj.org/problem?id=1637) / [UVa 10735](https://onlinejudge.org/index.php?option=com_onlinejudge&Itemid=8&page=show_problem&problem=1676)
+- **Constraints**: $T \le 20$ test cases. A connected mixed graph has $N \le 200$ intersections and $M \le 1000$ streets, where each street is either **one-way** (directed $u \to v$) or **two-way** (undirected $\{u, v\}$, which must be oriented into a one-way street). Determine whether the undirected streets can be oriented so that the entire city forms a **directed Eulerian circuit**.
+
+:::: {.callout-note collapse="true" title="Hint 1 — The Effect of Flipping One Street on Degree Discrepancy"}
+Orient every two-way street arbitrarily (say $u \to v$) at the start, and compute the initial net discrepancy $\text{out}_0(v) - \text{in}_0(v)$ at every vertex $v$. When you reverse a two-way street from $u \to v$ to $v \to u$, by how much does $\text{out}(u) - \text{in}(u)$ change? What parity condition must $\text{out}_0(v) - \text{in}_0(v)$ satisfy?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Compiling Half-Discrepancies into a Unit Network"}
+Since each reversed street changes $\text{out}(u) - \text{in}(u)$ by $-2$ and $\text{out}(v) - \text{in}(v)$ by $+2$, every vertex $v$ must experience a net reversal outflow minus inflow of $D(v) = (\text{out}_0(v) - \text{in}_0(v)) / 2$. Which streets are added to the flow network with capacity $1$, and which streets must be excluded?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — POJ 1637"}
+
+##### Step 1: Non-Graph Diagnostic Signal
+A connected directed graph has an Eulerian circuit if and only if $\text{out}(v) = \text{in}(v)$ for every $v \in V$. Choosing orientations for undirected edges while keeping directed edges fixed is **Archetype B (Mixed-Graph Eulerian Circuit Orientation, Section 4.2)**.
+
+##### Step 2: Intermediate Algebraic Representation
+Give each undirected edge $e \in E_U$ an arbitrary initial direction $u \to v$, and let $x_e \in \{0, 1\}$ indicate whether we reverse $e$ to $v \to u$. By Section 4.2:
+$$\sum_{e \in \delta^+_U(v)} x_e - \sum_{e \in \delta^-_U(v)} x_e = \frac{\text{out}_0(v) - \text{in}_0(v)}{2} \triangleq D(v) \qquad \forall v \in V.$$
+
+##### Step 3: Reverse-Engineering Scratchpad (Graph Compilation)
+1. Compute $\text{in}_0(v)$ and $\text{out}_0(v)$ across all directed edges $E_D$ and initially oriented undirected edges $E_U$.
+2. **Mandatory Parity Check (`FM-06` Guard)**: If $(\text{out}_0(v) - \text{in}_0(v)) \bmod 2 \neq 0$ for **any** $v \in \{1, \dots, N\}$, output `impossible` immediately!
+3. Build flow network with source $S^*$ and sink $T^*$:
+   - For each **undirected** street $e = (u \to v) \in E_U$, add directed arc $u \to v$ with capacity $1$. (**Do not** add one-way streets $e \in E_D$ to the flow network!)
+   - For each vertex $v$: let $D(v) = (\text{out}_0(v) - \text{in}_0(v)) / 2$. If $D(v) > 0$, add $S^* \to v$ with capacity $D(v)$ and add $D(v)$ to $\Sigma^+$; if $D(v) < 0$, add $v \to T^*$ with capacity $-D(v)$.
+4. Run `dinic(S*, T*)`. Output `possible` if and only if $\text{MaxFlow}(S^*, T^*) = \Sigma^+$. (In `UVa 10735`, to print the actual Eulerian circuit, reverse every $e \in E_U$ that has $x_e = \text{cap}[\text{rev}(e)] = 1$ and run Hierholzer's algorithm in $O(M)$.)
+
+##### Step 4: Toy Trace & Failure-Mode Guard
+Suppose $V = \{1, 2, 3\}$ with directed edges $1 \to 2$, $2 \to 3$ and undirected edge $\{1, 3\}$ initially oriented as $1 \to 3$.
+- Initial degrees: $(\text{out}_0 - \text{in}_0) = (+2, 0, -2)$, all even! Half-discrepancies: $D(1) = +1$, $D(2) = 0$, $D(3) = -1$, so $\Sigma^+ = 1$.
+- Only the undirected edge $1 \to 3$ is added to the flow network with capacity $1$. `dinic(S*, T*)` pushes $1$ unit along $S^* \to 1 \to 3 \to T^*$, reversing $1 \to 3$ into $3 \to 1$ and completing the directed cycle $1 \to 2 \to 3 \to 1$.
+- **Complexity**: Unit network with $|V| \le 202, |E| \le 1200$; Dinic runs in $O(M\sqrt{N})$ time.
+::::
+
+---
+
+### Tier 3: Advanced Problems
+
+#### Problem `#029` — `[Luogu P5192 / ZJOI2010 / ZOJ 3229]` Shoot the Bullet (东方文花帖) (`[ZH]`/`[EN]`)
+
+- **Judge URL**: [Luogu P5192](https://www.luogu.com.cn/problem/P5192) / [ZOJ 3229](https://zoj.pintia.cn/problem-sets/91827364500/problems/91827367855)
+- **Constraints**: $N \le 365$ days, $M \le 1000$ girls.
+  - Across all $N$ days, girl $j$ ($0 \le j < M$) must have **at least $G_j$ photos** taken in total.
+  - On day $i$ ($1 \le i \le N$), Aya can take **at most $D_i$ photos** in total across $C_i \le 300$ available girls.
+  - For the $k$-th available girl $T_{i,k}$ on day $i$, the number of photos taken of her on day $i$ must lie in the interval **$[L_{i,k}, R_{i,k}]$**.
+  Determine the **maximum total number of photos** Aya can take over the $N$ days, or output `-1` if the quotas cannot all be satisfied.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Mapping Days, Girls, and Quotas to Bounded Edges"}
+Let $f_{i,j}$ be the number of photos taken of girl $j$ on day $i$. Every constraint is a box bound on either a single variable $f_{i,j}$, a day sum $\sum_j f_{i,j} \le D_i$, or a girl sum $\sum_i f_{i,j} \ge G_j$. How do we wire $s \to \text{Day}_i \to \text{Girl}_j \to t$ with lower and upper bounds?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Maximizing Total Photos via Variant 3"}
+Once the bounded $s$-$t$ network is constructed, add the feedback arc $t \to s$ with $[0, \infty)$ and run Phase 1 `dinic(S*, T*)`. If $F_1 == \Sigma^+$, what are the exact steps to transition from Phase 1 to Phase 2 (`dinic(s, t)`) without double-counting $f_0$?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Luogu P5192"}
+
+##### Step 1: Non-Graph Diagnostic Signal
+We want to **maximize** total throughput $\sum_{i,j} f_{i,j}$ in a bipartite assignment between Days and Girls where:
+- Day totals have upper bounds $[0, D_i]$;
+- Day-to-Girl pairs have box bounds $[L_{i,j}, R_{i,j}]$;
+- Girl totals have lower bounds $[G_j, \infty)$.
+This is the textbook **Variant 3 (`有源汇上下界最大流`)** archetype.
+
+##### Step 2: Intermediate Algebraic Representation
+Maximize $\sum_{i=1}^N \sum_{j=0}^{M-1} f_{i,j}$ subject to:
+- $0 \le \sum_{j} f_{i,j} \le D_i$ for each day $i \in \{1, \dots, N\}$;
+- $L_{i,j} \le f_{i,j} \le R_{i,j}$ for each valid pair $(i, j)$;
+- $G_j \le \sum_{i} f_{i,j} \le \infty$ for each girl $j \in \{0, \dots, M-1\}$.
+Introduce day-total variables $r_i = \sum_j f_{i,j} \in [0, D_i]$ and girl-total variables $c_j = \sum_i f_{i,j} \in [G_j, \infty)$ so that $\text{Day}_i$ and $\text{Girl}_j$ satisfy exact flow conservation.
+
+##### Step 3: Reverse-Engineering Scratchpad (Graph Compilation & C++ Implementation)
+Create vertices $s$, $t$, $\text{Day}_1 \dots \text{Day}_N$, $\text{Girl}_0 \dots \text{Girl}_{M-1}$, and super-terminals $S^*, T^*$:
+1. For each day $i \in [1, N]$: add $s \to \text{Day}_i$ with $[l, u] = [0, D_i]$.
+2. For each girl $j \in [0, M-1]$: add $\text{Girl}_j \to t$ with $[l, u] = [G_j, \infty)$.
+3. For each candidate $(j, L_{i,j}, R_{i,j})$ on day $i$: add $\text{Day}_i \to \text{Girl}_j$ with $[l, u] = [L_{i,j}, R_{i,j}]$.
+4. Add feedback arc $e_{\text{fb}} = (t \to s)$ with $[l, u] = [0, \infty)$.
+
+```cpp
+// Luogu P5192 — Variant 3 (Max s-t Flow with Lower Bounds)
+int s = 0, t = N + M + 1, S_star = N + M + 2, T_star = N + M + 3;
+vector<long long> M_bal(N + M + 4, 0);
+auto add_bounded = [&](int u, int v, long long l, long long r) {
+    M_bal[u] -= l;
+    M_bal[v] += l;
+    return add_edge(u, v, r - l);
+};
+for (int j = 0; j < M; ++j)
+    add_bounded(N + 1 + j, t, G[j], INF);
+for (int i = 1; i <= N; ++i) {
+    add_bounded(s, i, 0, D[i]);
+    for (auto& [j, L, R] : day_girls[i])
+        add_bounded(i, N + 1 + j, L, R);
+}
+int e_fb = add_bounded(t, s, 0, INF);
+long long sigma_plus = 0;
+for (int v = 0; v <= t; ++v) {
+    if (M_bal[v] > 0) { add_edge(S_star, v, M_bal[v]); sigma_plus += M_bal[v]; }
+    else if (M_bal[v] < 0) { add_edge(v, T_star, -M_bal[v]); }
+}
+if (dinic(S_star, T_star) < sigma_plus) {
+    cout << -1 << "\n\n";
+} else {
+    long long f0 = edges[e_fb ^ 1].cap;
+    edges[e_fb].cap = edges[e_fb ^ 1].cap = 0; // Lock feedback arc!
+    long long ans = f0 + dinic(s, t);
+    cout << ans << "\n\n";
+}
+```
+
+##### Step 4: Toy Trace & Failure-Mode Guard
+Suppose $N = 1$ day ($D_1 = 5$) and $M = 2$ girls ($G_0 = 2, G_1 = 1$), with day-1 bounds $[1, 4]$ for Girl $0$ and $[2, 3]$ for Girl $1$.
+- Pre-injected imbalances:
+  - $M(s) = 0$; $M(\text{Day}_1) = 0 - (1 + 2) = -3$;
+  - $M(\text{Girl}_0) = 1 - 2 = -1$; $M(\text{Girl}_1) = 2 - 1 = +1$;
+  - $M(t) = (2 + 1) - 0 = +3$; $\Sigma^+ = 1 + 3 = 4$.
+- **Phase 1**: `dinic(S*, T*)` routes $1$ unit from $S^* \to \text{Girl}_1 \to t \to s \to \text{Day}_1 \to T^*$ and $3$ units from $S^* \to t \to s \to \text{Day}_1 \to \text{Girl}_0 \to T^*$ ($1$ unit) + $\text{Day}_1 \to T^*$ ($2$ units), saturating $\Sigma^+ = 4$ with $f_0 = \tilde{f}(t \to s) = 4$ (representing $2$ photos of Girl $0$ and $2$ photos of Girl $1$).
+- **Phase 2**: After zeroing $t \to s$, `dinic(s, t)` pushes $1$ additional unit along $s \to \text{Day}_1 \to \text{Girl}_0 \to t$ (or $\text{Girl}_1 \to t$), reaching $D_1 = 5$ total photos ($F_{\max} = 4 + 1 = 5$).
+- **Complexity**: $|V| = N + M + 4 \le 1369$, $|E| \le 365 \times 300 + 3000 \approx 1.1 \times 10^5$. Dinic completes in $< 50\text{ ms}$.
+::::
+
+---
+
+#### Problem `#030` — `[Codeforces 704D]` Captain America (`[EN]`)
+
+- **Judge URL**: [Codeforces 704D](https://codeforces.com/problemset/problem/704/D)
+- **Constraints**: $N \le 10^5$ shields on a 2D plane at integer coordinates $(x_i, y_i)$ ($1 \le x_i, y_i \le 10^9$). Painting a shield **Red** costs $r$, and painting it **Blue** costs $b$. You are given $M \le 10^5$ constraints of two types:
+  - `1 l d`: On the vertical line $x = l$, the absolute difference between the number of Red shields and Blue shields must not exceed $d$.
+  - `2 l d`: On the horizontal line $y = l$, the absolute difference between the number of Red shields and Blue shields must not exceed $d$.
+  Find the **minimum total cost** to paint all $N$ shields, and print the color assignment string (`r`/`b`), or output `-1` if impossible.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Turning Absolute Difference $|n_R - n_B| \le d$ into a Box Interval"}
+Assume without loss of generality that $r \le b$ (if $r > b$, swap $r \leftrightarrow b$ and swap output characters `'r'` $\leftrightarrow$ `'b'`). Then total cost is $N \cdot b - (b - r) \cdot (\#\text{Red})$, so minimizing cost is equivalent to **maximizing the total number of Red shields**!
+Now suppose a line $L$ contains $c_L$ shields in total, of which $k_L$ are painted Red and $c_L - k_L$ are painted Blue. Rewrite $|k_L - (c_L - k_L)| \le d_L$ as a lower and upper bound on $k_L$.
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Bipartite Point-as-Edge Graph & $O((N+M)\sqrt{N})$ Complexity"}
+Since $|2k_L - c_L| \le d_L \iff \frac{c_L - d_L}{2} \le k_L \le \frac{c_L + d_L}{2}$ and $k_L \in \mathbb{Z}$, we have:
+$$\left\lceil \frac{c_L - d_L}{2} \right\rceil \le k_L \le \left\lfloor \frac{c_L + d_L}{2} \right\rfloor.$$
+Model each occupied vertical line $x$ as a left node, each occupied horizontal line $y$ as a right node, and each shield $i = (x_i, y_i)$ as a directed unit edge $x_i \to y_i$ with bounds $[0, 1]$ (where flow $1$ means Red and $0$ means Blue). Why does Dinic run in $O((N+M)\sqrt{N})$ even though the capacities on $s \to x$ and $y \to t$ can be larger than $1$?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Codeforces 704D"}
+
+##### Step 1: Non-Graph Diagnostic Signal
+Each shield $(x_i, y_i)$ belongs to **one vertical line $x_i$** and **one horizontal line $y_i$** (Rank-2 Factorization, Chapter 3.3). The discrepancy constraint $|n_R - n_B| \le d$ on each line translates into a two-sided box interval on the number of Red shields on that line. With $N, M \le 10^5$, we need **Variant 3 (`Max s-t Flow with Lower Bounds`)** on a bipartite graph where all internal edges have unit capacity $[0, 1]$.
+
+##### Step 2: Intermediate Algebraic Representation
+1. If $r > b$, swap $r \leftrightarrow b$ and remember to flip `'r'` $\leftrightarrow$ `'b'` at the end. Now $r \le b$, and we want to **maximize** $\sum_{i=1}^N z_i$, where $z_i \in \{0, 1\}$ indicates whether shield $i$ is painted the cheaper color (`Red`).
+2. Coordinate-compress the distinct $x$-coordinates and $y$-coordinates that actually appear among the $N$ shields (at most $N$ rows and $N$ columns). Let $c_x$ be the number of shields on vertical line $x$, and let $d_x$ be the **minimum** $d$ among all type-1 constraints on line $x$ ($d_x = c_x$ if unconstrained).
+3. On line $x$, the number of Red shields $k_x = \sum_{i : x_i = x} z_i$ must satisfy:
+   $$L_x \triangleq \max\!\left(0, \left\lceil \frac{c_x - d_x}{2} \right\rceil\right) \le k_x \le \min\!\left(c_x, \left\lfloor \frac{c_x + d_x}{2} \right\rfloor\right) \triangleq R_x$$
+   (using integer arithmetic: $\lceil (c_x - d_x)/2 \rceil = (c_x - d_x + 1) / 2$ when $c_x - d_x > 0$). Similarly, on horizontal line $y$, $L_y \le k_y \le R_y$.
+   - **Immediate Parity / Feasibility Check**: If $L_x > R_x$ for any line $x$ (for instance, when $c_x$ is odd and $d_x = 0$, giving $\lceil c_x/2 \rceil > \lfloor c_x/2 \rfloor$), output `-1` immediately!
+
+##### Step 3: Reverse-Engineering Scratchpad (Graph Compilation)
+Build a Variant 3 network with $s$, $t$, compressed row nodes $\text{Row}_x$, and compressed column nodes $\text{Col}_y$:
+- Add $s \to \text{Row}_x$ with bounds $[L_x, R_x]$.
+- Add $\text{Col}_y \to t$ with bounds $[L_y, R_y]$.
+- For each shield $i = 1, \dots, N$, add $\text{Row}_{x_i} \to \text{Col}_{y_i}$ with bounds $[0, 1]$, storing the reverse edge index `rev_edge[i]`.
+- Add feedback arc $t \to s$ with $[0, \infty)$.
+Run Phase 1 `dinic(S*, T*)`. If $F_1 < \Sigma^+$, output `-1`. Otherwise, zero out both half-edges of $t \to s$, run Phase 2 `dinic(s, t)`, compute $F_{\max} = f_0 + f_{\text{add}}$, and output minimum cost:
+$$\text{Cost} = F_{\max} \cdot r + (N - F_{\max}) \cdot b.$$
+For each shield $i$, if `edges[rev_edge[i]].cap == 1`, shield $i$ receives the cheaper color; otherwise the more expensive color.
+
+```cpp
+// Core parity bound calculation for each compressed line v:
+long long L_v = max(0LL, (c_v - d_v + 1) / 2);
+long long R_v = min((long long)c_v, (c_v + d_v) / 2);
+if (L_v > R_v) { cout << -1 << "\n"; return 0; }
+```
+
+##### Step 4: Toy Trace & Complexity Proof
+- **Why does Dinic run in $O(N\sqrt{N})$ on $N = 10^5$?** Even though the boundary edges incident to $s, t, S^*, T^*$ have capacities $> 1$, **every internal edge** between the bipartite layers $\{\text{Row}_x\}$ and $\{\text{Col}_y\}$ has unit capacity $1$! Any simple path in the residual network alternates between $\text{Row}$ and $\text{Col}$ vertices along unit-capacity edges, so by Even–Tarjan's Theorem (Chapter 1), Dinic terminates in $O(E\sqrt{V}) = O(N\sqrt{N})$ time ($\approx 80\text{ ms}$).
+- **Failure-Mode Guard**: Ignore any constraint `(type, l, d)` whose line $l$ contains **zero** shields ($c_l = 0$)—allocating vertices for $10^9$ empty coordinates or applying $(0 - d + 1)/2$ carelessly wastes memory or corrupts bounds.
+::::
+
+---
+
+### Tier 4: Mastery Problems
+
+#### Problem `#031` — `[Codeforces 628F]` Bear and Fair Set (`[EN]`)
+
+- **Judge URL**: [Codeforces 628F](https://codeforces.com/problemset/problem/628/F)
+- **Constraints**: Limak wants to choose a set $S \subseteq \{1, 2, \dots, B\}$ of size $|S| = N$ ($N, B \le 10^4$, $5 \mid N$) such that:
+  1. For each remainder $r \in \{0, 1, 2, 3, 4\}$, $S$ contains **R-fairly** $N / 5$ elements congruent to $r \pmod 5$.
+  2. For each of $Q \le 10^4$ prefix hints $(u_k, q_k)$, $S$ contains **exactly** $q_k$ elements in $\{1, 2, \dots, u_k\}$.
+  Output `fair` if such a subset $S$ exists, or `unfair` otherwise.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Consecutive Prefix Differencing into Disjoint Intervals"}
+The prefix hints $(u_k, q_k)$ constrain overlapping prefixes $[1, u_k]$. Add the two boundary hints $(0, 0)$ and $(B, N)$, sort all hints by $u_k$, and take consecutive differences $I_k = (u_{k-1}, u_k]$ with quota $\Delta q_k = q_k - q_{k-1}$. What sanity conditions must $(u_{k-1}, u_k]$ and $\Delta q_k$ satisfy for every $k$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Bipartite Quota Flow & $2^5$ Hoffman/Hall Certificate"}
+After differencing, the intervals $I_k = (u_{k-1}, u_k]$ are **pairwise disjoint**! Each interval $I_k$ must contribute exactly $\Delta q_k$ integers, each remainder class $r \in \{0..4\}$ must receive exactly $N/5$ integers, and interval $I_k$ contains a known number $c_{k,r}$ of integers congruent to $r \pmod 5$. You can either run Dinic or check Hall/Hoffman's condition across all $2^5 = 32$ subsets of remainders!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — Codeforces 628F"}
+
+##### Step 1: Non-Graph Diagnostic Signal
+Overlapping prefix sum constraints $|S \cap [1, u_k]| = q_k$ become **disjoint interval quotas** $|S \cap (u_{k-1}, u_k]| = q_k - q_{k-1}$ upon sorting and taking consecutive differences. Each chosen number belongs to **one interval $I_k$** and **one remainder class $r \in \{0..4\}$**—a Rank-2 Contingency Table with exact row sums $\Delta q_k$, exact column sums $N/5$, and cell bounds $[0, c_{k,r}]$.
+
+##### Step 2: Intermediate Algebraic Representation
+1. Append $(0, 0)$ and $(B, N)$ to the list of hints and sort by $u_k$.
+2. For each adjacent pair $(u_{k-1}, q_{k-1})$ and $(u_k, q_k)$:
+   - If $u_k == u_{k-1}$ and $q_k \neq q_{k-1}$, output `unfair` (contradictory hints).
+   - If $q_k < q_{k-1}$ or $q_k - q_{k-1} > u_k - u_{k-1}$, output `unfair` (negative quota or quota exceeds interval length).
+3. For each non-empty interval $I_k = (u_{k-1}, u_k]$ and each $r \in \{0, 1, 2, 3, 4\}$, the number of integers in $(u_{k-1}, u_k]$ congruent to $r \pmod 5$ is:
+   $$c_{k,r} = \text{count}(u_k, r) - \text{count}(u_{k-1}, r), \qquad \text{where } \text{count}(x, r) = \left\lfloor \frac{x + (5 - r) \bmod 5}{5} \right\rfloor.$$
+4. We need non-negative integers $x_{k,r} \in [0, c_{k,r}]$ such that $\sum_{r=0}^4 x_{k,r} = \Delta q_k$ ($\forall k$) and $\sum_{k} x_{k,r} = N/5$ ($\forall r$).
+
+##### Step 3: Reverse-Engineering Scratchpad (Two Equivalent Compilations)
+- **Method A (Flow Network)**: Add $s \to I_k$ with capacity $\Delta q_k$, $I_k \to \text{Rem}_r$ with capacity $c_{k,r}$, and $\text{Rem}_r \to t$ with capacity $N/5$. Output `fair` $\iff \text{MaxFlow}(s, t) == N$.
+- **Method B ($O(2^5 \cdot Q)$ Closed-Form Hoffman/Hall Certificate)**: By Theorem 3.1 (Hoffman's Circulation Theorem / Hall's Marriage Theorem), since there are only $5$ remainder vertices on the right, a flow of value $N$ exists if and only if for every subset of remainders $R \subseteq \{0, 1, 2, 3, 4\}$ ($32$ masks), the maximum capacity available to $R$ across all intervals is at least $|R| \cdot (N / 5)$:
+  $$\sum_{k} \min\!\left(\Delta q_k, \sum_{r \in R} c_{k,r}\right) \ge |R| \cdot \frac{N}{5} \qquad \forall R \subseteq \{0, 1, 2, 3, 4\}.$$
+
+##### Step 4: Toy Trace & Failure-Mode Guard
+Suppose $N = 5, B = 10$, and hint $(u_1, q_1) = (3, 3)$.
+- Intervals: $I_1 = (0, 3]$ with $\Delta q_1 = 3$, and $I_2 = (3, 10]$ with $\Delta q_2 = 2$.
+- Notice $I_1 = \{1, 2, 3\}$ has **zero** elements congruent to $4 \pmod 5$ or $0 \pmod 5$, and we must pick all $3$ elements $\{1, 2, 3\}$ from $I_1$. That leaves only $\Delta q_2 = 2$ picks in $I_2$ to cover the remaining two remainders $\{4, 0\}$, which is feasible! Had the hint been $(3, 3)$ and $(4, 4)$, then $\{1, 2, 3, 4\}$ would force $4$ picks with $0$ elements $\equiv 0 \pmod 5$, and $I_{\text{last}}$ has $\Delta q = 1$, still feasible; but if $I_1 = \{1, 6\}$ had $2$ elements $\equiv 1 \pmod 5$ forced, subset $R = \{0, 2, 3, 4\}$ fails!
+- **Complexity**: $O(Q \log Q + 32 Q)$ with Method B, or $O(Q\sqrt{Q})$ with Dinic ($< 10\text{ ms}$).
+::::
+
+---
+
+#### Problem `#032` — `[BZOJ 3698]` XWW 的难题 (XWW's Puzzle — Matrix Rounding) (`[ZH]`)
+
+- **Judge URL**: [DarkBZOJ 3698](https://darkbzoj.cc/problem/3698) / [Hydro BZOJ 3698](https://hydro.ac/p/bzoj-P3698)
+- **Constraints**: You are given an $N \times N$ real matrix $A$ ($N \le 100$) where:
+  - $A_{N,N} = 0$;
+  - For $1 \le i \le N-1$, the last column entry $A_{i,N} = \sum_{j=1}^{N-1} A_{i,j}$ equals the sum of the first $N-1$ entries in row $i$;
+  - For $1 \le j \le N-1$, the last row entry $A_{N,j} = \sum_{i=1}^{N-1} A_{i,j}$ equals the sum of the first $N-1$ entries in column $j$.
+  You must construct an $N \times N$ integer matrix $B$ by rounding every entry $A_{i,j}$ either down ($B_{i,j} = \lfloor A_{i,j} \rfloor$) or up ($B_{i,j} = \lceil A_{i,j} \rceil$) such that $B$ still satisfies $B_{i,N} = \sum_{j=1}^{N-1} B_{i,j}$ and $B_{N,j} = \sum_{i=1}^{N-1} B_{i,j}$. Among all valid roundings, **maximize the sum of all $N^2$ entries of $B$** (equivalently, maximize the number of entries rounded up), or print `No` if impossible.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Interpreting the Last Row and Last Column as Flow Margins"}
+Separate the $(N-1) \times (N-1)$ interior matrix $B_{i,j}$ ($1 \le i, j \le N-1$) from its row sums $B_{i,N}$ and column sums $B_{N,j}$. In the Rank-2 Matrix Rounding network (Section 4.1), which edges carry flow $B_{i,j}$, which edges carry flow $B_{i,N}$, and which edges carry flow $B_{N,j}$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — The Factor-of-3 Coupling Between $s$-$t$ Flow and Total Matrix Sum"}
+Notice that for every unit of $s$-$t$ flow $|f| = \sum_{i=1}^{N-1} B_{i,N} = \sum_{i,j=1}^{N-1} B_{i,j} = \sum_{j=1}^{N-1} B_{N,j}$, the total sum of **all $N^2$ entries** of $B$ is:
+$$\sum_{i=1}^N \sum_{j=1}^N B_{i,j} = \underbrace{\sum_{i=1}^{N-1} B_{i,N}}_{|f|} + \underbrace{\sum_{i=1}^{N-1} \sum_{j=1}^{N-1} B_{i,j}}_{|f|} + \underbrace{\sum_{j=1}^{N-1} B_{N,j}}_{|f|} + B_{N,N} = 3 |f|!$$
+What Variant of lower-bound flow maximizes $3 |f|$?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — BZOJ 3698"}
+
+##### Step 1: Non-Graph Diagnostic Signal
+We are rounding a real contingency table $A$ to $\lfloor A \rfloor$ or $\lceil A \rceil$ while preserving row and column margin sums and maximizing the total rounded value. By Archetype A (Section 4.1, **Baranyai's Matrix Rounding Theorem**), this compiles directly to **Variant 3 (`有源汇上下界最大流`)**.
+
+##### Step 2: Intermediate Algebraic Representation
+For every entry $(i, j)$, $B_{i,j} \in [\lfloor A_{i,j} \rfloor, \lceil A_{i,j} \rceil]$. Furthermore, the margin equations:
+$$B_{i,N} = \sum_{j=1}^{N-1} B_{i,j} \quad (1 \le i < N), \qquad B_{N,j} = \sum_{i=1}^{N-1} B_{i,j} \quad (1 \le j < N)$$
+mean that the net $s$-$t$ flow value $|f| = \sum_{i=1}^{N-1} B_{i,N}$ simultaneously equals the sum of all interior cells and the sum of all column margins. Therefore, the sum of all $N^2$ entries in $B$ is **identically $3 |f|$**! Maximizing $\sum_{i,j} B_{i,j}$ (or maximizing the number of entries rounded up beyond $\lfloor A_{i,j} \rfloor$) is 100% equivalent to maximizing the $s$-$t$ flow $|f|$.
+
+##### Step 3: Reverse-Engineering Scratchpad (Graph Compilation)
+Build a Variant 3 network with $s$, $t$, row vertices $R_1 \dots R_{N-1}$, and column vertices $C_1 \dots C_{N-1}$:
+1. For $1 \le i \le N-1$: add $s \to R_i$ with $[l, u] = [\lfloor A_{i,N} \rfloor, \lceil A_{i,N} \rceil]$.
+2. For $1 \le j \le N-1$: add $C_j \to t$ with $[l, u] = [\lfloor A_{N,j} \rfloor, \lceil A_{N,j} \rceil]$.
+3. For $1 \le i, j \le N-1$: add $R_i \to C_j$ with $[l, u] = [\lfloor A_{i,j} \rfloor, \lceil A_{i,j} \rceil]$.
+4. Add feedback arc $t \to s$ with $[0, \infty)$.
+Run Phase 1 `dinic(S*, T*)`. If $F_1 < \Sigma^+$, output `No` (in case the input floats violate exact sum conservation). Otherwise, zero out $t \to s$, run Phase 2 `dinic(s, t)` to obtain $F_{\max} = f_0 + f_{\text{add}}$, and output **$3 \cdot F_{\max}$** (or if the problem variant asks for the sum of *fractional parts* rounded up, $3 \cdot F_{\max} - \sum_{i,j} \lfloor A_{i,j} \rfloor$).
+
+##### Step 4: Toy Trace & Failure-Mode Guard
+Consider $N = 3$ with a $2 \times 2$ interior of all $0.5$s:
+$$A = \begin{pmatrix} 0.5 & 0.5 & 1.0 \\ 0.5 & 0.5 & 1.0 \\ 1.0 & 1.0 & 0 \end{pmatrix}.$$
+- Row/col margin bounds are $[1, 1]$ on $s \to R_i$ and $C_j \to t$; interior cell bounds are $[0, 1]$ on $R_i \to C_j$.
+- Phase 1 saturates $\Sigma^+ = 2$ with $f_0 = 2$, and Phase 2 adds $0$, giving $F_{\max} = 2$ and total matrix sum $3 \cdot F_{\max} = 6$ (two $1$s in the interior, two $1$s in the last column, two $1$s in the last row).
+- **Floating-Point Guard**: Read floating-point numbers with `eps = 1e-8` when computing `floor(x + eps)` and `ceil(x - eps)` so that exact integers like `1.000000` do not get rounded to $[0, 1]$ or $[1, 2]$ due to IEEE-754 representation noise!
+- **Complexity**: $|V| = 2N + 2 \le 202$, $|E| = O(N^2) \le 10^4$; Dinic runs in $O(N^3)$ time ($< 5\text{ ms}$).
+::::
+
+---
+
+## 7. Reusable `BoundedFlow` Black-Box Wrapper & Failure Mode Summary
+
+### 7.1 Clean C++ Wrapper for All Four Lower-Bound Flow Variants (`LOJ #115, #116, #117`)
+
+Assuming a standard `Dinic` struct (Chapter 1), the following lightweight wrapper compiles all four variants (`Feasible Circulation`, `Feasible s-t Flow`, `Max s-t Flow`, and `Min s-t Flow`) while enforcing every invariant and failure-mode guard automatically:
+
+```cpp
+struct BoundedFlow {
+    int n, S_star, T_star;
+    Dinic G;
+    vector<long long> M, low;
+    vector<int> rev_idx;
+    bool box_valid = true;
+
+    BoundedFlow(int n_)
+        : n(n_), S_star(n_ + 1), T_star(n_ + 2), G(n_ + 3), M(n_ + 3, 0) {}
+
+    // Add directed edge u -> v with box bounds [l, r]
+    int add_bounded_edge(int u, int v, long long l, long long r) {
+        if (l > r) box_valid = false;
+        M[u] -= l;
+        M[v] += l;
+        low.push_back(l);
+        int e_id = G.add_edge(u, v, max(0LL, r - l));
+        rev_idx.push_back(e_id ^ 1);
+        return e_id;
+    }
+
+    // Variant 1: Sourceless Feasible Circulation (LOJ #115)
+    bool solve_circulation() {
+        if (!box_valid) return false;
+        long long sigma_plus = 0;
+        for (int v = 1; v <= n; ++v) {
+            if (M[v] > 0) {
+                G.add_edge(S_star, v, M[v]);
+                sigma_plus += M[v];
+            } else if (M[v] < 0) {
+                G.add_edge(v, T_star, -M[v]);
+            }
+        }
+        return G.max_flow(S_star, T_star) == sigma_plus;
+    }
+
+    // Variants 2, 3, 4: Bounded s-t Flow (mode: 0 = Feasible, +1 = Max, -1 = Min)
+    // Returns {feasible, flow_value}
+    pair<bool, long long> solve_st_flow(int s, int t, int mode) {
+        int e_fb = G.add_edge(t, s, INF); // Feedback arc t -> s with [0, INF)
+        if (!solve_circulation()) return {false, -1};
+        long long f0 = G.edges[e_fb ^ 1].cap;
+        // FM-04b Guard: Lock BOTH half-edges of feedback arc before Phase 2!
+        G.edges[e_fb].cap = G.edges[e_fb ^ 1].cap = 0;
+        if (mode == 0) return {true, f0};
+        if (mode > 0)  return {true, f0 + G.max_flow(s, t)}; // Variant 3 (LOJ #116)
+        return {true, f0 - G.max_flow(t, s)};                // Variant 4 (LOJ #117)
+    }
+
+    // FM-05 Guard: Reconstruct physical flow f(e_k) = l(e_k) + slack_flow(e_k)
+    long long get_edge_flow(int k) const {
+        return low[k] + G.edges[rev_idx[k]].cap;
+    }
+
+    // Theorem 3.2: Extract Hoffman Violation Certificate X* = S_min* \ {S*}
+    vector<int> get_hoffman_violation_subset() const {
+        vector<int> X_star;
+        for (int v = 1; v <= n; ++v) {
+            if (G.level[v] != -1) X_star.push_back(v); // Reachable from S* in G_f*
+        }
+        return X_star;
+    }
+};
+```
+
+---
+
+### 7.2 Chapter 4 Failure Mode Diagnostic Table & Verification Checklist
+
+| Failure Mode ID | Bug Name & Symptom | Root Cause in Algebraic-to-Graph Compilation | Exact Fix / Guard |
+| :---: | :--- | :--- | :--- |
+| **`FM-04a`** | **Lower-Bound Sign Inversion** (Every non-trivial test case outputs `INFEASIBLE`) | Defining $M(v) = \text{out}_l(v) - \text{in}_l(v)$ and wiring $S^* \to v$ when $\text{out}_l > \text{in}_l$. | Always define $M(v) = \text{in}_l(v) - \text{out}_l(v) - b(v)$: incoming lower bounds **minus** outgoing lower bounds (`S* -> v` when $M(v) > 0$). |
+| **`FM-04b`** | **Feedback-Edge Leakage** (Phase 2 returns $\infty$, $-\infty$, or $2 f_0 + f_{\text{add}}$) | Leaving `cap[e_fb] = INF` or `cap[e_fb ^ 1] = f0` non-zero when running Phase 2 `dinic(s, t)` or `dinic(t, s)`. | Record `f0 = edges[e_fb ^ 1].cap`, then immediately zero out **both** `edges[e_fb].cap = 0` and `edges[e_fb ^ 1].cap = 0`. |
+| **`FM-05`** | **Slack Offset Omission** (Printed edge flows or matrix cells are smaller than $l(e)$) | Reading only the slack flow $\tilde{f}(e) = \text{edges}[\text{rev}(e)].\text{cap}$ and forgetting to add $l(e)$. | Always reconstruct physical flow via $f(e) = l(e) + \text{edges}[\text{rev}(e)].\text{cap}$. |
+| **`FM-06`** | **Mixed Eulerian Parity Omission** (`WA` on graphs with odd degree discrepancies) | Writing `D = (out[v] - in[v]) / 2` in C++ without checking `(out[v] - in[v]) % 2 != 0` first (`1 / 2 == 0`). | Verify `((out[v] - in[v]) & 1) == 0` for **every** vertex $v$ before dividing by $2$; do not add fixed directed edges $E_D$ to the flow graph. |
+| **`FM-04c`** | **Negative Slack Capacity Crash** (Infinite loop in Dinic DFS) | Input constraints create an empty interval $l(e) > u(e)$ (e.g., `POJ 2396`, `CF 704D`), pushing negative capacity $u(e) - l(e) < 0$ into Dinic. | Check $l(e) \le u(e)$ on every edge **before** calling `MaxFlow`. |
+
+Before submitting any Lower-Bound Flow (`上下界网络流`), Matrix Rounding, or Mixed-Graph Eulerian solution, verify:
+
+1. **Box Validity Pre-Check ($l(e) \le u(e)$)**: Did you check $l(e) \le u(e)$ for all edges before running Dinic?
+2. **Sign of Nodal Imbalance $M(v)$ (`FM-04a`)**: Did you wire $S^* \to v$ when $\text{in}_l(v) > \text{out}_l(v)$ and $v \to T^*$ when $\text{in}_l(v) < \text{out}_l(v)$?
+3. **Zeroing Both Half-Edges of $t \to s$ (`FM-04b`)**: Did you zero out both `e_fb` and `e_fb ^ 1` before Phase 2?
+4. **Adding Baseline Offset $l(e)$ (`FM-05`)**: Did you add $l(e)$ back when printing individual edge flows or matrix entries?
+5. **Explicit Parity Check (`FM-06`)**: Did you check parity before dividing degree discrepancies by $2$?
+6. **Witness Subset Extraction (`Theorem 3.2`)**: When checking feasibility analytically on a small side ($K \le 10$, as in `CF 628F`), did you check Hoffman's inequality across all $2^K$ subsets?
+
+---
+
+## 8. Quarantined Template Problems, Chapter Summary & Multilingual References
+
+### 8.1 Quarantined Pure-Template Verification Benchmarks
+
+To keep our 8-problem practice ladder focused on genuine modelling and structural insights, pure bare-metal implementation drills are quarantined in the table below for rapid template testing:
+
+| Benchmark ID | Judge & Title | Variant Tested & Verification Purpose |
+| :---: | :--- | :--- |
+| **`T-04.1`** | [LOJ #115 — 无源汇有上下界可行流](https://loj.ac/p/115) | Direct verification of `BoundedFlow::solve_circulation()` and `get_edge_flow(k)` (`Variant 1`). |
+| **`T-04.2`** | [LOJ #116 — 有源汇有上下界最大流](https://loj.ac/p/116) | Direct verification of `BoundedFlow::solve_st_flow(s, t, +1)` (`Variant 3`). |
+| **`T-04.3`** | [LOJ #117 — 有源汇有上下界最小流](https://loj.ac/p/117) | Direct verification of `BoundedFlow::solve_st_flow(s, t, -1)` (`Variant 4`). |
+
+---
+
+### 8.2 Chapter Revision Summary
+
+- **The Affine Slack Shift**: Substituting $f(e) = l(e) + \tilde{f}(e)$ converts $l(e) \le f(e) \le u(e)$ and $\text{div}_f(v) = b(v)$ into standard box bounds $0 \le \tilde{f}(e) \le u(e) - l(e)$ with nodal divergence $\text{div}_{\tilde{f}}(v) = M(v) \triangleq \text{in}_l(v) - \text{out}_l(v) - b(v)$.
+- **The Four Variants of `上下界网络流`**:
+  - **Variant 1 (Feasible Circulation)**: Saturate $S^* \to T^*$ ($\text{MaxFlow}(S^*, T^*) = \Sigma^+$).
+  - **Variant 2 (Feasible $s$-$t$ Flow)**: Add feedback arc $t \xrightarrow{[0, \infty)} s$ and run Variant 1; initial flow is $f_0 = \tilde{f}(t \to s)$.
+  - **Variant 3 (Maximum $s$-$t$ Flow)**: Run Variant 2, zero out $t \to s$ and $s \to t$, and compute $F_{\max} = f_0 + \text{MaxFlow}(s, t)$.
+  - **Variant 4 (Minimum $s$-$t$ Flow)**: Run Variant 2, zero out $t \to s$ and $s \to t$, and peel back excess flow via $F_{\min} = f_0 - \text{MaxFlow}(t, s)$.
+- **Hoffman's Circulation Theorem (1960)**: A circulation exists $\iff \sum_{e \in \delta^-(X)} l(e) \le \sum_{e \in \delta^+(X)} u(e)$ for all $X \subseteq V$, proved via the exact cut identity $\Sigma^+ - \kappa_{\tilde{\mathcal{N}}}(S^* \sqcup X) = \sum_{e \in \delta^-(X)} l(e) - \sum_{e \in \delta^+(X)} u(e)$. When Phase 1 fails, $X^* = S_{\min}^* \setminus \{S^*\}$ is the maximum-violation witness subset.
+- **Canonical Non-Graph Compilations**: Contingency-table / real-matrix rounding (`Baranyai's Theorem`), mixed-graph Eulerian circuit orientation (`parity + half-discrepancy flow`), and minimum-fleet mandatory DAG edge/vertex covers (`Variant 4`).
+
+---
+
+### 8.3 Multilingual Bibliography (`[EN]`, `[ZH]`, `[JA]`)
+
+- **`[EN]` Hoffman, A. J. (1960)**. *Some recent applications of the theory of linear inequalities to extremal combinatorial analysis*. In Proceedings of Symposia in Applied Mathematics (Vol. 10, pp. 113–127). American Mathematical Society. (Original proof of Hoffman's Circulation Theorem.)
+- **`[EN]` Baranyai, Z. (1975)**. *On the factorization of the complete uniform hypergraph*. Infinite and Finite Sets, 91–108. (Introduces the matrix rounding lemma via integral bounded circulations.)
+- **`[EN]` Schrijver, A. (2003)**. *Combinatorial Optimization: Polyhedra and Efficiency* (Vol. A, Chapters 11–12: Circulations, Hoffman's Theorem, and Matrix Rounding). Springer.
+- **`[ZH]` 刘汝佳, 陈锋 (2012)**. *《算法竞赛入门经典：训练指南》* (Chapter 6: 上下界网络流与混合图欧拉回路). 清华大学出版社.
+- **`[ZH]` OI-Wiki**. *上下界网络流 (Flows with Lower and Upper Bounds)*. `https://oi-wiki.org/graph/flow/bound/` (Standard Chinese competitive programming reference for Variants 1–4).
+- **`[JA]` noshi91 / maspypy**. *最小流量制限付き最大流 (Maximum Flow with Lower Bounds) & 循環流 (Circulation)*. AtCoder / Competitive Programming Lecture Notes.
+

@@ -1,0 +1,1117 @@
+---
+title: "Chapter 12 — Multi-State Ordered Vertex Chains, 3-State Sign Cuts & Unary OR Layering"
+---
+
+## Prerequisites & Learning Objectives
+
+### Prerequisites
+
+Before studying this chapter, you should be comfortable with:
+
+- **Binary Project Selection & Pseudo-Boolean Cut Compilation (Chapters 9–10)**: Translating binary choices $x_i \in \{0, 1\}$ with implication constraints $x_u = 1 \implies x_v = 1$ into infinite-capacity directed arcs $u \xrightarrow{\infty} v$ corresponding to penalty terms $\infty \cdot x_u(1 - x_v)$.
+- **Bipartite Variable Inversion & Parity Cuts (Chapter 11)**: Reversing the source/sink convention ($y_v = 1 - x_v$) on one side of a bipartite conflict graph to convert supermodular agreement or disjunction penalties into standard submodular $S$-$T$ cut terms.
+
+### Learning Objectives
+
+By the end of this chapter, you will be able to:
+
+1. **Compile $K$-State Variables into Unary Threshold Chains (`K値燃やす埋める` / `切糕模型`)**: Encode any discrete variable $x_i \in \{1, 2, \dots, K\}$ using $K-1$ boolean threshold indicator vertices $z_{i,k} = [x_i \ge k]$ (or $w_{i,k} = [x_i > k]$) arranged in a directed chain from $S$ to $T$.
+2. **Prove and Audit the Reverse $\infty$-Lock Invariant (`FM-12`)**: Explain algebraically and combinatorially why reverse monotonicity arcs $v_{i,k} \xrightarrow{\infty} v_{i,k-1}$ are mandatory whenever cross-chain edges exist, and construct explicit numerical counterexamples showing how omitting them allows an $S$-$T$ cut to sever the same chain twice ("Hallucinated Double-State Failure").
+3. **Transform Between Series Chains and Parallel Closure Chains via 1D Abel Summation**: Switch seamlessly between placing point-value costs $c_i(k)$ on series chain edges (`[HNOI2013] 切糕`, `CF 434 D`) and placing marginal upgrade costs $\delta_i(k) = c_i(k) - c_i(k-1)$ on parallel sink/source edges (`ARC 142 E`, `ABC 326 G`).
+4. **Master Flagship Case Study 1 — [AtCoder ARC 107 F (Sum of Abs)](https://atcoder.jp/contests/arc107/tasks/arc107_f?lang=en) (`#095`)**: Linearize connected-component absolute-value sums $\sum_C \left|\sum_{v \in C} B_v\right|$ by lifting component signs into a 3-state ordered vertex assignment $\sigma_v \in \{-1 \prec 0 \text{ (deleted)} \prec +1\}$ where surviving edges forbid 1-step jump transitions across the middle deleted insulator state.
+5. **Master Flagship Case Study 2 — [AtCoder ARC 142 E (Pairing Wizards)](https://atcoder.jp/contests/arc142/tasks/arc142_e?lang=en) (`#096`)**: Uncover a hidden bipartite structure inside an arbitrary non-bipartite graph by proving the **Mandatory Pre-Promotion Lemma** and the **Low-Role vs. High-Role Bipartite Structural Dichotomy Lemma**, then compile disjunctive OR constraints across binary jump nodes and unary threshold chains.
+
+---
+
+## 1. Beyond Binary Variables — Unary Threshold Encoding $z_{i,k} = [x_i \ge k]$ (`K値燃やす埋める` / `切糕模型`)
+
+In Chapters 9 through 11, every decision entity $i \in \{1, \dots, N\}$ chose between **two** states: $x_i \in \{0, 1\}$. What happens when each entity must choose from $K \ge 3$ ordered discrete states $x_i \in \{1, 2, \dots, K\}$?
+
+A first instinct is to assign one binary indicator variable $e_{i,k} = [x_i = k] \in \{0, 1\}$ to each state $k \in \{1, \dots, K\}$. However, this "one-hot" encoding fails immediately in minimum-cut modelling: enforcing the exact-one constraint $\sum_{k=1}^K e_{i,k} = 1$ requires both $\sum_{k=1}^K e_{i,k} \le 1$ and $\sum_{k=1}^K e_{i,k} \ge 1$, which induces non-submodular multi-way exclusions across all $K$ states.
+
+The key breakthrough of the Japanese `K値燃やす埋める` (*$K$-valued Burn-or-Bury*, formalized by `noshi91` and `maspy`) and Chinese `切糕模型` (*Cake-Cutting Model*, popularized by `[HNOI2013] 切糕`) is to replace point-value indicators $[x_i = k]$ with **unary threshold indicators** $z_{i,k} = [x_i \ge k]$. Because the propositions $[x_i \ge 1], [x_i \ge 2], \dots, [x_i \ge K]$ are naturally nested, they form a **totally ordered implication chain** whose monotonicity is purely submodular.
+
+---
+
+### 1.1 Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+How do you recognize from an English, Chinese, or Japanese problem statement that a problem compiles into a **Multi-State Ordered Vertex Chain ($K$-ary Min-Cut)**?
+
+1. **Discrete Multi-Valued Choice per Entity**: Each entity $i \in \{1, \dots, N\}$ must be assigned **exactly one** integer state $x_i \in \{1, 2, \dots, K\}$ (such as a cutting depth $x_{r,c} \in \{1, \dots, R\}$ in `[HNOI2013] 切糕`, a power-plant level $x_i \in [l_i, r_i]$ in `CF 434 D`, a shortest-path distance $d_u \in \{1, \dots, N-1\}$ in `FoxAndCity`, or a 3-state sign/deletion choice $\sigma_v \in \{-1, 0, +1\}$ in `ARC 107 F`).
+2. **Arbitrary (Possibly Non-Convex) Unary Cost Table**: Assigning $x_i = k$ incurs an individual cost $c_i(k)$ (or yields reward $r_i(k)$) given by an arbitrary $N \times K$ table or non-concave formula (such as a quadratic polynomial $a_i x_i^2 + b_i x_i + d_i$ with positive leading coefficient $a_i > 0$ in `CF 434 D`).
+3. **Pairwise Ordering, Smoothness, or Step-Implication Constraints**: Pairs of variables $(u, v) \in E$ must satisfy a bounded-difference inequality $x_u - x_v \le D$ (such as Lipschitz smoothness $|x_u - x_v| \le D$ in `切糕`, triangle inequality $|d_u - d_v| \le 1$ in `FoxAndCity`, or general threshold implications $x_u \ge a \implies x_v \ge b$).
+4. **Constraint Fingerprint**: The total state-space size $\sum_{i=1}^N K_i \le 6.5 \times 10^4$ is small enough to materialize $O(NK)$ vertices in a flow network, whereas the interaction graph $G = (V, E)$ has large treewidth (e.g., a $40 \times 40$ 2D grid or a general 300-vertex graph).
+
+**Why Naive DP and Greedy Fail**:
+
+- **Dynamic Programming**: On a $P \times Q$ grid with $P, Q, R \le 40$, a broken-profile (plug) DP must remember the chosen height $x_{r,c} \in \{1, \dots, R\}$ for all $Q$ columns on the frontier, requiring $O(R^{\min(P, Q)}) = 40^{40}$ states. On general graphs with cycles (`ARC 107 F`, `CF 434 D`), treewidth can be $\Omega(N)$.
+- **Greedy / Local Descent**: Because the unary cost tables $c_i(k)$ are arbitrary and non-convex, a local minimum can be arbitrarily far from the global optimum. Raising or lowering a single variable $x_i$ propagates through a cascade of difference constraints $x_u - x_v \le D$, requiring a simultaneous global shift across a connected cluster of variables—precisely what an $S$-$T$ cut computes.
+
+---
+
+### 1.2 Step 2: Intermediate Algebraic Representation & The Dual-Indexed Rosetta Stone
+
+Before drawing any vertices or edges, we translate the integer variable $x_i \in \{1, 2, \dots, K\}$ into binary level-set propositions.
+
+Because the Japanese (`燃やす埋める`) and Chinese (`切糕模型`) competitive programming literatures use two slightly shifted indexing conventions for unary threshold bits, we present both side-by-side in a unified Rosetta Stone so you can read editorials in either language without off-by-one confusion.
+
+::: {.callout-important title="Definition 1.1: Reconciled Unary Threshold Indicator Variables"}
+For each integer variable $x_i \in \{1, 2, \dots, K\}$, introduce $K + 1$ binary indicator variables:
+
+- **Convention A (Weak Inequality `[JA]`): $z_{i,1}, z_{i,2}, \dots, z_{i,K+1} \in \{0, 1\}$**, where $z_{i,k} := [x_i \ge k]$.
+- **Convention B (Strict Inequality `[ZH]`): $w_{i,0}, w_{i,1}, \dots, w_{i,K} \in \{0, 1\}$**, where $w_{i,k} := [x_i > k]$.
+
+Both conventions describe the **exact same $K + 1$ boolean propositions** via the index shift $z_{i,k} \equiv w_{i,k-1}$:
+
+$$z_{i,k} := [x_i \ge k] \equiv w_{i,k-1} := [x_i > k - 1] = \begin{cases} 1 & \text{if } x_i \ge k \quad (\text{vertex } v_{i,k} \in S), \\ 0 & \text{if } x_i < k \quad (\text{vertex } v_{i,k} \in T), \end{cases} \qquad \text{for } k = 1, 2, \dots, K + 1.$$
+:::
+
+These unary threshold bits satisfy **four foundational algebraic laws** that mechanically dictate the entire flow network:
+
+1. **Boundary Pinning to Source $S$ and Sink $T$**:
+   Because every valid assignment $x_i \in \{1, 2, \dots, K\}$ trivially satisfies $x_i \ge 1$ ($x_i > 0$) and never satisfies $x_i \ge K + 1$ ($x_i > K$), the first indicator bit is pinned to $1$ (identified with the source $S$) and the last indicator bit is pinned to $0$ (identified with the sink $T$):
+
+   $$z_{i,1} = w_{i,0} = 1 \quad (v_{i,1} \equiv S), \qquad\qquad z_{i,K+1} = w_{i,K} = 0 \quad (v_{i,K+1} \equiv T).$$
+
+   Thus only the **$K - 1$ internal threshold propositions** $z_{i,2}, z_{i,3}, \dots, z_{i,K}$ (equivalently $w_{i,1}, w_{i,2}, \dots, w_{i,K-1}$) require dedicated internal vertices in the graph.
+
+2. **The Unary Monotonicity Invariant (Prefix-of-Ones Law)**:
+   For every threshold $k \in \{1, 2, \dots, K\}$, if an integer satisfies $x_i \ge k + 1$, it must also satisfy $x_i \ge k$. In boolean logic, $z_{i,k+1} = 1 \implies z_{i,k} = 1$, which forces the sequence of indicator bits to be **monotonically non-increasing**:
+
+   $$1 = z_{i,1} \ge z_{i,2} \ge z_{i,3} \ge \dots \ge z_{i,K} \ge z_{i,K+1} = 0.$$
+
+   In our pseudo-Boolean cut polynomial framework—where $z_\alpha(1 - z_\beta) = 1$ if and only if $\alpha \in S$ ($z_\alpha = 1$) and $\beta \in T$ ($z_\beta = 0$)—forbidding the non-monotonic violation $(z_{i,k+1} = 1 \land z_{i,k} = 0)$ adds the infinite penalty sum:
+
+   $$\text{MonotonicityPenalty}_i(z_i) = \sum_{k=2}^{K-1} \infty \cdot z_{i,k+1}(1 - z_{i,k}) = 0.$$
+
+3. **Order-Isomorphic Bijection with $\{1, \dots, K\}$ & Point-Value Indicator $[x_i = k]$**:
+   Every binary vector $(z_{i,1}, z_{i,2}, \dots, z_{i,K+1}) \in \{0, 1\}^{K+1}$ satisfying the monotonicity law $1 = z_{i,1} \ge z_{i,2} \ge \dots \ge z_{i,K+1} = 0$ consists of a contiguous prefix of $k$ ones followed by $K + 1 - k$ zeros for a **unique** integer $k \in \{1, 2, \dots, K\}$:
+
+   $$(z_{i,1}, \dots, z_{i,k}, z_{i,k+1}, \dots, z_{i,K+1}) = (\underbrace{1, 1, \dots, 1}_{k \text{ ones (in } S\text{)}}, \underbrace{0, 0, \dots, 0}_{K + 1 - k \text{ zeros (in } T\text{)}}), \qquad x_i = k = \sum_{t=1}^{K} z_{i,t}.$$
+
+   Crucially, under the monotonicity invariant $z_{i,t} \ge z_{i,t+1}$, the difference $z_{i,t} - z_{i,t+1}$ can never be $-1$ ($z_{i,t} = 0, z_{i,t+1} = 1$ is forbidden!). Therefore, the linear difference $z_{i,k} - z_{i,k+1}$ and the quadratic cut indicator $z_{i,k}(1 - z_{i,k+1})$ are **algebraically identical** on all valid chains, and both equal $1$ at the **unique transition index $t = k$** where the chain steps across the cut from $S$ ($1$) to $T$ ($0$):
+
+   $$\boxed{[x_i = k] = z_{i,k} - z_{i,k+1} = z_{i,k}(1 - z_{i,k+1}) \equiv w_{i,k-1}(1 - w_{i,k}).}$$
+
+4. **Bounded-Difference Constraint Compilation ($x_u - x_v \le D$)**:
+   Suppose two variables $x_u, x_v \in \{1, \dots, K\}$ must satisfy the relative difference bound $x_u - x_v \le D$ (i.e., $x_u \le x_v + D$) for some integer offset $D \in \mathbb{Z}$. In terms of unary thresholds, $x_u \le x_v + D$ holds if and only if for every level $k \in \{2, \dots, K\}$, reaching $x_u \ge k$ forces $x_v \ge k - D$:
+
+   $$x_u - x_v \le D \iff \forall k \in \{2, \dots, K\}, \; \big(z_{u,k} = 1 \implies z_{v,k-D} = 1\big) \iff \sum_{k=2}^{K} \infty \cdot z_{u,k}\big(1 - z_{v,\text{clamp}(k-D)}\big) = 0,$$
+
+   where $\text{clamp}(k - D) = \max(1, \min(K + 1, k - D))$ handles boundary clamping automatically:
+   - If $k - D \le 1$, then $z_{v,1} = 1$ holds unconditionally ($1 - z_{v,1} = 0$), so the implication $x_u \ge k \implies x_v \ge 1$ is vacuously true and **no edge is needed**.
+   - If $k - D \ge K + 1$, then $z_{v,K+1} = 0$ holds unconditionally ($1 - z_{v,K+1} = 1$), so $z_{u,k}$ is forced to $0$ via an $\infty$-arc $v_{u,k} \xrightarrow{\infty} v_{v,K+1} \equiv T$.
+
+---
+
+### 1.3 Step 3: Reverse-Engineering Scratchpad & The Series-vs.-Parallel Abel Equivalence Theorem
+
+Summing the unary costs, intra-chain monotonicity penalties, and cross-chain difference constraints over all variables yields our master pseudo-Boolean cut polynomial:
+
+$$\mathcal{P}(z) = \sum_{i=1}^{N} \sum_{k=1}^{K} c_i(k) \cdot z_{i,k}(1 - z_{i,k+1}) + \sum_{i=1}^{N} \sum_{k=2}^{K-1} \infty \cdot z_{i,k+1}(1 - z_{i,k}) + \sum_{(u, v, D) \in \mathcal{C}} \sum_{k=2}^{K} \infty \cdot z_{u,k}\big(1 - z_{v,\text{clamp}(k-D)}\big).$$
+
+Every quadratic term $\text{cap} \cdot z_\alpha(1 - z_\beta)$ in $\mathcal{P}(z)$ compiles directly into a single directed edge $\alpha \xrightarrow{\text{cap}} \beta$. Furthermore, applying 1D discrete summation by parts (Abel transformation) reveals that the unary cost function $c_i(x_i)$ can be wired in two dual ways on the **exact same vertex chain**:
+
+::: {.callout-note title="Theorem 1.2: Series Chain vs. Parallel Closure Equivalence via 1D Abel Summation"}
+Let $z_{i,1}, \dots, z_{i,K+1} \in \{0, 1\}$ satisfy the unary monotonicity invariant $1 = z_{i,1} \ge z_{i,2} \ge \dots \ge z_{i,K} \ge z_{i,K+1} = 0$. Then the unary cost function $c_i(x_i)$ admits two algebraically identical graph compilations on the internal vertex set $\{v_{i,2}, \dots, v_{i,K}\}$ and reverse $\infty$-backbone $v_{i,k+1} \xrightarrow{\infty} v_{i,k}$:
+
+1. **Form A — Series Chain Compilation (`[HNOI2013] 切糕` Form)**:
+   Using $[x_i = k] = z_{i,k} - z_{i,k+1} = z_{i,k}(1 - z_{i,k+1})$ (valid whenever $z_{i,k} \ge z_{i,k+1}$):
+
+   $$c_i(x_i) = \sum_{k=1}^{K} c_i(k) \cdot z_{i,k}(1 - z_{i,k+1}).$$
+
+   *Graph Compilation*: Place capacity $c_i(k) \ge 0$ on the **forward series edge** $v_{i,k} \xrightarrow{c_i(k)} v_{i,k+1}$ for $k = 1, \dots, K$ (where $v_{i,1} \equiv S$ and $v_{i,K+1} \equiv T$). Because a monotonic chain transitions from $1$ ($S$) to $0$ ($T$) at **exactly one** index $k = x_i$, the cut severs the unique forward series edge $v_{i,k} \to v_{i,k+1}$ and pays $c_i(k)$.
+
+   *(Pedestal Shift for Negative Costs or Maximization Objectives)*: Because $\sum_{k=1}^K z_{i,k}(1 - z_{i,k+1}) = z_{i,1} - z_{i,K+1} = 1 - 0 = 1$ on **every** valid monotonic chain, adding a constant pedestal $M_i \ge \max_k (-c_i(k))$ to all $K$ forward edges of chain $i$ ($c'_i(k) = c_i(k) + M_i \ge 0$) increases the capacity of every valid cut by **exactly $M_i$**! When maximizing a reward $f_i(x_i)$, simply set $c_i(k) = M_i - f_i(k) \ge 0$ with $M_i > \max_k |f_i(k)|$, and recover the maximum reward as $\sum_{i=1}^N M_i - \text{MinCut}(S, T)$.
+
+2. **Form B — Parallel Closure Compilation (`燃やす埋める` Marginal Form)**:
+   Applying 1D Abel summation by parts to $\sum_{k=1}^K c_i(k)(z_{i,k} - z_{i,k+1})$ with $z_{i,1} = 1$ and $z_{i,K+1} = 0$:
+
+   $$c_i(x_i) = c_i(1) z_{i,1} + \sum_{k=2}^{K} \underbrace{\big(c_i(k) - c_i(k-1)\big)}_{\delta_i(k)} z_{i,k} - c_i(K) z_{i,K+1} = c_i(1) + \sum_{\substack{k=2 \\ \delta_i(k) > 0}}^{K} \delta_i(k) \cdot z_{i,k}(1 - z_T) - \sum_{\substack{k=2 \\ \delta_i(k) < 0}}^{K} |\delta_i(k)| + \sum_{\substack{k=2 \\ \delta_i(k) < 0}}^{K} |\delta_i(k)| \cdot z_S(1 - z_{i,k}).$$
+
+   *Graph Compilation*: Keep the reverse $\infty$-backbone $v_{i,k+1} \xrightarrow{\infty} v_{i,k}$ ($2 \le k \le K-1$), and attach each threshold vertex $v_{i,k}$ ($2 \le k \le K$) **directly in parallel to $T$ or $S$** according to the sign of the marginal step cost $\delta_i(k) = c_i(k) - c_i(k-1)$:
+   - If $\delta_i(k) > 0$ (upgrading from $k-1$ to $k$ costs $\delta_i(k)$): wire $v_{i,k} \xrightarrow{\delta_i(k)} T$.
+   - If $\delta_i(k) < 0$ (upgrading from $k-1$ to $k$ earns $|\delta_i(k)|$): wire $S \xrightarrow{|\delta_i(k)|} v_{i,k}$ and subtract $|\delta_i(k)|$ from the base offset. $\blacksquare$
+:::
+
+| Structural Feature | Form A: Series Chain (`切糕` Form) | Form B: Parallel Closure (`燃やす埋める` Marginal Form) |
+| :--- | :--- | :--- |
+| **Forward / $S$-$T$ Cost Edges** | Series chain $v_{i,k} \xrightarrow{c_i(k)} v_{i,k+1}$ ($1 \le k \le K$) | Parallel arcs $v_{i,k} \xrightarrow{\delta_i(k)} T$ ($\delta > 0$) or $S \xrightarrow{\|\delta\|} v_{i,k}$ ($\delta < 0$) |
+| **Reverse Monotonicity Locks** | $v_{i,k+1} \xrightarrow{\infty} v_{i,k}$ ($2 \le k \le K-1$) | $v_{i,k+1} \xrightarrow{\infty} v_{i,k}$ ($2 \le k \le K-1$) — **Identical!** |
+| **Cross-Chain Constraint Arcs** | $v_{u,k} \xrightarrow{\infty} v_{v,k-D}$ — **Identical!** | $v_{u,k} \xrightarrow{\infty} v_{v,k-D}$ — **Identical!** |
+| **When to Prefer** | When point values $c_i(k)$ are given directly (`[HNOI2013] 切糕`, `ARC 107 F`, `CF 434 D`). | When marginal upgrade costs $\delta_i(k)$ are uniform (`ARC 142 E` where $\delta = 1$, `ABC 326 G` where $\delta = C_i$). |
+
+```{mermaid}
+flowchart LR
+    subgraph FormA ["Form A: Series Chain Compilation (v_{i,1}=S, v_{i,4}=T)"]
+        SA(("S")) -->|"c_i(1)"| a2["v_{i,2} (x_i >= 2)"]
+        a2 -->|"c_i(2)"| a3["v_{i,3} (x_i >= 3)"]
+        a3 -->|"c_i(3)"| TA(("T"))
+        a3 -.->|"inf (Reverse Lock)"| a2
+    end
+    subgraph FormB ["Form B: Parallel Closure Compilation (delta_i(k) = c_i(k) - c_i(k-1) > 0)"]
+        b3["v_{i,3} (x_i >= 3)"] ==>|"inf (Reverse Lock)"| b2["v_{i,2} (x_i >= 2)"]
+        b2 -->|"delta_i(2)"| TB(("T"))
+        b3 -->|"delta_i(3)"| TB
+    end
+```
+
+---
+
+### 1.4 Step 4: Hand-Checkable Toy Trace & Broken-Gadget Counterexample `FM-12`
+
+Why is the reverse $\infty$-edge $v_{i,k+1} \xrightarrow{\infty} v_{i,k}$ mandatory in Form A (Series Chain)?
+
+A classic misconception among competitive programmers meeting `[HNOI2013] 切糕` for the first time is: *"Since a minimum $S$-$T$ cut minimizes capacity, and cutting a single forward edge $v_{i,k} \to v_{i,k+1}$ already disconnects $S$ from $T$ along chain $i$, why would a minimum cut ever sever TWO forward edges in the same chain?"*
+
+::: {.callout-warning title="Broken-Gadget Counterexample FM-12: The Hallucinated Double-State Failure Mode"}
+When cross-chain edges connect chain $i$ to neighboring chains, omitting the reverse lock $v_{i,k+1} \xrightarrow{\infty} v_{i,k}$ allows a finite $S$-$T$ cut to place an **earlier** threshold vertex $v_{i,a} \in T$ ($z_{i,a} = 0$, pretending $x_i < a$ to satisfy one neighbor) while simultaneously placing a **later** threshold vertex $v_{i,b} \in S$ ($z_{i,b} = 1$ for $b > a$, pretending $x_i \ge b$ to satisfy another neighbor)!
+
+In the forward series chain $S \to v_{i,2} \to \dots \to v_{i,K} \to T$, any middle edge $v_{i,t} \to v_{i,t+1}$ located between $v_{i,a} \in T$ and $v_{i,b} \in S$ now points from $T$ to $S$. Because directed cut capacity only charges edges pointing from $S$ to $T$, **the expensive middle edge from $T$ to $S$ contributes $0$ to the cut**, allowing the solver to dodge a heavy middle penalty by cutting two cheap outer edges instead!
+:::
+
+#### Concrete Numerical Counterexample (2 Coupled Chains / 3-State Trace)
+
+Let us trace this failure mode with exact numbers on a 3-state system ($K = 3$, states $\{1, 2, 3\}$), where each variable $i$ has two internal threshold vertices $v_{i,2}$ ($z_{i,2} = [x_i \ge 2]$) and $v_{i,3}$ ($z_{i,3} = [x_i \ge 3]$) along the series chain
+
+$$S \xrightarrow{c_i(1)} v_{i,2} \xrightarrow{c_i(2)} v_{i,3} \xrightarrow{c_i(3)} T.$$
+
+Suppose we have $N = 2$ variables $x_1, x_2 \in \{1, 2, 3\}$ (or equivalently a middle column $x_1$ coupled to boundary anchors) with unary cost tables:
+
+- **Variable 1**: $c_1 = (1, \; 100, \; 1)$ — very cheap ($1$) at the extreme states $x_1 = 1$ and $x_1 = 3$, but very expensive ($100$) at the middle state $x_1 = 2$.
+- **Variable 2**: $c_2 = (100, \; 0, \; 100)$ — strongly anchored at the middle state $x_2 = 2$ (cost $0$), with cost $100$ at $x_2 = 1$ or $x_2 = 3$.
+
+Suppose Variable 1 and Variable 2 must satisfy the smoothness constraint $|x_1 - x_2| \le 0$ (i.e., $x_1 - x_2 \le 0$ and $x_2 - x_1 \le 0$, forcing $x_1 = x_2$). By Section 1.2, this compiles to the cross-chain $\infty$-edges:
+
+- $x_1 \le x_2 \implies (v_{1,2} \xrightarrow{\infty} v_{2,2}) \text{ and } (v_{1,3} \xrightarrow{\infty} v_{2,3})$.
+- $x_2 \le x_1 \implies (v_{2,2} \xrightarrow{\infty} v_{1,2}) \text{ and } (v_{2,3} \xrightarrow{\infty} v_{1,3})$.
+
+*(Equivalently, even if cross-chain edges are strictly one-way—say $v_{1,2} \xrightarrow{\infty} T$ from a low neighbor $x_{\text{low}} = 1$ and $S \xrightarrow{\infty} v_{1,3}$ from a high neighbor $x_{\text{high}} = 3$ with $D = 0$—the exact same phenomenon occurs on Chain 1!)* Let us trace what happens on Chain 1 when $v_{1,2}$ is pulled toward $T$ and $v_{1,3}$ is pushed toward $S$ (for instance, under one-way difference constraints $x_1 - x_{\text{low}} \le 1 \implies v_{1,2} \xrightarrow{\infty} v_{\text{low}, 2} \in T$ and $x_{\text{high}} - x_1 \le 0 \implies v_{\text{high}, 3} \in S \xrightarrow{\infty} v_{1,3}$):
+
+1. **True Feasible Optimum (With Reverse $\infty$-Lock $v_{1,3} \xrightarrow{\infty} v_{1,2}$)**:
+   - Because $v_{1,3} \xrightarrow{\infty} v_{1,2}$ is present, any cut with $v_{1,3} \in S$ and $v_{1,2} \in T$ severs $v_{1,3} \xrightarrow{\infty} v_{1,2}$ and pays **$\infty$**!
+   - Thus Chain 1 is forced to pick a valid monotonic state $(z_{1,2}, z_{1,3}) \in \{(0, 0), (1, 0), (1, 1)\}$. If $x_1 = 2$ is forced by its neighbors, it must set $v_{1,2} \in S, v_{1,3} \in T$, severing the middle edge $v_{1,2} \xrightarrow{100} v_{1,3}$ of cost **$100$** (or forcing one of the anchor neighbors to yield at cost $100$, giving a true minimum cut of **$101$**).
+
+2. **Broken Network (Reverse $\infty$-Lock $v_{1,3} \xrightarrow{\infty} v_{1,2}$ OMITTED)**:
+   - Without $v_{1,3} \xrightarrow{\infty} v_{1,2}$, the solver assigns the non-monotonic partition **$v_{1,2} \in T$ ($z_{1,2} = 0$) and $v_{1,3} \in S$ ($z_{1,3} = 1$)**!
+   - Let us inspect the three forward series edges of Chain 1 under $v_{1,2} \in T$ and $v_{1,3} \in S$:
+
+   $$\text{Chain 1: } \quad S \in S \xrightarrow[\text{CUT (cost } 1\text{)}]{c_1(1) = 1} v_{1,2} \in T \xrightarrow[\text{NOT CUT! (} T \to S, \text{ cap } 100\text{)}]{c_1(2) = 100} v_{1,3} \in S \xrightarrow[\text{CUT (cost } 1\text{)}]{c_1(3) = 1} T \in T.$$
+
+   - Look at what happened: the first edge $S \to v_{1,2}$ crosses $S \to T$ (cost $1$), the third edge $v_{1,3} \to T$ crosses $S \to T$ (cost $1$), and the middle edge $v_{1,2} \to v_{1,3}$ goes from **$T$ to $S$**, so its capacity of $100$ is **completely ignored** by the directed $S$-$T$ cut!
+   - The broken network reports a hallucinated minimum cut of $1 + 1 = \mathbf{2} \ll 101$, corresponding to Variable 1 simultaneously claiming $x_1 = 1$ (since $z_{1,2} = 0$) and $x_1 = 3$ (since $z_{1,3} = 1$). Always wire $v_{i,k+1} \xrightarrow{\infty} v_{i,k}$!
+
+
+---
+
+## 2. Flagship Deep-Dive Case Study 1 — 3-State Sign/Deletion Cuts & [AtCoder ARC 107 F — Sum of Abs](https://atcoder.jp/contests/arc107/tasks/arc107_f?lang=en) (`#095`)
+
+### Problem Statement & Constraints
+
+- **Problem**: [AtCoder ARC 107 F — Sum of Abs](https://atcoder.jp/contests/arc107/tasks/arc107_f?lang=en) (`#095`)
+- **Constraints**: $N \le 300$ vertices, $M \le 300$ undirected edges, $|A_v| \le 10^6$, $|B_v| \le 10^6$ (crucially, **both $A_v$ and $B_v$ can be negative**!), Time Limit $2.0\text{ s}$.
+- **Task**: You are given an undirected graph $G = (V, E)$ where each vertex $v \in V$ has a deletion cost $A_v \in \mathbb{Z}$ and a signed weight $B_v \in \mathbb{Z}$. You choose a subset of vertices $D \subseteq V$ to delete, paying $\sum_{v \in D} A_v$. Let $\text{CC}(G[V \setminus D])$ be the set of connected components of the surviving induced subgraph $G[V \setminus D]$. Each surviving connected component $C \in \text{CC}(G[V \setminus D])$ contributes the **absolute value** of the sum of $B_v$ over its vertices. Maximize the total score:
+
+$$\text{Score}(D) = \sum_{C \in \text{CC}(G[V \setminus D])} \left| \sum_{v \in C} B_v \right| - \sum_{v \in D} A_v.$$
+
+---
+
+### 2.1 Step 1: Non-Graph Diagnostic Signal & Linearizing $|X| = \max(+X, -X)$
+
+At first glance, `ARC 107 F` looks intractable for network flow: the objective depends on connected components $C \in \text{CC}(G[V \setminus D])$, which dynamically split and merge as vertices in $D$ are deleted, and the absolute value $\left|\sum_{v \in C} B_v\right|$ is a non-linear global function of an entire component.
+
+Why do standard approaches fail, and what diagnostic signal points to a 3-state ordered chain?
+
+1. **Why DP Fails**: $G$ is an arbitrary undirected graph with $N, M \le 300$ and cycles, so tree DP is impossible and treewidth can be $\Omega(N)$.
+2. **Why Binary (2-State) Cuts Fail**:
+   - A 2-state cut separating "Keep $v$" from "Delete $v$" cannot tell whether a surviving vertex $v \notin D$ contributes $+B_v$ (in a positive-sum component) or $-B_v$ (in a negative-sum component).
+   - Conversely, a 2-state cut separating "Sign $+1$" from "Sign $-1$" cannot model deleting a vertex $v \in D$ to act as an **insulator** between a $+1$ neighbor and a $-1$ neighbor.
+3. **Linearizing $|X| = \max(+X, -X)$ via Component Sign Choice**:
+   For any real number $X$, $|X| = \max(+X, -X) = \max_{s \in \{-1, +1\}} s \cdot X$. Crucially, because we are **maximizing** the sum of component absolute values, we can replace each component's absolute value with a free choice of component sign $s_C \in \{-1, +1\}$:
+
+   $$\max_{D \subseteq V} \left( \sum_{C \in \text{CC}(G[V \setminus D])} \left| \sum_{v \in C} B_v \right| - \sum_{v \in D} A_v \right) = \max_{D \subseteq V} \; \max_{\substack{s_C \in \{-1, +1\} \\ \forall C \in \text{CC}(G[V \setminus D])}} \left( \sum_{C \in \text{CC}(G[V \setminus D])} \sum_{v \in C} s_C B_v - \sum_{v \in D} A_v \right).$$
+
+   Why does replacing $|X|$ by $\max_{s_C \in \{-1, +1\}} s_C X$ require no constraint forcing $s_C$ to match $\operatorname{sgn}\left(\sum_{v \in C} B_v\right)$? Because in a maximization problem, if the solver picks the "wrong" sign $s_C = -\operatorname{sgn}(X)$, it gets $-|X| \le +|X|$, which is suboptimal and automatically dominated by the true sign choice!
+
+4. **Lifting Component Signs to 3 Vertex States**:
+   Once each surviving component $C$ has a sign $s_C \in \{-1, +1\}$, every individual vertex $v \in V$ is in **exactly one of three states** $\sigma_v \in \{-1, 0, +1\}$:
+   - $\sigma_v = -1$: vertex $v$ survives ($v \notin D$) inside a component with $s_C = -1$, contributing **$-B_v$** to the score.
+   - $\sigma_v = 0$: vertex $v$ is **deleted** ($v \in D$), contributing **$-A_v$** to the score.
+   - $\sigma_v = +1$: vertex $v$ survives ($v \notin D$) inside a component with $s_C = +1$, contributing **$+B_v$** to the score.
+
+---
+
+### 2.2 Step 2: Intermediate Algebraic Representation & The 1-Step Jump Prohibition
+
+When does a vertex-level assignment $\sigma = (\sigma_1, \dots, \sigma_N) \in \{-1, 0, +1\}^V$ correspond to a valid deletion set $D$ and a uniform sign $s_C$ on each surviving connected component $C \in \text{CC}(G[V \setminus D])$?
+
+::: {.callout-important title="Lemma 2.1: Component-Sign to 3-State Smoothness Bijection"}
+Let $G = (V, E)$ be an undirected graph. A 3-state vertex assignment $\sigma \in \{-1, 0, +1\}^V$ arises from a deletion set $D = \{v \in V : \sigma_v = 0\}$ and a uniform sign choice $s_C \in \{-1, +1\}$ on every connected component $C \in \text{CC}(G[V \setminus D])$ **if and only if** no undirected edge $(u, v) \in E$ directly connects a vertex in state $+1$ to a vertex in state $-1$:
+
+$$\forall (u, v) \in E, \qquad |\sigma_u - \sigma_v| \le 1 \quad \Longleftrightarrow \quad \neg\big((\sigma_u = +1 \land \sigma_v = -1) \lor (\sigma_u = -1 \land \sigma_v = +1)\big).$$
+
+*Proof*:
+
+- $(\Rightarrow)$ Suppose $D = \{v : \sigma_v = 0\}$ and $\sigma_v = s_C \in \{-1, +1\}$ on each component $C$ of $G[V \setminus D]$. For any edge $(u, v) \in E$, either at least one endpoint is deleted ($\sigma_u = 0$ or $\sigma_v = 0$, which immediately gives $|\sigma_u - \sigma_v| \le 1$) or both $u, v \notin D$ survive. In the latter case, edge $(u, v)$ survives in $G[V \setminus D]$, forcing $u$ and $v$ into the **same** connected component $C$, so $\sigma_u = \sigma_v = s_C$ and $|\sigma_u - \sigma_v| = 0 \le 1$.
+- $(\Leftarrow)$ Conversely, suppose $|\sigma_u - \sigma_v| \le 1$ holds for every $(u, v) \in E$, and define $D = \{v \in V : \sigma_v = 0\}$. For any surviving edge $(u, v)$ in $G[V \setminus D]$, both endpoints have $\sigma_u, \sigma_v \in \{-1, +1\}$ and satisfy $|\sigma_u - \sigma_v| \le 1$, which forces $\sigma_u = \sigma_v$. By induction along paths, $\sigma_v$ is constant across every connected component $C$ of $G[V \setminus D]$. $\blacksquare$
+:::
+
+Look closely at Lemma 2.1: **why must the deleted state $\sigma_v = 0$ sit in the middle of the ordering $-1 \prec 0 \prec +1$ (`FM-12`)?**
+
+Because deleting a vertex ($\sigma_v = 0$) acts as an **insulator** between $\sigma_u = -1$ and $\sigma_w = +1$! When we order the three states as $\sigma_v \in \{-1 \prec 0 \prec +1\}$, the condition "no $+1$ vertex is adjacent to a $-1$ vertex" becomes the **bounded-difference inequality $|\sigma_u - \sigma_v| \le 1$**—literally the `[HNOI2013] 切糕` Lipschitz constraint of Section 1.2 with $K = 3$ states and $D = 1$! If you instead ordered the states as $(-1, +1, 0)$, forbidding $(-1, +1)$ while allowing $(-1, 0)$ and $(+1, 0)$ would not be a monotone threshold constraint and could not be represented by a chain cut.
+
+#### Converting Vertex Gains into Non-Negative Series Cut Capacities
+
+Under state $\sigma_v \in \{-1, 0, +1\}$, vertex $v$'s individual gain in the maximization objective is:
+
+$$\text{Gain}_v(\sigma_v) = \begin{cases} -B_v, & \text{if } \sigma_v = -1 \quad (\text{survives with } - \text{ sign}), \\ -A_v, & \text{if } \sigma_v = 0 \quad (\text{deleted at cost } A_v), \\ +B_v, & \text{if } \sigma_v = +1 \quad (\text{survives with } + \text{ sign}). \end{cases}$$
+
+To turn $\max_\sigma \sum_{v \in V} \text{Gain}_v(\sigma_v)$ into a minimum cut $\sum_{v \in V} M_v - \min_\sigma \sum_{v \in V} c_v(\sigma_v)$ with **non-negative** edge capacities $c_v(-1), c_v(0), c_v(+1) \ge 0$, we subtract $\text{Gain}_v(\sigma_v)$ from a per-vertex pedestal constant $M_v$:
+
+$$c_v^- := c_v(-1) = M_v + B_v, \qquad c_v^{\text{mid}} := c_v(0) = M_v + A_v, \qquad c_v^+ := c_v(+1) = M_v - B_v.$$
+
+There are two standard ways to choose the pedestal $M_v$:
+
+1. **Choice A — The Universal Pedestal $M_v = \max(|B_v|, -A_v)$ (Recommended for Arbitrary $A_v \in \mathbb{Z}$)**:
+   Since `ARC 107 F` allows $A_v < 0$ (deleting $v$ can actually grant a positive bonus $-A_v > 0$!), setting
+
+   $$M_v = \max\big(|B_v|, \; -A_v\big)$$
+
+   guarantees $c_v^- = M_v + B_v \ge 0$, $c_v^{\text{mid}} = M_v + A_v \ge 0$, and $c_v^+ = M_v - B_v \ge 0$ unconditionally without any `if (A[v] < 0)` branches! When $A_v \ge 0$, this simplifies to $M_v = |B_v|$, giving:
+
+   $$c_v^- = |B_v| + B_v, \qquad c_v^{\text{mid}} = A_v + |B_v|, \qquad c_v^+ = |B_v| - B_v \qquad (\text{with baseline } \Phi = \sum_{v \in V} |B_v|).$$
+
+2. **Choice B — The Shifted-by-$A_v + |B_v|$ Pedestal $M_v = A_v + |B_v|$ (When $A_v \ge 0$)**:
+   Equivalently, if we add a further constant shift so that $M_v = A_v + |B_v|$ (or view every vertex as paying $A_v$ unless saved), every forward capacity shifts by—wait: remember from Theorem 1.2 that any constant added to $M_v$ must be added to **all three** capacities $c_v^-, c_v^{\text{mid}}, c_v^+$ simultaneously so that the differences $c_v(\sigma) - c_v(\sigma') = \text{Gain}_v(\sigma') - \text{Gain}_v(\sigma)$ remain invariant!
+
+::: {.callout-warning title="Pedagogical Audit: Do Not Swap the $+A_v$ Offset onto $c_v^-$ and $c_v^+$!"}
+A frequent algebraic slip when writing down `ARC 107 F` from memory is writing "$c_v^- = A_v + |B_v| + B_v, \; c_v^{\text{mid}} = A_v, \; c_v^+ = A_v + |B_v| - B_v$". Let us check why that formula has the $+A_v$ on the wrong edges: if $c_v^- = A_v + |B_v| + B_v$ and $c_v^{\text{mid}} = A_v$, then switching from $\sigma_v = -1$ (kept) to $\sigma_v = 0$ (deleted) changes the cut cost by $c_v^{\text{mid}} - c_v^- = -|B_v| - B_v$, completely independent of the deletion cost $A_v$!
+
+In truth, **deleting** $v$ ($\sigma_v = 0$) forfeits $|B_v|$ AND pays $A_v$, so the loss relative to $M_v = |B_v|$ is:
+
+$$c_v^- = |B_v| + B_v, \qquad c_v^{\text{mid}} = A_v + |B_v|, \qquad c_v^+ = |B_v| - B_v,$$
+
+or universally for all $A_v, B_v \in \mathbb{Z}$ with $M_v = \max(|B_v|, -A_v)$:
+
+$$\boxed{c_v^- = M_v + B_v, \qquad c_v^{\text{mid}} = M_v + A_v, \qquad c_v^+ = M_v - B_v.}$$
+:::
+
+---
+
+### 2.3 Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+For each vertex $v \in V$, we introduce two internal threshold vertices $v_{\text{in}}$ and $v_{\text{out}}$ representing the unary threshold bits of $\sigma_v \in \{-1 \prec 0 \prec +1\}$:
+
+$$z_{v,1} = [\sigma_v \ge 0] \in \{0, 1\} \quad (\text{vertex } v_{\text{in}}), \qquad z_{v,2} = [\sigma_v \ge +1] \in \{0, 1\} \quad (\text{vertex } v_{\text{out}}),$$
+
+subject to the monotonicity invariant $z_{v,1} \ge z_{v,2}$ (enforced by the reverse lock $v_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$).
+
+Let us verify how the four possible $(S, T)$ partitions of $(v_{\text{in}}, v_{\text{out}})$ map to the 3 states of vertex $v$ along the series chain
+
+$$S \xrightarrow{c_v^-} v_{\text{in}} \xrightarrow{c_v^{\text{mid}}} v_{\text{out}} \xrightarrow{c_v^+} T:$$
+
+| $(z_{v,1}, z_{v,2})$ | Partition of $(v_{\text{in}}, v_{\text{out}})$ | State $\sigma_v$ | Series Edge Cut in $S \to v_{\text{in}} \to v_{\text{out}} \to T$ | Cut Cost $c_v(\sigma_v)$ | Net Gain $M_v - c_v(\sigma_v)$ |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| $(0, 0)$ | $v_{\text{in}} \in T, \; v_{\text{out}} \in T$ | $\sigma_v = -1$ (kept, $-$ sign) | $S \xrightarrow{c_v^-} v_{\text{in}}$ | $M_v + B_v$ | $-B_v$ |
+| $(1, 0)$ | $v_{\text{in}} \in S, \; v_{\text{out}} \in T$ | $\sigma_v = 0$ (**deleted**) | $v_{\text{in}} \xrightarrow{c_v^{\text{mid}}} v_{\text{out}}$ | $M_v + A_v$ | $-A_v$ |
+| $(1, 1)$ | $v_{\text{in}} \in S, \; v_{\text{out}} \in S$ | $\sigma_v = +1$ (kept, $+$ sign) | $v_{\text{out}} \xrightarrow{c_v^+} T$ | $M_v - B_v$ | $+B_v$ |
+| $(0, 1)$ | $v_{\text{in}} \in T, \; v_{\text{out}} \in S$ | *Invalid* ($z_{v,1} < z_{v,2}$) | Severs reverse lock $v_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$ | $\infty$ | $-\infty$ |
+
+Now let us compile the 1-step jump prohibition $|\sigma_u - \sigma_v| \le 1$ for each undirected edge $(u, v) \in E$:
+
+- **Forbidding $(\sigma_u = +1 \land \sigma_v = -1)$**:
+  From the table above, $\sigma_u = +1 \iff z_{u,2} = 1$ ($u_{\text{out}} \in S$), and $\sigma_v = -1 \iff z_{v,1} = 0$ ($v_{\text{in}} \in T$). Forbidding $(u_{\text{out}} \in S \land v_{\text{in}} \in T)$ is the quadratic penalty $\infty \cdot z_{u,2}(1 - z_{v,1})$, which compiles to the directed arc:
+
+  $$u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}.$$
+
+- **Forbidding $(\sigma_v = +1 \land \sigma_u = -1)$**:
+  By symmetry, forbidding $(v_{\text{out}} \in S \land u_{\text{in}} \in T)$ compiles to the directed arc:
+
+  $$v_{\text{out}} \xrightarrow{\infty} u_{\text{in}}.$$
+
+*(Note on Dual Labeling Convention: If you instead reversed the chain semantics so that $(S, S)$ meant $\sigma_v = -1$, $(T, S)$ meant $\sigma_v = 0$, and $(T, T)$ meant $\sigma_v = +1$ with $v_{\text{in}} \xrightarrow{\infty} v_{\text{out}}$, the cross-edges would be $u_{\text{in}} \xrightarrow{\infty} v_{\text{out}}$ and $v_{\text{in}} \xrightarrow{\infty} u_{\text{out}}$. Under our canonical series chain $S \to v_{\text{in}} \to v_{\text{out}} \to T$ where the deleted state $(S, T)$ cuts $v_{\text{in}} \to v_{\text{out}}$, the cross-edges are always $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$ and $v_{\text{out}} \xrightarrow{\infty} u_{\text{in}}$, matching the natural vertex-split walk direction!)*
+
+```{mermaid}
+flowchart LR
+    S(("S (1)"))
+    T(("T (0)"))
+    subgraph Chain_u ["Vertex u Chain"]
+        u1["u_in (sigma_u >= 0)"]
+        u2["u_out (sigma_u >= +1)"]
+    end
+    subgraph Chain_v ["Vertex v Chain"]
+        v1["v_in (sigma_v >= 0)"]
+        v2["v_out (sigma_v >= +1)"]
+    end
+    S -->|"M_u + B_u"| u1
+    u1 -->|"M_u + A_u"| u2
+    u2 -->|"M_u - B_u"| T
+    u2 -.->|"inf (monotonicity)"| u1
+
+    S -->|"M_v + B_v"| v1
+    v1 -->|"M_v + A_v"| v2
+    v2 -->|"M_v - B_v"| T
+    v2 -.->|"inf (monotonicity)"| v1
+
+    u2 ==>|"inf (forbid +1 adj -1)"| v1
+    v2 ==>|"inf (forbid +1 adj -1)"| u1
+```
+
+---
+
+### 2.4 Step 4: Exhaustive 9-State Pairwise Verification, Hand-Checkable Trace & C++ Implementation
+
+#### Exhaustive Verification of All 9 Pairwise State Combinations on an Edge $(u, v) \in E$
+
+Let us verify that for every pair of valid states $(\sigma_u, \sigma_v) \in \{-1, 0, +1\}^2$, the cross-chain arcs $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$ and $v_{\text{out}} \xrightarrow{\infty} u_{\text{in}}$ contribute $\infty$ if and only if $\{\sigma_u, \sigma_v\} = \{-1, +1\}$, and $0$ in all 7 other valid configurations:
+
+| $\sigma_u$ | $(u_{\text{in}}, u_{\text{out}})$ | $\sigma_v$ | $(v_{\text{in}}, v_{\text{out}})$ | Arc $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$ | Arc $v_{\text{out}} \xrightarrow{\infty} u_{\text{in}}$ | Cross-Edge Cut Penalty | Physical Meaning |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| $-1$ | $(T, T)$ | $-1$ | $(T, T)$ | $T \to T$ ($0$) | $T \to T$ ($0$) | **$0$** | Both survive in same $-$ component |
+| $-1$ | $(T, T)$ | $0$ | $(S, T)$ | $T \to S$ ($0$) | $T \to T$ ($0$) | **$0$** | $u$ has $-$ sign, $v$ is deleted |
+| $-1$ | $(T, T)$ | $+1$ | $(S, S)$ | $T \to S$ ($0$) | **$S \to T$ ($\infty$)** | **$\infty$ (Forbidden!)** | Adjacent $-$ and $+$ without deletion |
+| $0$ | $(S, T)$ | $-1$ | $(T, T)$ | $T \to T$ ($0$) | $T \to S$ ($0$) | **$0$** | $u$ is deleted, $v$ has $-$ sign |
+| $0$ | $(S, T)$ | $0$ | $(S, T)$ | $T \to S$ ($0$) | $T \to S$ ($0$) | **$0$** | Both $u$ and $v$ are deleted |
+| $0$ | $(S, T)$ | $+1$ | $(S, S)$ | $T \to S$ ($0$) | $S \to S$ ($0$) | **$0$** | $u$ is deleted, $v$ has $+$ sign |
+| $+1$ | $(S, S)$ | $-1$ | $(T, T)$ | **$S \to T$ ($\infty$)** | $T \to S$ ($0$) | **$\infty$ (Forbidden!)** | Adjacent $+$ and $-$ without deletion |
+| $+1$ | $(S, S)$ | $0$ | $(S, T)$ | $S \to S$ ($0$) | $T \to S$ ($0$) | **$0$** | $u$ has $+$ sign, $v$ is deleted |
+| $+1$ | $(S, S)$ | $+1$ | $(S, S)$ | $S \to S$ ($0$) | $S \to S$ ($0$) | **$0$** | Both survive in same $+$ component |
+
+#### Concrete Numerical Trace ($N = 3$ Path Graph $1 - 2 - 3$)
+
+Consider the 3-vertex path graph $1 - 2 - 3$ with parameters:
+
+- **Vertex 1**: $A_1 = 10, \; B_1 = +5 \implies M_1 = \max(5, -10) = 5$, chain capacities $(c_1^-, c_1^{\text{mid}}, c_1^+) = (10, \; 15, \; 0)$.
+- **Vertex 2**: $A_2 = 2, \; B_2 = -1 \implies M_2 = \max(1, -2) = 1$, chain capacities $(c_2^-, c_2^{\text{mid}}, c_2^+) = (0, \; 3, \; 2)$.
+- **Vertex 3**: $A_3 = 10, \; B_3 = -6 \implies M_3 = \max(6, -10) = 6$, chain capacities $(c_3^-, c_3^{\text{mid}}, c_3^+) = (0, \; 16, \; 12)$.
+
+The total baseline pedestal is $\Phi = M_1 + M_2 + M_3 = 5 + 1 + 6 = 12$. Let us compare the candidate cuts:
+
+1. **Keep all three vertices with negative sign $\sigma = (-1, -1, -1)$**:
+   Cuts $S \xrightarrow{10} 1_{\text{in}}$, $S \xrightarrow{0} 2_{\text{in}}$, $S \xrightarrow{0} 3_{\text{in}}$. Total cut $= 10$; net score $= 12 - 10 = \mathbf{2}$ (matching $|5 - 1 - 6| = |-2| = 2$).
+2. **Keep all three vertices with positive sign $\sigma = (+1, +1, +1)$**:
+   Cuts $1_{\text{out}} \xrightarrow{0} T$, $2_{\text{out}} \xrightarrow{2} T$, $3_{\text{out}} \xrightarrow{12} T$. Total cut $= 14$; net score $= 12 - 14 = \mathbf{-2}$.
+3. **Delete middle Vertex 2 so Vertex 1 takes $+1$ and Vertex 3 takes $-1$: $\sigma = (+1, 0, -1)$**:
+   Partitions $1_{\text{in}}, 1_{\text{out}} \in S$; $2_{\text{in}} \in S, 2_{\text{out}} \in T$; $3_{\text{in}}, 3_{\text{out}} \in T$.
+   - Cross-edges on $(1, 2)$: $1_{\text{out}}(S) \xrightarrow{\infty} 2_{\text{in}}(S)$ (not cut) and $2_{\text{out}}(T) \xrightarrow{\infty} 1_{\text{in}}(S)$ ($T \to S$, not cut).
+   - Cross-edges on $(2, 3)$: $2_{\text{out}}(T) \xrightarrow{\infty} 3_{\text{in}}(T)$ (not cut) and $3_{\text{out}}(T) \xrightarrow{\infty} 2_{\text{in}}(S)$ ($T \to S$, not cut).
+   - Series edges cut: $1_{\text{out}} \xrightarrow{0} T$ (cost $0$) + $2_{\text{in}} \xrightarrow{3} 2_{\text{out}}$ (cost $3$) + $S \xrightarrow{0} 3_{\text{in}}$ (cost $0$) $= \mathbf{3}$.
+   - Maximum score $= \Phi - \text{MinCut}(S, T) = 12 - 3 = \mathbf{9}$ (matching $|5| + |-6| - A_2 = 5 + 6 - 2 = 9$).
+
+#### Complete Model Implementation (`ARC 107 F`)
+
+```cpp
+// AtCoder ARC 107 F — Sum of Abs (#095)
+// Assumes standard Dinic library: Dinic flow(num_nodes, S, T); flow.add_edge(u, v, cap);
+long long solve_arc107f(int N, int M, const vector<long long>& A,
+                        const vector<long long>& B,
+                        const vector<pair<int, int>>& edges) {
+    const long long INF = 1e15;
+    int S = 0, T = 2 * N + 1;
+    Dinic flow(2 * N + 2, S, T);
+
+    auto v_in  = [&](int v) { return 2 * v - 1; }; // 1-indexed v in [1..N]
+    auto v_out = [&](int v) { return 2 * v; };
+
+    long long total_pedestal = 0;
+    for (int v = 1; v <= N; ++v) {
+        long long M_v = max(abs(B[v]), -A[v]);
+        total_pedestal += M_v;
+
+        long long c_neg = M_v + B[v]; // cut if sigma_v = -1: (v_in, v_out) = (T, T)
+        long long c_mid = M_v + A[v]; // cut if sigma_v =  0: (v_in, v_out) = (S, T)
+        long long c_pos = M_v - B[v]; // cut if sigma_v = +1: (v_in, v_out) = (S, S)
+
+        flow.add_edge(S, v_in(v), c_neg);
+        flow.add_edge(v_in(v), v_out(v), c_mid);
+        flow.add_edge(v_out(v), T, c_pos);
+
+        // FM-12 Guard: Reverse infinity lock forbidding (v_in in T, v_out in S)
+        flow.add_edge(v_out(v), v_in(v), INF);
+    }
+
+    for (auto [u, v] : edges) {
+        // Forbid (sigma_u = +1 and sigma_v = -1) and vice versa
+        flow.add_edge(v_out(u), v_in(v), INF);
+        flow.add_edge(v_out(v), v_in(u), INF);
+    }
+
+    return total_pedestal - flow.max_flow();
+}
+```
+
+**Complexity**: The network has $2N + 2 \le 602$ vertices and $4N + 2M \le 1800$ directed edges. Dinic's algorithm finishes in $< 5\text{ ms}$.
+
+---
+
+## 3. 4-Layer Parity & Modulo Path-Prohibition Chains (`CF 1517 G — Starry Night Camping`)
+
+Look back at Figure 2's network for `ARC 107 F`: each vertex $v$ has an internal bridge $v_{\text{in}} \xrightarrow{M_v + A_v} v_{\text{out}}$, and each graph edge $(u, v)$ links $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$. From a dual perspective, cutting $v_{\text{in}} \to v_{\text{out}}$ **deletes vertex $v$** so that no path can travel from a $+1$ vertex ($S \to u_{\text{out}}$ uncut) to a $-1$ vertex ($S \to v_{\text{in}}$ cut, wait: from $S$ through $u_{\text{in}} \to u_{\text{out}} \to v_{\text{in}} \to v_{\text{out}} \to T$).
+
+What if a problem asks us to delete a minimum-weight set of vertices $D \subseteq V$ to destroy all forbidden **4-vertex configurations** (`CF 1517 G`), **3-vertex hex resonances** (`[BJOI2016] 水晶`), or **maximum-length increasing subsequences** (`[Luogu P2766] LIS`)?
+
+::: {.callout-note title="Theorem 3.1: Equivalence of K-Layer Vertex-Cut Walk Interception and (K+1)-State Smoothness Cuts"}
+Suppose the vertices of an undirected graph $G = (V, E)$ can be partitioned into $K$ ordered layers $V_1, V_2, \dots, V_K$ such that:
+
+1. Every forbidden configuration in $G$ is a $(K-1)$-step walk $v_1 - v_2 - \dots - v_K$ visiting layers $V_1 \to V_2 \to \dots \to V_K$ in strict order; and
+2. **Converse Soundness (No Spurious Walks)**: Every $(K-1)$-step walk $v_1 - v_2 - \dots - v_K$ visiting $V_1 \to V_2 \to \dots \to V_K$ in order is a valid forbidden configuration (in particular, because $V_1, \dots, V_K$ are pairwise disjoint, any such walk automatically consists of $K$ **distinct** vertices and can never fold back on itself!).
+
+Then deleting a minimum-weight vertex subset $D \subseteq V$ (where deleting $v \in V_k$ costs $w_v \ge 0$) to eliminate all forbidden configurations compiles into a $K$-layer vertex-split DAG:
+
+- Split each vertex $v \in V_k$ into $v_{\text{in}} \xrightarrow{w_v} v_{\text{out}}$.
+- Connect $S \xrightarrow{\infty} v_{\text{in}}$ for all $v \in V_1$, and $v_{\text{out}} \xrightarrow{\infty} T$ for all $v \in V_K$.
+- For every edge $(u, v) \in E$ with $u \in V_k$ and $v \in V_{k+1}$ ($1 \le k \le K-1$), wire $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$.
+
+By LP duality, any finite $S$-$T$ cut partitions the surviving vertices $V \setminus D$ into a monotonic $(K+1)$-state assignment where no edge transitions from an $S$-side layer-$k$ vertex to a $T$-side layer-$(k+1)$ vertex. $\blacksquare$
+:::
+
+### Case Study: [Codeforces 1517 G — Starry Night Camping](https://codeforces.com/problemset/problem/1517/G) (`#090`)
+
+In `CF 1517 G`, we are given $N \le 1000$ tents at integer coordinates $(x_i, y_i) \in \mathbb{Z}^2$, each with weight $w_i \ge 1$. A tent at $(x, y)$ is called **important** if both $x$ and $y$ are even, or... wait: in the problem statement, a tent is *special* if it has at least one horizontal neighbor at distance $1$ AND at least one vertical neighbor at distance $1$ with the same $y$-parity condition—specifically, the problem forbids any configuration of 4 tents $d - a - b - c$ where:
+
+- $a$ and $b$ are horizontally adjacent with **even** $y$-coordinates: one has $(x \text{ odd}, y \text{ even})$ and the other has $(x \text{ even}, y \text{ even})$;
+- $d$ is vertically adjacent to $a$: since $a$ has $(x \text{ odd}, y \text{ even})$, $d = (x_a, y_a \pm 1)$ has $(x \text{ odd}, y \text{ odd})$;
+- $c$ is vertically adjacent to $b$: since $b$ has $(x \text{ even}, y \text{ even})$, $c = (x_b, y_b \pm 1)$ has $(x \text{ even}, y \text{ odd})$.
+
+Look at the 2D coordinate parity $(x \bmod 2, \; y \bmod 2)$ of the four tents $d, a, b, c$:
+
+$$L_1 = (\text{odd}, \text{odd}) \xrightarrow{\text{vertical}} L_2 = (\text{odd}, \text{even}) \xrightarrow{\text{horizontal}} L_3 = (\text{even}, \text{even}) \xrightarrow{\text{vertical}} L_4 = (\text{even}, \text{odd}).$$
+
+Every single forbidden 4-tent configuration (`T`, `L`, `Z`, `S`, or `O` tetromino covering an $L_2 - L_3$ horizontal core edge) is a directed path $d \in L_1 \to a \in L_2 \to b \in L_3 \to c \in L_4$! Conversely, because $L_1, L_2, L_3, L_4$ have pairwise distinct $(x \bmod 2, y \bmod 2)$ signatures, **every** directed path from $L_1 \to L_2 \to L_3 \to L_4$ visits 4 distinct tents and forms a forbidden configuration!
+
+```{mermaid}
+flowchart LR
+    S(("S")) ==>|"inf"| L1["L_1: (odd, odd)\nd_in --w_d--> d_out"]
+    L1 ==>|"inf (dy = +-1)"| L2["L_2: (odd, even)\na_in --w_a--> a_out"]
+    L2 ==>|"inf (dx = +-1)"| L3["L_3: (even, even)\nb_in --w_b--> b_out"]
+    L3 ==>|"inf (dy = +-1)"| L4["L_4: (even, odd)\nc_in --w_c--> c_out"]
+    L4 ==>|"inf"| T(("T"))
+```
+
+| Contest Problem | Forbidden Pattern | Canonical $K$-Layer Partition $L_1 \to \dots \to L_K$ | Why Undirected Walks Never Self-Intersect |
+| :--- | :--- | :--- | :--- |
+| **`ARC 107 F`** | Path from $V_+$ to $V_-$ | $V_+ (\text{Layer } 1) \to V_{\text{del}} \to V_- (\text{Layer } 2)$ | Any path from $V_+$ to $V_-$ must cross a single edge $(u, v)$. |
+| **`[BJOI2016] 水晶`** | 3-cell resonance triad or line in 3D hex grid $(x, y, z)$ | 3-coloring by $p(x, y, z) = (x + y + z) \bmod 3$: $L_1 (p \equiv 1) \to L_2 (p \equiv 0) \to L_3 (p \equiv 2)$ | Moving $\pm 1$ along any hex axis shifts $x+y+z$ by $\pm 1 \pmod 3$; every triad/line around a center $p \equiv 0$ is $\{p \equiv 1\} - \{p \equiv 0\} - \{p \equiv 2\}$. |
+| **`CF 1517 G`** | 4-cell tent tetromino around horizontal even-$y$ core | 4-coloring by $(x \bmod 2, y \bmod 2)$: $(\text{odd}, \text{odd}) \to (\text{odd}, \text{even}) \to (\text{even}, \text{even}) \to (\text{even}, \text{odd})$ | The 4 layers are disjoint parity classes in $\mathbb{Z}_2 \times \mathbb{Z}_2$, so any 3-step walk $L_1 \to L_2 \to L_3 \to L_4$ visits 4 distinct points. |
+| **`[Luogu P2766] LIS`** | Any Longest Increasing Subsequence of length $K$ | $K$-layer DAG by DP length $dp[i] \in \{1, \dots, K\}$: wire $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$ iff $u < v, A_u \le A_v, dp[v] = dp[u] + 1$ | Since $dp[v] = dp[u] + 1$ strictly increases along transitions, the graph is naturally a $K$-layer DAG. |
+
+
+---
+
+## 4. Flagship Deep-Dive Case Study 2 — Unary Threshold Layering, Disjunctive OR Cuts & [AtCoder ARC 142 E — Pairing Wizards](https://atcoder.jp/contests/arc142/tasks/arc142_e?lang=en) (`#096`)
+
+### Problem Statement & Constraints
+
+- **Problem**: [AtCoder ARC 142 E — Pairing Wizards](https://atcoder.jp/contests/arc142/tasks/arc142_e?lang=en) (`#096`)
+- **Constraints**: $N \le 100$ wizards, $M \le \binom{N}{2}$ pairs, initial strengths $1 \le a_i \le 100$, target strengths $1 \le b_i \le 100$, Time Limit $2.0\text{ s}$.
+- **Task**: Each wizard $i \in \{1, \dots, N\}$ starts with strength $a_i$ and has a target threshold $b_i$. You may increase each wizard's strength to any integer $x_i \ge a_i$ at a cost of $x_i - a_i$. You are given $M$ pairs of wizards $(u, v) \in E$. For every pair $(u, v) \in E$, their final strengths $(x_u, x_v)$ must satisfy:
+
+$$(x_u \ge b_u \land x_v \ge b_v) \;\lor\; (x_u \ge b_v \land x_v \ge b_u).$$
+
+Find the minimum total cost $\sum_{i=1}^N (x_i - a_i)$ required to satisfy all $M$ pairs.
+
+---
+
+### 4.1 Step 1: Non-Graph Diagnostic Signal & The Mandatory Pre-Promotion Lemma
+
+Read the English problem statement of `ARC 142 E` again: **there is no mention of flows, cuts, or bipartite graphs anywhere.** Worse still, the input graph $G = (V, E)$ is an arbitrary undirected graph that can contain triangles $K_3$ and odd cycles of every length!
+
+Let us see how our 4-Step Compilation Protocol uncovers the hidden network structure from pure algebra.
+
+First, for any two pairs of numbers $(x_u, x_v)$ and $(b_u, b_v)$, saying that $(x_u, x_v)$ dominates $(b_u, b_v)$ in either the identity matching or the swapped matching is algebraically equivalent to saying that the sorted pair $(\min(x_u, x_v), \max(x_u, x_v))$ dominates $(\min(b_u, b_v), \max(b_u, b_v))$:
+
+$$(x_u \ge b_u \land x_v \ge b_v) \;\lor\; (x_u \ge b_v \land x_v \ge b_u) \quad \Longleftrightarrow \quad \begin{cases} \text{(1) Conjunctive Floor:} & \min(x_u, x_v) \ge \min(b_u, b_v), \\ \text{(2) Disjunctive Ceiling:} & \max(x_u, x_v) \ge \max(b_u, b_v). \end{cases}$$
+
+Expand Condition (1) and Condition (2) into elementary inequalities:
+
+1. **Condition (1) is a Pure Conjunction (AND)**:
+   $$\min(x_u, x_v) \ge \min(b_u, b_v) \quad \Longleftrightarrow \quad x_u \ge \min(b_u, b_v) \;\land\; x_v \ge \min(b_u, b_v).$$
+   There is no choice here! Every feasible solution $(x_1, \dots, x_N)$ **must** satisfy $x_u \ge \min(b_u, b_v)$ for every neighbor $v \in N(u)$.
+2. **Condition (2) is a Pure Disjunction (OR)**:
+   $$\max(x_u, x_v) \ge \max(b_u, b_v) \quad \Longleftrightarrow \quad x_u \ge \max(b_u, b_v) \;\lor\; x_v \ge \max(b_u, b_v).$$
+   Why is a disjunctive lower bound $x_u \ge B \lor x_v \ge B$ terrifying? Because in boolean indicator variables $z_u = [x_u \ge B] \in \{0, 1\}$, the disjunction $z_u = 1 \lor z_v = 1$ forbids $(z_u = 0 \land z_v = 0)$. On a general graph $G = (V, E)$, choosing a minimum-cost set of vertices with $z_u = 1$ so that every edge has at least one endpoint with $z = 1$ is **Minimum Weight Vertex Cover**, which is NP-hard on non-bipartite graphs!
+
+Why, then, is `ARC 142 E` solvable in polynomial time even when $G$ contains triangles $K_3$? Because enforcing Condition (1) first via **Mandatory Pre-Promotion** destroys every odd cycle in the remaining conflict graph!
+
+::: {.callout-important title="Lemma 4.1: The Mandatory Pre-Promotion Lemma"}
+In any feasible assignment $(x_1, \dots, x_N)$, every wizard $u \in V$ must satisfy
+
+$$x_u \ge a_u^{\text{new}} := \max\left(a_u, \; \max_{v \in N(u)} \min(b_u, b_v)\right).$$
+
+Therefore, we may immediately promote $a_u \gets a_u^{\text{new}}$ for every $u \in V$ and add the mandatory upfront cost
+
+$$C_{\text{base}} = \sum_{u=1}^{N} \big(a_u^{\text{new}} - a_u^{\text{old}}\big)$$
+
+to the answer. After this pre-promotion, Condition (1) ($\min(x_u, x_v) \ge \min(b_u, b_v)$) is **universally satisfied** for all $(u, v) \in E$ by any $x \ge a$. $\blacksquare$
+:::
+
+---
+
+### 4.2 Step 2: The Low-Role vs. High-Role Bipartite Structural Dichotomy Lemma
+
+Henceforth, let $a_u$ denote the **post-promotion** strength of wizard $u$ after Lemma 4.1 has been applied. Partition all wizards $V$ into two disjoint sets according to whether their post-promotion strength $a_u$ is still strictly below their own target $b_u$:
+
+$$V_{\text{low}} := \big\{ u \in V : a_u < b_u \big\} \quad (\textbf{Low-Role / Deficient Wizards}), \qquad V_{\text{high}} := \big\{ v \in V : a_v \ge b_v \big\} \quad (\textbf{High-Role / Sufficient Wizards}).$$
+
+*(Terminology Note: A wizard $u \in V_{\text{low}}$ currently has low strength $a_u < b_u$ relative to its own target $b_u$; a wizard $v \in V_{\text{high}}$ has already met its own target $a_v \ge b_v$ and only ever needs to climb to higher thresholds $k \in (a_v, 100]$ to cover a neighbor's target!)*
+
+Let us prove the central structural theorem of this section: after pre-promotion, the remaining unsatisfied edges of $G$ are **100% bipartite** between $V_{\text{low}}$ and $V_{\text{high}}$, and every wizard in $V_{\text{low}}$ makes a pure **binary jump** decision!
+
+::: {.callout-important title="Theorem 4.2: The Low-Role vs. High-Role Bipartite Structural Dichotomy Lemma"}
+Assume $a_u \gets \max_{v \in N(u)}(a_u, \min(b_u, b_v))$ has been applied for all $u \in V$. Then:
+
+1. **Bipartite Dichotomy of Unsatisfied Edges**: For every edge $(u, v) \in E$ whose disjunctive condition $\max(x_u, x_v) \ge \max(b_u, b_v)$ is not yet satisfied by $(a_u, a_v)$ (i.e., $\max(a_u, a_v) < \max(b_u, b_v)$), **exactly one** endpoint belongs to $V_{\text{low}}$ ($a_u < b_u$) and **the other** endpoint belongs to $V_{\text{high}}$ ($a_v \ge b_v$), with $\max(b_u, b_v) = b_u > a_u$. In particular, $V_{\text{low}} \cap V_{\text{high}} = \emptyset$, and no unsatisfied edge ever connects two vertices in $V_{\text{low}}$ or two vertices in $V_{\text{high}}$.
+2. **Binary Jump Property on $V_{\text{low}}$**: For every wizard $u \in V_{\text{low}}$ ($a_u < b_u$), every incident edge $(u, w) \in E$ has $\max(b_u, b_w) = b_u$. Consequently, in an optimal solution, $x_u$ only ever takes one of **two** values: $x_u \in \{a_u, b_u\}$.
+
+*Proof*:
+
+1. Let $(u, v) \in E$ be any edge with $\max(a_u, a_v) < \max(b_u, b_v)$. Without loss of generality, assume $b_v \le b_u$, so that $\min(b_u, b_v) = b_v$ and $\max(b_u, b_v) = b_u$.
+   - By Lemma 4.1 (Mandatory Pre-Promotion on edge $(u, v)$), we have
+
+     $$a_v \ge \min(b_u, b_v) = b_v \quad \Longrightarrow \quad v \in V_{\text{high}}!$$
+
+   - Simultaneously, since $\max(a_u, a_v) < \max(b_u, b_v) = b_u$, we must have
+
+     $$a_u < b_u \quad \text{and} \quad a_v < b_u \quad \Longrightarrow \quad u \in V_{\text{low}}!$$
+
+   Thus every unsatisfied edge has one endpoint $u \in V_{\text{low}}$ and one endpoint $v \in V_{\text{high}}$, and requires $\max(x_u, x_v) \ge b_u$.
+2. Now take any $u \in V_{\text{low}}$ ($a_u < b_u$) and consider **any** neighbor $w \in N(u)$. By Lemma 4.1, $\min(b_u, b_w) \le a_u < b_u$. Since $\min(b_u, b_w) < b_u$, we must have $b_w \le a_u < b_u$, which implies $\max(b_u, b_w) = b_u$ on **every** edge $(u, w)$ incident to $u$!
+   Therefore, raising $x_u$ to $b_u$ satisfies **all** edges incident to $u$ simultaneously; raising $x_u$ to any intermediate integer in $(a_u, b_u)$ satisfies **none** of them (since $a_w$ or $x_w$ would still need to reach $b_u$); and raising $x_u > b_u$ is strictly wasteful. Thus $x_u \in \{a_u, b_u\}$ is purely binary! $\blacksquare$
+:::
+
+---
+
+### 4.3 Step 3: Intermediate Algebraic Representation (Binary Jump vs. Unary Threshold Chain)
+
+By Theorem 4.2, the optimization problem reduces to a bipartite system between $u \in V_{\text{low}}$ and $v \in V_{\text{high}}$:
+
+1. **Binary Indicator $y_u \in \{0, 1\}$ for Low-Role Wizards $u \in V_{\text{low}}$ ($a_u < b_u$)**:
+   Since $x_u \in \{a_u, b_u\}$, define the binary jump indicator:
+
+   $$y_u := [x_u \ge b_u] = \begin{cases} 0 & \text{if } x_u = a_u \quad (\text{cost } 0), \\ 1 & \text{if } x_u = b_u \quad (\text{cost } b_u - a_u). \end{cases}$$
+
+2. **Unary Threshold Chain $z_{v,k} \in \{0, 1\}$ for High-Role Wizards $v \in V_{\text{high}}$ ($a_v \ge b_v$)**:
+   A High-Role wizard $v \in V_{\text{high}}$ may be adjacent to several Low-Role wizards $u_1, u_2, \dots \in V_{\text{low}}$ with distinct targets $b_{u_1}, b_{u_2}, \dots \in (a_v, 100]$. Because each $+1$ increment of $x_v$ above $a_v$ costs $1$, we encode $x_v \in \{a_v, a_v + 1, \dots, 100\}$ using the **Form B (Parallel Closure)** unary threshold indicators from Theorem 1.2:
+
+   $$z_{v,k} := [x_v \ge k] \in \{0, 1\} \qquad \text{for } k \in \{a_v + 1, a_v + 2, \dots, 100\},$$
+
+   subject to the decreasing monotonicity chain $z_{v, a_v+1} \ge z_{v, a_v+2} \ge \dots \ge z_{v, 100}$ and linear upgrade cost:
+
+   $$x_v - a_v = \sum_{k = a_v + 1}^{100} 1 \cdot z_{v,k}.$$
+
+3. **Disjunctive OR Constraint on Active Edges $(u, v) \in E$ ($u \in V_{\text{low}}, v \in V_{\text{high}}, a_v < b_u$)**:
+   Edge $(u, v)$ requires $x_u \ge b_u \lor x_v \ge b_u$, which in our boolean indicators is the disjunction:
+
+   $$y_u = 1 \;\lor\; z_{v, b_u} = 1 \quad \Longleftrightarrow \quad \neg\big(y_u = 0 \;\land\; z_{v, b_u} = 0\big).$$
+
+---
+
+### 4.4 Step 4: Mechanical Graph Compilation via Bipartite Variable Inversion
+
+To compile the forbidden conjunction $(y_u = 0 \land z_{v, b_u} = 0)$ into a directed $S \to T$ cut penalty $\infty \cdot [\text{tail} \in S][\text{head} \in T]$, we apply **Bipartite Variable Inversion** (Chapter 11) across the bipartition $(V_{\text{low}}, V_{\text{high}})$:
+
+- **On $V_{\text{low}}$ (Inverted Source Convention)**:
+  Place vertex $u \in V_{\text{low}}$ in $S$ when $y_u = 0$ ($x_u = a_u$, not promoted) and in $T$ when $y_u = 1$ ($x_u = b_u$, promoted at cost $b_u - a_u$).
+  - When $u \in T$ ($y_u = 1$), we must pay $b_u - a_u$, which compiles to the source edge:
+
+    $$S \xrightarrow{\text{cap } = \; b_u - a_u} u.$$
+
+- **On $V_{\text{high}}$ (Standard Unary Chain Convention)**:
+  For each $v \in V_{\text{high}}$ and each threshold $k \in (a_v, 100]$, place vertex $(v, k)$ in $S$ when $z_{v,k} = 1$ ($x_v \ge k$, paying $+1$) and in $T$ when $z_{v,k} = 0$ ($x_v < k$, paying $0$).
+  - Paying $+1$ when $(v, k) \in S$ ($z_{v,k} = 1$) compiles to the parallel unit sink edge:
+
+    $$(v, k) \xrightarrow{\text{cap } = \; 1} T \qquad \forall k \in \{a_v + 1, \dots, 100\}.$$
+
+  - Enforcing unary monotonicity $z_{v,k} = 1 \implies z_{v,k-1} = 1$ ($(v, k) \in S \implies (v, k-1) \in S$) compiles to the reverse $\infty$-lock:
+
+    $$(v, k) \xrightarrow{\text{cap } = \; \infty} (v, k - 1) \qquad \forall k \in \{a_v + 2, \dots, 100\}.$$
+
+- **Cross-Bipartition OR Constraint ($y_u = 1 \lor z_{v, b_u} = 1$)**:
+  The forbidden state $(y_u = 0 \land z_{v, b_u} = 0)$ is now literally **$u \in S \land (v, b_u) \in T$**! Forbidding $u \in S$ and $(v, b_u) \in T$ compiles to the single directed $\infty$-arc:
+
+  $$u \xrightarrow{\text{cap } = \; \infty} (v, b_u).$$
+
+Let us check the logic of this gadget: for any active edge $(u, v)$ with $u \in V_{\text{low}}, v \in V_{\text{high}}, a_v < b_u$, either $u \in T$ (severing $S \xrightarrow{b_u - a_u} u$ and paying $b_u - a_u$ to set $x_u = b_u$), or $u \in S$, which forces $(v, b_u) \in S$ via $u \xrightarrow{\infty} (v, b_u)$, which in turn forces $(v, b_u - 1), \dots, (v, a_v + 1) \in S$ via the reverse $\infty$-locks, severing $b_u - a_v$ unit edges to $T$ and paying $b_u - a_v$ to raise $x_v$ to $b_u$!
+
+$$\boxed{\text{Minimum Total Cost} = C_{\text{base}} + \text{MinCut}(S, T).}$$
+
+```{mermaid}
+flowchart LR
+    S(("S"))
+    T(("T"))
+    u1["u_1 in V_low\n(in S: y=0, in T: y=1)"]
+    u2["u_2 in V_low\n(in S: y=0, in T: y=1)"]
+    subgraph Chain_v ["v in V_high: Unary Threshold Chain (in S: z_{v,k}=1, in T: z_{v,k}=0)"]
+        vk1["(v, a_v+1)"]
+        vk2["(v, a_v+2)"]
+        vk3["..."]
+        vbu1["(v, b_{u1})"]
+        vbu2["(v, b_{u2})"]
+    end
+    S -->|"b_{u1} - a_{u1}"| u1
+    S -->|"b_{u2} - a_{u2}"| u2
+    u1 ==>|"inf (OR clause)"| vbu1
+    u2 ==>|"inf (OR clause)"| vbu2
+    vbu2 -.->|"inf"| vbu1
+    vbu1 -.->|"inf"| vk3
+    vk3 -.->|"inf"| vk2
+    vk2 -.->|"inf"| vk1
+    vk1 -->|"1"| T
+    vk2 -->|"1"| T
+    vk3 -->|"1"| T
+    vbu1 -->|"1"| T
+    vbu2 -->|"1"| T
+```
+
+---
+
+### 4.5 Step 5: Hand-Checkable Toy Trace, Broken-Gadget Counterexamples & Complete C++ Solution
+
+#### Concrete Numerical Trace ($N = 3$ Star Graph $2 - 1 - 3$)
+
+Suppose $N = 3$ wizards have initial and target strengths $(a_1, b_1) = (3, 2)$, $(a_2, b_2) = (1, 5)$, $(a_3, b_3) = (2, 6)$, connected by edges $(1, 2)$ and $(1, 3)$:
+
+1. **Step 1 (Mandatory Pre-Promotion)**:
+   - On edge $(1, 2)$, $\min(b_1, b_2) = \min(2, 5) = 2$. On edge $(1, 3)$, $\min(b_1, b_3) = \min(2, 6) = 2$.
+   - New floors: $a_1 \gets \max(3, 2, 2) = 3$ (cost $0$); $a_2 \gets \max(1, 2) = 2$ (cost $2 - 1 = 1$); $a_3 \gets \max(2, 2) = 2$ (cost $0$).
+   - Base cost $C_{\text{base}} = 1$, post-promotion strengths $a = (3, 2, 2)$.
+2. **Step 2 (Low-Role vs. High-Role Bipartition)**:
+   - Wizard 1 has $a_1 = 3 \ge b_1 = 2 \implies 1 \in V_{\text{high}}$, with unary chain nodes $(1, 4), (1, 5), (1, 6)$ wired $(1, 6) \xrightarrow{\infty} (1, 5) \xrightarrow{\infty} (1, 4)$ and each $(1, k) \xrightarrow{1} T$.
+   - Wizard 2 has $a_2 = 2 < b_2 = 5 \implies 2 \in V_{\text{low}}$ ($S \xrightarrow{5 - 2 = 3} 2$, OR-edge $2 \xrightarrow{\infty} (1, 5)$).
+   - Wizard 3 has $a_3 = 2 < b_3 = 6 \implies 3 \in V_{\text{low}}$ ($S \xrightarrow{6 - 2 = 4} 3$, OR-edge $3 \xrightarrow{\infty} (1, 6)$).
+3. **Step 3 (Evaluating Candidate Cuts)**:
+   - **Cut A (Promote Wizard 1 to $6$)**: Keep $2, 3 \in S$ ($y_2 = y_3 = 0$). Then $(1, 6) \in S \implies (1, 5), (1, 4) \in S$, severing three unit edges to $T$ for cut cost **$3$**.
+   - **Cut B (Promote Wizard 1 to $5$, Jump Wizard 3 to $6$)**: Keep $2 \in S \implies (1, 5), (1, 4) \in S$ (cost $2$), and place $3 \in T$ (severing $S \xrightarrow{4} 3$, cost $4$), total cut cost $2 + 4 = 6$.
+   - **Cut C (Jump Wizards 2 and 3)**: Place $2, 3 \in T$ and keep $(1, 4), (1, 5), (1, 6) \in T$, severing $S \xrightarrow{3} 2$ and $S \xrightarrow{4} 3$ for cut cost $3 + 4 = 7$.
+   - The minimum cut is **$3$** (Cut A), giving total cost $C_{\text{base}} + \text{MinCut}(S, T) = 1 + 3 = \mathbf{4}$ at optimal strengths $x^* = (6, 2, 2)$.
+
+#### Broken-Gadget Counterexamples
+
+1. **What Breaks If You Skip Step 1 (Mandatory Pre-Promotion) on a Triangle $K_3$?**
+   - Suppose $G$ is a triangle $K_3$ on wizards $\{1, 2, 3\}$ with $(a_1, b_1) = (0, 2)$, $(a_2, b_2) = (0, 4)$, and $(a_3, b_3) = (0, 6)$.
+   - **Without** pre-promotion, all three wizards satisfy $a_i = 0 < b_i$, so all three appear to belong to $V_{\text{low}}$ on an odd cycle $K_3$! Worse yet, Wizard 2 acts as the higher-target endpoint on edge $(1, 2)$ ($\max(b_1, b_2) = 4$) and as the lower-target endpoint on edge $(2, 3)$ ($\max(b_2, b_3) = 6$), destroying the bipartition!
+   - **With** pre-promotion (Lemma 4.1): $a_1 \gets \max(0, \min(2,4), \min(2,6)) = 2 \ge b_1$, $a_2 \gets \max(0, \min(4,2), \min(4,6)) = 4 \ge b_2$, and $a_3 \gets \max(0, \min(6,2), \min(6,4)) = 4 < b_3 = 6$. Pre-promotion automatically moves Wizards 1 and 2 into $V_{\text{high}}$, completely satisfies edge $(1, 2)$ at cost $0$, and leaves only Wizard 3 in $V_{\text{low}}$!
+2. **What Breaks If You Omit the Reverse Monotonicity Locks $(v, k) \xrightarrow{\infty} (v, k-1)$ on $v \in V_{\text{high}}$?**
+   - In our star-graph trace above, the OR-edges $2 \xrightarrow{\infty} (1, 5)$ and $3 \xrightarrow{\infty} (1, 6)$ enter $(1, 5)$ and $(1, 6)$, but **nothing** directly enters $(1, 4)$!
+   - If $(1, 6) \xrightarrow{\infty} (1, 5) \xrightarrow{\infty} (1, 4)$ were omitted, Cut A would place $(1, 6) \in S$ and $(1, 5) \in S$ while leaving $(1, 4) \in T$, paying only $2$ instead of $3$ to raise Wizard 1 from $a_1 = 3$ to $6$!
+
+#### Complete Model Implementation (`ARC 142 E`)
+
+```cpp
+// AtCoder ARC 142 E — Pairing Wizards (#096)
+// Assumes standard Dinic library: Dinic flow(num_nodes, S, T); flow.add_edge(u, v, cap);
+long long solve_arc142e(int N, vector<int> a, const vector<int>& b,
+                        const vector<pair<int, int>>& edges) {
+    const int INF = 1e9;
+    const int B_MAX = 100;
+
+    // Step 1: Mandatory Pre-Promotion (Lemma 4.1)
+    long long base_cost = 0;
+    vector<int> a_new = a;
+    for (auto [u, v] : edges) {
+        int floor_uv = min(b[u], b[v]);
+        a_new[u] = max(a_new[u], floor_uv);
+        a_new[v] = max(a_new[v], floor_uv);
+    }
+    for (int i = 0; i < N; ++i) {
+        base_cost += a_new[i] - a[i];
+        a[i] = a_new[i];
+    }
+
+    // Step 2: Bipartition into V_low (a_i < b_i) and V_high (a_i >= b_i)
+    // Node indexing:
+    //   S = 0, T = 1
+    //   wizard i binary node (for i in V_low): 2 + i
+    //   wizard i unary chain node (i, k) for k in [1..B_MAX]: 2 + N + i * (B_MAX + 1) + k
+    int S = 0, T = 1;
+    int total_nodes = 2 + N + N * (B_MAX + 1);
+    Dinic flow(total_nodes, S, T);
+
+    auto low_node  = [&](int u) { return 2 + u; };
+    auto high_node = [&](int v, int k) { return 2 + N + v * (B_MAX + 1) + k; };
+
+    for (int i = 0; i < N; ++i) {
+        if (a[i] < b[i]) {
+            // Low-Role wizard: cutting S -> u pays (b_i - a_i) to jump x_i to b_i
+            flow.add_edge(S, low_node(i), b[i] - a[i]);
+        } else {
+            // High-Role wizard: unary chain for k in (a_i, B_MAX]
+            for (int k = a[i] + 1; k <= B_MAX; ++k) {
+                flow.add_edge(high_node(i, k), T, 1);
+                if (k > a[i] + 1) {
+                    flow.add_edge(high_node(i, k), high_node(i, k - 1), INF);
+                }
+            }
+        }
+    }
+
+    // Step 4: Wire Disjunctive OR edges u -> (v, b_u) for unsatisfied pairs
+    for (auto [u, v] : edges) {
+        if (max(a[u], a[v]) >= max(b[u], b[v])) continue; // already satisfied
+        if (a[u] >= b[u]) swap(u, v); // ensure u in V_low (a_u < b_u) and v in V_high
+        flow.add_edge(low_node(u), high_node(v, b[u]), INF);
+    }
+
+    return base_cost + flow.max_flow();
+}
+```
+
+**Complexity**: The network has at most $N + N \cdot B_{\max} \le 10,100$ active vertices and $O(N B_{\max} + M)$ edges. Dinic's algorithm runs in $< 5\text{ ms}$.
+
+---
+
+## 5. The 4-Step Multi-State Chain Compilation Protocol
+
+Whenever you encounter a multi-state assignment, sign/deletion optimization, or threshold-upgrade problem in a contest, follow this **4-Step Compilation Protocol** to build a bug-free network:
+
+1. **Step 1 — Identify the Ordered State Space & Check $N \cdot K$**:
+   Determine the discrete state set $\{1, 2, \dots, K\}$ of each entity $i$. If the states are not initially numbers (e.g., $\{-, \text{del}, +\}$ in `ARC 107 F` or 4 coordinate parities in `CF 1517 G`), order them so that **all forbidden pairwise transitions jump across intermediate insulator states** ($|x_u - x_v| \le D$).
+2. **Step 2 — Choose Form A (Series Chain) vs. Form B (Parallel Closure)**:
+   - Use **Form A (Series Chain)** $S \xrightarrow{c_i(1)} v_{i,2} \xrightarrow{c_i(2)} \dots \xrightarrow{c_i(K)} T$ when arbitrary point-value costs $c_i(k)$ are given (`[HNOI2013] 切糕`, `ARC 107 F`, `CF 434 D`). If maximizing $f_i(k)$ or if $c_i(k) < 0$, shift every forward edge on chain $i$ by $+M_i$ where $M_i \ge \max_k |f_i(k)|$.
+   - Use **Form B (Parallel Closure)** $v_{i,k} \xrightarrow{\delta_i(k)} T$ when marginal upgrade costs $\delta_i(k) = c_i(k) - c_i(k-1) > 0$ are given (`ARC 142 E`, `ABC 326 G`).
+3. **Step 3 — Wire the Intra-Chain Reverse $\infty$-Locks (`FM-12` Guard)**:
+   In **both** Form A and Form B, unconditionally wire $v_{i,k+1} \xrightarrow{\infty} v_{i,k}$ for all $2 \le k \le K-1$ so that $z_{i,k+1} \le z_{i,k}$ holds and no chain can ever be severed twice.
+4. **Step 4 — Compile Cross-Chain Implications & Contract Inactive Sub-Chains**:
+   - **Difference Bound $x_u - x_v \le D$**: Wire $v_{u,k} \xrightarrow{\infty} v_{v,\text{clamp}(k-D)}$.
+   - **Conjunctive Milestone (`ABC 326 G`)**: Wire $S \xrightarrow{A_j} m_j$ and $m_j \xrightarrow{\infty} v_{i, L_{j,i}}$.
+   - **Bipartite Disjunctive OR (`ARC 142 E`)**: Invert $u \in V_{\text{low}}$ ($S \xrightarrow{\text{cost}} u$) and wire $u \xrightarrow{\infty} v_{v, \text{req}}$.
+   - **Active-Event Chain Contraction (When $K \le 10^9$ is Sparse)**: If $K$ is huge but only $k_i \ll K$ threshold levels $1 = t_1 < t_2 < \dots < t_{k_i} \le K$ on chain $i$ have incident cross-edges, contract each unbranched segment $[t_r, t_{r+1})$ into a single forward series edge of capacity $\min_{t_r \le k < t_{r+1}} c_i(k)$ (in Form A) or a single parallel edge of capacity $c_i(t_r) - c_i(t_{r-1})$ (in Form B)!
+
+
+---
+
+## 6. Worked Examples & Full 8-Problem Difficulty Ladder (`#089`–`#096`)
+
+Below is the progressive 8-problem mastery ladder for Chapter 12, advancing from foundational $K$-state series chains (`SS-1`, `SS-2`) through intermediate closed-form cut reductions and shifted quadratic chains (`Int-1`, `Int-2`) and advanced bilinear/milestone reductions (`Adv-1`, `Adv-2`, plus companion exercises on shortest-path Lipschitz chains and 2D rank chains) to our two flagship masterpieces (`Mas-1` `ARC 107 F` and `Mas-2` `ARC 142 E`).
+
+| Tier | Problem ID | Problem & Judge URL | Core Technique & Key Twist |
+| :---: | :---: | :--- | :--- |
+| **SS-1** | `#089` | **[Luogu P3227 [HNOI2013] — 切糕 (Cake Cutting)](https://www.luogu.com.cn/problem/P3227)** (`[ZH]`) | Canonical $K$-state Form A series chain + reverse $\infty$-locks + cross-chain $x_u - x_v \le D$ arcs (`§1.2–1.3`). |
+| **SS-2** | `#090` | **[Codeforces 1517 G — Starry Night Camping](https://codeforces.com/problemset/problem/1517/G)** (`[EN]`) *(Companion: **[Luogu P2598 [ZJOI2009] 狼和羊的故事](https://www.luogu.com.cn/problem/P2598)**)* | 4-layer 2D parity walk-obstruction chain $(\text{odd},\text{odd}) \to (\text{odd},\text{even}) \to (\text{even},\text{even}) \to (\text{even},\text{odd})$ (`§3`). |
+| **Int-1** | `#091` | **[AtCoder ARC 125 E — Snack](https://atcoder.jp/contests/arc125/tasks/arc125_e?lang=en)** (`[JA]`) *(Companion: **[Luogu P5458 [BJOI2016] 水晶](https://www.luogu.com.cn/problem/P5458)**)* | Closed-form $\min_k f(k)$ cut capacity after bipartite unary threshold analysis in $O((N+M)\log(N+M))$. |
+| **Int-2** | `#092` | **[Codeforces 434 D — Nanami's Power Plant](https://codeforces.com/problemset/problem/434/D)** (`[EN]`) *(Companion: **[Luogu P2766 LIS Layered DAG](https://www.luogu.com.cn/problem/P2766)**)* | Non-concave quadratic rewards $a_i x_i^2 + b_i x_i + c_i$ on $x_i \in [l_i, r_i]$ via pedestal shift $M - f_i(k) \ge 0$ + $x_u \le x_v + d$. |
+| **Adv-1** | `#093` | **[Luogu P3973 [TJOI2015] — 线性代数 (Linear Algebra)](https://www.luogu.com.cn/problem/P3973)** (`[ZH]`) *(Companion: **[TopCoder SRM 590 FoxAndCity](https://community.topcoder.com/stat?c=problem_statement&pm=12702)**)* | Matrix quadratic form $A B A^T - A C$ compressed to $N$ vertices via $x_i x_j = x_i - x_i(1 - x_j)$; shortest-path Lipschitz $D=1$ chain. |
+| **Adv-2** | `#094` | **[AtCoder ABC 326 G — Unlock Achievement](https://atcoder.jp/contests/abc326/tasks/abc326_g?lang=en)** (`[JA]`) *(Companion: **[Codeforces 1662 J — Training Camp](https://codeforces.com/problemset/problem/1662/J)**)* | Form B parallel skill-level unary chains $z_{i,k} = [\text{lv}_i \ge k]$ coupled with conjunctive achievement closures $m_j \xrightarrow{\infty} v_{i, L_{j,i}}$. |
+| **Mas-1** | `#095` | **[AtCoder ARC 107 F — Sum of Abs](https://atcoder.jp/contests/arc107/tasks/arc107_f?lang=en)** (`[JA]`) ★ **Flagship 1** | 3-state ordered sign/deletion chain $(-1 \prec 0 \prec +1)$ with universal pedestal $M_v = \max(\|B_v\|, -A_v)$ and $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$ (`§2`). |
+| **Mas-2** | `#096` | **[AtCoder ARC 142 E — Pairing Wizards](https://atcoder.jp/contests/arc142/tasks/arc142_e?lang=en)** (`[JA]`) ★ **Flagship 2** | Mandatory pre-promotion + Low/High bipartite dichotomy + inverted binary-to-unary OR cut $u \xrightarrow{\infty} (v, b_u)$ (`§4`). |
+
+---
+
+### `#089` (`SS-1`) — Luogu P3227 [HNOI2013]: 切糕 (Cake Cutting)
+
+- **Judge URL**: [Luogu P3227](https://www.luogu.com.cn/problem/P3227) | [LOJ #2314](https://loj.ac/p/2314)
+- **Constraints**: $P, Q, R \le 40$, $0 \le D \le R$, $0 \le c_{p,q}(r) \le 1000$, Time Limit $1.0\text{ s}$.
+- **Statement**: You are given a 3D grid of dimensions $P \times Q \times R$ where each voxel $(p, q, r)$ has a non-negative cost $c_{p,q}(r) \ge 0$. For each column $i = (p, q)$ ($1 \le p \le P, 1 \le q \le Q$), you must select a single cutting height $x_i \in \{1, 2, \dots, R\}$, paying $c_i(x_i)$, such that for any two 4-adjacent columns $u \sim v$, their chosen heights satisfy $|x_u - x_v| \le D$. Minimize the total cost $\sum_{i} c_i(x_i)$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+Each of the $N = PQ \le 1600$ columns chooses an integer state $x_i \in \{1, \dots, R\}$ ($R \le 40$) with an arbitrary non-convex cost table $c_i(r)$ and pairwise Lipschitz difference bounds $x_u - x_v \le D$ and $x_v - x_u \le D$. Because $PQ R \le 6.4 \times 10^4$, this is the canonical Form A Series Unary Threshold Chain of Section 1.2–1.3.
+
+#### Step 2: Intermediate Algebraic Representation
+
+Introduce unary threshold indicators $z_{i,k} = [x_i \ge k] \in \{0, 1\}$ for $k \in \{1, \dots, R+1\}$ with $z_{i,1} = 1$ ($S$) and $z_{i,R+1} = 0$ ($T$). The objective and constraints compile to the pseudo-Boolean cut polynomial:
+
+$$\mathcal{P}(z) = \sum_{i=1}^{PQ} \sum_{k=1}^{R} c_i(k) z_{i,k}(1 - z_{i,k+1}) + \sum_{i=1}^{PQ} \sum_{k=2}^{R-1} \infty \cdot z_{i,k+1}(1 - z_{i,k}) + \sum_{(u, v) \in E_{\text{grid}}} \sum_{k=D+2}^{R} \infty \cdot z_{u,k}(1 - z_{v,k-D}).$$
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #089"}
+1. **Hint 1**: Represent each column $i$'s choice $x_i \in \{1, \dots, R\}$ as severing one edge along a directed path of $R$ edges from $S$ to $T$ through $R-1$ internal threshold vertices $v_{i,2}, \dots, v_{i,R}$.
+2. **Hint 2**: What stops a minimum cut from severing two cheap edges along column $i$'s chain when cross-edges pull an earlier node into $T$ and push a later node into $S$? Add reverse $\infty$-locks $v_{i,k+1} \xrightarrow{\infty} v_{i,k}$!
+3. **Hint 3**: Express $x_u - x_v \le D$ as $x_u \ge k \implies x_v \ge k - D$, and wire $v_{u,k} \xrightarrow{\infty} v_{v,k-D}$ for all $k \in \{D+2, \dots, R\}$ in both directions $(u, v)$ and $(v, u)$.
+::::
+
+:::: {.callout-note collapse="true" title="Complete 4-Step Solution & Failure-Mode Guard for #089"}
+#### Step 3: Mechanical Graph Compilation
+
+For each column $i \in \{1, \dots, PQ\}$, create $R - 1$ internal vertices $v_{i,2}, \dots, v_{i,R}$ (identifying $v_{i,1} \equiv S$ and $v_{i,R+1} \equiv T$):
+
+1. **Forward Series Cost Edges**: For $k = 1, \dots, R$, wire $v_{i,k} \xrightarrow{c_i(k)} v_{i,k+1}$.
+2. **Reverse Monotonicity Locks (`FM-12` Guard)**: For $k = 2, \dots, R-1$, wire $v_{i,k+1} \xrightarrow{\infty} v_{i,k}$.
+3. **Cross-Column Lipschitz Arcs**: For every ordered pair of 4-adjacent columns $(u, v)$ and every threshold $k \in \{D + 2, \dots, R\}$, wire $v_{u,k} \xrightarrow{\infty} v_{v,k-D}$.
+
+Run Dinic's algorithm from $S$ to $T$ and output $\text{MinCut}(S, T)$.
+
+#### Step 4: Complexity & Failure-Mode Guard
+
+- **Graph Size**: $|V| = PQ(R - 1) + 2 \le 62,402$ vertices and $|E| \approx 6 PQR \le 3.8 \times 10^5$ directed edges. Dinic runs in $< 0.1\text{ s}$.
+- **Failure-Mode Guard (`FM-12`)**: Never omit the vertical reverse arcs $v_{i,k+1} \xrightarrow{\infty} v_{i,k}$ when $D < R$. Also handle $D = 0$ cleanly: when $D = 0$, $k$ ranges over $\{2, \dots, R\}$ and wires $v_{u,k} \xrightarrow{\infty} v_{v,k}$, forcing all columns to choose the exact same height $x_u = x_v$.
+::::
+
+---
+
+### `#090` (`SS-2`) — Codeforces 1517 G: Starry Night Camping
+
+- **Judge URL**: [Codeforces 1517 G](https://codeforces.com/problemset/problem/1517/G) *(Companion 3-state grid boundary cut: [Luogu P2598 [ZJOI2009] 狼和羊的故事](https://www.luogu.com.cn/problem/P2598))*
+- **Constraints**: $N \le 1000$ tents at integer coordinates $(x_i, y_i) \in [-10^9, 10^9]^2$, weights $1 \le w_i \le 10^9$, Time Limit $2.0\text{ s}$.
+- **Statement**: Given $N$ tents on the 2D integer grid, a tent is called *special* if it has both a horizontal neighbor (at distance $1$) and a vertical neighbor (at distance $1$) among the surviving tents, and the problem forbids any configuration where two special tents with even $y$-coordinates (specifically, horizontal neighbors $(2a+1, 2b)$ and $(2a, 2b)$) both survive along with their vertical neighbors. Maximize the total weight of surviving tents.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+We want to delete a minimum-weight subset of tents $D \subseteq V$ so that no forbidden 4-tent walk survives. As shown in Section 3, classifying tents into $K = 4$ layers by their 2D coordinate parity $(x \bmod 2, y \bmod 2)$ orients every undirected forbidden 4-tent configuration into a directed path across a 4-layer DAG.
+
+#### Step 2: Intermediate Algebraic Representation
+
+Partition the $N$ tents into four disjoint parity layers:
+
+$$L_1 = (\text{odd}, \text{odd}), \quad L_2 = (\text{odd}, \text{even}), \quad L_3 = (\text{even}, \text{even}), \quad L_4 = (\text{even}, \text{odd}).$$
+
+Every forbidden configuration consists of four tents $(v_1, v_2, v_3, v_4) \in L_1 \times L_2 \times L_3 \times L_4$ with $\|v_1 - v_2\|_1 = \|v_2 - v_3\|_1 = \|v_3 - v_4\|_1 = 1$.
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #090"}
+1. **Hint 1**: Classify every tent $(x, y)$ into one of 4 types according to `(x & 1)` and `(y & 1)`.
+2. **Hint 2**: Check the parity types of the 4 tents in any forbidden configuration: the two central tents have $y$ even and differ by $1$ in $x$, so one is $(\text{odd}, \text{even})$ and the other is $(\text{even}, \text{even})$. Their vertical neighbors have $y$ odd, so they are $(\text{odd}, \text{odd})$ and $(\text{even}, \text{odd})$!
+3. **Hint 3**: Split each tent $i$ into $i_{\text{in}} \xrightarrow{w_i} i_{\text{out}}$, wire $S \xrightarrow{\infty} L_1 \xrightarrow{\infty} L_2 \xrightarrow{\infty} L_3 \xrightarrow{\infty} L_4 \xrightarrow{\infty} T$ between grid-adjacent tents in consecutive layers, and output $\sum_{i=1}^N w_i - \text{MinCut}(S, T)$.
+::::
+
+:::: {.callout-note collapse="true" title="Complete 4-Step Solution & Failure-Mode Guard for #090"}
+#### Step 3: Mechanical Graph Compilation
+
+1. Split each tent $i \in \{1, \dots, N\}$ into two vertices $i_{\text{in}}$ and $i_{\text{out}}$ connected by a directed edge $i_{\text{in}} \xrightarrow{w_i} i_{\text{out}}$.
+2. Assign each tent $i$ a layer index $\text{layer}(i) \in \{1, 2, 3, 4\}$:
+   - $(x_i \text{ odd}, y_i \text{ odd}) \mapsto 1$: wire $S \xrightarrow{\infty} i_{\text{in}}$.
+   - $(x_i \text{ odd}, y_i \text{ even}) \mapsto 2$.
+   - $(x_i \text{ even}, y_i \text{ even}) \mapsto 3$.
+   - $(x_i \text{ even}, y_i \text{ odd}) \mapsto 4$: wire $i_{\text{out}} \xrightarrow{\infty} T$.
+3. For every pair of tents $(u, v)$ with Manhattan distance $|x_u - x_v| + |y_u - y_v| = 1$ and $\text{layer}(v) = \text{layer}(u) + 1$, wire $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$.
+4. Output $\sum_{i=1}^N w_i - \text{MinCut}(S, T)$.
+
+#### Step 4: Complexity & Failure-Mode Guard
+
+- **Graph Size**: $|V| = 2N + 2 \le 2002$, $|E| \le 5N \le 5000$. Dinic finishes in $< 5\text{ ms}$.
+- **Failure-Mode Guard**: Because coordinates $(x_i, y_i)$ can be negative in C++, never test parity with `x % 2 == 1` (which evaluates to `-1` for odd negative numbers!). Always use bitwise `(x & 1)`!
+- **Companion Problem (`#090b` — Luogu P2598 `[ZJOI2009] 狼和羊的故事`)**: On an $N \times M$ grid with Wolves (`1`), Empty (`0`), and Sheep (`2`), wire $S \xrightarrow{\infty} \text{Wolf}$, $\text{Sheep} \xrightarrow{\infty} T$, and bidirectional unit edges $u \xleftrightarrow{1} v$ between 4-adjacent grid cells so empty cells naturally side with whichever partition minimizes fence perimeter.
+::::
+
+---
+
+### `#091` (`Int-1`) — AtCoder ARC 125 E: Snack
+
+- **Judge URL**: [AtCoder ARC 125 E](https://atcoder.jp/contests/arc125/tasks/arc125_e?lang=en) *(Companion 3-layer hex-parity cut: [Luogu P5458 [BJOI2016] 水晶](https://www.luogu.com.cn/problem/P5458))*
+- **Constraints**: $N, M \le 2 \times 10^5$, $1 \le A_i \le 10^{12}$, $1 \le B_j, C_j \le 10^{12}$, Time Limit $2.0\text{ s}$.
+- **Statement**: There are $N$ types of snacks (type $i$ has $A_i$ pieces) and $M$ children. Child $j$ can receive at most $B_j$ pieces of any single snack type $i$, and at most $C_j$ pieces in total across all snack types. Find the maximum total number of snack pieces that can be distributed.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+Distributing snacks from $N$ supply types to $M$ children subject to per-type caps $A_i$, per-child caps $C_j$, and pairwise $(i, j)$ caps $B_j$ is a textbook bipartite maximum flow on $S \xrightarrow{A_i} u_i \xrightarrow{B_j} v_j \xrightarrow{C_j} T$. Because $N, M \le 2 \times 10^5$, materializing $NM = 4 \times 10^{10}$ edges is impossible. However, notice that every cross-edge $(u_i \to v_j)$ has capacity $B_j$ depending **only on $j$, not on $i$**! This symmetry allows us to dualize to **Minimum $S$-$T$ Cut** and parameterize the cut by the unary count $k = |S \cap U| \in \{0, 1, \dots, N\}$ of snack vertices kept on the $S$-side.
+
+#### Step 2: Intermediate Algebraic Representation
+
+Let $x_i \in \{0, 1\}$ ($1$ if snack $i \in S$, $0$ if $i \in T$) and $y_j \in \{0, 1\}$ ($1$ if child $j \in S$, $0$ if $j \in T$). The cut capacity is:
+
+$$\text{Cut}(x, y) = \sum_{i=1}^{N} A_i (1 - x_i) + \sum_{j=1}^{M} C_j y_j + \sum_{i=1}^{N} \sum_{j=1}^{M} B_j x_i (1 - y_j).$$
+
+Suppose we fix the number of snack types in $S$ to be $k = \sum_{i=1}^N x_i \in \{0, 1, \dots, N\}$. Then $\sum_{i=1}^N B_j x_i (1 - y_j) = k \cdot B_j (1 - y_j)$, so each child $j$'s optimal choice $y_j \in \{0, 1\}$ decouples completely and pays $\min(C_j, \; k \cdot B_j)$! Meanwhile, to minimize $\sum_{i=1}^N A_i (1 - x_i)$ subject to $\sum_{i=1}^N x_i = k$, we greedily set $x_i = 1$ for the $k$ snack types with the **largest** $A_i$:
+
+$$\text{MinCut}(S, T) = \min_{k=0}^{N} \left( \sum_{i=k+1}^{N} A_{(i)} + \sum_{j=1}^{M} \min\big(C_j, \; k \cdot B_j\big) \right),$$
+
+where $A_{(1)} \ge A_{(2)} \ge \dots \ge A_{(N)}$ are the snack supplies sorted in descending order.
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #091"}
+1. **Hint 1**: Model the problem as Max-Flow ($S \xrightarrow{A_i} u_i \xrightarrow{B_j} v_j \xrightarrow{C_j} T$) and apply Max-Flow Min-Cut duality.
+2. **Hint 2**: Notice that if $k$ snack vertices $u_i$ lie in $S$, then for every child $v_j$, putting $v_j \in S$ costs $C_j$ while putting $v_j \in T$ cuts $k$ edges of capacity $B_j$, costing $k \cdot B_j$.
+3. **Hint 3**: Sort $A_i$ descending and sort children by threshold $t_j = \lfloor C_j / B_j \rfloor$. Sweep $k = 0 \dots N$ using prefix sums of $B_j$ and $C_j$ to evaluate all $N+1$ candidate cuts in $O((N+M)\log(N+M))$ time!
+::::
+
+:::: {.callout-note collapse="true" title="Complete 4-Step Solution & Failure-Mode Guard for #091"}
+#### Step 3: Mechanical Evaluation of the Closed-Form Cut
+
+1. Sort $A_1 \ge A_2 \ge \dots \ge A_N$ in descending order and compute suffix sums $\text{suf}_A[k] = \sum_{i=k+1}^N A_i$.
+2. For each child $j \in \{1, \dots, M\}$, $\min(C_j, k B_j)$ equals $k B_j$ when $k \le \lfloor C_j / B_j \rfloor$ and equals $C_j$ when $k > \lfloor C_j / B_j \rfloor$. Bucket children by $t_j = \min\big((long\;long)N, \; \lfloor C_j / B_j \rfloor\big)$ so that for each $k = 0, \dots, N$, we maintain the sum of $B_j$ for children with $t_j \ge k$ and the sum of $C_j$ for children with $t_j < k$.
+3. Return $\min_{0 \le k \le N} \big(\text{suf}_A[k] + k \cdot \sum_{t_j \ge k} B_j + \sum_{t_j < k} C_j\big)$.
+
+#### Step 4: Complexity & Failure-Mode Guard
+
+- **Complexity**: $O(N \log N + M)$ time and $O(N + M)$ space—solving a $4 \times 10^5$-vertex dense flow network in $40\text{ ms}$!
+- **Failure-Mode Guard**: Total capacity can reach $2 \times 10^{17}$, so accumulate all sums in 64-bit `long long` (or `__int128` if computing products $k \cdot B_j$ before clamping $t_j = \lfloor C_j / B_j \rfloor$).
+- **Companion Problem (`#091b` — Luogu P5458 `[BJOI2016] 水晶`)**: Canonicalize 3D hex coordinates $(x, y, z) \mapsto (x - z, y - z)$ and color cells by $p(x, y, z) = ((x + y + z) \bmod 3 + 3) \bmod 3 \in \{1, 0, 2\}$ into a 3-layer vertex-split chain $S \to \{p \equiv 1\} \to \{p \equiv 0\} \to \{p \equiv 2\} \to T$ (Section 3).
+::::
+
+---
+
+### `#092` (`Int-2`) — Codeforces 434 D: Nanami's Power Plant
+
+- **Judge URL**: [Codeforces 434 D](https://codeforces.com/problemset/problem/434/D) *(Companion layered DAG problem: [Luogu P2766 最长不下降子序列问题](https://www.luogu.com.cn/problem/P2766))*
+- **Constraints**: $N \le 50$ generators, $M \le 100$ constraints, $-100 \le l_i \le r_i \le 100$, $|a_i| \le 100, |b_i| \le 1000, |c_i| \le 10^4$, Time Limit $2.0\text{ s}$.
+- **Statement**: Each generator $i \in \{1, \dots, N\}$ must be assigned an integer operating level $x_i \in [l_i, r_i]$, producing output $f_i(x_i) = a_i x_i^2 + b_i x_i + c_i$. There are $M$ constraints of the form $x_u \le x_v + d$. Maximize the total output $\sum_{i=1}^N f_i(x_i)$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+Each generator $i$ chooses from $K_i = r_i - l_i + 1 \le 201$ integer states with an arbitrary quadratic reward $f_i(x_i)$ (where $a_i$ can be positive, making $f_i$ convex and non-concave!) subject to pairwise difference bounds $x_u - x_v \le d$. Since $\sum K_i \le 50 \times 201 \approx 10^4$, this compiles directly into a Form A Series Unary Threshold Chain (`[HNOI2013] 切糕`) with a pedestal shift $M_{\text{ped}} - f_i(k) \ge 0$.
+
+#### Step 2: Intermediate Algebraic Representation
+
+For each generator $i$, index its valid levels $k \in [l_i, r_i]$ and introduce threshold bits $z_{i,k} = [x_i \ge k] \in \{0, 1\}$ for $k \in [l_i, r_i + 1]$ with $z_{i, l_i} = 1$ ($S$) and $z_{i, r_i + 1} = 0$ ($T$). Choose a uniform pedestal $M_{\text{ped}} = 2 \times 10^6 > \max_{i, k} |f_i(k)|$ and define non-negative series capacities $c_i(k) = M_{\text{ped}} - f_i(k) > 0$.
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #092"}
+1. **Hint 1**: Create a series chain of $r_i - l_i + 1$ edges for each generator $i$, corresponding to choosing $x_i = k \in [l_i, r_i]$.
+2. **Hint 2**: Because $f_i(k) = a_i k^2 + b_i k + c_i$ is being **maximized** and can be positive or negative, set each edge capacity to $M_{\text{ped}} - f_i(k)$ where $M_{\text{ped}} = 2 \times 10^6$, and subtract $\text{MinCut}(S, T)$ from $N \cdot M_{\text{ped}}$!
+3. **Hint 3**: Add reverse $\infty$-locks $v_{i,k+1} \xrightarrow{\infty} v_{i,k}$, and compile $x_u \le x_v + d$ by wiring $v_{u,k} \xrightarrow{\infty} v_{v,\text{clamp}(k-d)}$ for all $k \in [l_u + 1, r_u]$.
+::::
+
+:::: {.callout-note collapse="true" title="Complete 4-Step Solution & Failure-Mode Guard for #092"}
+#### Step 3: Mechanical Graph Compilation
+
+For each generator $i \in \{1, \dots, N\}$, create internal threshold nodes $v_{i,k}$ for $k \in [l_i + 1, r_i]$, identifying $v_{i, l_i} \equiv S$ and $v_{i, r_i + 1} \equiv T$:
+
+1. **Shifted Series Edges**: For each $k \in [l_i, r_i]$, wire $v_{i,k} \xrightarrow{M_{\text{ped}} - f_i(k)} v_{i,k+1}$.
+2. **Reverse Monotonicity Locks (`FM-12`)**: For each $k \in [l_i + 1, r_i - 1]$, wire $v_{i,k+1} \xrightarrow{\infty} v_{i,k}$.
+3. **Difference Constraints ($x_u \le x_v + d$)**: For each constraint $(u, v, d)$ and each $k \in [l_u + 1, r_u]$:
+   - If $k - d \le l_v$: the target $v_{v, l_v} \equiv S$ is always $1$, so no edge is needed.
+   - If $l_v + 1 \le k - d \le r_v$: wire $v_{u,k} \xrightarrow{\infty} v_{v, k-d}$.
+   - If $k - d \ge r_v + 1$: wire $v_{u,k} \xrightarrow{\infty} T$ (since $x_v$ can never reach $k - d \ge r_v + 1$, forcing $x_u < k$).
+
+Output $N \cdot M_{\text{ped}} - \text{MinCut}(S, T)$.
+
+#### Step 4: Complexity & Failure-Mode Guard
+
+- **Graph Size**: $|V| \le 10,002$, $|E| \le 40,000$. Dinic runs in $< 15\text{ ms}$.
+- **Failure-Mode Guard**: Do not forget the boundary case $k - d > r_v$! If a constraint says $x_u \le x_v + d$ and $k - d > r_v$, then $x_u \ge k$ is **impossible** because $x_v \le r_v < k - d$, so $v_{u,k}$ must be wired directly to $T$ with capacity $\infty$!
+::::
+
+---
+
+### `#093` (`Adv-1`) — Luogu P3973 [TJOI2015]: 线性代数 (Linear Algebra)
+
+- **Judge URL**: [Luogu P3973](https://www.luogu.com.cn/problem/P3973) | [LOJ #2130](https://loj.ac/p/2130) *(Companion shortest-path Lipschitz chain: [TopCoder SRM 590 Div1 Hard — FoxAndCity](https://community.topcoder.com/stat?c=problem_statement&pm=12702))*
+- **Constraints**: $N \le 500$, $0 \le B_{ij}, C_i \le 10^3$, Time Limit $1.0\text{ s}$.
+- **Statement**: Given an $N \times N$ non-negative matrix $B$ and a $1 \times N$ vector $C$, choose a binary row vector $A = (x_1, \dots, x_N) \in \{0, 1\}^N$ to maximize $D(x) = (A B - C) A^T = A B A^T - C A^T$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+Expanding the matrix product reveals a quadratic pseudo-Boolean maximization objective:
+
+$$D(x) = \sum_{i=1}^{N} \sum_{j=1}^{N} B_{ij} x_i x_j - \sum_{i=1}^{N} C_i x_i, \qquad x_i \in \{0, 1\}.$$
+
+With $N = 500$, creating $N^2 = 250,000$ auxiliary project nodes $p_{ij}$ for every pair $(i, j)$ builds a large graph. Instead, applying the 1D/2D Abel identity $x_i x_j = x_i - x_i(1 - x_j)$ eliminates all $N^2$ auxiliary vertices and compiles the entire matrix game onto just **$N$ vertices**!
+
+#### Step 2: Intermediate Algebraic Representation
+
+Substitute $x_i x_j = x_i - x_i(1 - x_j)$ into $D(x)$:
+
+$$D(x) = \sum_{i=1}^{N} \left(\sum_{j=1}^{N} B_{ij}\right) x_i - \sum_{i=1}^{N} C_i x_i - \sum_{i=1}^{N} \sum_{j=1}^{N} B_{ij} x_i(1 - x_j).$$
+
+Let $R_i = \sum_{j=1}^N B_{ij}$ be the $i$-th row sum of $B$. Subtracting from the baseline $\Phi = \sum_{i=1}^N R_i$ using $x_i = 1 - (1 - x_i)$ gives the exact cut polynomial:
+
+$$\Phi - D(x) = \sum_{i=1}^{N} R_i (1 - x_i) + \sum_{i=1}^{N} C_i x_i + \sum_{i=1}^{N} \sum_{j \ne i} B_{ij} x_i(1 - x_j).$$
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #093"}
+1. **Hint 1**: Expand $(A B - C) A^T = \sum_{i,j} B_{ij} x_i x_j - \sum_i C_i x_i$ using $x_i^2 = x_i$ for $x_i \in \{0, 1\}$.
+2. **Hint 2**: Use the identity $x_i x_j = x_i - x_i(1 - x_j)$ to rewrite each pairwise reward as a unary row-sum reward $B_{ij} x_i$ minus a cut penalty $B_{ij} x_i(1 - x_j)$!
+3. **Hint 3**: Wire $S \xrightarrow{\sum_j B_{ij}} i \xrightarrow{C_i} T$ and directed arcs $i \xrightarrow{B_{ij}} j$ on just $N + 2$ vertices!
+::::
+
+:::: {.callout-note collapse="true" title="Complete 4-Step Solution & Companion Breakdown (FoxAndCity) for #093"}
+#### Step 3: Mechanical Graph Compilation (`[TJOI2015] 线性代数`)
+
+Create $N + 2$ vertices ($S, T$, and $1, \dots, N$ where $i \in S \iff x_i = 1$):
+
+1. Set baseline $\Phi = \sum_{i=1}^N R_i$, where $R_i = \sum_{j=1}^N B_{ij}$.
+2. For each $i \in \{1, \dots, N\}$, wire $S \xrightarrow{R_i} i$ and $i \xrightarrow{C_i} T$.
+3. For each pair $1 \le i < j \le N$, wire a single undirected/bidirectional edge pair between $i$ and $j$ with forward capacity $B_{ij}$ ($i \to j$) and reverse capacity $B_{ji}$ ($j \to i$).
+4. Output $\Phi - \text{MinCut}(S, T)$. On $502$ vertices, Dinic finishes in $< 3\text{ ms}$.
+
+#### Companion Problem (`#093b` — TopCoder SRM 590 Div1 Hard: `FoxAndCity`)
+
+- **Task**: Given a connected undirected graph $G = (V, E)$ ($N \le 40$), add new edges so that the shortest-path distances $d_u = \operatorname{dist}_{G'}(0, u) \in \{1, \dots, N-1\}$ minimize $\sum_{u=1}^{N-1} (d_u - \text{want}_u)^2$.
+- **Key Reduction to `切糕` ($D = 1$)**: By the Discrete Intermediate Value Theorem on connected graphs, an integer vector $(d_0 = 0, d_1, \dots, d_{N-1}) \in \{1, \dots, N-1\}^{N-1}$ is realizable as shortest-path distances in some supergraph $G' \supseteq G$ **if and only if**:
+  1. $d_u = 1$ for every existing neighbor $\{0, u\} \in E(G)$; and
+  2. $|d_u - d_v| \le 1$ ($d_u - d_v \le 1$ and $d_v - d_u \le 1$) for every existing edge $\{u, v\} \in E(G)$!
+  *(Why? Because along any path from $0$ to $u$ in $G$, distances start at $0$ and increase by at most $+1$ per step, guaranteeing that every intermediate distance $1, 2, \dots, d_u - 1$ exists in $V$, to which $u$ can be directly connected!)* Thus `FoxAndCity` compiles 100% into `#089` (`切糕`) with $D = 1$ and unary cost $c_u(k) = (k - \text{want}_u)^2$!
+::::
+
+---
+
+### `#094` (`Adv-2`) — AtCoder ABC 326 G: Unlock Achievement
+
+- **Judge URL**: [AtCoder ABC 326 G](https://atcoder.jp/contests/abc326/tasks/abc326_g?lang=en) *(Companion 2D rank-chain problem: [Codeforces 1662 J — Training Camp](https://codeforces.com/problemset/problem/1662/J))*
+- **Constraints**: $N, M \le 50$, skill levels $L_{j,i} \in \{1, \dots, 5\}$, $1 \le C_i, A_j \le 10^9$, Time Limit $2.0\text{ s}$.
+- **Statement**: You have $N$ skills, all initially at level $1$. Upgrading skill $i$ by $+1$ level (up to level $5$) costs $C_i$ per level. There are $M$ achievements; achievement $j$ pays reward $A_j$ if and only if every skill $i \in \{1, \dots, N\}$ reaches level $x_i \ge L_{j,i}$. Maximize net profit (total rewards minus upgrade costs).
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+Each skill $i \in \{1, \dots, N\}$ chooses a state $x_i \in \{1, 2, 3, 4, 5\}$ ($K = 5$) with uniform marginal upgrade cost $\delta_i(k) = C_i$, while each achievement $j \in \{1, \dots, M\}$ is a positive-reward project requiring the conjunctive threshold precondition $\bigwedge_{i=1}^N (x_i \ge L_{j,i})$. This is the textbook **Form B Parallel Closure Chain** of Theorem 1.2!
+
+#### Step 2: Intermediate Algebraic Representation
+
+Introduce unary skill indicators $z_{i,k} = [x_i \ge k] \in \{0, 1\}$ for $k \in \{2, 3, 4, 5\}$ (since $x_i \ge 1$ holds initially at cost $0$) and binary achievement indicators $m_j \in \{0, 1\}$:
+
+$$\max \sum_{j=1}^{M} A_j m_j - \sum_{i=1}^{N} \sum_{k=2}^{5} C_i z_{i,k} \quad \text{s.t.} \quad z_{i,k} \le z_{i,k-1} \; (3 \le k \le 5), \quad m_j \le z_{i, L_{j,i}} \; (\forall L_{j,i} \ge 2).$$
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #094"}
+1. **Hint 1**: Represent each skill $i$ by 4 binary upgrade nodes $v_{i,2}, v_{i,3}, v_{i,4}, v_{i,5}$ where $v_{i,k} \in S \iff x_i \ge k$, each wired to $T$ with capacity $C_i$.
+2. **Hint 2**: Enforce $x_i \ge k \implies x_i \ge k-1$ by wiring reverse locks $v_{i,k} \xrightarrow{\infty} v_{i,k-1}$ for $k \in \{3, 4, 5\}$.
+3. **Hint 3**: Represent each achievement $j$ as a node $m_j$ with $S \xrightarrow{A_j} m_j$ and wire $m_j \xrightarrow{\infty} v_{i, L_{j,i}}$ whenever $L_{j,i} \ge 2$. Output $\sum_{j=1}^M A_j - \text{MinCut}(S, T)$.
+::::
+
+:::: {.callout-note collapse="true" title="Complete 4-Step Solution & Companion Breakdown (CF 1662 J) for #094"}
+#### Step 3: Mechanical Graph Compilation (`ABC 326 G`)
+
+Set baseline $\Phi = \sum_{j=1}^M A_j$. Create $4N + M + 2 \le 252$ vertices:
+
+1. **Skill Parallel Chains**: For each $i \in \{1, \dots, N\}$ and $k \in \{2, 3, 4, 5\}$, wire $v_{i,k} \xrightarrow{C_i} T$. For $k \in \{3, 4, 5\}$, wire the reverse lock $v_{i,k} \xrightarrow{\infty} v_{i,k-1}$.
+2. **Achievement Closures**: For each $j \in \{1, \dots, M\}$, wire $S \xrightarrow{A_j} m_j$, and for every skill $i$ with $L_{j,i} \ge 2$, wire $m_j \xrightarrow{\infty} v_{i, L_{j,i}}$.
+3. Output $\Phi - \text{MinCut}(S, T)$. Runs in $< 1\text{ ms}$.
+
+#### Companion Problem (`#094b` — Codeforces 1662 J: `Training Camp`)
+
+- **Task**: On an $N \times N$ grid ($N \le 128$) where each row and each column of matrix $A$ is a permutation of $\{1, \dots, N\}$, select a stable set of $N$ cells maximizing $\sum C_{r,c}$.
+- **Compilation**: Split each cell $u = (r, c)$ into $u_{\text{in}} \xrightarrow{M_{\text{ped}} - C_{r,c}} u_{\text{out}}$ ($M_{\text{ped}} = N + 1$), and chain rank $k$ to rank $k+1$ along both rows and columns (reversing column rank orientation relative to row rank orientation so that every row/column rank transition $k \to k+1$ forms a coupled $N$-state cut chain). Output $N \cdot M_{\text{ped}} - \text{MinCut}(S, T)$.
+::::
+
+---
+
+### `#095` (`Mas-1`) — [AtCoder ARC 107 F: Sum of Abs](https://atcoder.jp/contests/arc107/tasks/arc107_f?lang=en) ★ Flagship 1
+
+- **Judge URL**: [AtCoder ARC 107 F](https://atcoder.jp/contests/arc107/tasks/arc107_f?lang=en)
+- **Constraints**: $N, M \le 300$, $|A_v|, |B_v| \le 10^6$ ($A_v, B_v \in \mathbb{Z}$, both can be negative), Time Limit $2.0\text{ s}$.
+- **Cross-Reference**: Full 4-Step Derivation, 9-State Verification Table, Toy Trace, and C++ Implementation are given in **Section 2**.
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints & Diagnostic Invariants Summary for #095"}
+1. **Hint 1 (Sign Linearization)**: Replace $\left|\sum_{v \in C} B_v\right|$ with $\max_{s_C \in \{-1, +1\}} \sum_{v \in C} s_C B_v$. Now each vertex $v \in V$ chooses from 3 states $\sigma_v \in \{-1, 0 \text{ (deleted)}, +1\}$.
+2. **Hint 2 (Insulator State Ordering)**: Order the 3 states as $-1 \prec 0 \prec +1$ so that the surviving-edge constraint "no $+1$ vertex is adjacent to a $-1$ vertex" becomes the 1-step smoothness bound $|\sigma_u - \sigma_v| \le 1$.
+3. **Hint 3 (Universal Negative-$A_v$ Pedestal)**: Set $M_v = \max(|B_v|, -A_v)$, wire $S \xrightarrow{M_v + B_v} v_{\text{in}} \xrightarrow{M_v + A_v} v_{\text{out}} \xrightarrow{M_v - B_v} T$ with reverse lock $v_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$, and wire $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}, v_{\text{out}} \xrightarrow{\infty} u_{\text{in}}$ for every edge $(u, v) \in E$.
+::::
+
+---
+
+### `#096` (`Mas-2`) — [AtCoder ARC 142 E: Pairing Wizards](https://atcoder.jp/contests/arc142/tasks/arc142_e?lang=en) ★ Flagship 2
+
+- **Judge URL**: [AtCoder ARC 142 E](https://atcoder.jp/contests/arc142/tasks/arc142_e?lang=en)
+- **Constraints**: $N \le 100$, $M \le \binom{N}{2}$, $1 \le a_i, b_i \le 100$, Time Limit $2.0\text{ s}$.
+- **Cross-Reference**: Full 4-Step Derivation, Proofs of Lemma 4.1 (Mandatory Pre-Promotion) and Theorem 4.2 (Low-Role vs. High-Role Bipartite Structural Dichotomy), Toy Trace, and C++ Implementation are given in **Section 4**.
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints & Diagnostic Invariants Summary for #096"}
+1. **Hint 1 (Conjunctive vs. Disjunctive Split)**: Rewrite the pair condition on $(u, v)$ as $\min(x_u, x_v) \ge \min(b_u, b_v)$ AND $\max(x_u, x_v) \ge \max(b_u, b_v)$. Enforce $a_u \gets \max_{v \in N(u)}(a_u, \min(b_u, b_v))$ greedily first!
+2. **Hint 2 (Hidden Bipartition)**: Prove that after pre-promotion, every remaining unsatisfied edge connects a Low-Role wizard $u \in V_{\text{low}}$ ($a_u < b_u$) to a High-Role wizard $v \in V_{\text{high}}$ ($a_v \ge b_v$), and $u \in V_{\text{low}}$ only ever chooses $x_u \in \{a_u, b_u\}$.
+3. **Hint 3 (Inverted Binary-to-Unary OR Cut)**: Wire $S \xrightarrow{b_u - a_u} u$ for $u \in V_{\text{low}}$, build a unit-capacity Form B unary chain $(v, k) \xrightarrow{1} T$ with $(v, k) \xrightarrow{\infty} (v, k-1)$ for $v \in V_{\text{high}}$, and wire $u \xrightarrow{\infty} (v, b_u)$ for each unsatisfied edge.
+::::
+
+---
+
+## 7. Pre-Submission Checklist (`FM-12` Audit)
+
+Before submitting any multi-state chain or threshold-cut solution, run through this 5-point audit:
+
+1. **Reverse $\infty$-Locks Present (`FM-12`)**: Did you add $v_{i,k+1} \xrightarrow{\infty} v_{i,k}$ between every pair of consecutive internal threshold vertices along every series and parallel chain?
+2. **Insulator State Ordering (`ARC 107 F`)**: In 3-state sign/deletion or conflict models (`ARC 107 F`, `yukicoder 119`), is the neutral/deleted insulator state placed in the **middle** ($1 \prec 2 \prec 3$) so that the forbidden pair is $(1, 3)$ and compiles to $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$?
+3. **Pedestal Shift Non-Negativity (`CF 434 D`, `ARC 107 F`)**: Can any unary cost $c_i(k)$ be negative (e.g., when $A_v < 0$ in `ARC 107 F` or when maximizing $f_i(k)$ in `CF 434 D`)? Verify that your per-chain pedestal $M_i$ satisfies $M_i + c_i(k) \ge 0$ for **every** state $k$, and that $M_i$ is added to **all** $K$ series edges of chain $i$.
+4. **Boundary Clamping on Cross-Chain Edges ($k - D > K$)**: In $x_u - x_v \le D$, when $k - D \ge K + 1$ (so $x_v$ can never reach $k - D$), did you wire $v_{u,k} \xrightarrow{\infty} T$ instead of silently skipping the edge?
+5. **Upfront Tightening Before Bipartition (`ARC 142 E`)**: When a constraint mixes $\min$ and $\max$ bounds, did you propagate all unconditional conjunctive lower bounds **before** partitioning vertices into $V_{\text{low}}$ and $V_{\text{high}}$?
+
+---
+
+## 8. Chapter Summary & Bridge to Chapter 13
+
+In this chapter, we lifted binary project selection into the multi-state domain by encoding each $K$-valued variable $x_i \in \{1, \dots, K\}$ as a monotonic chain of $K - 1$ unary threshold indicators $z_{i,k} = [x_i \ge k]$ locked together by reverse $\infty$-arcs $v_{i,k+1} \xrightarrow{\infty} v_{i,k}$. We saw how 1D Abel summation bridges Form A (Series Chains for point-value tables like `[HNOI2013] 切糕` and `ARC 107 F`) and Form B (Parallel Chains for marginal upgrades like `ARC 142 E` and `ABC 326 G`).
+
+What happens when the pairwise interaction between $x_u$ and $x_v$ is **not** a hard $\infty$-cliff $[x_u - x_v > D]\infty$, but a **soft convex penalty** such as $(x_u - x_v)^2$ (`ABC 347 G`) or $w_{uv}|h_u - h_v|$ over $K = 10^9$ shades of grey (`CF 1427 G`)?
+
+In **Chapter 13 (The Coarea Formula, Level-Set Cuts, Ishikawa's Convex Chains & Monge Arrays)**, we apply **2D Abel Summation by Parts** to prove Ishikawa's Theorem—compiling any submodular/Monge penalty $\Phi(x_u, x_v)$ into cross-chain capacities $-\Delta_a \Delta_b \Phi(a, b) \ge 0$—and derive the **Discrete Coarea Formula**, which decouples $10^9$-state $\ell_1$ smoothing into nested level-set cuts solved in $O(N^3)$ total time via incremental residual rollback!
+
+---
+
+## Multilingual Bibliography & Further Reading
+
+- **`[JA]` `noshi91` (2019)**: *「燃やす埋める問題と劣モジュラ関数のグラフ表現」 (Burn-or-Bury Problems and Graph Representations of Submodular Functions)*, [noshi91.hatenablog.com](https://noshi91.hatenablog.com/entry/2021/06/29/044225) — The definitive Japanese exposition of $K$-state unary threshold chains (`K値燃やす埋める`) and Monge cross-chain compilation.
+- **`[JA]` `maspy` (2020–2022)**: *AtCoder Editorial & Unary Cut Notes for `ARC 107 F` (Sum of Abs) and `ARC 142 E` (Pairing Wizards)*, [maspypy.com](https://maspypy.com/) — Introduces the 3-state sign/deletion chain and bipartite OR threshold layering.
+- **`[ZH]` 胡伯涛 (Amber, 2007) & `[HNOI2013] 切糕` Standard Folklore**: *《最小割模型在信息学竞赛中的应用》 (Applications of Minimum Cut Models in Olympiad in Informatics)* — Establishes the Chinese `切糕模型` (Cake-Cutting Model) and the mandatory reverse $\infty$-lock invariant.
+- **`[EN]` Hiroshi Ishikawa (2003)**: *"Exact Optimization for Markov Random Fields with Convex Priors"*, IEEE Transactions on Pattern Analysis and Machine Intelligence (TPAMI), 25(10):1333–1336 — The foundational paper introducing multi-state series chains with reverse $\infty$-locks and cross-chain difference capacities.

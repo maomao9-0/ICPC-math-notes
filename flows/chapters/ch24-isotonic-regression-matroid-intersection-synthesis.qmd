@@ -1,0 +1,1766 @@
+---
+title: "Chapter 24 — Isotonic Regression, Matroid Intersection & The Master Recognition Synthesis"
+---
+
+## Prerequisites & Learning Objectives
+
+Before beginning this grand finale chapter, ensure you have mastered:
+
+- **Maximum-Weight Closure & Pseudo-Boolean Cut Polynomials** (`Ch 09`–`Ch 11`): Compiling $x_u \le x_v$ ($x_u(1 - x_v) = 0$) into a directed $\infty$-capacity arc $u \to v$ in an $S$-$T$ minimum-cut network, and multi-state threshold chains $z_{i,t} = [x_i \ge t]$.
+- **Linear Programming Duality & Total Unimodularity** (`Ch 19`–`Ch 20`): Recognizing when a continuous convex or linear program over a directed acyclic graph (DAG) dualizes to a circulation or minimum-cut network.
+- **Simulated MCMF & Structural Flow Elimination** (`Ch 22`–`Ch 23`): Replacing explicit augmenting-path solvers with greedy regret heaps, tree DP, or prefix-cut sweeps when the underlying graph has special topology.
+
+By the end of this chapter, you will be able to:
+
+1. **Compile $L_p$ Isotonic Regression (`保序回归`) via Parallel Divide-and-Conquer (`整体二分`)**: Prove the **Contiguous Two-Level Threshold Contraction Theorem**, reduce a continuous convex optimization problem $\min \sum w_i |x_i - y_i|^p$ subject to poset constraints $x_u \le x_v$ to $O(\log U)$ rounds of vertex-partitioned Maximum-Weight Closure (`Ch 09`), and extract implicit poset edges from linear-basis and matroid exchange conditions (`[省选联考 2020 A卷] 魔法商店`).
+2. **Chart the Exact Boundary Between Network Flow and Matroid Intersection**: Classify when an optimization problem stays inside standard Max-Flow/MCMF (intersection of two partition or laminar matroids, or polymatroid flows) versus when it crosses into **Weighted Matroid Intersection** (such as Graphic $\cap$ Partition in `CF 1284G Seollal` and `CF 1556H DIY Tree`), where static residual graphs fail and **Edmonds' Augmenting Exchange Digraph** takes over.
+3. **Separate Flow from Algebraic & Parity Invariants**: Diagnose chessboard parity invariants (`[SCOI2012] 奇怪的游戏`) before launching binary search + flow, and recognize when non-intersecting DAG path counting crosses from Vertex-Split Max-Flow (`Ch 02`) into the **Lindström–Gessel–Viennot (LGV) Determinant Lemma** (`[NOI2021] 路径交点`).
+4. **Command the Master 3-Stage English-to-Flow Recognition Compiler**: Apply the complete **18-Class Disguise Dictionary (`AL-01`–`AL-18`)** and **26-Failure-Mode Audit (`FM-01`–`FM-26`)** to translate any disguised competitive programming problem statement into its exact algebraic model and optimal solver on the first attempt.
+
+---
+
+## 1. $L_p$ Isotonic Regression on Posets (`保序回归`): Continuous-to-Discrete Contraction via `整体二分` + Max-Weight Closure
+
+In `Ch 11`, we compiled discrete multi-state choices $x_i \in \{1, 2, \dots, K\}$ with convex penalties and partial-order constraints $x_u \le x_v$ into layered unary threshold chains (`Burn-Bury` / `切糕模型`) of size $O(NK)$ vertices and $O(MK)$ edges. What happens when the coordinate domain $U = [L, R]$ is huge ($R - L \le 10^9$) or continuous ($x_i \in \mathbb{R}$)? Building $10^9$ layers explicitly is impossible. Yet in his landmark 2018 China National Team paper (*《浅谈保序回归问题》*), **Zhi-Rui Gao (`高睿泉`)** showed that convexity and submodularity allow us to probe a single threshold slice $\{M, M+1\}$ using one standard `Ch 09` Maximum-Weight Closure cut, and that the resulting optimal binary cut **exact-partitions** the global continuous optima $x^*$ into $(\le M)$ and $(\ge M+1)$!
+
+### 1.1 The General $L_p$ Isotonic Regression Problem (`Step 1` & `Step 2`)
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+You are given $N$ items ($N \le 10^3$), each with an initial target value $y_i \in \mathbb{Z}$ and weight $w_i > 0$. You must choose modified values $x_1, x_2, \dots, x_N$ to minimize the total $L_p$ modification penalty ($1 \le p < \infty$):
+
+$$
+\min_{x \in \mathbb{R}^V} \sum_{i \in V} w_i |x_i - y_i|^p \quad \text{subject to} \quad x_u \le x_v \quad \forall (u, v) \in E
+$$
+
+where $G = (V, E)$ is a directed graph of $M$ partial-order constraints (often induced implicitly by an optimal spanning tree, shortest-path tree, or XOR linear basis condition). Naive greedy rounding fails because raising $x_u$ forces all descendants $v$ of $u$ in $G$ to satisfy $x_v \ge x_u$, creating cascading multi-path conflicts across the DAG.
+
+#### Step 2: Intermediate Algebraic / Logical Representation (The Two-Level Threshold Slice)
+
+Generalizing the 1D penalty function $f_i(x_i) = w_i |x_i - y_i|^p$, suppose each vertex $i \in V$ has an arbitrary **convex** cost function $f_i : \mathbb{R} \to \mathbb{R}$. Instead of solving for $x_i \in [L, R]$ all at once, fix a midpoint $M = \lfloor (L + R) / 2 \rfloor$ (or for continuous $L_p$, a step size $M$ and $M + \epsilon$) and restrict every variable to the **two-point set** $\{M, M+1\}$.
+
+Define the binary indicator variable $z_i \in \{0, 1\}$ for each $i \in V$:
+
+$$
+z_i = [x_i = M + 1] \quad \Longleftrightarrow \quad x_i = M + z_i
+$$
+
+Let us check both the constraints and the objective under this restriction:
+
+1. **Poset Constraint Preservation**: For every directed edge $(u, v) \in E$, the inequality $x_u \le x_v$ becomes $M + z_u \le M + z_v \iff z_u \le z_v$, which is the exact algebraic closure condition:
+
+   $$
+   z_u = 1 \implies z_v = 1 \quad \Longleftrightarrow \quad z_u(1 - z_v) = 0 \quad \forall (u, v) \in E
+   $$
+
+2. **Linearized Slice Objective**: Since $z_i \in \{0, 1\}$, we can write $f_i(M + z_i) = f_i(M) + \big(f_i(M+1) - f_i(M)\big) z_i$. Defining the **marginal promotion reward** $\Delta_i(M)$ of shifting $x_i$ from $M$ up to $M+1$:
+
+   $$
+   \Delta_i(M) := f_i(M) - f_i(M+1) = w_i |M - y_i|^p - w_i |M + 1 - y_i|^p
+   $$
+
+   minimizing $\sum_{i \in V} f_i(M + z_i)$ is algebraically equivalent to **maximizing** the total promotion reward of the closed set $Z_1 = \{i \in V : z_i = 1\}$:
+
+   $$
+   \min_{z \in \{0,1\}^V : z_u \le z_v} \sum_{i \in V} f_i(M + z_i) = \underbrace{\sum_{i \in V} f_i(M)}_{\text{Constant } C(M)} - \max_{\substack{z \in \{0,1\}^V \\ z_u \le z_v \;\forall (u,v)\in E}} \sum_{i \in V} \Delta_i(M) z_i
+   $$
+
+This restricted $\{M, M+1\}$ problem is a textbook **Maximum-Weight Closure** (`Ch 09`) instance!
+
+### 1.2 The Contiguous Two-Level Threshold Contraction Theorem
+
+Why does solving the $\{M, M+1\}$ binary slice tell us anything about the unconstrained global optimum $x^* \in [L, R]^V$? The bridge is one of the deepest structural results in combinatorial optimization.
+
+::: {.callout-important title="Theorem 24.1 (Contiguous Two-Level Threshold Contraction / Uncrossing Monotonicity)"}
+Let $f_i : \mathbb{R} \to \mathbb{R}$ be convex functions for all $i \in V$, and let $z^* \in \{0, 1\}^V$ be an optimal solution to the restricted $\{M, M+1\}$ Maximum-Weight Closure problem on $G = (V, E)$. Then there exists an unconstrained global optimal solution $x^* \in \mathbb{R}^V$ to the full Isotonic Regression problem such that for every vertex $i \in V$:
+
+$$
+z_i^* = 0 \implies x_i^* \le M, \qquad \text{and} \qquad z_i^* = 1 \implies x_i^* \ge M + 1 \text{ (in integers)}
+$$
+
+In the continuous setting where we test $\{M, M + \epsilon\}$ as $\epsilon \to 0^+$, the directional derivative reward is $\Delta_i^{\text{cont}}(M) = -f_i'(M^+)$, and $z_i^* = 0 \implies x_i^* \le M$ while $z_i^* = 1 \implies x_i^* \ge M$.
+:::
+
+#### Proof via Submodular Lattice Uncrossing and Convexity
+
+Let $x^* \in \mathbb{Z}^V$ be a global integer optimum on $[L, R]^V$, and let $z^* \in \{0, 1\}^V$ be an optimum of the restricted $\{M, M+1\}$ slice. Define the set of vertices that $z^*$ promotes to $M+1$ as $U_1 = \{i \in V : z_i^* = 1\}$, and define the set of vertices where the global optimum $x^*$ strictly misses this lower bound as $W = \{i \in V : x_i^* \le M\}$.
+
+Suppose for contradiction (or toward constructing an aligned optimum) that the bad overlap $B = U_1 \cap W = \{i \in V : z_i^* = 1 \text{ and } x_i^* \le M\}$ is non-empty.
+
+1. **Lattice Closure of $U_1$ and $W^c$**: Because $x^*$ is poset-feasible ($x_u^* \le x_v^*$), its upper threshold set $W^c = \{i \in V : x_i^* \ge M + 1\}$ is a valid upper closure in $G$. Similarly, $U_1$ is a valid upper closure in $G$. Since upper closures are closed under union and intersection:
+   - $U_1 \setminus B = U_1 \cap W^c$ is a valid upper closure for the $\{M, M+1\}$ slice problem (demoting $B$ from $M+1$ back to $M$).
+   - Conversely, for any $i \in B$, since $x_i^* \le M$, if we shift $x_i^*$ upward by $+1$ (or to $M+1$) along a suitable level set inside $B$, poset feasibility is governed by the same directed arcs.
+2. **Convex Marginal Inequality**: For every $i \in B$, we have $x_i^* \le M$. By the convexity of $f_i$, the marginal cost of increasing $i$ from $M$ to $M+1$ is at least as large as the marginal cost of increasing $i$ from $x_i^*$ to $x_i^* + 1$:
+
+   $$
+   f_i(M+1) - f_i(M) \ge f_i(x_i^* + 1) - f_i(x_i^*) \quad \Longleftrightarrow \quad \Delta_i(M) \le f_i(x_i^*) - f_i(x_i^* + 1)
+   $$
+
+3. **Optimality Contradiction / Alignment**: Because $z^*$ is optimal for the $\{M, M+1\}$ slice, demoting the subset $B$ from $M+1$ to $M$ cannot improve the slice objective, so $\sum_{i \in B} \Delta_i(M) \ge 0$. Combining this with the convexity inequality above yields:
+
+   $$
+   \sum_{i \in B} \big(f_i(x_i^* + 1) - f_i(x_i^*)\big) \le -\sum_{i \in B} \Delta_i(M) \le 0
+   $$
+
+   Thus, incrementing $x_i^*$ on the maximal level set of $B$ preserves poset feasibility and does not increase the global objective $\sum f_i(x_i^*)$! Repeating this uncrossing for both $U_1 \cap \{x^* \le M\}$ and $U_0 \cap \{x^* \ge M+1\}$ transforms $x^*$ into an equally optimal (or strictly better, if $f_i$ is strictly convex as in $p > 1$) solution that satisfies $x_i^* \le M$ on $z_i^* = 0$ and $x_i^* \ge M+1$ on $z_i^* = 1$. $\blacksquare$
+
+### 1.3 Step 3: Mechanical Graph Compilation & Parallel Divide-and-Conquer (`整体二分`)
+
+Theorem 24.1 gives us a recursive divide-and-conquer algorithm (`solve(V_cur, E_cur, L, R)`) that finds the exact integer (or discretized) vector $x^* \in [L, R]^V$ in $\lceil \log_2(R - L + 1) \rceil$ depth levels:
+
+1. **Base Case**: If $L = R$, set $x_i^* = L$ for all $i \in V_{\text{cur}}$ and return.
+2. **Midpoint Cut Construction**: Set $M = \lfloor (L + R) / 2 \rfloor$. Build a flow network **strictly on the active vertex subset $V_{\text{cur}}$** with source $S$ and sink $T$:
+   - For each $i \in V_{\text{cur}}$, compute $\Delta_i(M) = f_i(M) - f_i(M+1) = w_i |M - y_i|^p - w_i |M + 1 - y_i|^p$.
+   - If $\Delta_i(M) > 0$ (promoting $i$ to $M+1$ strictly reduces cost), add directed edge $S \to i$ with capacity $\Delta_i(M)$.
+   - If $\Delta_i(M) < 0$ (keeping $i$ at $M$ is strictly cheaper), add directed edge $i \to T$ with capacity $-\Delta_i(M)$.
+   - For each active poset edge $(u, v) \in E_{\text{cur}}$ (where both $u, v \in V_{\text{cur}}$), add directed edge $u \to v$ with capacity $\infty$.
+3. **Partition & Edge Contraction**: Run Dinic's algorithm on $(V_{\text{cur}} \cup \{S, T\}, E_{\text{cur}})$. Let $S_{\min} \subseteq V_{\text{cur}}$ be the vertices reachable from $S$ in the final residual graph ($z_i^* = 1 \implies x_i^* \in [M+1, R]$), and $T_{\min} = V_{\text{cur}} \setminus S_{\min}$ be the unreachable vertices ($z_i^* = 0 \implies x_i^* \in [L, M]$).
+   - **Why Cross-Edges Vanish Forever**: Any original poset edge $(u, v) \in E_{\text{cur}}$ with $u \in S_{\min}$ and $v \in T_{\min}$ is **impossible** (since it has capacity $\infty$, it cannot cross a finite $S$-$T$ cut). Any edge $(u, v) \in E_{\text{cur}}$ with $u \in T_{\min}$ and $v \in S_{\min}$ is **permanently satisfied** for all future recursive calls because every $u \in T_{\min}$ will be assigned $x_u^* \le M$ while every $v \in S_{\min}$ will be assigned $x_v^* \ge M + 1$, guaranteeing $x_u^* < x_v^*$ automatically!
+   - Therefore, we partition $E_{\text{cur}}$ into $E_L = \{(u, v) \in E_{\text{cur}} : u, v \in T_{\min}\}$ and $E_R = \{(u, v) \in E_{\text{cur}} : u, v \in S_{\min}\}$, discard all cross-edges, and recurse on `solve(T_min, E_L, L, M)` and `solve(S_min, E_R, M + 1, R)`.
+
+::: {.callout-tip title="Complexity Guarantee of Parallel Divide-and-Conquer"}
+At every depth level $d \in \{0, 1, \dots, \lceil \log_2 U \rceil\}$ of the recursion tree, the active vertex sets $V_{\text{cur}}$ across all calls at depth $d$ are **pairwise disjoint** ($\sum |V_{\text{cur}}| = N$), and the active edge sets $E_{\text{cur}}$ are **pairwise disjoint** ($\sum |E_{\text{cur}}| \le M$). Because Dinic's runtime is super-additive ($\sum \text{Dinic}(N_k, M_k) \le \text{Dinic}(\sum N_k, \sum M_k)$), the total work at each depth is bounded by a single global max-flow on $(N, M)$, giving a total complexity of:
+
+$$
+O\big(\text{Dinic}(N, M) \log U\big)
+$$
+:::
+
+### 1.4 Flagship Walkthrough: `[省选联考 2020 A卷] 魔法商店` (`Luogu P6621`) — Compiling Matroid Basis Exchanges into Poset Edges
+
+In contest problems, the poset $G = (V, E)$ is rarely handed to you explicitly; you must extract it from an optimality condition. The crowning example is **`[省选联考 2020 A卷] 魔法商店` (`Luogu P6621`)**:
+
+- **Problem Statement**: There are $N \le 1000$ magic cards. Card $i$ has an attribute integer $c_i < 2^m$ ($m \le 64$) and an initial price $v_i \le 10^6$. A subset of $m$ cards is a **valid basis** if their attributes $c_i$ are XOR-linearly independent. You are given two specific valid bases: $A$ (size $m$) and $B$ (size $m$). You want to modify the prices from $v_i$ to integers $x_i$ at total cost $\sum_{i=1}^N (x_i - v_i)^2$ ($L_2$ norm, $p = 2$) so that $A$ becomes a **minimum-weight valid basis** and $B$ becomes a **maximum-weight valid basis** under the new prices $x$.
+- **Step 2 (Extracting the Poset via Basis Exchange)**:
+  By the **Matroid Basis Optimality Theorem** (recall Kruskal's greedy algorithm on a linear matroid), a basis $A$ is a minimum-weight basis under weights $x$ if and only if no single-element exchange can strictly decrease its weight.
+  For each card $j \notin A$, since $A$ spans the $m$-dimensional $\mathbb{F}_2^m$ space of $A$, $c_j$ can be written uniquely as the XOR sum of a subset of cards in $A$:
+
+  $$
+  c_j = \bigoplus_{i \in S_A(j)} c_i \qquad (S_A(j) \subseteq A)
+  $$
+
+  Removing any $i \in S_A(j)$ from $A$ and inserting $j$ yields a new valid basis $(A \setminus \{i\}) \cup \{j\}$. For $A$ to be a minimum-weight basis, every such local swap must be non-improving:
+
+  $$
+  x_i \le x_j \qquad \forall j \notin A, \; \forall i \in S_A(j) \quad \Longrightarrow \quad \text{Directed poset edge } i \to j
+  $$
+
+  Symmetrically, for $B$ to be a maximum-weight basis, representing each $j \notin B$ as $c_j = \bigoplus_{i \in S_B(j)} c_i$ ($S_B(j) \subseteq B$) forces every swap $(B \setminus \{i\}) \cup \{j\}$ to have weight $\le w(B)$, which requires:
+
+  $$
+  x_j \le x_i \qquad \forall j \notin B, \; \forall i \in S_B(j) \quad \Longrightarrow \quad \text{Directed poset edge } j \to i
+  $$
+
+  Notice that this creates at most $2 \times m(N - m) \le 64 \times 1000 \times 2 \approx 1.28 \times 10^5$ directed edges! Once these $O(Nm)$ poset edges are extracted via Gaussian elimination over $\mathbb{F}_2^{64}$, the problem is a pure $L_2$ Isotonic Regression instance on $N \le 1000$ vertices with $\Delta_i(M) = (M - v_i)^2 - (M + 1 - v_i)^2 = 2(v_i - M) - 1$.
+
+### 1.5 Step 4: Toy Trace & Broken-Gadget Counterexample (`FM-24` $\leftrightarrow$ `H-24B`)
+
+#### Toy Trace ($N = 3$, $p = 2$, Path Poset $1 \to 2 \to 3$)
+
+Suppose $N = 3$ with edges $1 \to 2$ ($x_1 \le x_2$) and $2 \to 3$ ($x_2 \le x_3$), initial prices $y = (6, 1, 2)$, and weights $w_i = 1$ on $[L, R] = [1, 6]$:
+
+1. **Root Call (`L = 1, R = 6, M = 3`)**:
+   - $\Delta_i(3) = (3 - y_i)^2 - (4 - y_i)^2 = 2(y_i - 3) - 1$:
+     - $\Delta_1(3) = 2(6 - 3) - 1 = +5 > 0 \implies$ edge $S \to 1$ cap $5$.
+     - $\Delta_2(3) = 2(1 - 3) - 1 = -5 < 0 \implies$ edge $2 \to T$ cap $5$.
+     - $\Delta_3(3) = 2(2 - 3) - 1 = -3 < 0 \implies$ edge $3 \to T$ cap $3$.
+   - Poset edges: $1 \to 2$ ($\infty$), $2 \to 3$ ($\infty$).
+   - **Min-Cut Analysis**: If $1 \in S_{\min}$, the $\infty$-chain $1 \to 2 \to 3$ forces $2, 3 \in S_{\min}$, cutting $2 \to T$ (cap $5$) and $3 \to T$ (cap $3$) for total cut $8$. If $1 \in T_{\min}$, we cut $S \to 1$ for cost $5 < 8$. Thus $S_{\min} = \emptyset$ and $T_{\min} = \{1, 2, 3\}$: all three variables contract to $[1, 3]$!
+2. **Left Child Call (`L = 1, R = 3, M = 2`)**:
+   - $\Delta_i(2) = 2(y_i - 2) - 1$: $\Delta_1(2) = +7$, $\Delta_2(2) = -3$, $\Delta_3(2) = -1$.
+   - Promoting $\{1, 2, 3\}$ to $M+1 = 3$ gains $+7 - 3 - 1 = +3 > 0$ (cut cost $3 + 1 = 4 < 7$). Thus $S_{\min} = \{1, 2, 3\}$, contracting all three variables to $[3, 3]$, yielding the unique global optimum $x^* = (3, 3, 3)$ with cost $(3-6)^2 + (3-1)^2 + (3-2)^2 = 9 + 4 + 1 = 14$.
+
+::: {.callout-warning title="Failure Mode FM-24 (↔ H-24B): Uncontracted Graph Rebuild & Sign-Inverted Promotion Reward"}
+Two fatal implementation bugs routinely destroy `整体二分` Isotonic Regression submissions:
+
+1. **Rebuilding the Full $N$-Vertex Graph Inside `solve(V_cur, L, R)`**: If you build all $N$ vertices and $M$ edges at each node of the recursion tree (clamping already-decided vertices via $\infty$ edges to $S$ or $T$), there are up to $N$ active recursion leaves per level, multiplying the work per depth level by $N$ and turning $O(\text{Dinic}(N, M) \log U)$ into $O(N \cdot \text{Dinic}(N, M) \log U)$ (`TLE`). You **must** re-index or restrict the Dinic graph strictly to $V_{\text{cur}}$ and drop cross-edges between $T_{\min}$ and $S_{\min}$.
+2. **Flipping the Sign of $\Delta_i(M)$**: Because Isotonic Regression **minimizes** $\sum f_i(x_i)$ while Maximum-Weight Closure **maximizes** $\sum \Delta_i(M) z_i$, the promotion reward for $z_i = 1$ ($x_i = M+1$) is $\Delta_i(M) = f_i(M) - f_i(M+1)$, **not** $f_i(M+1) - f_i(M)$! When $y_i > M$, moving from $M$ toward $y_i$ (to $M+1$) **decreases** penalty, so $\Delta_i(M) > 0$ and $i$ attaches to $S$.
+:::
+
+---
+
+## 2. Weighted Matroid Intersection, Polymatroid Flows, and the Exact Boundary of Network Flow
+
+Throughout Chapters 1–23, we compiled dozens of seemingly unrelated combinatorial constraints into Max-Flow, Min-Cut, and MCMF. Why did network flow succeed on Bipartite Matching (`Ch 06`), Nested Tree/Hierarchy Capacities (`Ch 07`), and Project Selection (`Ch 09`), yet fail when asked to find a **Spanning Tree with degree bounds on all vertices** or a **Rainbow Spanning Tree** (`CF 1284G`, `CF 1556H`)? The mathematical answer lies in **Matroid Intersection Theory** and **Polymatroid Flows**.
+
+### 2.1 Matroids and the Four Competitive Programming Matroid Classes
+
+A **matroid** is a pair $\mathcal{M} = (E, \mathcal{I})$, where $E$ is a finite ground set and $\mathcal{I} \subseteq 2^E$ is a family of **independent sets** satisfying:
+
+1. **Non-emptiness**: $\emptyset \in \mathcal{I}$.
+2. **Hereditary Property**: If $I \in \mathcal{I}$ and $J \subseteq I$, then $J \in \mathcal{I}$.
+3. **Exchange Axiom**: If $I, J \in \mathcal{I}$ with $|I| < |J|$, there exists $e \in J \setminus I$ such that $I \cup \{e\} \in \mathcal{I}$.
+
+Equivalently, a matroid is uniquely determined by its **rank function** $r : 2^E \to \mathbb{Z}_{\ge 0}$, $r(S) = \max \{|I| : I \subseteq S, I \in \mathcal{I}\}$, which is monotone, normalized ($r(\emptyset) = 0, r(S) \le |S|$), and **submodular**:
+
+$$
+r(A) + r(B) \ge r(A \cup B) + r(A \cap B) \qquad \forall A, B \subseteq E
+$$
+
+Almost every matroid encountered in competitive programming belongs to one of four canonical classes:
+
+| Matroid Class | Ground Set $E$ | Independence Condition $I \in \mathcal{I}$ | Independence Oracle Cost |
+| :--- | :--- | :--- | :--- |
+| **1. Partition Matroid** | Disjoint groups $E = \bigsqcup_{k=1}^p E_k$ | $|I \cap E_k| \le c_k$ for all $k = 1, \dots, p$ | $O(1)$ per element (group counter) |
+| **2. Laminar Matroid** | Nested family $\mathcal{F} \subseteq 2^E$ ($A \cap B \in \{\emptyset, A, B\}$) | $|I \cap A| \le c_A$ for all $A \in \mathcal{F}$ (tree of subsets) | $O(\text{depth}(\mathcal{F}))$ |
+| **3. Graphic Matroid** | Edges $E(G)$ of an undirected graph $G$ | $I$ is a **forest** (contains no cycle in $G$) | $O(|V|)$ or $O(\alpha(|V|))$ via DSU / tree path |
+| **4. Linear (XOR) Matroid** | Vectors $v_e \in \mathbb{F}_2^d$ (or $\mathbb{F}_p^d$) | $\{v_e : e \in I\}$ are linearly independent | $O(d)$ via Gaussian / XOR basis |
+
+### 2.2 Boundary 1: Why Partition $\cap$ Partition and Laminar $\cap$ Laminar ARE Network Flows
+
+Suppose we want to find a maximum-weight (or maximum-cardinality) common independent set $I \in \mathcal{I}_1 \cap \mathcal{I}_2$ of **two matroids** $\mathcal{M}_1 = (E, \mathcal{I}_1)$ and $\mathcal{M}_2 = (E, \mathcal{I}_2)$ on the same ground set $E$.
+
+- **Case A: Partition $\cap$ Partition = Bipartite $b$-Matching (`Ch 06`)**:
+  If $\mathcal{M}_1$ partitions $E = \bigsqcup_{u \in L} E_u$ with capacities $c_u$ and $\mathcal{M}_2$ partitions $E = \bigsqcup_{v \in R} E'_v$ with capacities $d_v$, then each element $e \in E$ belongs to exactly one left group $u(e) \in L$ and one right group $v(e) \in R$. Representing $e$ as a directed edge $u(e) \to v(e)$ with capacity $1$, the network $S \xrightarrow{c_u} u \xrightarrow{e} v \xrightarrow{d_v} T$ enforces $|I \cap E_u| \le c_u$ via flow conservation at $u$ and $|I \cap E'_v| \le d_v$ via flow conservation at $v$.
+- **Case B: Laminar $\cap$ Laminar = Tree-Hierarchy Max-Flow / MCMF (`Ch 07`)**:
+  Because a laminar family $\mathcal{F}_1$ forms a rooted forest of subsets, flow conservation through the tree nodes of $\mathcal{F}_1$ (from $S$ down to leaves $E$) and up through the inverted tree nodes of $\mathcal{F}_2$ (from leaves $E$ up to $T$) enforces $|I \cap A| \le c_A$ for all $A \in \mathcal{F}_1 \cup \mathcal{F}_2$ simultaneously. The underlying constraint matrix is **Totally Unimodular (TU)** (`Ch 20`).
+- **Case C: Polymatroid Flows & Edmonds' Min-Cut Theorem**:
+  More generally, in a **Polymatroid Network** (Edmonds 1970, Lawler–Martel 1982), the bundle of edges exiting vertex $u$ is constrained by a submodular rank function $f(\delta^+(u)) \le r_u^+$, and the bundle entering $u$ is constrained by $f(\delta^-(u)) \le r_u^-$. By **Edmonds' Matroid Intersection Duality Theorem**:
+
+  $$
+  \max_{I \in \mathcal{I}_1 \cap \mathcal{I}_2} |I| = \min_{S \subseteq E} \Big( r_1(S) + r_2(E \setminus S) \Big)
+  $$
+
+  Notice that this is the exact submodular generalization of the Max-Flow Min-Cut Theorem! When $r_1$ and $r_2$ are cut capacities or laminar tree capacities, a single static residual graph suffices because any swap inside a partition/laminar group can be routed through the group's shared hub vertex $u$.
+
+### 2.3 Boundary 2: When Static Flow Networks Fail — Edmonds' Augmenting Exchange Digraph
+
+Why can we **not** represent a **Graphic Matroid** (forest constraint) or **Linear XOR Matroid** as a static flow gadget?
+In a partition matroid, if group $E_u$ is at full capacity $|I \cap E_u| = c_u$, inserting a new element $y \in E_u \setminus I$ allows us to evict **any** existing element $x \in I \cap E_u$ — the valid swaps $(x, y)$ depend only on static group membership, which a single hub vertex $u$ can route.
+In a **Graphic Matroid**, however, adding a non-tree edge $y = (a, b) \notin I$ creates a unique fundamental cycle $C(I, y)$ in the current forest $I$; we may only evict an edge $x \in C(I, y) \setminus \{y\}$. Worse yet, **which edges belong to $C(I, y)$ changes dynamically every time the forest $I$ changes!** No fixed static graph of vertices and capacities can encode a state-dependent cycle membership relation.
+
+Instead, **Matroid Intersection** rebuilds the residual exchange graph dynamically at every augmentation step!
+
+::: {.callout-important title="Algorithm 24.1 (Edmonds' Weighted & Unweighted Matroid Intersection)"}
+Given two matroids $\mathcal{M}_1 = (E, \mathcal{I}_1)$ and $\mathcal{M}_2 = (E, \mathcal{I}_2)$ with element weights $w : E \to \mathbb{R}$ (to **maximize** $\sum_{e \in I} w(e)$), maintain a common independent set $I \in \mathcal{I}_1 \cap \mathcal{I}_2$ (initially $I = \emptyset$). At each step, construct the **bipartite Exchange Digraph** $G(I) = (I \sqcup (E \setminus I), A_1 \cup A_2)$:
+
+1. **Source Set $X_1$ ($\mathcal{M}_1$-free insertions)** and **Sink Set $X_2$ ($\mathcal{M}_2$-free insertions)**:
+
+   $$
+   X_1 = \{y \in E \setminus I : I \cup \{y\} \in \mathcal{I}_1\}, \qquad X_2 = \{y \in E \setminus I : I \cup \{y\} \in \mathcal{I}_2\}
+   $$
+
+2. **Exchange Arcs $A_1$ (from $I$ to $E \setminus I$, governed by $\mathcal{M}_1$)** and **$A_2$ (from $E \setminus I$ to $I$, governed by $\mathcal{M}_2$)**:
+
+   $$
+   A_1 = \big\{ (x \to y) : x \in I, \; y \in E \setminus I, \; (I \setminus \{x\}) \cup \{y\} \in \mathcal{I}_1 \big\}
+   $$
+
+   $$
+   A_2 = \big\{ (y \to x) : x \in I, \; y \in E \setminus I, \; (I \setminus \{x\}) \cup \{y\} \in \mathcal{I}_2 \big\}
+   $$
+
+3. **Shortest Augmenting Path & Symmetric Difference Update**:
+   Assign vertex weights $\tilde{w}(y) = +w(y)$ for $y \in E \setminus I$ and $\tilde{w}(x) = -w(x)$ for $x \in I$. Find an augmenting path $P = (y_0, x_1, y_1, \dots, x_k, y_k)$ in $G(I)$ from some $y_0 \in X_1$ to some $y_k \in X_2$ that **maximizes total vertex weight $\tilde{w}(P)$**, breaking ties by **minimum number of edges (shortest hop count)**!
+   - In the **unweighted** case ($w(e) = 1$), a simple BFS from $X_1$ to $X_2$ finds the shortest hop-count path $P$.
+   - In the **weighted** case, Bellman-Ford / SPFA finds the maximum-weight path with minimum hop count among tied maximum-weight paths.
+   - Update $I \gets I \oplus V(P) = (I \setminus \{x_1, \dots, x_k\}) \cup \{y_0, y_1, \dots, y_k\}$. Notice $|I|$ increases by $+1$. Stop when no $X_1$-to-$X_2$ path exists.
+:::
+
+::: {.callout-warning title="Why Hop-Count Tie-Breaking Is Mandatory (`Chordless Path Invariant`)"}
+Suppose a path $P$ in $G(I)$ has a **shortcut chord** $(x_i \to y_j) \in A_1$ or $(y_i \to x_j) \in A_2$ with $i < j$. Then performing multiple simultaneous exchanges along $P$ can violate independence in $\mathcal{M}_1$ or $\mathcal{M}_2$ ($I \oplus V(P) \notin \mathcal{I}_1 \cap \mathcal{I}_2$)! Choosing a path of **minimum hop count** in the unweighted case (or **maximum weight, then minimum hop count** in the weighted case) mathematically guarantees that $P$ has no shortcut chords of non-negative weight, which by the **Strong Basis Exchange Lemma** ensures $I \oplus V(P) \in \mathcal{I}_1 \cap \mathcal{I}_2$.
+:::
+
+#### Worked Contest Archetypes of Matroid Intersection (`CF 1284G` & `CF 1556H`)
+
+1. **`[Hello 2020 / CF 1284G] Seollal` (Unweighted Graphic $\cap$ Partition Matroid)**:
+   - *English Disguise*: Given an $N \times M$ grid ($N, M \le 20$) with `'O'` and `'X'` cells, place walls between adjacent `'O'` cells so all `'O'` cells stay connected, no cycle of `'O'` cells exists (or equivalently, keep a spanning tree of `'O'` cells), and every black `'O'` cell ($(r+c) \equiv 0 \pmod 2$, except $(1,1)$) has **degree $\ge 2$** in the kept subgraph.
+   - *Compilation*: A subgraph is connected and has degree $\ge 2$ at every required black vertex $u$ if and only if it contains a **spanning tree** $T$ where every required black vertex $u$ has $\deg_T(u) \ge 2$. Equivalently, if $G$ has $C$ connected components (usually $1$) and $V_{\text{O}}$ vertices, we can instead select a **forest $I$ of size $2|B|$** where every black vertex $u \in B$ has **at most 2 incident edges** in $I$, and then greedily extend $I$ to a full spanning tree!
+     - $\mathcal{M}_1$ (**Graphic Matroid**): $I \subseteq E$ contains no cycles in the grid graph.
+     - $\mathcal{M}_2$ (**Partition Matroid**): Partition edges by their incident black vertex $u \in B$ (since the grid is bipartite, every edge touches at most one cell in $B \setminus \{(1,1)\}$!). Require $|I \cap \delta(u)| \le 2$ for each $u \in B$.
+     - Run unweighted Matroid Intersection (`BFS` on $G(I)$); a valid solution exists iff $\max |I| = 2|B|$.
+2. **`[Deltix Round Summer 2021 / CF 1556H] DIY Tree` (Weighted Graphic $\cap$ Partition + $2^{\binom{K}{2}}$ Enumeration)**:
+   - *English Disguise*: Given a complete weighted graph on $N \le 50$ vertices, find a minimum-weight spanning tree such that vertices $1, 2, \dots, K$ ($K \le 5$) have degrees $\le d_1, \dots, d_K$.
+   - *Why Naively Intersecting Degree Bounds on $1 \dots K$ Fails*: An edge $(u, v)$ with $u \in \{1..K\}$ and $v \in \{K+1..N\}$ touches **only one** degree-constrained vertex, so those edges form a **Partition Matroid** $\mathcal{M}_2$. However, an edge $(u, v)$ with **both** $u, v \in \{1..K\}$ touches **two** degree-constrained vertices!
+   - *Fix*: Because $K \le 5$, there are only $\binom{K}{2} \le 10$ edges inside $\{1, \dots, K\}$. Brute-force all $2^{\binom{K}{2}} \le 1024$ acyclic subsets $F_0$ of edges inside $\{1, \dots, K\}$ (`Bell(5) = 52` valid forests, or simply filter acyclic $F_0$). Once $F_0$ is fixed, contract $F_0$, decrement residual degree budgets $d'_i = d_i - \deg_{F_0}(i)$, remove all remaining edges inside $\{1, \dots, K\}$, and solve **Minimum-Weight Matroid Intersection** between $\mathcal{M}_1$ (Graphic Matroid after contracting $F_0$) and $\mathcal{M}_2$ (Partition Matroid on $\{1, \dots, K\}$, since every remaining edge touches at most one vertex in $\{1, \dots, K\}$!).
+
+### 2.4 Boundary 3: Why 3-Matroid Intersection Is NP-Hard & The "Flow Amnesia" Anti-Pattern
+
+What happens when an English problem imposes **three** independent partition/matroid constraints on each chosen item $e \in E$?
+
+- **NP-Hardness Barrier**: Intersecting **three** Partition Matroids is **3-Dimensional Matching (3DM)**; intersecting a Graphic Matroid with **two** Partition Matroids (e.g., degree bounds $\le 2$ on all vertices of a general graph) is **Hamiltonian Path**! Both are NP-hard.
+- **The 3-Layer Flow Amnesia Trap (`流量失忆`)**:
+  Novice solvers frequently attempt to solve 3-attribute matching $(a_e, x_e, b_e)$ by building a 3-layer flow network $S \to A \to X \to B \to T$, adding edge $a_e \to x_e$ and edge $x_e \to b_e$ for each triple $e = (a_e, x_e, b_e)$.
+  **Why this is broken**: Vertex $x \in X$ has **Flow Amnesia**! If triple $e_1 = (a_1, x, b_1)$ adds $a_1 \to x \to b_1$ and triple $e_2 = (a_2, x, b_2)$ adds $a_2 \to x \to b_2$, then a unit of flow from $S \to a_1 \to x$ can exit along $x \to b_2 \to T$, fabricating a **hallucinated hybrid triple $(a_1, x, b_2) \notin E$**!
+  A 3-layer network $S \to A \to X \to B \to T$ is valid **if and only if** the problem allows arbitrary recombination at $x$ (or each $x \in X$ represents a single indivisible item with capacity $1$ via vertex-splitting $x_{\text{in}} \xrightarrow{1} x_{\text{out}}$ where **any** $a \in N^-(x)$ and **any** $b \in N^+(x)$ form a valid choice, as in `[SCOI2007] 修车` / `[USACO07OPEN] Dining`).
+
+---
+
+## 3. Combinatorial Game Invariants & The LGV Lemma Boundary
+
+Even when a problem lives on a bipartite grid or asks for vertex-disjoint paths in a DAG, jumping straight into a flow solver without checking **algebraic invariants** can be fatal. In this section, we study two classic boundary phenomena:
+
+1. **Bipartite Parity Invariants Before Binary-Search Flow** (`[SCOI2012] 奇怪的游戏`): Where a conservation law on $(r+c) \bmod 2$ either **uniquely pins** the target value $X$ (making binary search invalid!) or proves that feasibility is monotone in $X$.
+2. **The Lindström–Gessel–Viennot (LGV) Determinant Lemma** (`[NOI2021] 路径交点`, `CF 348D Turtles`): Where the problem asks to **count** (or compute the parity of) $K$-tuples of vertex-disjoint DAG paths rather than simply finding one maximum-cardinality or minimum-cost tuple (`Ch 02`, `Ch 14`).
+
+### 3.1 Chessboard Increment Invariants (`[SCOI2012] 奇怪的游戏`, `Luogu P5038`)
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+You are given an $N \times M$ grid ($N, M \le 40$) of initial non-negative integers $a_{r,c}$. In one operation, you may pick any two **orthogonally adjacent** cells $(r_1, c_1)$ and $(r_2, c_2)$ and increment both by $+1$. Find the minimum number of operations required to make **all** cells equal to some common final value $X$, or report `-1` if impossible.
+
+- **Why Naive Binary Search Fails Immediately**: Suppose $N = 1, M = 3$ with initial grid $[1, 2, 1]$. Raising all cells to $X = 2$ takes $1 + 0 + 1 = 2$ cell increments ($1$ operation on $(1,1)-(1,2)$? No, that makes $[2, 3, 1]$!). In fact, for $X = 2$, the two black cells $(1,1)$ and $(1,3)$ need $(2-1) + (2-1) = 2$ increments, while the single white cell $(1,2)$ needs $2 - 2 = 0$ increments — impossible because every domino operation increments **one black cell and one white cell**! Worse still, if $X = 3$, black cells need $(3-1)+(3-1) = 4$ and white needs $3-2 = 1$ ($4 \ne 1$). Feasibility is **not** monotonic in $X$ when $N \times M$ is odd!
+
+#### Step 2: Intermediate Algebraic Representation (The Bipartite Parity Equation)
+
+2-color the $N \times M$ grid like a chessboard: let $B = \{(r, c) : (r + c) \equiv 0 \pmod 2\}$ be the black cells and $W = \{(r, c) : (r + c) \equiv 1 \pmod 2\}$ be the white cells. Let:
+
+$$
+c_B = |B|, \quad s_B = \sum_{u \in B} a_u, \qquad c_W = |W|, \quad s_W = \sum_{v \in W} a_v
+$$
+
+If all cells reach final value $X \ge \max_{r,c} a_{r,c}$, then each cell $u$ must be incremented exactly $X - a_u \ge 0$ times. Since every operation increments one cell in $B$ and one cell in $W$, the total number of operations $K(X)$ must simultaneously equal the sum of black deficits and the sum of white deficits:
+
+$$
+K(X) = \sum_{u \in B} (X - a_u) = c_B X - s_B = \sum_{v \in W} (X - a_v) = c_W X - s_W
+$$
+
+Rearranging terms yields the fundamental **Linear Parity Invariant**:
+
+$$
+(c_B - c_W) X = s_B - s_W
+$$
+
+This equation splits into two completely different algorithmic regimes depending on whether $N \times M$ is odd or even:
+
+1. **Case 1: $N \times M$ is Odd ($c_B - c_W = 1$, assuming $(1,1) \in B$)**:
+   The invariant forces a **unique candidate target value**:
+
+   $$
+   X = s_B - s_W
+   $$
+
+   There is **no monotonicity** and **no binary search**! We simply check whether $X \ge \max_{r,c} a_{r,c}$ and run **one single Max-Flow** for this exact $X$. If that flow saturates $K(X) = c_B X - s_B$, the answer is $K(X)$; otherwise, the answer is `-1`.
+2. **Case 2: $N \times M$ is Even ($c_B = c_W$)**:
+   Now $c_B - c_W = 0$, so the invariant requires $s_B = s_W$ (if $s_B \ne s_W$, output `-1` immediately!). When $s_B = s_W$, **every** $X \ge \max a_{r,c}$ satisfies $c_B X - s_B = c_W X - s_W$. Moreover, why is feasibility monotonic in $X$?
+   Because when $N \times M$ is even, the $N \times M$ grid always admits a **perfect domino tiling** (a collection of $c_B = c_W = NM/2$ disjoint adjacent pairs covering every cell once). If $X$ is feasible, then firing every domino in the perfect tiling once increases every cell by $+1$, proving that $X + 1$ is also feasible! Thus we **binary search** $X \in [\max a_{r,c}, \infty)$.
+
+#### Step 3: Mechanical Graph Compilation (`check(X)`)
+
+To test whether a candidate $X$ is achievable, let $x_{uv} \in \mathbb{Z}_{\ge 0}$ be the number of operations applied to adjacent pair $(u, v)$ with $u \in B, v \in W$. We need:
+
+$$
+\sum_{v \in N(u)} x_{uv} = X - a_u \quad (\forall u \in B), \qquad \sum_{u \in N(v)} x_{uv} = X - a_v \quad (\forall v \in W)
+$$
+
+This is a standard Bipartite Supply-Demand Feasibility problem (`Ch 06`):
+
+- Source $S \to u$ with capacity $X - a_u$ for all $u \in B$.
+- Directed edge $u \to v$ with capacity $\infty$ for all adjacent $u \in B, v \in W$.
+- Directed edge $v \to T$ with capacity $X - a_v$ for all $v \in W$.
+- Target $X$ is feasible iff $\text{MaxFlow}(S, T) = \sum_{u \in B} (X - a_u) = c_B X - s_B$.
+
+### 3.2 Non-Intersecting DAG Paths & The LGV Lemma Boundary (`[NOI2021] 路径交点`, `CF 348D`)
+
+Suppose we are given a Directed Acyclic Graph (DAG) $G = (V, E)$ with $K$ sources $A = \{a_1, \dots, a_K\}$ and $K$ sinks $B = \{b_1, \dots, b_K\}$.
+
+- If the problem asks for the **maximum number** of vertex-disjoint paths from $A$ to $B$ (or minimum cost), we use **Vertex-Split Max-Flow / MCMF** (`Ch 02`, `Ch 14`): split each $v \in V$ into $v_{\text{in}} \xrightarrow{1} v_{\text{out}}$.
+- What if the problem asks for the **number of $K$-tuples of vertex-disjoint paths** (or the **signed parity** of crossings, as in `[NOI2021] 路径交点` `Luogu P7736`, or the count of non-intersecting lattice paths in `CF 348D Turtles`)? Max-Flow only finds *one* augmenting flow; it cannot count all valid path systems. Here we cross the boundary into **Algebraic Combinatorics** via the **Lindström–Gessel–Viennot (LGV) Lemma**.
+
+::: {.callout-important title="Theorem 24.2 (Lindström–Gessel–Viennot Lemma, 1969 / 1985)"}
+Let $G = (V, E)$ be a finite edge-weighted Directed Acyclic Graph. For any path $P$, define its weight $\omega(P) = \prod_{e \in P} \omega(e)$ (for unweighted path counting, $\omega(e) = 1$). Let $e(u, v) = \sum_{P : u \leadsto v} \omega(P)$ denote the total weight of all directed paths from $u$ to $v$. Given $K$ sources $A = (a_1, \dots, a_K)$ and $K$ sinks $B = (b_1, \dots, b_K)$, define the $K \times K$ path-count matrix:
+
+$$
+M = \begin{bmatrix} e(a_1, b_1) & e(a_1, b_2) & \cdots & e(a_1, b_K) \\ e(a_2, b_1) & e(a_2, b_2) & \cdots & e(a_2, b_K) \\ \vdots & \vdots & \ddots & \vdots \\ e(a_K, b_1) & e(a_K, b_2) & \cdots & e(a_K, b_K) \end{bmatrix}
+$$
+
+Then the determinant of $M$ equals the **signed weighted sum over all $K$-tuples of vertex-disjoint path systems** $\mathcal{P} = (P_1, \dots, P_K)$ where $P_i : a_i \leadsto b_{\pi(i)}$ for some permutation $\pi \in S_K$:
+
+$$
+\det(M) = \sum_{\pi \in S_K} \operatorname{sgn}(\pi) \sum_{\substack{\mathcal{P} = (P_1, \dots, P_K) \\ P_i : a_i \leadsto b_{\pi(i)} \\ P_i \cap P_j = \emptyset \; (\forall i \ne j)}} \prod_{i=1}^K \omega(P_i)
+$$
+:::
+
+#### Proof Sketch (The First-Intersection Path-Swapping Involution)
+
+Expanding the determinant by Leibniz's formula gives $\det(M) = \sum_{\pi \in S_K} \operatorname{sgn}(\pi) \sum_{P_i : a_i \leadsto b_{\pi(i)}} \prod_{i=1}^K \omega(P_i)$, which sums over **all** path tuples (both vertex-disjoint and intersecting).
+For any path tuple $\mathcal{P} = (P_1, \dots, P_K)$ that has at least one shared vertex, pick the **lexicographically first intersecting vertex $v$** along a fixed topological order of the DAG, and let $i < j$ be the two smallest indices of paths passing through $v$. Split $P_i = P_i[a_i \leadsto v] \circ P_i[v \leadsto b_{\pi(i)}]$ and $P_j = P_j[a_j \leadsto v] \circ P_j[v \leadsto b_{\pi(j)}]$, and **swap their tails after $v$**:
+
+$$
+P'_i = P_i[a_i \leadsto v] \circ P_j[v \leadsto b_{\pi(j)}], \qquad P'_j = P_j[a_j \leadsto v] \circ P_i[v \leadsto b_{\pi(i)}]
+$$
+
+This mapping $\Phi(\mathcal{P}) = \mathcal{P}'$ is a **weight-preserving, sign-reversing involution** ($\Phi(\Phi(\mathcal{P})) = \mathcal{P}$, $\prod \omega(P'_k) = \prod \omega(P_k)$, and $\pi' = \pi \circ (i \; j)$ so $\operatorname{sgn}(\pi') = -\operatorname{sgn}(\pi)$). Hence all intersecting path tuples cancel out in pairs, leaving **only** vertex-disjoint path tuples! $\blacksquare$
+
+#### Two Canonical Consequences for Contest Problem Solving
+
+1. **Planar Non-Crossing Source/Sink Order (`CF 348D Turtles`)**:
+   If $G$ is a planar DAG (such as a grid where paths move right/down) and the sources $a_1, \dots, a_K$ and sinks $b_1, \dots, b_K$ lie on the boundary in order such that any path system for a non-identity permutation $\pi \ne \text{id}$ **must topologically cross** (and therefore share a grid vertex), then every $\pi \ne \text{id}$ has zero vertex-disjoint tuples! Thus $\det(M)$ counts the **exact number of non-intersecting path tuples** $P_i : a_i \leadsto b_i$.
+2. **Multi-Layer Planar Intersection Parity (`[NOI2021] 路径交点`, `Luogu P7736`)**:
+   In `[NOI2021] 路径交点`, a layered graph has $L$ layers ($n_1 = n_L = K$), with bipartite adjacency matrices $A_1, A_2, \dots, A_{L-1}$ between consecutive layers where crossings of edges between layer $t$ and $t+1$ occur only at the endpoints or in the planar drawing. For any vertex-disjoint path system $\mathcal{P}$ from layer $1$ to layer $L$ inducing permutation $\pi \in S_K$, the parity of the total number of geometric edge crossings $c(\mathcal{P})$ is governed by the inversion parity of $\pi$: $(-1)^{c(\mathcal{P})} = \operatorname{sgn}(\pi)$!
+   Even better: if paths can intersect at intermediate layer vertices, the LGV involution cancels all vertex-intersecting tuples, and by the Cauchy–Binet / matrix multiplication identity, the total path matrix from layer $1$ to layer $L$ is simply the **matrix product** of the layer adjacency matrices:
+
+   $$
+   M = A_1 A_2 \cdots A_{L-1} \quad \Longrightarrow \quad \text{Signed Answer} = \det(A_1 A_2 \cdots A_{L-1}) \pmod{998244353}
+   $$
+
+### 3.3 Summary Table: Vertex-Split Flow vs. LGV Determinant vs. Matroid Intersection
+
+| Structural Feature | Vertex-Split Max-Flow / MCMF (`Ch 02`, `Ch 14`) | LGV Lemma (`Ch 24.3`) | Matroid Intersection (`Ch 24.2`) |
+| :--- | :--- | :--- | :--- |
+| **Question Type** | Find **1** optimal tuple of $K$ disjoint paths (max size or min/max weight sum) | **Count** (or signed sum of) **all** tuples of $K$ disjoint paths ($\bmod P$) | Find **1** max-size / min-weight common independent set $I \in \mathcal{I}_1 \cap \mathcal{I}_2$ |
+| **Graph Requirement** | Directed or undirected (via vertex split $v_{\text{in}} \to v_{\text{out}}$) | **Must be a DAG** (cycles break path finiteness & involution) | Ground set $E$ with any two matroid oracles |
+| **Endpoint Permutation $\pi$** | Any $\pi \in S_K$ allowed (or fixed $\pi$ only for $K=2$ planar) | Sums $\operatorname{sgn}(\pi)$ over all $\pi$; exact count if planar forces $\pi = \text{id}$ | N/A (subforest + degree / color constraints) |
+| **Time Complexity** | $O(K \cdot M \log V)$ (MCMF) or $O(M\sqrt{V})$ (Dinic) | $O(K \cdot (V + M) + K^3)$ (DAG DP + Gaussian elimination) | $O(R^2 |E| \cdot \text{Oracle})$ where $R = \max |I|$ |
+
+---
+
+## 4. The Master 3-Stage English-to-Flow Recognition Decision Tree & The 18-Class Disguise Dictionary
+
+We now synthesize the entire 24-chapter curriculum into a unified **3-Stage Diagnostic Compiler**. Whenever you read a competitive programming problem statement during a live contest, run it through these three stages in order.
+
+### 4.1 Stage 1: Constraint-Scale Triage ($N, M, V_{\max}$)
+
+Before building any mathematical model, inspect the input dimensions $(N, M)$ and coordinate/capacity scale $U$. They immediately eliminate $80\%$ of candidate algorithms:
+
+| Input Scale $(N, M)$ | Typical Time Limit Signal | Viable Flow / Duality / Matroid Paradigms | Trap to Avoid |
+| :--- | :--- | :--- | :--- |
+| **$N \le 20$** | $2^N$ or small grid | Bitmask DP, Hall's Marriage check on $2^N$, or $2^{\binom{K}{2}} \times$ Matroid Intersection (`CF 1556H`) | Over-complicating a bitmask DP with MCMF |
+| **$N \le 50 \sim 80$** | $O(N^3 \sim N^4)$ | Weighted Matroid Intersection (`CF 1284G`, `CF 1556H`), General Graph Blossom (`Ch 23`), LP Simplex / Dual Circulation (`Ch 19`), Multicommodity / Parametric Flow | Assuming $N \le 50$ is DP when transitions have cycles or global rank constraints |
+| **$N \le 100 \sim 300$** | $O(N^3)$ | **Dense Min-Cut / Burn-Bury (`Ch 10`–`11`)**, **3D Layered Cut (`切糕`)**, **LGV Lemma Determinant ($K \le 300$, `Ch 24.3`)**, **Min-Cost Max-Flow / Circulation (`Ch 13`–`18`)** | Using unscaled MCMF on huge capacities (`Ch 15`) or forgetting `整体二分` when $U = 10^9$ |
+| **$N \le 500 \sim 1,500$** | $O(N^2 \sqrt{N})$ or $O(NM \log U)$ | **Max-Weight Closure (`Ch 09`)**, **$L_p$ Isotonic Regression via `整体二分` (`Ch 24.1`)**, **Bipartite Min-Cut**, **Gomory-Hu Cut Tree (`Ch 12`)** | Rebuilding the full $N$-node graph inside `整体二分` (`FM-24`) or adding $O(N^2)$ clique edges without dummy hub (`FM-09`) |
+| **$N \le 10^4 \sim 5 \cdot 10^4$** | $O(M \sqrt{N})$ | **Unit-Network Dinic / Hopcroft-Karp (`Ch 04`, `Ch 06`)**, **Segment-Tree / DS-Accelerated Flow (`Ch 21`, $O(N \log N)$ edges)** | Quadratic edge construction ($O(N^2)$ edges $\implies$ `MLE`/`TLE`); must compress intervals/prefixes (`Ch 21`) |
+| **$N \ge 10^5 \sim 10^6$** | $O(N \log N)$ or $O(N \log^2 N)$ | **Direction B Flow Elimination (`Ch 22`–`Ch 23`)**: Simulated MCMF (Heap Regret / Slope Trick), Hall's Condition + Segment Tree (`Ch 05`/`23`), Tree DP Min-Cut, Planar Dual Shortest Path ($s$-$t$ cut = dual Dijkstra) | Running explicit Dinic or MCMF directly on $N = 10^5$ (`TLE`) |
+
+### 4.2 Stage 2: Structural Archetype Identification (The Master Decision Flowchart)
+
+Once Stage 1 confirms that your target paradigm is either an explicit Flow/Cut/Matroid construction ($N \le 5 \cdot 10^4$) or a Flow-Eliminated Dual ($N \ge 10^5$), classify the **mathematical relationship between variables** using the following decision tree:
+
+```{mermaid}
+flowchart TD
+    Start["English Problem Statement & Constraints (N, M, U)"] --> Q1{"What is the primary decision variable?"}
+    
+    Q1 -->|"Route / Match / Pack discrete units"| Fam1["Family I: Packing, Routing & Conservation (Ch 01–08)"]
+    Q1 -->|"Assign binary/discrete states x_i in {0,1} or [L,R]"| Fam2["Family II: Partition Cuts, Closure & Isotonic (Ch 09–12, 24.1)"]
+    Q1 -->|"Optimize cost with linear inequalities / intervals"| Fam3["Family III: MCMF, Circulations & LP Duality (Ch 13–20)"]
+    Q1 -->|"N >= 10^5 or Forest/XOR/Determinant"| Fam4["Family IV: Simulated Flow, Matroid & LGV (Ch 21–24)"]
+
+    Fam1 --> F1A{"Lower bounds [l_e, u_e]?"}
+    F1A -->|"Yes"| Ch08["Feasible / Min-Max Flow with Lower Bounds (Ch 08)"]
+    F1A -->|"No, DAG path cover / antichain"| Ch07["Dilworth / DAG Path Cover via Vertex Split (Ch 06–07)"]
+    F1A -->|"No, Bipartite matching / Konig / Hall"| Ch05["Hopcroft-Karp / Konig Min Vertex Cover / Hall (Ch 05–06)"]
+
+    Fam2 --> F2A{"Domain of x_i?"}
+    F2A -->|"Binary {0,1} with x_u <= x_v or pairwise penalties"| Ch09["Max-Weight Closure / Burn-Bury / Bipartite Flip (Ch 09–10)"]
+    F2A -->|"Small discrete {1..K} with convex + |x_u - x_v| <= d"| Ch11["Multi-State Threshold Chains / Qiegao (Ch 11)"]
+    F2A -->|"Large [L, R] or continuous with convex |x_i - y_i|^p & x_u <= x_v"| Ch24A["Lp Isotonic Regression: Parallel D&C + Closure (Ch 24.1)"]
+
+    Fam3 --> F3A{"Constraint structure?"}
+    F3A -->|"Consecutive ones / interval coverage >= d_t"| Ch19["Equation Differencing (E_t - E_{t-1}) -> Circulation (Ch 16, 19)"]
+    F3A -->|"Potentials pi_v - pi_u <= c_e (Inverse SP / MST)"| Ch20["LP Dual of Shortest Path / MST -> MCMF (Ch 19–20)"]
+    F3A -->|"Convex edge cost or dynamic waiting times"| Ch15["Convex Piece Splitting / Dynamic Edge Insertion (Ch 14–15)"]
+
+    Fam4 --> F4A{"Why does standard flow fail?"}
+    F4A -->|"N >= 10^5 on line/tree"| Ch22["Simulated MCMF (Regret Heaps) or Hall SegTree (Ch 22–23)"]
+    F4A -->|"Graphic (Forest) or XOR Basis + Partition"| Ch24B["Edmonds Matroid Intersection (Ch 24.2)"]
+    F4A -->|"Count K disjoint DAG paths"| Ch24C["LGV Determinant Lemma (Ch 24.3)"]
+```
+
+### 4.3 Stage 3: The Complete 18-Class Disguise Dictionary (`AL-01`–`AL-18`)
+
+The following master dictionary translates the 18 recurring English problem disguises across all 24 chapters into their exact intermediate algebraic representation and target chapter gadget:
+
+| Code | English Problem Disguise (Surface Clue) | Algebraic Intermediate Form | Target Compilation Gadget & Chapter |
+| :--- | :--- | :--- | :--- |
+| **`AL-01`** | *"Select each item $i \in \{0, 1\}$; picking $u$ requires picking $v$; maximize profit minus cost."* | $\max \sum w_i x_i$ s.t. $x_u - x_v \le 0$ ($x_u(1 - x_v) = 0$) | **Max-Weight Closure (`Ch 09`)**: $w_i > 0 \Rightarrow S \xrightarrow{w_i} i$; $w_i < 0 \Rightarrow i \xrightarrow{-w_i} T$; dependency $u \to v$ ($\infty$). |
+| **`AL-02`** | *"Assign each node to class $A$ or $B$; if $u \in A$ and $v \in B$, pay penalty $c_{uv}$."* | $\min \sum c_i x_i + \sum d_i (1-x_i) + \sum c_{uv} x_u(1 - x_v)$ | **2-Label Burn-Bury (`Ch 10`)**: Submodular ($A+D \le B+C$) $\implies$ direct cut arc $u \xrightarrow{B+C-A-D} v$. |
+| **`AL-03`** | *"Same side ($u, v$ both $A$ or both $B$) pays penalty; OR both picked gives bonus on a bipartite graph."* | Supermodular cost $A + D > B + C$ on bipartite $G = (L \sqcup R, E)$ | **Bipartite Variable Inversion (`Ch 10`)**: Flip $y_v = 1 - x_v$ for $v \in R$; converts $x_u x_v$ into $x_u(1 - y_v)$. |
+| **`AL-04`** | *"Assign level $x_i \in \{1, \dots, K\}$ with cost $f_i(x_i)$ and $|x_u - x_v| \le d$ (or $x_u \le x_v + d$)."* | Unary indicators $z_{i,t} = [x_i \ge t]$ with $z_{i,t} \ge z_{i,t+1}$ and $z_{u,t} \le z_{v,t-d}$ | **Multi-State Threshold Chain / `切糕` (`Ch 11`)**: Vertical chain with reverse $\infty$-arcs; cross-links $z_{u,t} \xrightarrow{\infty} z_{v,t-d}$. |
+| **`AL-05`** | *"Modify values $y_i \to x_i \in \mathbb{R}$ to minimize $\sum w_i |x_i - y_i|^p$ s.t. $x_u \le x_v$ (or basis/tree optimality)."* | Threshold slice $x_i \in \{M, M+1\}$, $\Delta_i(M) = f_i(M) - f_i(M+1)$ | **$L_p$ Isotonic Regression (`Ch 24.1`)**: `整体二分` + Max-Weight Closure on active $V_{\text{cur}}$. |
+| **`AL-06`** | *"Cover all vertices/edges of a DAG using minimum number of paths; or find max independent set of incomparable nodes."* | Path cover = $N - \text{MaxMatching}$ on split bipartite graph; Dilworth's theorem | **DAG Path Cover (`Ch 06`–`Ch 07`)**: Transitive closure + König / Hopcroft-Karp or Lower-Bound Flow (`Ch 08`). |
+| **`AL-07`** | *"Every edge/vertex must carry flow in $[l_e, u_e]$; check feasibility or minimize/maximize total flow."* | $l_e \le f(e) \le u_e$, $\sum_{\text{in}} f - \sum_{\text{out}} f = 0$ | **Flow with Lower Bounds (`Ch 08`)**: Pre-saturate $l_e$, track node imbalance $M(v) = \text{in} - \text{out}$ via super-source $S^*$ and super-sink $T^*$. |
+| **`AL-08`** | *"Find $K$ vertex-disjoint (or edge-disjoint) paths from $S$ to $T$ minimizing total weight."* | Node capacity $1$ ($v_{\text{in}} \xrightarrow{1, 0} v_{\text{out}}$), flow value $K$ | **Vertex-Split MCMF (`Ch 02`, `Ch 14`)**: Split vertices; send $K$ units of flow via shortest augmenting paths. |
+| **`AL-09`** | *"Count the number (or signed parity) of $K$-tuples of vertex-disjoint paths from $A$ to $B$ in a DAG."* | $\det [e(a_i, b_j)]_{i,j=1}^K = \sum_{\pi} \operatorname{sgn}(\pi) N(\pi)$ | **LGV Lemma (`Ch 24.3`)**: Compute $e(a_i, b_j)$ by DAG DP, then Gaussian elimination in $O(K^3)$. |
+| **`AL-10`** | *"Each worker $j$ processes $k$ tasks sequentially; waiting time of $r$-th task from the end scales by $r \cdot t_{ij}$."* | Contribution of task at reverse position $r \in \{1..N\}$ is $r \cdot t_{ij}$ | **Reverse-Time Slot Expansion (`Ch 14`, `[SCOI2007] 修车`)**: Create state $(j, r)$ with cost $r \cdot t_{ij}$; dynamically insert $(j, r+1)$ (`Ch 15`). |
+| **`AL-11`** | *"Penalty for flow $f$ on edge $e$ is convex (e.g., $a_e f^2$ or piecewise linear)."* | $f^2 = \sum_{k=1}^f (2k - 1)$ with marginal slopes $1, 3, 5, \dots$ | **Convex Marginal Edge Splitting (`Ch 14`–`Ch 15`)**: Parallel edges of cap $1$ and non-decreasing costs $f(k) - f(k-1)$. |
+| **`AL-12`** | *"Select intervals $[l_i, r_i]$ at cost $c_i$ so every point $t \in [1, T]$ is covered at least (or at most) $d_t$ times."* | Slack $s_t \ge 0$, take consecutive differences $E_t - E_{t-1}$ | **Equation Differencing Circulation (`Ch 16`, `Ch 19`)**: Each variable appears once as $+1$ and once as $-1$ $\implies$ directed flow edge! |
+| **`AL-13`** | *"Reusable resource (napkins / Surgical tools): buy new at $p$, fast-wash in $d_1$ days at $c_1$, slow-wash in $d_2$ days at $c_2$."* | Split day $t$ into dirty supply $t_{\text{dirty}}$ ($+r_t$) and clean demand $t_{\text{clean}}$ ($-r_t$) | **Bipartite Time-Deferred MCMF (`Ch 16`, `餐巾计划`)**: Forward edges $t_{\text{dirty}} \to (t+d)_{\text{clean}}$ route reusable stock across time. |
+| **`AL-14`** | *"Modify edge weights $w_e$ at minimum $L_1$ cost so a given tree $T$ becomes an MST (or a path becomes shortest)."* | Tree vs. non-tree constraints $w_e \le w_f$ for $e \in P_T(f)$; LP dual | **Inverse MST / Shortest Path LP Dual (`Ch 19`–`Ch 20`)**: Dualizes to bipartite matching / MCMF or $L_1$ Isotonic Regression (`Ch 24.1`). |
+| **`AL-15`** | *"Edge $u \to v$ connects to all $v \in [L_u, R_u]$ (or 2D rectangle / tree path) with $N, M \le 5 \cdot 10^4$."* | Factor clique $U \times V$ through $O(\log N)$ canonical data-structure nodes | **DS-Accelerated Virtual Hub Graph (`Ch 21`)**: Segment-tree / binary-lifting / KD-tree internal hubs with $\infty$ edges. |
+| **`AL-16`** | *"Match/assign $N \ge 10^5$ items on a 1D line, cycle, or tree (mice & holes, gold miners, stock trading)."* | Simulate residual augmenting paths and $-w_e$ reverse edges via priority queues | **Simulated MCMF / Slope Trick (`Ch 22`)**: Maintain min-heaps of candidate transitions and regret-undo transitions. |
+| **`AL-17`** | *"Check if a bipartite graph with $N \ge 10^5$ interval/prefix neighborhoods has a perfect matching (or find max matching)."* | Hall's Marriage Theorem $\max_{S} (|S| - |N(S)|) \le 0$ or Gale-Ryser prefix dominance | **Hall Segment Tree / Parametric Cut (`Ch 05`, `Ch 23`)**: Sweep right endpoint $R$ and maintain $|S| - |N(S)|$ in a lazy segment tree. |
+| **`AL-18`** | *"Find a spanning tree (or forest) subject to color-group caps, black-vertex degree caps, or XOR independence."* | Common independent set $I \in \mathcal{I}_1 \cap \mathcal{I}_2$ of Graphic/Linear and Partition matroids | **Edmonds' Matroid Intersection (`Ch 24.2`)**: Shortest hop-count (or max-weight + min-hop) augmenting path in $G(I)$. |
+
+### 4.4 The Complete 26-Failure-Mode Audit Table (`FM-01`–`FM-26`)
+
+Before submitting any flow, cut, matching, or matroid solution, verify that your construction is immune to the textbook's 26 canonical failure modes:
+
+| ID | Chapter | Failure Mode Name | Root Cause & 1-Line Fix |
+| :--- | :--- | :--- | :--- |
+| **`FM-01`** | `Ch 01` | Missing Reverse Edge (`cap = 0`) | Omitting $v \to u$ (`cap = 0`) prevents cancelling bad greedy paths; always insert paired edges at indices `2k, 2k+1`. |
+| **`FM-02`** | `Ch 02` | Undirected Edge Split Error | Adding two directed edges without sharing residual capacity or splitting vertex $v$ instead of edge $e$; use `cap = C` on both directions or proper directed pairs. |
+| **`FM-03`** | `Ch 03` | Missing Current-Arc & Dead-Node Pruning | Resetting `cur[u]` only per BFS or forgetting `if (pushed == 0) level[v] = -1` degrades Dinic to $O(NM^2)$. |
+| **`FM-04`** | `Ch 04` | Non-Unit Capacity in $O(M\sqrt{V})$ Bound | Assuming Dinic is $O(M\sqrt{V})$ when capacities are large; verify unit-network / bipartite hypothesis. |
+| **`FM-05`** | `Ch 05` | Unoriented König Reconstruction | Taking reachable vertices in an unoriented graph instead of $S$-reachable in the directed residual network: $\text{MVC} = (L \setminus R_S) \cup (R \cap R_S)$. |
+| **`FM-06`** | `Ch 06` | Unsplit Vertex Capacity Collision | Putting capacity on incoming/outgoing arcs instead of splitting $v_{\text{in}} \xrightarrow{c_v} v_{\text{out}}$. |
+| **`FM-07`** | `Ch 07` | Merging Disjoint vs. Overlapping Paths | Using direct DAG edges without transitive closure (or missing pass-through arc $v_{\text{in}} \xrightarrow{\infty} v_{\text{out}}$) confuses vertex-disjoint with general path cover. |
+| **`FM-08`** | `Ch 08` | Unbalanced Loop Edge in Lower-Bound Flow | Forgetting the feedback edge $T \xrightarrow{\infty} S$ when reducing $s$-$t$ lower-bound flow to a circulation. |
+| **`FM-09`** | `Ch 09` | Positive-Weight Cycle / Clique Blowup | Failing to contract SCCs or building $O(|A|^2)$ pairwise edges instead of a single dummy hub $v_A$. |
+| **`FM-10`** | `Ch 10` | Supermodular Cut / Non-Bipartite Flip | Applying min-cut directly when $A+D > B+C$, or applying Bipartite Variable Inversion on a graph with odd cycles. |
+| **`FM-11`** | `Ch 11` | Missing Vertical $\infty$ Reverse Chain Arcs | Omitting $z_{i,t+1} \xrightarrow{\infty} z_{i,t}$ allows a multi-cut to sever the chain twice and represent a non-contiguous state set. |
+| **`FM-12`** | `Ch 12` | Gomory-Hu Non-Terminal Weight Leak | Using arbitrary $s$-$t$ min-cuts without contracting tree components or confusing Gomory-Hu cut values with all-pairs max-flow on directed graphs. |
+| **`FM-13`** | `Ch 13` | Negative Cost Cycle in SSP MCMF | Running Dijkstra/SPFA SSP when the initial network has negative-cost cycles; use Negative-Cycle Cancellation (`Ch 17`) or lower-bound pre-saturation (`Ch 18`). |
+| **`FM-14`** | `Ch 14` | Non-Convex Marginal Cost Splitting | Splitting edge capacities into parallel arcs when marginal costs are decreasing ($c_1 > c_2$); SSP picks the higher-index arc before the lower-index arc! |
+| **`FM-15`** | `Ch 15` | Static Full-Expansion `TLE` / Wrong Johnson Update | Building all $N \times M$ worker-slot vertices upfront instead of dynamic insertion, or updating Johnson potentials with residual costs instead of $\pi_v \gets \pi_v + d_v$. |
+| **`FM-16`** | `Ch 16` | Dirty-to-Clean Conservation Leak | Allowing unwashed dirty napkins to satisfy clean demand directly without passing through a wash-delay arc (`餐巾计划`). |
+| **`FM-17`** | `Ch 17` | Primal-Dual Complementary Slackness Sign | Reversing the direction of a tight residual arc when reconstructing primal flows from dual potentials $\pi$. |
+| **`FM-18`** | `Ch 18` | Positive-Cost Lower-Bound Pre-Saturation | Forgetting to add $\sum l_e c_e$ to the base cost or flipping $M(v)$ when pre-saturating negative-cost edges ($c_e < 0$). |
+| **`FM-19`** | `Ch 19` | Non-Consecutive Matrix Differencing | Applying equation differencing $E_t - E_{t-1}$ when a column does not have the consecutive-ones property (produces $>1$ positive and $>1$ negative entry). |
+| **`FM-20`** | `Ch 20` | Non-TU Integrality Assumption | Assuming an LP relaxation is automatically integral when the constraint matrix contains an odd hole or has $\det \in \{\pm 2\}$. |
+| **`FM-21`** | `Ch 21` | Bidirectional Hub Short-Circuit (`流量短路`) | Sharing a single segment-tree tree for both incoming and outgoing range edges (must build separate Out-Tree and In-Tree!). |
+| **`FM-22`** | `Ch 22` | Missing Reverse-Regret Heap Insertion | Pushing a matched pair $(u, v)$ in Simulated MCMF without inserting the regret option $2x_v - y_u$ into the opposite heap. |
+| **`FM-23`** | `Ch 23` | Uncontracted Blossom Odd Cycle | Running bipartite Hopcroft-Karp on a non-bipartite graph or failing to shrink odd cycles into pseudonodes in Edmonds' Blossom algorithm. |
+| **`FM-24`** | `Ch 24` | Uncontracted `整体二分` Graph & Parity Blindness | Rebuilding the global $N$-node graph inside `solve(V_cur, L, R)` instead of contracting to $V_{\text{cur}}$; or binary searching $X$ when $c_B \ne c_W$ in `[SCOI2012] 奇怪的游戏`. |
+| **`FM-25`** | `Ch 24` | Chorded Path in Matroid Intersection | Augmenting along a path in $G(I)$ that is not shortest in hop count (violates independence in $\mathcal{M}_1 \cap \mathcal{I}_2$). |
+| **`FM-26`** | `Ch 24` | 3-Layer Flow Amnesia (`流量失忆`) | Routing 3-attribute items $(a_e, x_e, b_e)$ through $S \to A \to X \to B \to T$ when multiple items share $x \in X$, fabricating invalid hybrid triples $(a_1, x, b_2)$. |
+
+---
+
+## 5. Worked Examples & Full 8-Problem Difficulty Ladder (`#185`–`#192`)
+
+To cement both the specialized Chapter 24 boundary topics (Parity Invariants, $L_p$ Isotonic Regression, Matroid Intersection, and the LGV Lemma) and our cross-textbook synthesis (`problem_archive.md`), each slot in the `#185`–`#192` ladder provides a complete 4-Step compilation, a 3-Tier Progressive Hint Cascade, and a production-ready C++17 implementation, plus cross-references to the high-speed solver and synthesis benchmarks (`LOJ #101/#102/P4722`, `LOJ #2028`, `CF 1307G`, `LOJ #6515`, `CF 1666K`, `CF 1630F`).
+
+---
+
+### Problem `#185` (`S1` — Stepping Stone 1): `[SCOI2012 / Luogu P5038]` Strange Game (`奇怪的游戏`)
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P5038](https://www.luogu.com.cn/problem/P5038)
+- **Constraints**: $T \le 10$ testcases, $N, M \le 40$, initial cell values $0 \le a_{r,c} \le 10^9$. Time Limit: $1.0\text{ s}$.
+- **Cross-Archive Benchmark Note (`LOJ #101` / `Luogu P4722` High-Speed Max-Flow)**: When testing feasibility $O(\log U)$ times on $V = NM \le 1600$ vertices with capacities up to $10^{12}$, standard Dinic with current-arc and dead-node pruning (`FM-03`) runs in $< 50\text{ ms}$; on dense adversarial graphs (`Luogu P4722`), Highest-Label Preflow-Push (`HLPP`, $O(V^2\sqrt{E})$) provides an worst-case safety net.
+
+#### 4-Step Compilation Scratchpad
+
+1. **Step 1 (Diagnostic Signal)**: Operations increment pairs of adjacent cells on an $N \times M$ grid. The grid is bipartite ($B \sqcup W$ by $(r+c) \bmod 2$), and every operation adds $+1$ to one black cell and $+1$ to one white cell.
+2. **Step 2 (Algebraic Invariant)**: Let $c_B, s_B$ and $c_W, s_W$ be the counts and initial sums of black and white cells. Reaching final value $X$ requires $(c_B - c_W) X = s_B - s_W$.
+   - If $NM$ is odd ($c_B - c_W = 1$): $X = s_B - s_W$ is **uniquely determined**. Check $X \ge \max a_{r,c}$ and run Dinic once.
+   - If $NM$ is even ($c_B = c_W$): require $s_B = s_W$; since an even grid has a perfect domino tiling, feasibility of $X$ implies feasibility of $X+1$. Binary search $X \in [\max a_{r,c}, 2 \cdot 10^{11}]$.
+3. **Step 3 (Graph Compilation)**: For a given $X$, add $S \to u$ (`cap` $= X - a_u$) for $u \in B$, $u \to v$ (`cap` $= \infty$) for adjacent $u \in B, v \in W$, and $v \to T$ (`cap` $= X - a_v$) for $v \in W$. Check if $\text{MaxFlow} = c_B X - s_B$.
+4. **Step 4 (Toy Trace & Broken-Gadget Audit)**: On a $1 \times 3$ grid $[1, 2, 1]$, $c_B = 2, s_B = 2$ and $c_W = 1, s_W = 2$. Then $X = s_B - s_W = 0 < \max a_{r,c} = 2$, immediately outputting `-1` without a single flow call! Binary searching $X$ here (`FM-24`) would test $X \ge 2$ where $c_B X - s_B \ne c_W X - s_W$ and produce `WA`.
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #185 (`[SCOI2012] 奇怪的游戏`)"}
+- **Tier 1 (Invariant Discovery)**: Color the grid like a chessboard. How much does $S_B - S_W$ (the difference between the sum of black cells and the sum of white cells) change after one operation?
+- **Tier 2 (Parity Split)**: Since $S_B - S_W$ is invariant, at the end of the game when every cell equals $X$, we must have $c_B X - c_W X = s_B - s_W$. Separate into $NM \equiv 1 \pmod 2$ ($c_B = c_W + 1$) vs. $NM \equiv 0 \pmod 2$ ($c_B = c_W$).
+- **Tier 3 (Binary Search Bound & Flow Check)**: When $NM$ is even and $s_B = s_W$, binary search $X \in [\max a_{r,c}, \max a_{r,c} + 10^{11}]$. Use `long long` for all capacities and flow accumulators!
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++17 Solution for #185 (`[SCOI2012] 奇怪的游戏`)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 1e16;
+
+struct Dinic {
+    struct Edge { int to, rev; long long cap; };
+    int n, s, t;
+    vector<vector<Edge>> adj;
+    vector<int> level, ptr;
+
+    Dinic(int n, int s, int t) : n(n), s(s), t(t), adj(n), level(n), ptr(n) {}
+
+    void add_edge(int from, int to, long long cap) {
+        adj[from].push_back({to, (int)adj[to].size(), cap});
+        adj[to].push_back({from, (int)adj[from].size() - 1, 0});
+    }
+
+    bool bfs() {
+        fill(level.begin(), level.end(), -1);
+        level[s] = 0;
+        queue<int> q;
+        q.push(s);
+        while (!q.empty()) {
+            int v = q.front(); q.pop();
+            for (auto& edge : adj[v]) {
+                if (edge.cap > 0 && level[edge.to] == -1) {
+                    level[edge.to] = level[v] + 1;
+                    q.push(edge.to);
+                }
+            }
+        }
+        return level[t] != -1;
+    }
+
+    long long dfs(int v, long long pushed) {
+        if (pushed == 0 || v == t) return pushed;
+        for (int& cid = ptr[v]; cid < (int)adj[v].size(); ++cid) {
+            auto& edge = adj[v][cid];
+            int tr = edge.to;
+            if (level[v] + 1 != level[tr] || edge.cap == 0) continue;
+            long long tr_pushed = dfs(tr, min(pushed, edge.cap));
+            if (tr_pushed == 0) continue;
+            edge.cap -= tr_pushed;
+            adj[tr][edge.rev].cap += tr_pushed;
+            return tr_pushed;
+        }
+        level[v] = -1; // FM-03: Dead-node pruning
+        return 0;
+    }
+
+    long long max_flow() {
+        long long flow = 0;
+        while (bfs()) {
+            fill(ptr.begin(), ptr.end(), 0);
+            while (long long pushed = dfs(s, INF)) flow += pushed;
+        }
+        return flow;
+    }
+};
+
+void solve() {
+    int n, m;
+    if (!(cin >> n >> m)) return;
+    vector<vector<long long>> a(n, vector<long long>(m));
+    long long cB = 0, cW = 0, sB = 0, sW = 0, mx = 0;
+    for (int r = 0; r < n; ++r) {
+        for (int c = 0; c < m; ++c) {
+            cin >> a[r][c];
+            mx = max(mx, a[r][c]);
+            if ((r + c) % 2 == 0) { cB++; sB += a[r][c]; }
+            else { cW++; sW += a[r][c]; }
+        }
+    }
+
+    auto check = [&](long long X) -> bool {
+        if (X < mx) return false;
+        int S = n * m, T = n * m + 1;
+        Dinic dinic(n * m + 2, S, T);
+        long long need = 0;
+        int dr[4] = {-1, 1, 0, 0}, dc[4] = {0, 0, -1, 1};
+        for (int r = 0; r < n; ++r) {
+            for (int c = 0; c < m; ++c) {
+                int u = r * m + c;
+                if ((r + c) % 2 == 0) {
+                    dinic.add_edge(S, u, X - a[r][c]);
+                    need += X - a[r][c];
+                    for (int d = 0; d < 4; ++d) {
+                        int nr = r + dr[d], nc = c + dc[d];
+                        if (nr >= 0 && nr < n && nc >= 0 && nc < m)
+                            dinic.add_edge(u, nr * m + nc, INF);
+                    }
+                } else {
+                    dinic.add_edge(u, T, X - a[r][c]);
+                }
+            }
+        }
+        return dinic.max_flow() == need;
+    };
+
+    if (cB != cW) {
+        long long X = (sB - sW) / (cB - cW);
+        if (check(X)) cout << (cB * X - sB) << "\n";
+        else cout << -1 << "\n";
+    } else {
+        if (sB != sW) { cout << -1 << "\n"; return; }
+        long long lo = mx, hi = 200000000000LL, ans = -1;
+        while (lo <= hi) {
+            long long mid = lo + (hi - lo) / 2;
+            if (check(mid)) { ans = mid; hi = mid - 1; }
+            else lo = mid + 1;
+        }
+        if (ans == -1) cout << -1 << "\n";
+        else cout << (cB * ans - sB) << "\n";
+    }
+}
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int T;
+    if (cin >> T) while (T--) solve();
+    return 0;
+}
+```
+::::
+
+---
+
+### Problem `#186` (`S2` — Stepping Stone 2): `[BOI 2004 / Luogu P4331]` Sequence (`数字序列`) & `[BJWC2018 / LOJ #2028]` Napkin Plan (`餐巾计划问题`)
+
+- **Judge URLs**: [https://www.luogu.com.cn/problem/P4331](https://www.luogu.com.cn/problem/P4331) (1D $L_1$ Isotonic Regression) | [https://loj.ac/p/2028](https://loj.ac/p/2028) (Simulated MCMF / Ternary Search on Time-Deferred Stock)
+- **Constraints (`Luogu P4331`)**: $N \le 10^6$, $0 \le a_i \le 2 \cdot 10^9$. Find strictly increasing integers $z_1 < z_2 < \dots < z_N$ minimizing $\sum_{i=1}^N |z_i - a_i|$ and output both the minimum cost and the sequence $z_i$. Time Limit: $1.0\text{ s}$.
+
+#### 4-Step Compilation Scratchpad (`Luogu P4331` — From `整体二分` Closure to $O(N \log N)$ Slope Trick / Leftist Heap)
+
+1. **Step 1 (Diagnostic Signal)**: We want $z_1 < z_2 < \dots < z_N$ in $\mathbb{Z}$ minimizing $\sum |z_i - a_i|$ with $N = 10^6$. This is 1D $L_1$ Isotonic Regression (`AL-05`), but $N = 10^6$ triggers Stage 1's **Direction B Flow Elimination** (`AL-16`)!
+2. **Step 2 (Algebraic Transformation)**: Substitute $x_i = z_i - i$ and $b_i = a_i - i$. Then $z_1 < z_2 < \dots < z_N$ (in integers) becomes the standard non-decreasing chain poset:
+
+   $$
+   \min_{x_1 \le x_2 \le \dots \le x_N} \sum_{i=1}^N |x_i - b_i|
+   $$
+
+3. **Step 3 (Connecting `整体二分` Min-Cut to Pool-Adjacent-Violators / Slope Trick)**:
+   In our `整体二分` closure network for a chain $1 \to 2 \to \dots \to N$, an upper closure is simply a suffix $[k, N]$, and whenever $b_i > b_{i+1}$, the poset arc $i \to i+1$ is tight ($x_i^* = x_{i+1}^*$) in the optimal cut! Merging adjacent violating blocks $B_1, B_2$ with $\text{median}(B_1) > \text{median}(B_2)$ and replacing their objective $\sum_{i \in B} |x - b_i|$ by its median (via mergeable max-heaps of size $\lceil |B|/2 \rceil$, or Slope Trick priority queue) solves the 1D poset in $O(N \log N)$ time and reconstructs $x_i^*$ exactly!
+4. **Step 4 (Toy Trace)**: Suppose $a = [5, 4, 3]$, so $b_i = a_i - i = [4, 2, 0]$.
+   - Block 1: $\{4\}$, median $4$.
+   - Block 2: $\{2\}$, since $4 > 2$, merge $\{4, 2\}$ (size 2, keep lower median $2$).
+   - Block 3: $\{0\}$, since $2 > 0$, merge $\{4, 2, 0\}$ (size 3, median $2$).
+   - Optimal $x^* = [2, 2, 2] \implies z_i^* = x_i^* + i = [3, 4, 5]$, cost $|3-5| + |4-4| + |5-3| = 4$.
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #186 (`[BOI 2004] Sequence` & `[BJWC2018] 餐巾计划`)"}
+- **Tier 1 (Strict to Weak Inequality)**: Replace $z_i < z_{i+1}$ with $z_i - i \le z_{i+1} - (i+1)$ by setting $b_i = a_i - i$ and $x_i = z_i - i$.
+- **Tier 2 (Pool-Adjacent-Violators Lemma)**: When $b_u > b_{u+1}$, Theorem 24.1 guarantees that the poset edge $u \to u+1$ is active, so $x_u^* = x_{u+1}^*$. Thus the two elements fuse into a single contiguous block whose optimal value is the median of the block!
+- **Tier 3 (Mergeable Max-Heap Reconstruction)**: Maintain a stack of blocks. Each block stores a leftist heap (or `std::priority_queue` with small-to-large merge) containing the smallest $\lceil \text{len}/2 \rceil$ elements of that block; its top is the block's median. Whenever the previous block's median exceeds the current block's median, merge them and pop until heap size equals $\lceil (\text{len}_1 + \text{len}_2)/2 \rceil$. (For `[BJWC2018] 餐巾计划问题` with $N = 2 \cdot 10^5$, the total cost is convex in the total number of purchased new napkins $K$; ternary search $K$ and greedily use free carry-over, then slow-wash from oldest days, then fast-wash from newest days via a deque in $O(N \log U)$!).
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++17 Solution for #186 (`[BOI 2004 / Luogu P4331] Sequence`)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+struct LeftistNode {
+    long long val;
+    int l = 0, r = 0, dist = 0;
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int n;
+    if (!(cin >> n)) return 0;
+    vector<long long> b(n + 1);
+    vector<LeftistNode> pool(n + 1);
+    for (int i = 1; i <= n; ++i) {
+        long long a;
+        cin >> a;
+        b[i] = a - i;
+        pool[i] = {b[i], 0, 0, 0};
+    }
+
+    auto merge = [&](auto& self, int x, int y) -> int {
+        if (!x || !y) return x | y;
+        if (pool[x].val < pool[y].val) swap(x, y); // Max-heap root is median
+        pool[x].r = self(self, pool[x].r, y);
+        if (pool[pool[x].l].dist < pool[pool[x].r].dist)
+            swap(pool[x].l, pool[x].r);
+        pool[x].dist = pool[pool[x].r].dist + 1;
+        return x;
+    };
+
+    struct Block { int root, l, r, sz; };
+    vector<Block> st;
+    for (int i = 1; i <= n; ++i) {
+        Block cur = {i, i, i, 1};
+        while (!st.empty() && pool[st.back().root].val > pool[cur.root].val) {
+            Block prev = st.back();
+            st.pop_back();
+            cur.root = merge(merge, prev.root, cur.root);
+            cur.l = prev.l;
+            cur.sz += prev.sz;
+            int target_sz = (cur.r - cur.l + 2) / 2;
+            while (cur.sz > target_sz) {
+                cur.root = merge(merge, pool[cur.root].l, pool[cur.root].r);
+                cur.sz--;
+            }
+        }
+        st.push_back(cur);
+    }
+
+    vector<long long> x(n + 1);
+    long long ans = 0;
+    for (auto& blk : st) {
+        long long med = pool[blk.root].val;
+        for (int i = blk.l; i <= blk.r; ++i) {
+            x[i] = med;
+            ans += llabs(x[i] - b[i]);
+        }
+    }
+    cout << ans << "\n";
+    for (int i = 1; i <= n; ++i)
+        cout << (x[i] + i) << (i == n ? '\n' : ' ');
+    return 0;
+}
+```
+::::
+
+---
+
+### Problem `#187` (`I1` — Intermediate 1): `[SHOI2004 / Luogu P4412 / BZOJ 1937]` Inverse Minimum Spanning Tree (`最小生成树`) & `[CF 1307G]` Cow and Exercise
+
+- **Judge URLs**: [https://www.luogu.com.cn/problem/P4412](https://www.luogu.com.cn/problem/P4412) (Inverse MST via $L_1$ Isotonic Regression / LP Dual) | [https://codeforces.com/problemset/problem/1307/G](https://codeforces.com/problemset/problem/1307/G) (Parametric Shortest-Path Interdiction LP Dual via SSP MCMF Hull)
+- **Constraints (`Luogu P4412`)**: $N \le 50$ vertices, $M \le 1000$ undirected edges with initial weights $w_e$ and unit modification costs $c_e$ (or $c_e = 1$). Given a specific spanning tree $T_0$, modify edge weights to $x_e$ minimizing $\sum_{e} c_e |x_e - w_e|$ so that $T_0$ is a minimum spanning tree.
+
+#### 4-Step Compilation Scratchpad (`Luogu P4412` & `CF 1307G`)
+
+1. **Step 1 (Diagnostic Signal)**: We want to modify edge weights $w_e \to x_e$ under the $L_1$ norm so that a fixed spanning tree $T_0$ satisfies Kruskal's MST optimality condition (`AL-05` + `AL-14`).
+2. **Step 2 (Algebraic Poset / LP Dual Formulation)**:
+   - **Perspective A ($L_1$ Isotonic Regression Poset, `Ch 24.1`)**: A spanning tree $T_0$ is an MST under weights $x$ if and only if for every non-tree edge $f = (u, v) \notin T_0$ and every tree edge $e \in P_{T_0}(u, v)$ on the unique path between $u$ and $v$ in $T_0$, we have:
+
+     $$
+     x_e \le x_f \qquad \forall f \notin T_0, \; \forall e \in P_{T_0}(f)
+     $$
+
+     Notice this is a **bipartite poset** between the $N-1$ tree edges $e \in T_0$ (which only ever decrease, $x_e \le w_e$) and the $M - N + 1$ non-tree edges $f \notin T_0$ (which only ever increase, $x_f \ge w_f$).
+   - **Perspective B (LP Dual $\to$ Bipartite Matching / MCMF, `Ch 19`–`Ch 20`)**: Writing $x_e = w_e - d_e$ ($d_e \ge 0$) for $e \in T_0$ and $x_f = w_f + d_f$ ($d_f \ge 0$) for $f \notin T_0$, the constraint $x_e \le x_f$ becomes:
+
+     $$
+     d_e + d_f \ge \max(0, w_e - w_f) \qquad \forall f \notin T_0, \; e \in P_{T_0}(f)
+     $$
+
+     Minimizing $\sum_{e \in T_0} c_e d_e + \sum_{f \notin T_0} c_f d_f$ subject to $d_e + d_f \ge \text{gap}(e, f)$ is the **Dual of Maximum-Weight Bipartite $b$-Matching (or Min-Cost Flow)** between $T_0$ and $E \setminus T_0$! And by Theorem 24.1, running `整体二分` on the bipartite poset $(T_0 \to E \setminus T_0)$ finds the exact modified weights $x_e^*$ in $O(\text{Dinic}(M, NM) \log U)$ time!
+   - **Perspective C (`CF 1307G Cow and Exercise` — Inverse Shortest Path Dual)**: Increasing edge weights on a directed graph within budget $X$ to maximize the $1$-to-$N$ shortest path $\lambda$ is the dual of parametric MCMF: run SSP from $1$ to $N$, record each augmenting path's cumulative flow $k$ and cumulative cost $C_k$, and answer each query $X$ in $O(\#\text{paths})$ via the lower envelope $\min_{k \ge 1} (C_k + X) / k$!
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #187 (`[SHOI2004] 最小生成树` & `[CF 1307G] Cow and Exercise`)"}
+- **Tier 1 (Cycle Optimality Condition)**: For $T_0$ to be an MST, add each non-tree edge $f = (u, v) \notin T_0$ one by one. Which tree edges $e \in T_0$ can swap with $f$?
+- **Tier 2 (Poset Edges)**: Every $e \in P_{T_0}(u, v)$ must satisfy $x_e \le x_f$. Add directed poset edges $e \to f$ for all $e \in P_{T_0}(u, v)$.
+- **Tier 3 (`整体二分` + Max-Weight Closure)**: Use `solve(V_cur, E_cur, L, R)` from Section 1.3 with $\Delta_i(M) = c_i |M - w_i| - c_i |M + 1 - w_i|$ (`+c_i` if $M < w_i$, and `-c_i` if $M \ge w_i$).
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++17 Solution for #187 (`[SHOI2004 / Luogu P4412] 最小生成树` + `[CF 1307G] Cow and Exercise`)"}
+```cpp
+// Part A: [SHOI2004 / Luogu P4412] Inverse MST via Parallel D&C Isotonic Regression
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 1e15;
+
+struct Dinic {
+    struct Edge { int to, rev; long long cap; };
+    int n, s, t;
+    vector<vector<Edge>> adj;
+    vector<int> level, ptr;
+    Dinic(int n, int s, int t) : n(n), s(s), t(t), adj(n), level(n), ptr(n) {}
+    void add_edge(int u, int v, long long cap) {
+        adj[u].push_back({v, (int)adj[v].size(), cap});
+        adj[v].push_back({u, (int)adj[u].size() - 1, 0});
+    }
+    bool bfs() {
+        fill(level.begin(), level.end(), -1);
+        level[s] = 0;
+        queue<int> q; q.push(s);
+        while (!q.empty()) {
+            int u = q.front(); q.pop();
+            for (auto& e : adj[u])
+                if (e.cap > 0 && level[e.to] == -1) {
+                    level[e.to] = level[u] + 1;
+                    q.push(e.to);
+                }
+        }
+        return level[t] != -1;
+    }
+    long long dfs(int u, long long pushed) {
+        if (!pushed || u == t) return pushed;
+        for (int& cid = ptr[u]; cid < (int)adj[u].size(); ++cid) {
+            auto& e = adj[u][cid];
+            if (level[u] + 1 != level[e.to] || e.cap == 0) continue;
+            long long tr = dfs(e.to, min(pushed, e.cap));
+            if (!tr) continue;
+            e.cap -= tr; adj[e.to][e.rev].cap += tr;
+            return tr;
+        }
+        level[u] = -1;
+        return 0;
+    }
+    long long max_flow() {
+        long long f = 0;
+        while (bfs()) {
+            fill(ptr.begin(), ptr.end(), 0);
+            while (long long p = dfs(s, INF)) f += p;
+        }
+        return f;
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int n, m;
+    if (!(cin >> n >> m)) return 0;
+    struct RawEdge { int u, v; long long w, c; int in_tree; };
+    vector<RawEdge> edges(m);
+    for (int i = 0; i < m; ++i) {
+        // Adapt input format: u, v, w, in_tree, cost c (default 1 if unweighted L1)
+        cin >> edges[i].u >> edges[i].v >> edges[i].w >> edges[i].in_tree;
+        edges[i].c = 1;
+    }
+    vector<vector<pair<int, int>>> tree_adj(n + 1);
+    for (int i = 0; i < m; ++i) {
+        if (edges[i].in_tree) {
+            tree_adj[edges[i].u].push_back({edges[i].v, i});
+            tree_adj[edges[i].v].push_back({edges[i].u, i});
+        }
+    }
+    vector<pair<int, int>> poset_edges;
+    for (int f = 0; f < m; ++f) {
+        if (edges[f].in_tree) continue;
+        // Find path in T_0 between edges[f].u and edges[f].v
+        vector<int> par_e(n + 1, -1), par_v(n + 1, -1);
+        queue<int> q; q.push(edges[f].u); par_v[edges[f].u] = 0;
+        while (!q.empty()) {
+            int u = q.front(); q.pop();
+            for (auto [nxt, eid] : tree_adj[u]) {
+                if (par_v[nxt] == -1) {
+                    par_v[nxt] = u; par_e[nxt] = eid;
+                    q.push(nxt);
+                }
+            }
+        }
+        for (int cur = edges[f].v; cur != edges[f].u; cur = par_v[cur])
+            poset_edges.push_back({par_e[cur], f}); // x_e <= x_f
+    }
+
+    vector<long long> ans(m);
+    vector<int> idx(m), local_id(m);
+    iota(idx.begin(), idx.end(), 0);
+
+    auto solve_iso = [&](auto& self, vector<int>& V, vector<pair<int, int>>& E, long long L, long long R) -> void {
+        if (V.empty()) return;
+        if (L == R) {
+            for (int u : V) ans[u] = L;
+            return;
+        }
+        long long M = L + (R - L) / 2;
+        int k = V.size();
+        for (int i = 0; i < k; ++i) local_id[V[i]] = i;
+        int S = k, T = k + 1;
+        Dinic dinic(k + 2, S, T);
+        for (int i = 0; i < k; ++i) {
+            int u = V[i];
+            long long delta = (M < edges[u].w) ? edges[u].c : -edges[u].c;
+            if (delta > 0) dinic.add_edge(S, i, delta);
+            else dinic.add_edge(i, T, -delta);
+        }
+        for (auto [u, v] : E)
+            dinic.add_edge(local_id[u], local_id[v], INF);
+        dinic.max_flow();
+        vector<int> VL, VR;
+        for (int i = 0; i < k; ++i) {
+            if (dinic.level[i] != -1) VR.push_back(V[i]);
+            else VL.push_back(V[i]);
+        }
+        vector<pair<int, int>> EL, ER;
+        for (auto [u, v] : E) {
+            bool uR = (dinic.level[local_id[u]] != -1);
+            bool vR = (dinic.level[local_id[v]] != -1);
+            if (!uR && !vR) EL.push_back({u, v});
+            else if (uR && vR) ER.push_back({u, v});
+        }
+        self(self, VL, EL, L, M);
+        self(self, VR, ER, M + 1, R);
+    };
+
+    solve_iso(solve_iso, idx, poset_edges, 0, 1000000);
+    long long total_cost = 0;
+    for (int i = 0; i < m; ++i) total_cost += edges[i].c * llabs(ans[i] - edges[i].w);
+    cout << total_cost << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### Problem `#188` (`I2` — Intermediate 2): `[省选联考 2020 A卷 / Luogu P6621]` Magic Shop (`魔法商店`)
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P6621](https://www.luogu.com.cn/problem/P6621)
+- **Constraints**: $N \le 1000$, $m \le 64$, $c_i < 2^{64}$ (`unsigned long long`), $v_i \le 10^6$. Time Limit: $3.0\text{ s}$.
+
+#### 4-Step Compilation Scratchpad
+
+1. **Step 1 (Diagnostic Signal)**: Modify item prices $v_i \to x_i \in \mathbb{Z}$ minimizing the $L_2$ quadratic cost $\sum_{i=1}^N (x_i - v_i)^2$ so that XOR-basis $A$ is a minimum-weight basis and XOR-basis $B$ is a maximum-weight basis (`AL-05`).
+2. **Step 2 (Linear Basis Exchange Poset Extraction)**:
+   - Insert the $m$ elements of basis $A$ into an $\mathbb{F}_2^{64}$ linear basis while tracking the **coordinate mask** of which elements of $A$ XOR-sum to each basis vector. For every $j \notin A$, decompose $c_j$ into its unique subset $S_A(j) \subseteq A$ and add poset constraint $x_i \le x_j$ ($i \to j$) for all $i \in S_A(j)$.
+   - Repeat for basis $B$: for every $j \notin B$, decompose $c_j$ into $S_B(j) \subseteq B$ and add poset constraint $x_j \le x_i$ ($j \to i$) for all $i \in S_B(j)$.
+3. **Step 3 (Graph Compilation via `整体二分`)**: Run `solve(V_cur, E_cur, L, R)` on $[0, 10^6]$ with $\Delta_i(M) = (M - v_i)^2 - (M + 1 - v_i)^2 = 2(v_i - M) - 1$.
+4. **Step 4 (Broken-Gadget Audit `FM-24`)**: Ensure the Dinic graph inside `solve` has size $|V_{\text{cur}}| + 2$, NOT $N + 2$!
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #188 (`[省选联考 2020 A卷] 魔法商店`)"}
+- **Tier 1 (Basis Optimality via Single-Element Swaps)**: Why do we only need to compare $j \notin A$ against the elements $i \in A$ whose XOR sum equals $c_j$? By the Matroid Basis Exchange Theorem, if $x_i \le x_j$ for all $i \in S_A(j)$, then $A$ is globally minimum-weight among all bases!
+- **Tier 2 (Tracking Coordinate Masks in Gaussian Elimination)**: When inserting the $k$-th element of $A$ ($0 \le k < m$) into the 64-bit XOR basis, maintain an auxiliary `unsigned long long mask = (1ULL << k)`. Whenever you XOR `val ^= basis_val[b]`, also XOR `mask ^= basis_mask[b]`.
+- **Tier 3 (Quadratic Slice Reward)**: At midpoint $M = \lfloor (L + R) / 2 \rfloor$, moving $x_i$ from $M$ to $M+1$ changes $(x_i - v_i)^2$ by $(M + 1 - v_i)^2 - (M - v_i)^2 = 2(M - v_i) + 1$. Thus the promotion reward is $\Delta_i(M) = 2(v_i - M) - 1$.
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++17 Solution for #188 (`[省选联考 2020 A卷 / Luogu P6621] 魔法商店`)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+using ull = unsigned long long;
+const long long INF = 1e16;
+
+struct Dinic {
+    struct Edge { int to, rev; long long cap; };
+    int n, s, t;
+    vector<vector<Edge>> adj;
+    vector<int> level, ptr;
+    Dinic(int n, int s, int t) : n(n), s(s), t(t), adj(n), level(n), ptr(n) {}
+    void add_edge(int u, int v, long long cap) {
+        adj[u].push_back({v, (int)adj[v].size(), cap});
+        adj[v].push_back({u, (int)adj[u].size() - 1, 0});
+    }
+    bool bfs() {
+        fill(level.begin(), level.end(), -1);
+        level[s] = 0;
+        queue<int> q; q.push(s);
+        while (!q.empty()) {
+            int u = q.front(); q.pop();
+            for (auto& e : adj[u])
+                if (e.cap > 0 && level[e.to] == -1) {
+                    level[e.to] = level[u] + 1;
+                    q.push(e.to);
+                }
+        }
+        return level[t] != -1;
+    }
+    long long dfs(int u, long long pushed) {
+        if (!pushed || u == t) return pushed;
+        for (int& cid = ptr[u]; cid < (int)adj[u].size(); ++cid) {
+            auto& e = adj[u][cid];
+            if (level[u] + 1 != level[e.to] || e.cap == 0) continue;
+            long long tr = dfs(e.to, min(pushed, e.cap));
+            if (!tr) continue;
+            e.cap -= tr; adj[e.to][e.rev].cap += tr;
+            return tr;
+        }
+        level[u] = -1;
+        return 0;
+    }
+    long long max_flow() {
+        long long f = 0;
+        while (bfs()) {
+            fill(ptr.begin(), ptr.end(), 0);
+            while (long long p = dfs(s, INF)) f += p;
+        }
+        return f;
+    }
+};
+
+struct XorBasis {
+    ull val[64] = {0}, mask[64] = {0};
+    void insert(ull x, int bit_idx) {
+        ull m = 1ULL << bit_idx;
+        for (int b = 63; b >= 0; --b) {
+            if (!(x >> b & 1)) continue;
+            if (!val[b]) { val[b] = x; mask[b] = m; return; }
+            x ^= val[b]; m ^= mask[b];
+        }
+    }
+    ull query_mask(ull x) const {
+        ull m = 0;
+        for (int b = 63; b >= 0; --b) {
+            if (x >> b & 1) { x ^= val[b]; m ^= mask[b]; }
+        }
+        return m;
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int n, m;
+    if (!(cin >> n >> m)) return 0;
+    vector<ull> c(n);
+    vector<long long> v(n);
+    for (int i = 0; i < n; ++i) cin >> c[i];
+    for (int i = 0; i < n; ++i) cin >> v[i];
+
+    vector<int> A(m), B(m), inA(n, 0), inB(n, 0);
+    XorBasis basisA, basisB;
+    for (int i = 0; i < m; ++i) { cin >> A[i]; --A[i]; inA[A[i]] = 1; basisA.insert(c[A[i]], i); }
+    for (int i = 0; i < m; ++i) { cin >> B[i]; --B[i]; inB[B[i]] = 1; basisB.insert(c[B[i]], i); }
+
+    vector<pair<int, int>> edges;
+    for (int j = 0; j < n; ++j) {
+        if (!inA[j]) {
+            ull msk = basisA.query_mask(c[j]);
+            for (int k = 0; k < m; ++k)
+                if (msk >> k & 1) edges.push_back({A[k], j}); // x_{A[k]} <= x_j
+        }
+        if (!inB[j]) {
+            ull msk = basisB.query_mask(c[j]);
+            for (int k = 0; k < m; ++k)
+                if (msk >> k & 1) edges.push_back({j, B[k]}); // x_j <= x_{B[k]}
+        }
+    }
+
+    vector<long long> ans(n);
+    vector<int> V_all(n), local_id(n);
+    iota(V_all.begin(), V_all.end(), 0);
+
+    auto solve = [&](auto& self, vector<int>& V, vector<pair<int, int>>& E, long long L, long long R) -> void {
+        if (V.empty()) return;
+        if (L == R) {
+            for (int u : V) ans[u] = L;
+            return;
+        }
+        long long M = L + (R - L) / 2;
+        int k = V.size();
+        for (int i = 0; i < k; ++i) local_id[V[i]] = i;
+        int S = k, T = k + 1;
+        Dinic dinic(k + 2, S, T);
+        for (int i = 0; i < k; ++i) {
+            int u = V[i];
+            long long delta = 2LL * (v[u] - M) - 1;
+            if (delta > 0) dinic.add_edge(S, i, delta);
+            else dinic.add_edge(i, T, -delta);
+        }
+        for (auto [u, w] : E)
+            dinic.add_edge(local_id[u], local_id[w], INF);
+        dinic.max_flow();
+
+        vector<int> VL, VR;
+        for (int i = 0; i < k; ++i) {
+            if (dinic.level[i] != -1) VR.push_back(V[i]);
+            else VL.push_back(V[i]);
+        }
+        vector<pair<int, int>> EL, ER;
+        for (auto [u, w] : E) {
+            bool uR = (dinic.level[local_id[u]] != -1);
+            bool wR = (dinic.level[local_id[w]] != -1);
+            if (!uR && !wR) EL.push_back({u, w});
+            else if (uR && wR) ER.push_back({u, w});
+        }
+        self(self, VL, EL, L, M);
+        self(self, VR, ER, M + 1, R);
+    };
+
+    solve(solve, V_all, edges, 0, 1000000);
+    unsigned long long total = 0;
+    for (int i = 0; i < n; ++i) {
+        long long diff = ans[i] - v[i];
+        total += (unsigned long long)(diff * diff);
+    }
+    cout << total << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### Problem `#189` (`I3` — Intermediate 3): `[Hello 2020 / CF 1284G]` Seollal & `[LOJ #6515]` Greedy Submodular Closure
+
+- **Judge URLs**: [https://codeforces.com/problemset/problem/1284/G](https://codeforces.com/problemset/problem/1284/G) (Graphic $\cap$ Partition Matroid Intersection) | [https://loj.ac/p/6515](https://loj.ac/p/6515) (Parametric / Offline Closure Cut)
+- **Constraints (`CF 1284G`)**: $T \le 20$, $N, M \le 20$ grid of `'O'` and `'X'` cells, $\sum NM \le 400$. Time Limit: $2.0\text{ s}$.
+
+#### 4-Step Compilation Scratchpad (`CF 1284G Seollal`)
+
+1. **Step 1 (Diagnostic Signal)**: We must select a spanning tree of `'O'` cells in an $N \times M$ grid such that every black `'O'` cell $u \in B = \{(r, c) : (r+c) \equiv 0 \pmod 2 \land (r,c) \ne (0,0)\}$ has degree $\ge 2$ in the tree (`AL-18`).
+2. **Step 2 (Complement / Dualization to Upper Degree Bounds)**:
+   Wait — a Partition Matroid enforces **upper bounds** $|I \cap \delta(u)| \le c_u$, whereas the problem asks for **lower bounds** $\deg_T(u) \ge 2$! How do we flip $\ge 2$ into $\le 2$?
+   Suppose we first look for a **forest** $I \subseteq E$ of size $2|B|$ such that every $u \in B$ has $|I \cap \delta(u)| \le 2$. If we find such a forest $I$ of size $2|B|$, then because $\sum_{u \in B} |I \cap \delta(u)| = |I| = 2|B|$ (every grid edge touches at most one vertex in $B$, since $(0,0)$ is excluded and $B$ is one side of the bipartite grid!), **every $u \in B$ must have $|I \cap \delta(u)| = 2$ with equality**! Then, because the Graphic Matroid is a matroid, we can greedily add edges from $E \setminus I$ to extend the forest $I$ to a full spanning tree $T \supseteq I$, and adding edges can only increase degrees ($\deg_T(u) \ge \deg_I(u) = 2$)!
+3. **Step 3 (Matroid Intersection Compilation)**:
+   - Ground set $E_{\text{good}}$: all grid edges between adjacent `'O'` cells, **excluding** edges incident to $(0, 0)$ when checking $\mathcal{M}_2$ (or simply define $B$ as all `'O'` cells with $(r+c)$ even and $(r,c) \ne (0,0)$, and only include in $E$ edges incident to some $u \in B$; actually any grid edge between `'O'` cells not incident to $(0,0)$ touches **exactly one** cell in $B$).
+   - $\mathcal{M}_1$ (**Graphic Matroid**): $I \subseteq E$ is acyclic in the grid graph of `'O'` cells.
+   - $\mathcal{M}_2$ (**Partition Matroid**): For each $u \in B$, $|I \cap \delta(u)| \le 2$.
+   - Run unweighted Matroid Intersection (`Algorithm 24.1` via BFS shortest hop-count augmenting paths). Check if $|I| = 2|B|$ and if the full `'O'` graph is connected; if so, greedily extend $I$ to a spanning tree of all `'O'` cells via DSU.
+4. **Step 4 (Broken-Gadget Audit `FM-25`)**: In `G(I)`, always find the shortest augmenting path from $X_1$ to $X_2$ via BFS so that no shortcut chords exist!
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #189 (`[CF 1284G] Seollal`)"}
+- **Tier 1 (Flipping $\ge 2$ into $\le 2$)**: Every grid edge not incident to $(0,0)$ is incident to **at most one** cell in $B = \{(r,c) : \text{grid}[r][c] == \text{'O'}, (r+c) \equiv 0 \pmod 2, (r,c) \ne (0,0)\}$. If we find an acyclic edge set $I$ of size $2|B|$ where each $u \in B$ has degree $\le 2$, what must the degree of every $u \in B$ be?
+- **Tier 2 (Building the Exchange Digraph $G(I)$)**: For $x \in I$ and $y \notin I$, $(x \to y) \in A_1$ iff adding $y$ to the forest $I$ creates a cycle containing $x$ (or $I \setminus \{x\} \cup \{y\}$ is acyclic). And $(y \to x) \in A_2$ iff $x$ and $y$ share the same black endpoint $u \in B$ whose degree in $I$ is currently $2$.
+- **Tier 3 (Completing the Spanning Tree)**: Once $|I| = 2|B|$, iterate over all remaining grid edges between `'O'` cells (including those incident to $(0,0)$) and add any edge that connects two different DSU components of $I$. If all `'O'` cells end up in one component, print the grid!
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++17 Solution for #189 (`[Hello 2020 / CF 1284G] Seollal`)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+struct DSU {
+    vector<int> p;
+    DSU(int n) : p(n) { iota(p.begin(), p.end(), 0); }
+    int find(int x) { return p[x] == x ? x : p[x] = find(p[x]); }
+    bool unite(int a, int b) {
+        a = find(a); b = find(b);
+        if (a == b) return false;
+        p[a] = b; return true;
+    }
+};
+
+struct Edge { int u, v, b_node, r1, c1, r2, c2; };
+
+void solve() {
+    int n, m;
+    cin >> n >> m;
+    vector<string> s(n);
+    for (int i = 0; i < n; ++i) cin >> s[i];
+
+    int num_B = 0, total_O = 0;
+    vector<vector<int>> b_id(n, vector<int>(m, -1));
+    for (int r = 0; r < n; ++r) {
+        for (int c = 0; c < m; ++c) {
+            if (s[r][c] == 'O') {
+                total_O++;
+                if ((r + c) % 2 == 0 && (r != 0 || c != 0))
+                    b_id[r][c] = num_B++;
+            }
+        }
+    }
+
+    vector<Edge> edges, all_edges;
+    for (int r = 0; r < n; ++r) {
+        for (int c = 0; c < m; ++c) {
+            if (s[r][c] != 'O') continue;
+            if (r + 1 < n && s[r + 1][c] == 'O') {
+                int bn = (b_id[r][c] != -1) ? b_id[r][c] : b_id[r + 1][c];
+                Edge e = {r * m + c, (r + 1) * m + c, bn, r, c, r + 1, c};
+                all_edges.push_back(e);
+                if (bn != -1) edges.push_back(e);
+            }
+            if (c + 1 < m && s[r][c + 1] == 'O') {
+                int bn = (b_id[r][c] != -1) ? b_id[r][c] : b_id[r][c + 1];
+                Edge e = {r * m + c, r * m + c + 1, bn, r, c, r, c + 1};
+                all_edges.push_back(e);
+                if (bn != -1) edges.push_back(e);
+            }
+        }
+    }
+
+    int E = edges.size();
+    vector<int> in_I(E, 0);
+    while (true) {
+        vector<int> deg(num_B, 0);
+        DSU dsu_full(n * m);
+        for (int i = 0; i < E; ++i) {
+            if (in_I[i]) {
+                deg[edges[i].b_node]++;
+                dsu_full.unite(edges[i].u, edges[i].v);
+            }
+        }
+        vector<int> X1(E, 0), X2(E, 0);
+        queue<int> q;
+        vector<int> dist(E, -1), par(E, -1);
+        for (int y = 0; y < E; ++y) {
+            if (in_I[y]) continue;
+            if (dsu_full.find(edges[y].u) != dsu_full.find(edges[y].v)) X1[y] = 1;
+            if (deg[edges[y].b_node] < 2) X2[y] = 1;
+            if (X1[y]) { dist[y] = 0; q.push(y); }
+        }
+
+        // Precompute Graphic exchange: for each x in I, DSU without x
+        vector<vector<int>> adj(E);
+        for (int x = 0; x < E; ++x) {
+            if (!in_I[x]) continue;
+            DSU dsu_no_x(n * m);
+            for (int i = 0; i < E; ++i)
+                if (in_I[i] && i != x) dsu_no_x.unite(edges[i].u, edges[i].v);
+            for (int y = 0; y < E; ++y) {
+                if (in_I[y]) continue;
+                // A1: x -> y if I \ {x} U {y} is acyclic
+                if (dsu_no_x.find(edges[y].u) != dsu_no_x.find(edges[y].v))
+                    adj[x].push_back(y);
+                // A2: y -> x if I \ {x} U {y} satisfies deg <= 2
+                if (deg[edges[y].b_node] < 2 || edges[x].b_node == edges[y].b_node)
+                    adj[y].push_back(x);
+            }
+        }
+
+        int target = -1;
+        while (!q.empty()) {
+            int u = q.front(); q.pop();
+            if (X2[u]) { target = u; break; }
+            for (int v : adj[u]) {
+                if (dist[v] == -1) {
+                    dist[v] = dist[u] + 1;
+                    par[v] = u;
+                    q.push(v);
+                }
+            }
+        }
+        if (target == -1) break;
+        for (int cur = target; cur != -1; cur = par[cur]) in_I[cur] ^= 1;
+    }
+
+    int cnt_I = accumulate(in_I.begin(), in_I.end(), 0);
+    if (cnt_I < 2 * num_B) { cout << "NO\n"; return; }
+
+    DSU dsu_final(n * m);
+    vector<Edge> chosen;
+    for (int i = 0; i < E; ++i) {
+        if (in_I[i]) {
+            dsu_final.unite(edges[i].u, edges[i].v);
+            chosen.push_back(edges[i]);
+        }
+    }
+    for (auto& e : all_edges) {
+        if (dsu_final.unite(e.u, e.v)) chosen.push_back(e);
+    }
+    if ((int)chosen.size() != total_O - 1) { cout << "NO\n"; return; }
+
+    cout << "YES\n";
+    vector<string> out(2 * n - 1, string(2 * m - 1, ' '));
+    for (int r = 0; r < n; ++r)
+        for (int c = 0; c < m; ++c)
+            out[2 * r][2 * c] = s[r][c];
+    for (auto& e : chosen)
+        out[e.r1 + e.r2][e.c1 + e.c2] = 'O';
+    for (auto& row : out) cout << row << "\n";
+}
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int T;
+    if (cin >> T) while (T--) solve();
+    return 0;
+}
+```
+::::
+
+---
+
+### Problem `#190` (`A1` — Advanced 1): `[Deltix Round Summer 2021 / CF 1556H]` DIY Tree & `[SWERC 2021 / CF 1666K]` Kingdom Partition
+
+- **Judge URLs**: [https://codeforces.com/problemset/problem/1556/H](https://codeforces.com/problemset/problem/1556/H) (Weighted Matroid Intersection) | [https://codeforces.com/problemset/problem/1666/K](https://codeforces.com/problemset/problem/1666/K) (Half-Integral 3-State Bipartite Min-Cut)
+- **Constraints (`CF 1556H`)**: $N \le 50$, $K \le 5$, degree limits $d_1, \dots, d_K$, pairwise edge weights $w_{u,v} \le 100$. Time Limit: $3.0\text{ s}$.
+
+#### 4-Step Compilation Scratchpad (`CF 1556H` & `CF 1666K`)
+
+1. **Step 1 (Diagnostic Signal)**:
+   - In `CF 1556H`, we want a minimum-weight spanning tree on $N \le 50$ vertices subject to degree limits $d_1, \dots, d_K$ on the first $K \le 5$ vertices (`AL-18`).
+   - In `CF 1666K Kingdom Partition`, we assign vertices to $\{A, B, C\}$ where edges pay $2w$ if one endpoint is $A$ and the other is $B$, $w$ if one is $A/B$ and the other is $C$, and $0$ if both are $C$ or both are $A$ or both are $B$. Notice that on a general graph, assigning $\{0, 1, 2\}$ labels ($0 = A, 1 = C, 2 = B$) gives edge penalty $w_e |x_u - x_v|$ — wait: if both are $C$ ($x_u = x_v = 1$), penalty is $0$, which is **doubled Bipartite Variable Inversion** (`AL-03` + `AL-04`): create two binary variables $p_u, q_u \in \{0, 1\}$ per vertex with $u \in A \iff (p_u, q_u) = (1, 0)$, $u \in B \iff (p_u, q_u) = (0, 1)$, and $u \in C \iff (p_u, q_u) = (0, 0)$ (forcing $p_u + q_u \le 1$, i.e., $p_u = 1 \implies q_u = 0$, which is $p_u \le \bar{q}_u$)!
+2. **Step 2 (Pre-Contracting $\{K+1, \dots, N\}$ in `CF 1556H`)**:
+   In `CF 1556H`, any edge with both endpoints in $\{K+1, \dots, N\}$ has no degree constraints at all! Thus, only the $N - K - 1$ edges of the **Minimum Spanning Tree of $\{K+1, \dots, N\}$** can ever be useful among internal edges of $\{K+1, \dots, N\}$. Reducing the ground set of internal $\{K+1, \dots, N\}$ edges from $\binom{N-K}{2} \approx 1000$ down to just $N - K - 1 \le 44$ tree edges shrinks the ground set size $|E|$ to $K(N - K) + (N - K - 1) \le 225 + 44 = 269$!
+3. **Step 3 (Enumerating Core Forests $F_0$ inside $\{1, \dots, K\}$)**:
+   Iterate over all $2^{\binom{K}{2}} \le 1024$ subsets $F_0$ of edges inside $\{1, \dots, K\}$ that are acyclic and respect $d_1, \dots, d_K$. Actually, even simpler: instead of running Matroid Intersection $1024$ times from scratch, notice that in the Matroid Intersection initialization, we only need to run Weighted Matroid Intersection over the **Bell number $B_K \le 52$** (or simply include the $\binom{K}{2}$ core edges? No, core edges touch two vertices in $\{1..K\}$, so we can either enumerate the $52$ acyclic forests $F_0$ on $\{1..K\}$ choosing the minimum-weight forest for each of the $B_5 = 52$ component partitions of $\{1, \dots, K\}$ — Wait: degree inside $\{1..K\}$ also matters, so filtering acyclic subsets $F_0$ or pruning gives at most a few hundred runs on a tiny ground set of size $\le 269$, or even faster: include only the $(N-K-1)$ MST edges of $\{K+1..N\}$ and for each $i \in \{1..K\}$ and each component, we only ever need $N - 1 - |F_0|$ augmentations!).
+   Wait — let's make `CF 1556H` blazingly fast: if we **start** each Matroid Intersection run with the $N - K - 1$ MST edges of $\{K+1, \dots, N\}$ already in $I$? No, an augmenting path might evict an MST edge of $\{K+1..N\}$, so starting from $I = \emptyset$ requires $N - 1 - |F_0| \le 49$ augmentations. Wait: if we instead **invert** the Graphic Matroid to the **Co-Graphic Matroid** or if we just notice that we can pick a forest $F_0$ on $\{1..K\}$ and then we only need to add $N - 1 - |F_0|$ edges? Even simpler: why not include $\{1..K\}$ edges? No, $52$ partitions isn't enough if degrees differ, unless we notice that in `CF 1666K Kingdom Partition` (and `CF 1556H`), both are clean! Let's provide the complete, fast Weighted Matroid Intersection for `CF 1556H` (with the $N-K-1$ MST reduction + SPFA shortest augmenting path) AND the complete 2-variable cut for `CF 1666K`!
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #190 (`[CF 1556H] DIY Tree` & `[CF 1666K] Kingdom Partition`)"}
+- **Tier 1 (`CF 1556H` Edge Pruning)**: First compute the MST of the unconstrained vertices $\{K+1, \dots, N\}$. Any edge inside $\{K+1, \dots, N\}$ not in this MST can never be part of the optimal answer — discard it! Now $|E| \le K(N-K) + (N-K-1) \le 269$.
+- **Tier 2 (`CF 1556H` Core Forest + Weighted Matroid Intersection)**: Enumerate all acyclic subsets $F_0$ of edges inside $\{1, \dots, K\}$ with $\deg_{F_0}(i) \le d_i$. Contract $F_0$ in a base DSU and run Weighted Matroid Intersection (maximizing $\sum (M_{\text{big}} - w_e)$ so every augmentation step increases $|I|$ by $1$ at minimum weight) using Bellman-Ford / SPFA with `(cost, hop_count)` tie-breaking (`FM-25`).
+- **Tier 3 (`CF 1666K` Double-Binary Cut Encoding)**: For each vertex $u$, create two cut nodes $u_1, u_2$. We map $(u_1 \in S, u_2 \in T) \leftrightarrow u \in A$, $(u_1 \in T, u_2 \in S) \leftrightarrow u \in B$, and $(u_1 \in T, u_2 \in T) \leftrightarrow u \in C$ (forbid $(S, S)$ by clamping $s_A$ and $s_B$, and for each edge $(u, v)$ of weight $w$, add $u_1 \leftrightarrow v_2$ cap $w$ and $u_2 \leftrightarrow v_1$ cap $w$!).
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++17 Solutions for #190 (`[CF 1556H] DIY Tree` & `[CF 1666K] Kingdom Partition`)"}
+```cpp
+// Solution 190A: [CF 1556H] DIY Tree (Weighted Matroid Intersection)
+#include <bits/stdc++.h>
+using namespace std;
+
+struct DSU {
+    int p[55];
+    void init(int n) { iota(p, p + n, 0); }
+    int find(int x) { return p[x] == x ? x : p[x] = find(p[x]); }
+    bool unite(int a, int b) {
+        a = find(a); b = find(b);
+        if (a == b) return false;
+        p[a] = b; return true;
+    }
+};
+
+struct Edge { int u, v, w; };
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int n, k;
+    if (!(cin >> n >> k)) return 0;
+    vector<int> d(k);
+    for (int i = 0; i < k; ++i) cin >> d[i];
+    vector<vector<int>> W(n, vector<int>(n, 0));
+    vector<Edge> core_edges, other_edges, rem_edges;
+    for (int i = 0; i < n; ++i) {
+        for (int j = i + 1; j < n; ++j) {
+            cin >> W[i][j];
+            W[j][i] = W[i][j];
+            if (i < k && j < k) core_edges.push_back({i, j, W[i][j]});
+            else if (i >= k && j >= k) rem_edges.push_back({i, j, W[i][j]});
+            else other_edges.push_back({i, j, W[i][j]});
+        }
+    }
+    // Keep only MST edges inside {k .. n-1}
+    sort(rem_edges.begin(), rem_edges.end(), [](const Edge& a, const Edge& b) { return a.w < b.w; });
+    DSU dsu_rem; dsu_rem.init(n);
+    for (auto& e : rem_edges) {
+        if (dsu_rem.unite(e.u, e.v)) other_edges.push_back(e);
+    }
+
+    int E = other_edges.size();
+    int C = core_edges.size();
+    int best_ans = 1e9;
+
+    for (int mask = 0; mask < (1 << C); ++mask) {
+        DSU base_dsu; base_dsu.init(n);
+        vector<int> rem_d = d;
+        int base_cost = 0, base_cnt = 0;
+        bool ok = true;
+        for (int i = 0; i < C; ++i) {
+            if (mask >> i & 1) {
+                int u = core_edges[i].u, v = core_edges[i].v;
+                if (--rem_d[u] < 0 || --rem_d[v] < 0 || !base_dsu.unite(u, v)) {
+                    ok = false; break;
+                }
+                base_cost += core_edges[i].w;
+                base_cnt++;
+            }
+        }
+        if (!ok) continue;
+
+        vector<int> in_I(E, 0);
+        int cur_cost = base_cost, cur_cnt = base_cnt;
+        while (cur_cnt < n - 1) {
+            vector<int> deg(k, 0);
+            DSU dsu_full = base_dsu;
+            for (int i = 0; i < E; ++i) {
+                if (in_I[i]) {
+                    if (other_edges[i].u < k) deg[other_edges[i].u]++;
+                    dsu_full.unite(other_edges[i].u, other_edges[i].v);
+                }
+            }
+            vector<int> X1(E, 0), X2(E, 0);
+            for (int y = 0; y < E; ++y) {
+                if (in_I[y]) continue;
+                if (dsu_full.find(other_edges[y].u) != dsu_full.find(other_edges[y].v)) X1[y] = 1;
+                int u = other_edges[y].u;
+                if (u >= k || deg[u] < rem_d[u]) X2[y] = 1;
+            }
+            vector<vector<int>> adj(E);
+            for (int x = 0; x < E; ++x) {
+                if (!in_I[x]) continue;
+                DSU dsu_no_x = base_dsu;
+                for (int i = 0; i < E; ++i)
+                    if (in_I[i] && i != x) dsu_no_x.unite(other_edges[i].u, other_edges[i].v);
+                for (int y = 0; y < E; ++y) {
+                    if (in_I[y]) continue;
+                    if (dsu_no_x.find(other_edges[y].u) != dsu_no_x.find(other_edges[y].v))
+                        adj[x].push_back(y);
+                    int uy = other_edges[y].u, ux = other_edges[x].u;
+                    if (uy >= k || deg[uy] < rem_d[uy] || ux == uy)
+                        adj[y].push_back(x);
+                }
+            }
+            const int INF = 1e9;
+            vector<pair<int, int>> dist(E, {INF, INF});
+            vector<int> par(E, -1), in_q(E, 0);
+            queue<int> q;
+            for (int y = 0; y < E; ++y) {
+                if (X1[y]) {
+                    dist[y] = {other_edges[y].w, 0};
+                    q.push(y); in_q[y] = 1;
+                }
+            }
+            while (!q.empty()) {
+                int u = q.front(); q.pop(); in_q[u] = 0;
+                for (int v : adj[u]) {
+                    int w = in_I[v] ? -other_edges[v].w : other_edges[v].w;
+                    pair<int, int> cand = {dist[u].first + w, dist[u].second + 1};
+                    if (cand < dist[v]) {
+                        dist[v] = cand; par[v] = u;
+                        if (!in_q[v]) { in_q[v] = 1; q.push(v); }
+                    }
+                }
+            }
+            int best_y = -1;
+            for (int y = 0; y < E; ++y) {
+                if (X2[y] && dist[y].first < INF) {
+                    if (best_y == -1 || dist[y] < dist[best_y]) best_y = y;
+                }
+            }
+            if (best_y == -1) break;
+            cur_cost += dist[best_y].first;
+            cur_cnt++;
+            for (int cur = best_y; cur != -1; cur = par[cur]) in_I[cur] ^= 1;
+        }
+        if (cur_cnt == n - 1) best_ans = min(best_ans, cur_cost);
+    }
+    cout << best_ans << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### Problem `#191` (`A2` — Advanced 2): `[NOI2021 / Luogu P7736]` Path Intersections (`路径交点`) & `[CF 1630F]` Making It Bipartite
+
+- **Judge URLs**: [https://www.luogu.com.cn/problem/P7736](https://www.luogu.com.cn/problem/P7736) (Multi-Layer LGV Determinant) | [https://codeforces.com/problemset/problem/1630/F](https://codeforces.com/problemset/problem/1630/F) (2-Layer Poset Orientation Dilworth Antichain)
+- **Constraints (`Luogu P7736`)**: $T \le 5$, $K \le 100$ layers, $n_1 = n_K \le 100$, $n_i \le 200$, $m_i \le n_i n_{i+1}$. Output (# of even-crossing vertex-disjoint path systems minus # of odd-crossing systems) $\bmod 998244353$. Time Limit: $1.0\text{ s}$.
+
+#### 4-Step Compilation Scratchpad (`[NOI2021] 路径交点` & `CF 1630F`)
+
+1. **Step 1 (Diagnostic Signal)**:
+   - In `[NOI2021] 路径交点`, we want the signed sum $\sum_{\mathcal{P}} (-1)^{\text{crossings}(\mathcal{P})}$ over all vertex-disjoint path systems $\mathcal{P}$ from layer $1$ to layer $K$ (`AL-09`).
+   - In `CF 1630F Making It Bipartite`, we must delete the minimum number of vertices from a divisibility graph so that it becomes bipartite (i.e., contains no directed path of length $\ge 2$ under some orientation, which is equivalent to a 2-layer poset where each number $u$ is split into $u_{\text{out}}$ and $u_{\text{in}}$, and we find the Maximum Antichain via Dilworth's theorem / König's theorem on $4N$ vertices, `AL-06`!).
+2. **Step 2 (Algebraic Parity Identity via LGV Involution)**:
+   In a planar layered drawing between layer $t$ and layer $t+1$, two vertex-disjoint edges $(u_1, v_1)$ and $(u_2, v_2)$ ($u_1 < u_2$) cross if and only if $v_1 > v_2$ (an inversion!). Summing over all $K-1$ layers, the total number of geometric edge crossings $\text{crossings}(\mathcal{P})$ of any vertex-disjoint path tuple $\mathcal{P} = (P_1, \dots, P_{n_1})$ has the exact same parity as the inversion count of the endpoint permutation $\pi \in S_{n_1}$:
+
+   $$
+   (-1)^{\text{crossings}(\mathcal{P})} = \operatorname{sgn}(\pi)
+   $$
+
+   By the **LGV Lemma (Theorem 24.2)**, all path tuples that intersect at any intermediate vertex cancel out under the tail-swapping involution, and the path count matrix $M$ from layer $1$ to layer $K$ is simply the matrix product of the $K-1$ adjacency matrices:
+
+   $$
+   M = A_1 A_2 \cdots A_{K-1} \quad \Longrightarrow \quad \text{Answer} = \det(M) \bmod 998244353
+   $$
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #191 (`[NOI2021] 路径交点` & `[CF 1630F] Making It Bipartite`)"}
+- **Tier 1 (Crossing Parity = Permutation Sign)**: Between two adjacent layers, each crossing of two disjoint edges swaps the relative vertical order of the two paths. Therefore, $(-1)^{\text{total crossings}} = \operatorname{sgn}(\pi)$ where $\pi$ is the permutation from layer $1$ to layer $K$.
+- **Tier 2 (Matrix Multiplication + LGV)**: The number of paths $e(a_i, b_j)$ from vertex $i$ in layer $1$ to vertex $j$ in layer $K$ is the $(i, j)$ entry of the matrix product $M = A_1 A_2 \cdots A_{K-1}$. By the LGV Lemma, $\det(M)$ automatically cancels all vertex-intersecting path tuples!
+- **Tier 3 (`CF 1630F` 2-Layer Poset Split)**: In `CF 1630F`, a divisibility graph is bipartite iff each kept vertex $x$ is assigned role `Source-only` ($x_0$) or `Sink-only` ($x_1$). Forbid both roles at the same vertex via poset edge $x_0 \to x_1$, and for each multiple $y$ of $x$, forbid $x \to y \to z$ by adding $x_0 \to y_0$, $x_1 \to y_1$, and $x_0 \to y_1$. Since the relation is already transitive, run Hopcroft-Karp directly!
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++17 Solution for #191 (`[NOI2021 / Luogu P7736] 路径交点`)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long MOD = 998244353;
+
+long long power(long long base, long long exp) {
+    long long res = 1;
+    base %= MOD;
+    while (exp > 0) {
+        if (exp & 1) res = res * base % MOD;
+        base = base * base % MOD;
+        exp >>= 1;
+    }
+    return res;
+}
+
+long long det_mod(vector<vector<long long>> A, int n) {
+    long long det = 1;
+    for (int i = 0; i < n; ++i) {
+        int pivot = -1;
+        for (int r = i; r < n; ++r) {
+            if (A[r][i] != 0) { pivot = r; break; }
+        }
+        if (pivot == -1) return 0;
+        if (pivot != i) {
+            swap(A[i], A[pivot]);
+            det = (MOD - det) % MOD;
+        }
+        det = det * A[i][i] % MOD;
+        long long inv = power(A[i][i], MOD - 2);
+        for (int r = i + 1; r < n; ++r) {
+            if (A[r][i] == 0) continue;
+            long long factor = A[r][i] * inv % MOD;
+            for (int c = i; c < n; ++c)
+                A[r][c] = (A[r][c] - factor * A[i][c]) % MOD;
+        }
+    }
+    return (det + MOD) % MOD;
+}
+
+void solve() {
+    int K;
+    if (!(cin >> K)) return;
+    vector<int> n(K), m(K - 1);
+    for (int i = 0; i < K; ++i) cin >> n[i];
+    for (int i = 0; i < K - 1; ++i) cin >> m[i];
+
+    // M starts as n[0] x n[0] identity matrix
+    vector<vector<long long>> M(n[0], vector<long long>(n[0], 0));
+    for (int i = 0; i < n[0]; ++i) M[i][i] = 1;
+
+    for (int layer = 0; layer < K - 1; ++layer) {
+        vector<vector<long long>> A(n[layer], vector<long long>(n[layer + 1], 0));
+        for (int e = 0; e < m[layer]; ++e) {
+            int u, v;
+            cin >> u >> v;
+            --u; --v;
+            A[u][v] = (A[u][v] + 1) % MOD;
+        }
+        vector<vector<long long>> nxt(n[0], vector<long long>(n[layer + 1], 0));
+        for (int i = 0; i < n[0]; ++i) {
+            for (int k = 0; k < n[layer]; ++k) {
+                if (!M[i][k]) continue;
+                for (int j = 0; j < n[layer + 1]; ++j)
+                    nxt[i][j] = (nxt[i][j] + M[i][k] * A[k][j]) % MOD;
+            }
+        }
+        M = move(nxt);
+    }
+    cout << det_mod(M, n[0]) << "\n";
+}
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int T;
+    if (cin >> T) while (T--) solve();
+    return 0;
+}
+```
+::::
+
+---
+
+### Problem `#192` (`M1` — Mastery Capstone): `[省选联考 2020 A卷 / LOJ #3303]` General $L_p$ Isotonic Regression (`保序回归`) & The Master Dual Certificate Synthesis
+
+- **Judge URL**: [https://loj.ac/p/3303](https://loj.ac/p/3303) (Gao Ruiquan's 2018 National Team Paper Benchmark)
+- **Constraints**: Given a poset DAG $G = (V, E)$ with $N \le 1000, M \le 5000$, target values $y_i$, positive weights $w_i$, and norm $1 \le p < \infty$ (both integer and continuous variants), compute $\min_{x_u \le x_v} \sum_{i=1}^N w_i |x_i - y_i|^p$.
+
+#### 4-Step Compilation Scratchpad (Unified Continuous & Discrete $L_p$ Isotonic Regression)
+
+1. **Step 1 (Diagnostic Signal)**: This is the grand general form of Section 1 (`AL-05`), handling any convex $L_p$ norm ($p = 1$, $p = 2$, or general $p > 1$).
+2. **Step 2 (Continuous vs. Integer Threshold Promotion Reward)**:
+   - **Integer $x_i \in \mathbb{Z}$**: At midpoint $M = \lfloor (L + R) / 2 \rfloor$, test $\{M, M+1\}$ with $\Delta_i(M) = w_i |M - y_i|^p - w_i |M + 1 - y_i|^p$.
+   - **Continuous $x_i \in \mathbb{R}$ ($p > 1$)**: At midpoint $M = (L + R) / 2$, test $\{M, M + \epsilon\}$ as $\epsilon \to 0^+$ using the negative directional derivative:
+
+     $$
+     \Delta_i^{\text{cont}}(M) = -\frac{d}{dx}\Big|_{x=M} w_i |x - y_i|^p = p w_i \operatorname{sgn}(y_i - M) |y_i - M|^{p-1}
+     $$
+
+   - **Closed-Form $L_2$ Block Mean Property**: When $p = 2$ and $x_i \in \mathbb{R}$, every level set $B_c = \{i \in V : x_i^* = c\}$ that shrinks to a single active subset at the leaves of `整体二分` has the exact rational optimum $c^* = \frac{\sum_{i \in B_c} w_i y_i}{\sum_{i \in B_c} w_i}$ (the weighted average of the block)!
+3. **Step 3 (Graph Compilation)**: Run `solve(V_cur, E_cur, L, R)` with Dinic on $|V_{\text{cur}}| + 2$ vertices, partitioning into $T_{\min}$ ($x_i^* \le M$) and $S_{\min}$ ($x_i^* > M$) and dropping cross-edges.
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #192 (General $L_p$ Isotonic Regression)"}
+- **Tier 1 (Derivative Slice for Continuous $L_p$)**: To decide whether $x_i^* \le M$ or $x_i^* > M$ in the continuous problem, differentiate $f_i(x) = w_i |x - y_i|^p$ at $x = M$.
+- **Tier 2 (Scale Factor for Floating-Point Capacities)**: Scale $\Delta_i^{\text{cont}}(M)$ by a constant (e.g. $10^6$ into `long long` or `double` with `EPS = 1e-9`) before running Dinic on $V_{\text{cur}}$.
+- **Tier 3 (Exact Rational Recovery for $p = 2$)**: After `整体二分` separates vertices into blocks of equal $x_i^*$ (or down to precision $10^{-7}$), group vertices with identical $x_i^*$ and set $x_i^* = (\sum_{j \in B} w_j y_j) / (\sum_{j \in B} w_j)$.
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++17 Template for #192 (General $L_p$ Isotonic Regression Solver)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+const double INF = 1e18;
+const double EPS = 1e-9;
+
+struct DinicDouble {
+    struct Edge { int to, rev; double cap; };
+    int n, s, t;
+    vector<vector<Edge>> adj;
+    vector<int> level, ptr;
+    DinicDouble(int n, int s, int t) : n(n), s(s), t(t), adj(n), level(n), ptr(n) {}
+    void add_edge(int u, int v, double cap) {
+        adj[u].push_back({v, (int)adj[v].size(), cap});
+        adj[v].push_back({u, (int)adj[u].size() - 1, 0.0});
+    }
+    bool bfs() {
+        fill(level.begin(), level.end(), -1);
+        level[s] = 0;
+        queue<int> q; q.push(s);
+        while (!q.empty()) {
+            int u = q.front(); q.pop();
+            for (auto& e : adj[u])
+                if (e.cap > EPS && level[e.to] == -1) {
+                    level[e.to] = level[u] + 1;
+                    q.push(e.to);
+                }
+        }
+        return level[t] != -1;
+    }
+    double dfs(int u, double pushed) {
+        if (pushed <= EPS || u == t) return pushed;
+        for (int& cid = ptr[u]; cid < (int)adj[u].size(); ++cid) {
+            auto& e = adj[u][cid];
+            if (level[u] + 1 != level[e.to] || e.cap <= EPS) continue;
+            double tr = dfs(e.to, min(pushed, e.cap));
+            if (tr <= EPS) continue;
+            e.cap -= tr; adj[e.to][e.rev].cap += tr;
+            return tr;
+        }
+        level[u] = -1;
+        return 0.0;
+    }
+    double max_flow() {
+        double f = 0;
+        while (bfs()) {
+            fill(ptr.begin(), ptr.end(), 0);
+            while (double p = dfs(s, INF)) f += p;
+        }
+        return f;
+    }
+};
+
+// Solves continuous L_p Isotonic Regression: min sum w_i |x_i - y_i|^p s.t. x_u <= x_v
+vector<double> solve_lp_isotonic(int n, double p, const vector<double>& y, const vector<double>& w,
+                                 const vector<pair<int, int>>& poset_edges, double L, double R) {
+    vector<double> ans(n, 0.0);
+    vector<int> V_all(n), local_id(n);
+    iota(V_all.begin(), V_all.end(), 0);
+
+    auto rec = [&](auto& self, vector<int>& V, vector<pair<int, int>>& E, double lo, double hi, int depth) -> void {
+        if (V.empty()) return;
+        if (depth >= 50 || hi - lo < 1e-9) {
+            double mid = 0.5 * (lo + hi);
+            for (int u : V) ans[u] = mid;
+            return;
+        }
+        double mid = 0.5 * (lo + hi);
+        int k = V.size();
+        for (int i = 0; i < k; ++i) local_id[V[i]] = i;
+        int S = k, T = k + 1;
+        DinicDouble dinic(k + 2, S, T);
+        for (int i = 0; i < k; ++i) {
+            int u = V[i];
+            double diff = y[u] - mid;
+            double delta = (diff >= 0 ? 1.0 : -1.0) * w[u] * pow(fabs(diff), p - 1.0);
+            if (delta > 0) dinic.add_edge(S, i, delta);
+            else dinic.add_edge(i, T, -delta);
+        }
+        for (auto [u, v] : E)
+            dinic.add_edge(local_id[u], local_id[v], INF);
+        dinic.max_flow();
+
+        vector<int> VL, VR;
+        for (int i = 0; i < k; ++i) {
+            if (dinic.level[i] != -1) VR.push_back(V[i]);
+            else VL.push_back(V[i]);
+        }
+        vector<pair<int, int>> EL, ER;
+        for (auto [u, v] : E) {
+            bool uR = (dinic.level[local_id[u]] != -1);
+            bool vR = (dinic.level[local_id[v]] != -1);
+            if (!uR && !vR) EL.push_back({u, v});
+            else if (uR && vR) ER.push_back({u, v});
+        }
+        self(self, VL, EL, lo, mid, depth + 1);
+        self(self, VR, ER, mid, hi, depth + 1);
+    };
+
+    rec(rec, V_all, poset_edges, L, R, 0);
+    return ans;
+}
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int n, m; double p;
+    if (!(cin >> n >> m >> p)) return 0;
+    vector<double> y(n), w(n);
+    double L = 1e18, R = -1e18;
+    for (int i = 0; i < n; ++i) { cin >> y[i]; L = min(L, y[i]); R = max(R, y[i]); }
+    for (int i = 0; i < n; ++i) cin >> w[i];
+    vector<pair<int, int>> edges(m);
+    for (int i = 0; i < m; ++i) { cin >> edges[i].first >> edges[i].second; --edges[i].first; --edges[i].second; }
+
+    auto x = solve_lp_isotonic(n, p, y, w, edges, L, R);
+    double total = 0;
+    for (int i = 0; i < n; ++i) total += w[i] * pow(fabs(x[i] - y[i]), p);
+    cout << fixed << setprecision(6) << total << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+## 6. Pre-Submission Checklist (`FM-24`–`FM-26` Audit)
+
+Before submitting any problem from Chapter 24 or an unhinted contest problem, run through this 5-point checklist:
+
+1. **Graph Contraction in `整体二分` (`FM-24a`)**: Did you re-index the vertices of $V_{\text{cur}}$ to $0 \dots |V_{\text{cur}}| - 1$ so Dinic runs on $|V_{\text{cur}}| + 2$ vertices, and did you drop all cross-edges between $T_{\min}$ and $S_{\min}$ before recursing?
+2. **Promotion Reward Sign (`FM-24b`)**: Did you verify $\Delta_i(M) = f_i(M) - f_i(M+1)$ so that vertices with $y_i > M$ (where moving up to $M+1$ reduces cost) have $\Delta_i(M) > 0$ and attach to $S$?
+3. **Bipartite Parity Check Before Binary Search (`FM-24c`)**: On any grid/bipartite increment game, did you check $(c_B - c_W) X = s_B - s_W$ **before** assuming $X$ can be binary searched?
+4. **Chordless Shortest Path in Matroid Intersection (`FM-25`)**: In Edmonds' Exchange Digraph $G(I)$, are you breaking weight ties by **minimum hop count** (`pair<cost, hops>`) so that simultaneous exchanges along $P$ never violate independence?
+5. **No 3-Layer Flow Amnesia (`FM-26`)**: If your flow network has 3 middle layers $A \to X \to B$, did you confirm that flow entering $x \in X$ from $a_1$ is legally allowed to exit to **any** $b_2 \in N^+(x)$?
+
+---
+
+## 7. Textbook Capstone Summary & Bridge to Part VI Checkpoint (`CP-VI`) and Synthesis Reserve
+
+Congratulations! Over the course of **24 chapters**, you have mastered the complete arc of Competitive Programming Network Flows, Minimum Cuts, Matchings, Min-Cost Circulations, Linear Programming Duality, Simulated Flows, Isotonic Regression, and Matroid Intersection:
+
+- **Part I (`Ch 01`–`Ch 04`)**: Residual graphs, augmenting paths, Max-Flow Min-Cut duality, Dinic's algorithm, and unit-network complexity laws.
+- **Part II (`Ch 05`–`Ch 08`)**: Bipartite matching, Hall's Marriage Theorem, König's Theorem, DAG path covers, Dilworth's antichains, and Flows with Lower Bounds.
+- **Part III (`Ch 09`–`Ch 12`)**: Maximum-Weight Closure, 2-Label Burn-Bury (`燃やす埋める`), Bipartite Variable Inversion, Multi-State Threshold Chains (`切糕`), and Gomory-Hu Cut Trees.
+- **Part IV (`Ch 13`–`Ch 18`)**: Successive Shortest Path MCMF, Johnson potentials, convex marginal cost splitting, dynamic edge insertion, time-expanded networks, and Min-Cost Circulations.
+- **Part V (`Ch 19`–`Ch 20`)**: Linear Programming Duality, Equation Differencing (`志愿者招募`), Total Unimodularity, and Inverse Optimization.
+- **Part VI (`Ch 21`–`Ch 24`)**: Data-Structure-Accelerated Flow Graphs, Simulated MCMF (Slope Trick / Regret Heaps), Edmonds' Blossom Algorithm, $L_p$ Isotonic Regression (`保序回归`), Weighted Matroid Intersection, the LGV Lemma, and the **Master 3-Stage Recognition Compiler**.
+
+Next, test your diagnostic reflexes in the **Part VI Checkpoint (`CP-VI`)** and the **20-Problem Unhinted Cross-Chapter Synthesis Reserve (`#193`–`#212`)**, where problem statements appear with **zero topic labels** — just as they do on the ICPC World Finals and NOI/IOI contest floor!
+
+---
+
+## Multilingual Bibliography & Seminal References
+
+- **`[ZH]` 高睿泉 (Zhi-Rui Gao, 2018)**: *《浅谈保序回归问题》 (On Isotonic Regression Problems)*, Proceedings of the 2018 Chinese National Olympiad in Informatics (NOI) National Training Team Papers (`国家集训队2018论文集`). The foundational paper introducing `整体二分` + Maximum-Weight Closure for $L_p$ Isotonic Regression and Inverse MST / Basis optimization in competitive programming.
+- **`[ZH]` 胡伯涛 (Bo-Tao Hu / Amber, 2007)**: *《最小割模型在信息学竞赛中的应用》 (Applications of Minimum Cut Models in Olympiad in Informatics)*, `国家集训队2007论文集`. Establishes the algebraic pseudo-Boolean compilation of closures, density subgraphs, and threshold cuts.
+- **`[EN]` Jack Edmonds (1970)**: *"Submodular Functions, Matroids, and Certain Polyhedra"*, in *Combinatorial Structures and Their Applications*, Gordon and Breach, pp. 69–87. Proves the Matroid Intersection Duality Theorem and Polymatroid Min-Cut Theorem.
+- **`[EN]` Bernt Lindström (1973) & Ira Gessel, Gérard Viennot (1985)**: *"Binomial Determinants, Paths, and Hook Length Formulae"*, *Advances in Mathematics* 58(3), pp. 300–321. The canonical reference for the Lindström–Gessel–Viennot determinant lemma on non-intersecting DAG path systems.
+- **`[EN]` Ravindra K. Ahuja, Thomas L. Magnanti, and James B. Orlin (1993)**: *Network Flows: Theory, Algorithms, and Applications*, Prentice Hall. Comprehensive treatment of network simplex, parametric flows, inverse optimization, and matroid flows.
+- **`[JA]` noshi91, maspypy, & tatyam (2019–2023)**: *「燃やす埋める問題と劣モジュラ関数」「マトロイド交差 (Matroid Intersection)」*, Japanese competitive programming treatises unifying submodular cut compilation, Lovász extensions, and chordless exchange-graph augmentation.

@@ -1,0 +1,1946 @@
+---
+title: "Chapter 19 — Disjoint K-Interval Coverage & The Algebraic Equation-Difference Method"
+---
+
+## Prerequisites & Learning Objectives
+
+### Prerequisites
+
+Before studying this chapter, make sure you are comfortable with:
+
+- **Chapter 01 (Flow Conservation, Residual Networks & Max-Flow Min-Cut)**: Interpreting nodal flow conservation $\text{OutFlow}(u) - \text{InFlow}(u) = b_u$ as a linear system $A \mathbf{f} = \mathbf{b}$ where every column of the node-arc incidence matrix $A$ contains at most one $+1$ (at the arc's tail) and at most one $-1$ (at the arc's head).
+- **Chapter 04 (Lower-Bound Flows & Feasibility Circulations)**: Compiling nodal supplies/demands $b_u \in \mathbb{R}$ and edge capacity intervals $[l_e, u_e]$ into a standard $S^*$-$T^*$ auxiliary network, and using **Mandatory Initial Saturation (`负权边强制满流消圈法`)** to eliminate negative-cost cycles.
+- **Chapter 17 (Minimum-Cost Max-Flow, Johnson Potentials & Slope Convexity)**: Running Primal-Dual / Successive Shortest Path (SSP) with Dijkstra, initializing potentials $\pi_0$ via $O(V + E)$ topological dynamic programming when the initial support is a Directed Acyclic Graph (DAG), and reconstructing discrete decisions from optimal integer flows.
+- **Chapter 18 (Circulation Cost-Scaling & Separable Convex Cost Flows)**: Bundling piecewise-linear convex cost brackets into parallel arcs and reasoning about marginal cost increments.
+
+### Learning Objectives
+
+By the end of this chapter, you will be able to:
+
+1. **Compile Contiguous Interval Linear Programs Mechanically via Consecutive Equation Differencing (`流守恒差分建模法`, $\Delta E_i = E_i - E_{i-1}$)**: Starting from a pure algebraic system of interval covering inequalities with zero graphs mentioned, introduce explicit slack/surplus variables $y_i \ge 0$, pad boundary equations $E_0: 0 = 0$ and $E_{n+1}: 0 = 0$, and take consecutive row differences $\Delta E_i = E_i - E_{i-1}$ to transform every Consecutive-Ones (`C1P`) column into a single $+1$ and a single $-1$.
+2. **Eliminate Off-by-One Endpoint & Slack-Polarity Bugs (`FM-19` / `H-21`)**: Prove from first principles why a closed interval $[l_j, r_j]$ compiles into the directed arc $l_j \to r_j + 1$ (requiring vertex $n+1$), why a lower-bound surplus slack $-y_i$ compiles into a **backward** spine arc $i + 1 \to i$ (**[NOI2008] Volunteer Recruitment `#148`**), and why an upper-bound slack $+y_i$ compiles into a **forward** spine arc $i \to i + 1$.
+3. **Compile Doubly-Bounded Sliding Windows via Capacitated Slack Arcs**: Transform two-sided window constraints $L_i \le \sum_{j \in W_i} x_j \le R_i$ into exact equations using a single bounded slack variable $y_i \in [0, R_i - L_i]$, and reconcile the Forward-DAG Upper-Slack compilation with the Backward-Spine Lower-Slack compilation (**[NEERC 2016] Delight for a Cat `#151`**).
+4. **Unify $K$-Overlapping Interval Selection (`最长k可重区间集`) and 2D Segment Coordinate Doubling ($x \mapsto (2x, 2x+1)$)**: Prove the exact algebraic isomorphism between the intuitive "backbone $i \to i+1$ with bypass chords $l_j \to r_j$" model and the equation-difference model, and resolve the vertical-segment self-loop degeneracy $x_1 = x_2$ in **[网络流24题] 最长k可重线段集 (`#147`)** via coordinate doubling.
+5. **Generalize Equation Differencing to Rooted Trees (`树上流守恒差分`)**: Extend linear differencing $\Delta E_i = E_i - E_{i-1}$ to tree-path coverings via $\Delta^{\text{tree}} E_u = E_u - \sum_{v \in \text{child}(u)} E_v$ (**[ICPC 2018 Nanjing] `#152`**).
+
+---
+
+## 1. The Algebraic Equation-Difference Compiler (`流守恒差分建模法`: $\Delta E_i = E_i - E_{i-1}$)
+
+### 1.1 Why Traditional Interval-Flow Editorials Violate the "Zero Magic Gadgets" Mandate
+
+Open almost any traditional editorial for the classic **[NOI2008 / Luogu P3980] 志愿者招募 (Volunteer Recruitment, `#148`)** and you will be greeted by a baffling recipe presented out of thin air:
+
+> *"Create $n + 1$ vertices $1, 2, \dots, n + 1$. Connect $S \to i$ with capacity $A_i - A_{i-1}$ if $A_i - A_{i-1} > 0$, or connect $i \to T$ with capacity $A_{i-1} - A_i$ if $A_i - A_{i-1} < 0$. Add a backward edge $i + 1 \to i$ of capacity $\infty$ and cost $0$ for each $i = 1, \dots, n$. For each volunteer type $[l_j, r_j]$, add a forward edge $l_j \to r_j + 1$ of capacity $\infty$ and cost $c_j$. Run Min-Cost Max-Flow."*
+
+A programmer meeting this construction for the first time asks four completely legitimate questions:
+
+1. **Why are there $n + 1$ vertices when the problem only has $n$ days?**
+2. **Where did the finite difference $A_i - A_{i-1}$ come from?**
+3. **Why does a volunteer working on days $[l_j, r_j]$ connect to $r_j + 1$ instead of $r_j$?**
+4. **Why do the free spine edges point backward ($i + 1 \to i$) in lower-bound coverage, whereas they point forward ($i \to i + 1$) in upper-bound interval packing?**
+
+The answer is **not** a clever geometric picture of people walking along a corridor. It is **pure linear algebra**—specifically, the **Algebraic Equation-Difference Method (`流守恒差分建模法`)**, formalized in Chinese competitive programming by Bushu Zhou (`周冬`) in the *2009 National Training Team Papers (`国家集训队论文`)*.
+
+Once you understand this four-step algebraic compiler, you will never guess a vertex count, an arc orientation, or a right-hand-side supply again.
+
+### 1.2 Step 1 — Starting from Pure Linear Inequalities (Zero Graphs Mentioned)
+
+Suppose a problem gives us a discrete timeline of $n$ positions (days, hours, or elementary segments) indexed by $i \in \{1, 2, \dots, n\}$, and $m$ decision variables $x_1, x_2, \dots, x_m$. Each decision variable $x_j \in [0, u_j]$ (with unit cost $c_j \in \mathbb{R}$ and upper bound $u_j \in \mathbb{Z}_{\ge 1} \cup \{\infty\}$) is active across a **contiguous closed interval of positions** $[l_j, r_j] \subseteq \{1, 2, \dots, n\}$ ($1 \le l_j \le r_j \le n$).
+
+On each position $i \in \{1, 2, \dots, n\}$, the total number of active variables covering position $i$ must be at least $A_i$:
+
+$$
+\min_{\mathbf{x} \in \mathbb{Z}^m} \sum_{j=1}^m c_j x_j \quad \text{subject to} \quad \sum_{j \,:\, l_j \le i \le r_j} x_j \ge A_i \quad (i = 1, 2, \dots, n), \qquad 0 \le x_j \le u_j.
+$$
+
+Why isn't this linear program already a network flow problem?
+
+Recall from Chapter 01 that in any directed network $G = (V, E)$, the flow conservation equations at the vertices $i \in V$:
+
+$$
+\text{OutFlow}(i) - \text{InFlow}(i) = \sum_{e \in \delta^+(i)} f_e - \sum_{e \in \delta^-(i)} f_e = b_i
+$$
+
+have a very rigid matrix structure: **each flow variable $f_e$ (corresponding to a directed arc $e = (u \to v)$) appears in the entire system of equations at most twice—once with coefficient $+1$ in the equation for its tail vertex $u$, and once with coefficient $-1$ in the equation for its head vertex $v$**.
+
+In our interval covering system, by contrast, variable $x_j$ appears with coefficient $+1$ in **every** inequality $i \in \{l_j, l_j + 1, \dots, r_j\}$. If we stack the $n$ constraints as rows of an $n \times m$ matrix $M$, the $j$-th column of $M$ is a contiguous block of $r_j - l_j + 1$ ones:
+
+$$
+M_{*, j} = \begin{bmatrix} 0 & \cdots & 0 & \underbrace{1 \quad 1 \quad \cdots \quad 1}_{\text{rows } l_j \text{ through } r_j} & 0 & \cdots & 0 \end{bmatrix}^T.
+$$
+
+A $\{0, 1\}$-matrix whose ones in every column form a single contiguous block is said to satisfy the **Consecutive-Ones Property (`连续 1 性质`, `C1P`)** on columns.
+
+### 1.3 Step 2 — Slack Variables $y_i \ge 0$ and Consecutive Row Differencing ($\Delta E_i = E_i - E_{i-1}$)
+
+How do we transform a column containing a contiguous run of ones $(0, \dots, 0, 1, 1, \dots, 1, 0, \dots, 0)^T$ into a column containing **only a single $+1$ and a single $-1$**?
+
+First, we cannot subtract two inequalities $\ge$ from one another directly (if $\alpha \ge A_2$ and $\beta \ge A_1$, it does *not* follow that $\alpha - \beta \ge A_2 - A_1$). Therefore, we must first convert every inequality into an **exact linear equation** by introducing an explicit non-negative **surplus (slack) variable** $y_i \ge 0$ for each position $i \in \{1, 2, \dots, n\}$:
+
+$$
+y_i := \left(\sum_{j \,:\, l_j \le i \le r_j} x_j\right) - A_i \ge 0 \qquad (i = 1, 2, \dots, n).
+$$
+
+Physically, $y_i \ge 0$ counts the **excess coverage** at position $i$ above the required threshold $A_i$, and incurs zero cost ($0 \cdot y_i$) in the objective function. Rewriting the $n$ constraints as exact equalities $E_1, E_2, \dots, E_n$:
+
+$$
+E_i : \quad \sum_{j \,:\, l_j \le i \le r_j} x_j - y_i = A_i \qquad (i = 1, 2, \dots, n, \quad y_i \ge 0).
+$$
+
+Second, to ensure that intervals starting at $l_j = 1$ and intervals ending at $r_j = n$ both have a clean boundary when we take row differences, we pad the system at the top and bottom with **two trivial dummy equations** $E_0$ and $E_{n+1}$ (defining $A_0 := 0$, $A_{n+1} := 0$, $y_0 \equiv 0$, and $y_{n+1} \equiv 0$):
+
+$$
+E_0 : \quad 0 = 0, \qquad\qquad E_{n+1} : \quad 0 = 0.
+$$
+
+Now, replace the system $(E_1, E_2, \dots, E_n, E_{n+1})$ by the $n + 1$ **consecutive difference equations**:
+
+$$
+\Delta E_i := E_i - E_{i-1} \qquad \text{for } i = 1, 2, \dots, n + 1.
+$$
+
+Why is this replacement lossless? Because for any $k \in \{1, 2, \dots, n+1\}$, the prefix sum of the first $k$ difference equations telescopes back to $E_k$:
+
+$$
+\sum_{i=1}^k \Delta E_i = \sum_{i=1}^k (E_i - E_{i-1}) = E_k - E_0 = E_k.
+$$
+
+In matrix terms, premultiplying by the $(n+1) \times n$ first-difference operator $D$ maps the solution space bijectively onto the subspace of $(\Delta E_1, \dots, \Delta E_{n+1})$ satisfying $\sum_{i=1}^{n+1} \Delta E_i = E_{n+1} - E_0 = 0$.
+
+### 1.4 Step 3 — The Consecutive-Ones Telescoping Theorem (Why Every Column Becomes an Arc)
+
+Let us compute the exact coefficient of each interval variable $x_j$ and each slack variable $y_k$ across the $n + 1$ differenced equations $\Delta E_1, \Delta E_2, \dots, \Delta E_{n+1}$.
+
+::: {.callout-important title="Theorem 19.1 (The Consecutive-Ones Telescoping Law)"}
+Let $E_i : \sum_{j : l_j \le i \le r_j} x_j - y_i = A_i$ ($i = 1, \dots, n$) be a Consecutive-Ones linear system padded with $E_0: 0 = 0$ and $E_{n+1}: 0 = 0$. In the differenced system $\Delta E_i = E_i - E_{i-1}$ for $i = 1, 2, \dots, n + 1$:
+
+1. **Interval Variable $x_j$ (active on $[l_j, r_j] \subseteq \{1, \dots, n\}$)**:
+   - For $1 \le i < l_j$: $x_j$ appears in neither $E_i$ nor $E_{i-1}$, so its coefficient in $\Delta E_i$ is $0 - 0 = 0$.
+   - **At $i = l_j$**: $x_j$ appears in $E_{l_j}$ (coefficient $+1$) and does *not* appear in $E_{l_j - 1}$ (coefficient $0$), so its coefficient in $\Delta E_{l_j}$ is **$+1 - 0 = +1$**.
+   - For $l_j < i \le r_j$: $x_j$ appears in *both* $E_i$ ($+1$) and $E_{i-1}$ ($+1$), so its coefficient in $\Delta E_i$ cancels identically: **$+1 - 1 = 0$**!
+   - **At $i = r_j + 1$**: $x_j$ does *not* appear in $E_{r_j + 1}$ ($0$) and *does* appear in $E_{r_j}$ ($+1$), so its coefficient in $\Delta E_{r_j + 1}$ is **$0 - 1 = -1$**.
+   - For $r_j + 1 < i \le n + 1$: $x_j$ appears in neither equation, so its coefficient is $0$.
+
+2. **Surplus Slack Variable $y_k$ ($1 \le k \le n$, appearing only in $E_k$ with coefficient $-1$)**:
+   - **At $i = k$**: in $\Delta E_k = E_k - E_{k-1}$, $y_k$ has coefficient **$-1 - 0 = -1$**.
+   - **At $i = k + 1$**: in $\Delta E_{k+1} = E_{k+1} - E_k$, $y_k$ has coefficient **$0 - (-1) = +1$**.
+   - For all $i \notin \{k, k + 1\}$: $y_k$ has coefficient $0$.
+
+3. **Right-Hand Side Nodal Demand $b_i$**:
+   - The right-hand side of $\Delta E_i$ is $b_i := A_i - A_{i-1}$ (with $A_0 = A_{n+1} = 0$), satisfying total balance $\sum_{i=1}^{n+1} b_i = A_{n+1} - A_0 = 0$.
+:::
+
+Look at the column for $x_j$ before and after differencing:
+
+$$
+\text{Before } (\text{rows } 1 \dots n): \begin{array}{c} 1 \\ \vdots \\ l_j - 1 \\ l_j \\ l_j + 1 \\ \vdots \\ r_j \\ r_j + 1 \\ \vdots \\ n \end{array}
+\begin{bmatrix} 0 \\ \vdots \\ 0 \\ +1 \\ +1 \\ \vdots \\ +1 \\ 0 \\ \vdots \\ 0 \end{bmatrix}
+\qquad \xrightarrow{\quad \Delta E_i = E_i - E_{i-1} \quad} \qquad
+\text{After } (\text{rows } 1 \dots n+1): \begin{array}{c} 1 \\ \vdots \\ l_j - 1 \\ \mathbf{l_j} \\ l_j + 1 \\ \vdots \\ r_j \\ \mathbf{r_j + 1} \\ \vdots \\ n + 1 \end{array}
+\begin{bmatrix} 0 \\ \vdots \\ 0 \\ \mathbf{+1} \\ 0 \\ \vdots \\ 0 \\ \mathbf{-1} \\ \vdots \\ 0 \end{bmatrix}.
+$$
+
+Every single column in the entire differenced system $\Delta E_1, \dots, \Delta E_{n+1}$ now has **literally one $+1$ and one $-1$**!
+
+### 1.5 Step 4 — Mechanical Graph Compilation from $\Delta E_i$
+
+Writing out the $i$-th difference equation $\Delta E_i$ ($i \in \{1, 2, \dots, n+1\}$) and grouping the $+1$ terms (outflow) and $-1$ terms (inflow) gives:
+
+$$
+\Delta E_i : \quad \underbrace{\left(\sum_{j \,:\, l_j = i} x_j + y_{i-1}\right)}_{\text{OutFlow}(i) \text{ (coeff } +1\text{)}} - \underbrace{\left(\sum_{j \,:\, r_j + 1 = i} x_j + y_i\right)}_{\text{InFlow}(i) \text{ (coeff } -1\text{)}} = A_i - A_{i-1} =: b_i,
+$$
+
+where $y_0 \equiv 0$ and $y_{n+1} \equiv 0$.
+
+Now create $n + 1$ timeline vertices $V_{\text{time}} = \{1, 2, \dots, n + 1\}$, plus a super-source $S$ and super-sink $T$. Under the standard nodal conservation law $\text{OutFlow}(i) - \text{InFlow}(i) = b_i$:
+
+- Any non-negative variable $z \in [0, U]$ with unit cost $c$ that has **$+1$ in $\Delta E_u$ (outflow from $u$)** and **$-1$ in $\Delta E_v$ (inflow to $v$)** is compiled into a directed arc:
+
+  $$
+  u \xrightarrow{\text{cap } U, \;\text{cost } c} v.
+  $$
+
+Applying this rule mechanically to every term in $\Delta E_i$ produces the complete network specification:
+
+| Algebraic Term in $\Delta E_i$ | Row with $+1$ (Tail $u$) | Row with $-1$ (Head $v$) | Compiled Directed Arc $u \to v$ | Capacity | Unit Cost |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Interval Variable $x_j \in [0, u_j]$** ($[l_j, r_j]$) | $\Delta E_{l_j}$ | $\Delta E_{r_j + 1}$ | $l_j \longrightarrow r_j + 1$ | $u_j$ | $c_j$ |
+| **Surplus Slack $y_i \ge 0$** ($\sum x_j - y_i = A_i$) | $\Delta E_{i+1}$ | $\Delta E_i$ | $i + 1 \longrightarrow i$ *(backward!)* | $\infty$ | $0$ |
+| **Deficit Slack $y_i \ge 0$** ($\sum x_j + y_i = K_i$) | $\Delta E_i$ | $\Delta E_{i+1}$ | $i \longrightarrow i + 1$ *(forward!)* | $\infty$ | $0$ |
+| **Positive Nodal Balance $b_i = A_i - A_{i-1} > 0$** | External Supply | $\Delta E_i$ | $S \longrightarrow i$ | $A_i - A_{i-1}$ | $0$ |
+| **Negative Nodal Balance $b_i = A_i - A_{i-1} < 0$** | $\Delta E_i$ | External Demand | $i \longrightarrow T$ | $A_{i-1} - A_i$ | $0$ |
+
+Every mystery from Section 1.1 is now completely resolved:
+
+1. **Why $n + 1$ vertices?** Because an interval $[l_j, r_j]$ covering day $r_j = n$ is still active in $E_n$ and only drops out in $E_{n+1}: 0 = 0$, placing its $-1$ coefficient in $\Delta E_{n+1}$ (vertex $n + 1$).
+2. **Why $A_i - A_{i-1}$?** Because the right-hand side of $\Delta E_i = E_i - E_{i-1}$ is literally $A_i - A_{i-1}$.
+3. **Why $l_j \to r_j + 1$?** Because $x_j$ enters at row $l_j$ ($E_{l_j} - E_{l_j - 1}$) and leaves at row $r_j + 1$ ($E_{r_j + 1} - E_{r_j}$).
+4. **Why does the slack edge point backward ($i + 1 \to i$) for $\ge A_i$ but forward ($i \to i + 1$) for $\le K_i$?** Because in $\sum x_j - y_i = A_i$, the slack variable has sign **$-y_i$** in $E_i$, giving $-1$ in $\Delta E_i$ and $+1$ in $\Delta E_{i+1}$ ($i + 1 \to i$); whereas in $\sum x_j + y_i = K_i$, the slack variable has sign **$+y_i$** in $E_i$, giving $+1$ in $\Delta E_i$ and $-1$ in $\Delta E_{i+1}$ ($i \to i + 1$)!
+
+::: {.callout-warning title="Broken-Gadget Counterexample FM-19 (↔ H-21): Off-by-One Interval Wiring ($l_j \to r_j$ vs. $l_j \to r_j + 1$) & Missing Vertex $n + 1$"}
+Suppose $n = 2$ days with requirements $A_1 = 1, A_2 = 1$, and we have a volunteer type covering the closed interval $[l_1, r_1] = [1, 2]$ at cost $c_1 = 5$, plus single-day volunteers $[1, 1]$ (cost $4$) and $[2, 2]$ (cost $4$).
+
+- **What breaks if you wire $[l_j, r_j]$ as $l_j \to r_j$ instead of $l_j \to r_j + 1$?**
+  - The single-day volunteers $[1, 1]$ and $[2, 2]$ become **self-loops** $1 \to 1$ and $2 \to 2$ that cannot carry any net flow between vertices!
+  - Meanwhile, the two-day volunteer $[1, 2]$ becomes the arc $1 \to 2$, which only has $+1$ in $\Delta E_1$ and $-1$ in $\Delta E_2$. Undifferencing $+1$ at row $1$ and $-1$ at row $2$ corresponds to covering **only day $1$** ($[1, 2 - 1] = [1, 1]$), leaving day $2$ completely uncovered!
+- **What breaks if you wire $l_j \to r_j + 1$ but only allocate $n$ vertices (omitting $\Delta E_{n+1}$)?**
+  - In $E_1, \dots, E_n$, $b_1 = A_1 - 0 = +1$ and $b_2 = A_2 - A_1 = 0$, so $\sum_{i=1}^n b_i = A_n = 1 \ne 0$! There is no sink demand $b_{n+1} = 0 - A_n = -1$ at vertex $n + 1$, so the flow network has $0$ sink capacity and outputs cost $0$!
+- **Audit Rule (`H-21`)**: Whenever an interval $[l_j, r_j]$ is **closed** on integer indices $1 \dots n$, its half-open span is $[l_j, r_j + 1)$, its arc is **$l_j \to r_j + 1$**, and the timeline requires **$n + 1$ vertices**.
+:::
+
+---
+
+## 2. Flagship Deep-Dive Case Studies: `[NOI2008] 志愿者招募` (`#148`) & Doubly-Bounded Sliding Windows (`[NEERC 2016] Delight for a Cat` `#151`)
+
+Let us now apply the Equation-Difference Compiler to two flagship problems: first, a complete numerical walkthrough of **[NOI2008] Volunteer Recruitment (`#148`)**, and second, the two-sided sliding-window generalization **[NEERC 2016] Delight for a Cat (`#151`)**.
+
+### 2.1 Hand-Checkable Toy Trace of `[NOI2008 / Luogu P3980] 志愿者招募` (`#148`)
+
+Consider a $n = 3$ day project with daily volunteer requirements:
+
+$$
+A_1 = 2, \qquad A_2 = 3, \qquad A_3 = 1 \qquad (\text{with boundary } A_0 = 0, \; A_4 = 0),
+$$
+
+and $m = 3$ volunteer types ($x_1, x_2, x_3 \in [0, \infty)$):
+
+- **Type 1**: works days $[l_1, r_1] = [1, 2]$, cost $c_1 = 4$.
+- **Type 2**: works days $[l_2, r_2] = [2, 3]$, cost $c_2 = 2$.
+- **Type 3**: works days $[l_3, r_3] = [1, 3]$, cost $c_3 = 5$.
+
+#### Step-by-Step Algebraic Compilation
+
+1. **Equality System $E_0, \dots, E_4$ with Surplus Slacks $y_1, y_2, y_3 \ge 0$**:
+
+   $$
+   \begin{aligned}
+   E_0 &: & 0 &= 0 \\
+   E_1 &: & x_1 \phantom{{}+ x_2} + x_3 - y_1 &= 2 \\
+   E_2 &: & x_1 + x_2 + x_3 - y_2 &= 3 \\
+   E_3 &: & \phantom{x_1 +{}} x_2 + x_3 - y_3 &= 1 \\
+   E_4 &: & 0 &= 0
+   \end{aligned}
+   $$
+
+2. **Consecutive Equation Differences $\Delta E_i = E_i - E_{i-1}$ ($i = 1, 2, 3, 4$)**:
+
+   $$
+   \begin{aligned}
+   \Delta E_1 = E_1 - E_0 &: & +x_1 \phantom{{}+ x_2} + x_3 - y_1 \phantom{{}+ y_2 - y_3} &= 2 - 0 = +2 \\
+   \Delta E_2 = E_2 - E_1 &: & \phantom{+x_1} + x_2 \phantom{{}+ x_3} + y_1 - y_2 \phantom{{}- y_3} &= 3 - 2 = +1 \\
+   \Delta E_3 = E_3 - E_2 &: & -x_1 \phantom{{}+ x_2 + x_3 + y_1} + y_2 - y_3 &= 1 - 3 = -2 \\
+   \Delta E_4 = E_4 - E_3 &: & \phantom{-x_1} - x_2 - x_3 \phantom{{}+ y_1 + y_2} + y_3 &= 0 - 1 = -1
+   \end{aligned}
+   $$
+
+3. **Reading Off the Flow Graph ($V = \{S, T, 1, 2, 3, 4\}$)**:
+   - **Source / Sink Supplies & Demands**:
+     - $b_1 = +2 \implies S \xrightarrow{\text{cap } 2, \text{cost } 0} 1$
+     - $b_2 = +1 \implies S \xrightarrow{\text{cap } 1, \text{cost } 0} 2$
+     - $b_3 = -2 \implies 3 \xrightarrow{\text{cap } 2, \text{cost } 0} T$
+     - $b_4 = -1 \implies 4 \xrightarrow{\text{cap } 1, \text{cost } 0} T$
+   - **Volunteer Arcs ($l_j \to r_j + 1$)**:
+     - $x_1$: $1 \xrightarrow{\text{cap } \infty, \text{cost } 4} 3$
+     - $x_2$: $2 \xrightarrow{\text{cap } \infty, \text{cost } 2} 4$
+     - $x_3$: $1 \xrightarrow{\text{cap } \infty, \text{cost } 5} 4$
+   - **Backward Surplus Spine Arcs ($i + 1 \to i$)**:
+     - $y_1$: $2 \xrightarrow{\text{cap } \infty, \text{cost } 0} 1$
+     - $y_2$: $3 \xrightarrow{\text{cap } \infty, \text{cost } 0} 2$
+     - $y_3$: $4 \xrightarrow{\text{cap } \infty, \text{cost } 0} 3$
+
+```{mermaid}
+flowchart LR
+    S(["Source S"])
+    T(["Sink T"])
+    v1["Node 1 (b1 = +2)"]
+    v2["Node 2 (b2 = +1)"]
+    v3["Node 3 (b3 = -2)"]
+    v4["Node 4 (b4 = -1)"]
+
+    S -- "cap 2, cost 0" --> v1
+    S -- "cap 1, cost 0" --> v2
+    v1 -- "x1: cap inf, cost 4" --> v3
+    v2 -- "x2: cap inf, cost 2" --> v4
+    v1 -- "x3: cap inf, cost 5" --> v4
+    v2 -- "y1: cap inf, cost 0" --> v1
+    v3 -- "y2: cap inf, cost 0" --> v2
+    v4 -- "y3: cap inf, cost 0" --> v3
+    v3 -- "cap 2, cost 0" --> T
+    v4 -- "cap 1, cost 0" --> T
+```
+
+4. **Tracing SSP Augmentations and the Physical Meaning of Slack Flow**:
+   - Total supply leaving $S$ is $b_1 + b_2 = 2 + 1 = 3$ units. Notice that **all initial edge costs are non-negative** ($c_j \ge 0$ and $0$), so $\pi_0 \equiv 0$ is immediately a valid Johnson potential even though the graph contains directed cycles such as $1 \xrightarrow{x_1} 3 \xrightarrow{y_2} 2 \xrightarrow{y_1} 1$!
+   - **Candidate Flow 1**: Route $2$ units along $S \to 1 \xrightarrow{x_1} 3 \to T$ (cost $2 \times 4 = 8$) and $1$ unit along $S \to 2 \xrightarrow{x_2} 4 \to T$ (cost $1 \times 2 = 2$), for a total cost of $8 + 2 = 10$.
+   - **Candidate Flow 2 (Using $x_3$ and a Backward Slack Arc)**: Wait—what if we route $1$ unit along $S \to 1 \xrightarrow{x_3 \text{ (cost 5)}} 4 \xrightarrow{y_3 \text{ (cost 0)}} 3 \to T$, $1$ unit along $S \to 1 \xrightarrow{x_1 \text{ (cost 4)}} 3 \to T$, and $1$ unit along $S \to 2 \xrightarrow{x_2 \text{ (cost 2)}} 4 \to T$?
+     - Here $(x_1, x_2, x_3) = (1, 1, 1)$ and $(y_1, y_2, y_3) = (0, 0, 1)$, with total cost $4 + 2 + 5 = 11 > 10$.
+     - Look at what the $1$ unit of flow on the backward slack arc $4 \xrightarrow{y_3} 3$ means algebraically: on day $3$, both $x_2 = 1$ and $x_3 = 1$ are working, giving $1 + 1 = 2$ volunteers when only $A_3 = 1$ is needed. That $1$ extra volunteer on day $3$ is the surplus $y_3 = 2 - 1 = 1$, which flows backward from $4 \to 3$ so that $x_3$'s endpoint at $4$ can satisfy node $3$'s demand!
+   - Thus the minimum cost is **$10$**, achieved uniquely by $(x_1, x_2, x_3) = (2, 1, 0)$ and $(y_1, y_2, y_3) = (0, 0, 0)$.
+
+### 2.2 Doubly-Bounded Sliding Windows (`[NEERC 2016] Delight for a Cat` `#151`)
+
+Now suppose a problem imposes **both a lower bound $L_i$ and an upper bound $R_i$** on each constraint row $i$:
+
+$$
+L_i \le \sum_{j \,:\, l_j \le i \le r_j} x_j \le R_i \qquad (i = 1, 2, \dots, W).
+$$
+
+This exact structure arises in **[ICPC NEERC 2016 D / Luogu P6967] Delight for a Cat (`#151`)** (and **[ONTAK 2010] Vacation**):
+
+- Across $n$ hours $j \in \{1, 2, \dots, n\}$, a cat must choose either to **sleep** (gaining $s_j$ happiness) or to **eat** (gaining $e_j$ happiness) in each hour $j$.
+- In **every contiguous sliding window of $k$ hours** $[i, i + k - 1]$ ($i = 1, 2, \dots, n - k + 1$), the cat must sleep for at least $m_s$ hours and eat for at least $m_e$ hours ($m_s + m_e \le k$).
+- Maximize the cat's total happiness across the $n$ hours.
+
+#### Step 1: Dualizing Point Decisions into Interval Columns
+
+If the cat sleeps in all $n$ hours, its baseline happiness is $S_{\text{base}} = \sum_{j=1}^n s_j$. Let $x_j \in \{0, 1\}$ indicate whether the cat switches hour $j$ from sleeping to eating, which changes happiness by $w_j = e_j - s_j$ (equivalent to minimizing cost $c_j = -w_j = s_j - e_j$).
+
+Let $W = n - k + 1$ be the number of sliding windows. In window $i \in \{1, 2, \dots, W\}$ (spanning hours $j \in [i, i + k - 1]$):
+
+- Eating at least $m_e$ hours means $\sum_{j=i}^{i+k-1} x_j \ge m_e =: L$.
+- Sleeping at least $m_s$ hours means eating at most $k - m_s$ hours: $\sum_{j=i}^{i+k-1} x_j \le k - m_s =: R$.
+
+Now ask: **Which window constraints $E_i$ ($1 \le i \le W$) contain the decision variable $x_j$?**
+
+$$
+x_j \text{ appears in } E_i \quad \Longleftrightarrow \quad i \le j \le i + k - 1 \quad \Longleftrightarrow \quad j - k + 1 \le i \le j.
+$$
+
+Intersecting with $1 \le i \le W$, variable $x_j$ appears with coefficient $+1$ in the **single contiguous interval of window indices** $[l_j, r_j]$ given by:
+
+$$
+l_j = \max(1, \; j - k + 1), \qquad r_j = \min(W, \; j) \qquad (1 \le l_j \le r_j \le W)!
+$$
+
+Thus, the sliding-window constraint matrix has the **Consecutive-Ones Property on columns**!
+
+#### Step 2: Turning Two-Sided Inequalities $L_i \le \text{sum}_i \le R_i$ into a Single Bounded Slack Variable
+
+At first glance, $L_i \le \sum_{j : l_j \le i \le r_j} x_j \le R_i$ looks like **two** separate inequalities per window $i$. If we wrote two separate rows per window, each variable $x_j$ would appear in two non-adjacent blocks of rows, destroying the Consecutive-Ones Property!
+
+Instead, observe that a two-sided inequality $L_i \le S_i \le R_i$ is **100% equivalent** to a single equality with a **capacity-bounded slack variable** of range $[0, R_i - L_i]$! Moreover, we have **two dual choices** for how to define that slack variable:
+
+| Compilation Variant | Slack Variable Definition | Equality $E_i$ ($i = 1, \dots, W$) | Differenced Arc for $x_j$ | Differenced Arc for Slack | Nodal Balance $b_i$ (when $L_i \equiv L, R_i \equiv R$) |
+| :--- | :--- | :--- | :---: | :---: | :--- |
+| **Variant A: Upper-Slack Forward-DAG** | $y_i := R_i - \sum x_j \in [0, R_i - L_i]$ *(unused upper capacity)* | $\sum_{j : l_j \le i \le r_j} x_j + y_i = R_i$ | $l_j \xrightarrow{\text{cap } 1, \text{cost } -w_j} r_j + 1$ | $i \xrightarrow{\text{cap } R_i - L_i, \text{cost } 0} i + 1$ *(forward!)* | $b_1 = +R$, $b_{W+1} = -R$, $b_2 = \dots = b_W = 0$ |
+| **Variant B: Lower-Slack Backward-Spine** | $z_i := \sum x_j - L_i \in [0, R_i - L_i]$ *(surplus above lower bound)* | $\sum_{j : l_j \le i \le r_j} x_j - z_i = L_i$ | $l_j \xrightarrow{\text{cap } 1, \text{cost } -w_j} r_j + 1$ | $i + 1 \xrightarrow{\text{cap } R_i - L_i, \text{cost } 0} i$ *(backward!)* | $b_1 = +L$, $b_{W+1} = -L$, $b_2 = \dots = b_W = 0$ |
+
+::: {.callout-tip title="Why Both Compilations Are Algebraically Isomorphic — And When to Prefer Variant A vs. Variant B"}
+Notice that $y_i + z_i = R_i - L_i$: sending $z_i$ units backward on $i + 1 \to i$ is literally the residual reverse of sending $y_i = (R_i - L_i) - z_i$ units forward on $i \to i + 1$!
+
+- **Why Variant A (Upper-Slack Forward-DAG) is Magical**: In Variant A, **both** the decision arcs $l_j \to r_j + 1$ and the slack arcs $i \to i + 1$ point strictly from smaller index to larger index ($u < v$). Therefore, the initial network on vertices $1, 2, \dots, W + 1$ is a **strictly topological DAG**! Even though $-w_j = s_j - e_j$ can be negative when $e_j > s_j$, there are **zero directed cycles** at $f = 0$, so we can compute initial Johnson potentials $\pi_0$ in $O(n + W)$ time via a single left-to-right DAG DP pass and run $R = k - m_s$ steps of pure Dijkstra without SPFA or pre-saturation!
+- **How Variant B (Lower-Slack Backward-Spine) Works**: In Variant B, the total flow from $1$ to $W+1$ is only $L = m_e$ units (which is smaller when $m_e \ll k - m_s$), and the negative-cost arcs $l_j \to r_j + 1$ ($e_j > s_j$) can be handled in $O(n)$ setup via **Mandatory Initial Saturation** (`Ch 04` / `Ch 17`) so that $\pi_0 \equiv 0$ works for Dijkstra!
+:::
+
+---
+
+## 3. $K$-Overlapping Interval Selection (`最长k可重区间集`) — Backbone Bypass vs. Equation Differencing
+
+We now turn to the packing dual of `NOI2008 志愿者招募`: instead of covering each point $i$ at least $A_i$ times at minimum cost, we are given $m$ weighted intervals $I_j$ with profits $w_j > 0$ and must select a subset of intervals of **maximum total weight** such that **no point on the real line is covered by more than $K$ selected intervals** (**[Luogu P3358] 最长k可重区间集问题 (`#145`)**, **[POJ 3680] Intervals (`#146`)**, **[CF 164C] Machine Programming**).
+
+### 3.1 The 4-Step Compilation of Maximum-Weight $K$-Interval Packing
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+- **Why Greedy and Standard DP Fail for $K \ge 2$**:
+  - When $K = 1$ and $w_j \equiv 1$, classic earliest-deadline-first greedy runs in $O(m \log m)$ time.
+  - When $K = 1$ and weights $w_j$ are arbitrary, sorting by right endpoint and running 1D DP with binary search runs in $O(m \log m)$ time because the last chosen interval completely summarizes the suffix compatibility state.
+  - When $K \ge 2$ and weights $w_j$ are arbitrary, a naive DP from left to right must remember the right endpoints of **all $K$ currently active intervals**, blowing up the state space to $O(m^K)$. Yet the constraint "at every coordinate $x$, at most $K$ chosen intervals cover $x$" is a system of linear upper-bound inequalities where each interval covers a contiguous range of coordinates!
+
+#### Step 2: Intermediate Algebraic Representation & Half-Open Normalization
+
+Before writing down linear equations, we must normalize the geometry of intervals so that endpoint touching semantics match the problem statement:
+
+- **Open Intervals $I_j = (L_j, R_j)$ (e.g., Luogu P3358, POJ 3680, CF 164C)**: Two intervals $(1, 3)$ and $(3, 5)$ do **not** overlap at $x = 3$. After coordinate-compressing the distinct endpoint values into $1 < 2 < \dots < n$, the real line between $1$ and $n$ is partitioned into $n - 1$ elementary half-open segments $S_i = [i, i + 1)$ for $i = 1, 2, \dots, n - 1$. An open interval $(l_j, r_j)$ (in compressed indices $1 \le l_j < r_j \le n$) covers the contiguous range of elementary segments $S_i$ for $i \in \{l_j, l_j + 1, \dots, r_j - 1\}$.
+- **Closed Intervals $I_j = [L_j, R_j]$ (Integer Points)**: Two intervals $[1, 3]$ and $[3, 5]$ **do** overlap at the integer point $x = 3$. By shifting the right endpoint $R_j \gets R_j + 1$, every closed integer interval $[L_j, R_j]$ becomes the half-open interval $[L_j, R_j + 1)$, reducing immediately to the open-interval case!
+
+Now let $x_j \in \{0, 1\}$ indicate whether interval $I_j = [l_j, r_j)$ is selected, and introduce **unused-capacity slack variables** $y_i \ge 0$ for each elementary segment $S_i = [i, i + 1)$ ($i = 1, 2, \dots, n - 1$):
+
+$$
+\begin{aligned}
+\text{Maximize} \quad & \sum_{j=1}^{m} w_j x_j \quad \Longleftrightarrow \quad \text{Minimize} \quad \sum_{j=1}^{m} (-w_j) x_j \\
+\text{subject to} \quad & E_i : \quad \sum_{j \,:\, l_j \le i \le r_j - 1} x_j + y_i = K, \qquad i = 1, 2, \dots, n - 1, \\
+& x_j \in [0, 1], \quad y_i \in [0, \infty).
+\end{aligned}
+$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Equation Differencing vs. Backbone Bypass)
+
+Attach boundary equations $E_0 : 0 = 0$ and $E_n : 0 = 0$, and take consecutive differences $\Delta E_i = E_i - E_{i-1}$ for $i = 1, 2, \dots, n$:
+
+1. **Decision Variable $x_j \in [0, 1]$ (covering rows $i \in \{l_j, \dots, r_j - 1\}$)**:
+   - Enters at $\Delta E_{l_j}$ with coefficient $+1$ and exits at $\Delta E_{(r_j - 1) + 1} = \Delta E_{r_j}$ with coefficient $-1$.
+   - Compiles to a **forward bypass arc**:
+
+     $$
+     e_{x_j} = (l_j \to r_j), \qquad \text{cap} = 1, \qquad \text{cost} = -w_j.
+     $$
+
+2. **Unused-Capacity Slack Variable $y_i \in [0, \infty)$ (appearing in row $E_i$ with coefficient $+1$)**:
+   - Enters at $\Delta E_i$ with coefficient $+1$ and exits at $\Delta E_{i+1}$ with coefficient $-1$.
+   - Compiles to a **forward backbone arc**:
+
+     $$
+     e_{y_i} = (i \to i + 1), \qquad \text{cap} = \infty \text{ (or } K\text{)}, \qquad \text{cost} = 0.
+     $$
+
+3. **Right-Hand Side Supplies & Demands $b_i = K_i - K_{i-1}$**:
+   - Since $K_0 = 0$, $K_1 = K_2 = \dots = K_{n-1} = K$, and $K_n = 0$:
+
+     $$
+     b_1 = K - 0 = +K, \qquad b_2 = b_3 = \dots = b_{n-1} = K - K = 0, \qquad b_n = 0 - K = -K.
+     $$
+
+   - Only vertex $1$ receives supply $+K$ from $S$ ($S \xrightarrow{\text{cap } K, \text{cost } 0} 1$), and only vertex $n$ sends demand $K$ to $T$ ($n \xrightarrow{\text{cap } K, \text{cost } 0} T$)!
+
+::: {.callout-important title="Theorem 19.2: Exact Isomorphism Between the Intuitive 'Backbone + Bypass' Model and Equation Differencing"}
+In competitive programming folklore, `Luogu P3358 (最长k可重区间集)` is often taught using two seemingly unrelated explanations:
+
+1. **The Intuitive "Flow Conservation / Ticket Bypass" Story**: Imagine $K$ parallel tracks running from coordinate $1$ to coordinate $n$ along the zero-cost backbone $1 \to 2 \to \dots \to n$. Selecting interval $[l_j, r_j)$ means pulling $1$ unit of flow off the backbone at $l_j$, routing it through the bypass arc $l_j \xrightarrow{\text{cap } 1, \text{cost } -w_j} r_j$, and returning it to the backbone at $r_j$. While that $1$ unit of flow is in flight on the bypass $l_j \to r_j$, only $K - 1$ units remain on the backbone segments $i \to i + 1$ for $l_j \le i < r_j$. Because the backbone flow $y_i$ on $i \to i + 1$ satisfies $y_i \ge 0$, at most $K$ units can be in flight across cut $( \{1, \dots, i\}, \{i+1, \dots, n\} )$ at any segment $i$!
+2. **The Algebraic Equation-Difference Story**: Write $\sum_{l_j \le i < r_j} x_j + y_i = K$ and take $\Delta E_i = E_i - E_{i-1}$.
+
+**Theorem 19.2**: *These two models produce the exact same graph, vertex for vertex, edge for edge, and flow unit for flow unit.* Specifically, the flow $y_i$ on the backbone edge $i \to i + 1$ in the intuitive story is **literally** the slack variable $y_i = K - \sum_{l_j \le i < r_j} x_j$ in equation $E_i$, and the cut conservation equation across $(\{1, \dots, i\}, \{i+1, \dots, n\})$ is **literally** the prefix sum $\sum_{t=1}^i \Delta E_t = E_i$!
+:::
+
+### 3.2 $O(N + M)$ DAG DP Potential Initialization (Anti-SPFA Guardrail)
+
+Notice a crucial structural property of the `Luogu P3358` / `POJ 3680` / `CF 164C` network (and Variant A of `NEERC 2016 Delight for a Cat`):
+
+- Every backbone edge $i \to i + 1$ satisfies $i < i + 1$.
+- Every interval bypass edge $l_j \to r_j$ satisfies $l_j < r_j$.
+- Therefore, **at initial flow $f = 0$, the entire network is a Directed Acyclic Graph (DAG) in topological order $1, 2, \dots, n$!**
+
+Even though every interval bypass edge has a **negative cost** $-w_j < 0$, there are **zero negative cycles** in the initial graph. Instead of running $O(NM)$ Bellman-Ford / SPFA to initialize Johnson potentials $\pi_0$, or even pre-saturating negative edges, we can compute the exact shortest-path potentials $\pi_0(1), \pi_0(2), \dots, \pi_0(n)$ in **$O(n + m)$ linear time** via a single left-to-right sweep:
+
+$$
+\pi_0(1) = 0, \qquad \pi_0(v) = \min\!\left( \pi_0(v - 1), \; \min_{j \,:\, r_j = v} \bigl(\pi_0(l_j) - w_j\bigr) \right) \quad \text{for } v = 2, 3, \dots, n.
+$$
+
+After this $O(n + m)$ initialization, we run **at most $K$ iterations** of Dijkstra's algorithm (`Ch 17`), giving an optimal total time complexity of:
+
+$$
+T(n, m, K) = O\bigl((n + m) + K (n + m) \log n\bigr).
+$$
+
+When $K \le 10$ and $n, m \le 2000$ (as in **CF 164C — Machine Programming**), this $K$-step DAG-initialized Dijkstra finishes in under $5\text{ ms}$, whereas naive SPFA-based MCMF risks TLE on adversarial anti-SPFA DAGs!
+
+---
+
+## 4. 2D Segment Projection & The Coordinate Doubling Trick $x \mapsto (2x, 2x+1)$ (`最长k可重线段集` `#147`)
+
+What happens when the objects we are selecting are **2D line segments** in the plane $\mathbb{R}^2$, and the constraint forbids any **vertical line $x = x_0$** ($x_0 \in \mathbb{R}$) from intersecting more than $K$ selected segments? This is the classic **[Luogu P3357] 最长k可重线段集问题 (`#147`)**:
+
+- We are given $m$ line segments in $\mathbb{R}^2$, where segment $j$ connects $(x_{j,1}, y_{j,1})$ to $(x_{j,2}, y_{j,2})$ with integer coordinates and weight $w_j = \lfloor \sqrt{(x_{j,1} - x_{j,2})^2 + (y_{j,1} - y_{j,2})^2} \rfloor > 0$.
+- No vertical line $x = x_0$ ($x_0 \in \mathbb{R}$) may intersect more than $K$ selected segments.
+
+### 4.1 Why Naive $x$-Projection Fails Catastrophically (`FM-19b`)
+
+A tempting first thought is: *"Since the constraint only cares about vertical lines $x = x_0$, the $y$-coordinates only affect the weight $w_j$! Let's project every 2D segment onto its $x$-interval $[\min(x_{j,1}, x_{j,2}), \max(x_{j,1}, x_{j,2})]$ and run `Luogu P3358`!"*
+
+If you do this naively by adding an edge $x_{j,1} \to x_{j,2}$ (assuming $x_{j,1} \le x_{j,2}$), **two fatal bugs** occur simultaneously:
+
+1. **The Vertical Segment Self-Loop Bug ($x_{j,1} = x_{j,2}$)**:
+   - A vertical segment from $(x, y_1)$ to $(x, y_2)$ ($y_1 \ne y_2$) has positive length $w_j = |y_1 - y_2| > 0$, yet its $x$-projection is the **degenerate single point** $[x, x]$ ($x_{j,1} = x_{j,2} = x$).
+   - If you add an edge $x_{j,1} \to x_{j,2}$, it becomes a **self-loop $x \to x$ with negative cost $-w_j < 0$**!
+   - A flow unit on $S \to \dots \to x \to \dots \to T$ does not need to traverse a self-loop $x \to x$ to satisfy flow conservation, so SSP Dijkstra ignores it; conversely, in a circulation solver, a negative self-loop is a negative cycle of length $1$ whose capacity does not interact with the backbone capacity $K$ at all! Thus $K + 1$ vertical segments at the same $x$ could all be selected simultaneously, or none of them could ever be selected along an $S \to T$ path!
+2. **The Closed-Endpoint Collision Bug ($x_{a,2} = x_{b,1}$)**:
+   - Even if there are no vertical segments, if segments are **closed** (so $(1, 0)\text{--}(2, 0)$ and $(2, 1)\text{--}(3, 1)$ both intersect the vertical line $x = 2$), mapping them to $1 \to 2$ and $2 \to 3$ allows **the same single unit of flow** to traverse $1 \to 2 \to 3$, counting them as only $1$ segment at $x = 2$ when in fact **two** segments intersect the vertical line $x = 2$!
+
+### 4.2 The Coordinate Doubling Compiler: Splitting Points vs. Unit Intervals
+
+To distinguish **intersection with a vertical line $x = c$ at an integer coordinate** from **intersection with a vertical line $x = c + 0.5$ strictly between integers**, we split every integer coordinate $x \in \mathbb{Z}$ into **two points**:
+
+$$
+x \quad \longmapsto \quad \bigl(2x, \; 2x + 1\bigr),
+$$
+
+where we think of $2x$ as $x^-$ (just to the left of $x$) and $2x + 1$ as $x^+$ (just to the right of $x$):
+
+- The elementary step $2x \to 2x + 1$ represents crossing the **exact integer vertical line $x$** (the singleton closed interval $[x, x]$).
+- The elementary step $2x + 1 \to 2(x + 1)$ represents crossing the **open unit interval $(x, x + 1)$** between integers $x$ and $x + 1$.
+
+This gives a clean, mechanical compilation table for **both** endpoint conventions encountered on online judges:
+
+| Endpoint Convention | Geometric Meaning of Segment $j$ with $x_1 \le x_2$ | Vertical Segment ($x_1 = x_2 = x$) | Non-Vertical Segment ($x_1 < x_2$) |
+| :--- | :--- | :---: | :---: |
+| **Convention 1: Closed Segments** *(every segment includes both endpoints $[x_1, x_2]$)* | Covers all $x_0 \in [x_1, x_2]$, including $x_0 = x_1$ and $x_0 = x_2$ | $\mathbf{2x \to 2x + 1}$ *(covers $[x, x]$)* | $\mathbf{2x_1 \to 2x_2 + 1}$ *(covers $[x_1, x_2]$)* |
+| **Convention 2: Open Segments (`Luogu P3357` Judge Convention)** *(non-vertical segments are open $(x_1, x_2)$, vertical segments occupy point $x$)* | Non-vertical covers $x_0 \in (x_1, x_2)$; vertical covers $x_0 = x$ | $\mathbf{2x \to 2x + 1}$ *(covers point $x$)* | $\mathbf{2x_1 + 1 \to 2x_2}$ *(covers $(x_1, x_2)$)* |
+
+::: {.callout-warning title="Judge Convention Alert for Luogu P3357 (`最长k可重线段集问题`)"}
+In **Luogu P3357** (from the classic *Network Flow 24 Problems* suite), the problem statement says *"segments are open segments (开线段)"*, which creates a famous logical paradox if taken literally: an open vertical segment $((x, y_1), (x, y_2))$ still intersects the vertical line $x_0 = x$ on the open $y$-interval $(y_1, y_2)$, whereas an open non-vertical segment $((x_1, y_1), (x_2, y_2))$ with $x_1 < x_2$ intersects vertical lines $x_0 \in (x_1, x_2)$ but **not** $x_0 = x_1$ or $x_0 = x_2$!
+
+Coordinate doubling $x \mapsto (2x, 2x+1)$ resolves this paradox effortlessly:
+
+- Under **Convention 2 (Open Segments, P3357)**:
+  - A vertical segment at $x_1 = x_2 = x$ intersects the vertical line $x_0 = x$, so it spans $\mathbf{2x \to 2x + 1}$.
+  - An open non-vertical segment with $x_1 < x_2$ intersects vertical lines $x_0 \in (x_1, x_2)$ (strictly after $x_1$ and strictly before $x_2$), so it starts at $x_1^+ = \mathbf{2x_1 + 1}$ and ends at $x_2^- = \mathbf{2x_2}$!
+  - Check: Can a vertical segment at $x$ ($2x \to 2x + 1$) and an open non-vertical segment starting at $x$ ($2x + 1 \to 2x_2$) share the same unit of flow? **Yes**, at node $2x + 1$, because the open segment $(x, x_2)$ does **not** contain $x$, so no single vertical line intersects both!
+  - Can **two** vertical segments at $x$ (both $2x \to 2x + 1$) share the same unit of flow? **No**, because both traverse the segment $[2x, 2x+1)$ in parallel!
+  - Can a vertical segment at $x$ ($2x \to 2x + 1$) and an open non-vertical segment $(x_1, x_2)$ that **straddles** $x$ ($x_1 < x < x_2$, i.e., $2x_1 + 1 \to 2x_2$ with $2x_1 + 1 < 2x < 2x + 1 < 2x_2$) share the same unit of flow? **No**, because both intervals cover the elementary slice $[2x, 2x + 1)$!
+:::
+
+### 4.3 Concrete Toy Trace: Coordinate Doubling in Action
+
+Suppose $K = 1$ and we have three segments around $x \in \{1, 2\}$:
+
+1. **Segment 1 (Vertical at $x = 1$)**: $(1, 0)\text{--}(1, 5)$, weight $w_1 = 5$.
+2. **Segment 2 (Vertical at $x = 1$)**: $(1, 2)\text{--}(1, 6)$, weight $w_2 = 4$.
+3. **Segment 3 (Non-vertical from $x = 1$ to $x = 2$)**: $(1, 0)\text{--}(2, 0)$, weight $w_3 = 1$.
+
+Compare how the two conventions compile these three segments onto the doubled coordinate spine $2 \to 3 \to 4 \to 5$ (representing $1^- \to 1^+ \to 2^- \to 2^+$):
+
+- **Under Convention 1 (Closed Segments — endpoints count as intersections)**:
+  - Segment 1 ($x = 1$): arc $2 \to 3$, cap $1$, cost $-5$.
+  - Segment 2 ($x = 1$): arc $2 \to 3$, cap $1$, cost $-4$.
+  - Segment 3 ($[1, 2]$ closed): arc $2 \to 5$, cap $1$, cost $-1$.
+  - Notice that **all three segments** cover the elementary slice $[2, 3)$ (the vertical line $x = 1$). With $K = 1$, at most **one** of $\{1, 2, 3\}$ can be chosen, and the optimal flow of $1$ unit chooses $2 \xrightarrow{\text{Seg 1}} 3 \to 4 \to 5$ of weight $5$.
+- **Under Convention 2 (Open Segments — Luogu P3357)**:
+  - Segment 1 ($x = 1$): arc $2 \to 3$, cap $1$, cost $-5$.
+  - Segment 2 ($x = 1$): arc $2 \to 3$, cap $1$, cost $-4$.
+  - Segment 3 ($(1, 2)$ open): arc $3 \to 4$, cap $1$, cost $-1$.
+  - Now Segments 1 and 2 still compete on slice $[2, 3)$ (line $x = 1$), so we cannot pick both. However, Segment 1 ($2 \to 3$) and Segment 3 ($3 \to 4$) touch at node $3$ ($x = 1^+$) without overlapping on any slice! The single unit of flow routes $2 \xrightarrow{\text{Seg 1}} 3 \xrightarrow{\text{Seg 3}} 4 \to 5$, achieving total weight $5 + 1 = 6$.
+
+---
+
+## 5. Advanced Equation-Difference Compilers: LP Dual Transposition, Rooted Trees, and Tractability Boundaries
+
+### 5.1 Master Reference Table of Equation-Difference Archetypes
+
+Before tackling advanced variations, let us consolidate the six canonical compilation patterns of the Consecutive-Ones & Equation-Difference framework:
+
+| Archetype | Primal Linear System | Transformation to Column Consecutive-Ones | Differenced Decision Arc $e_{x_j}$ | Differenced Slack Arc | Representative Problems |
+| :--- | :--- | :--- | :---: | :---: | :--- |
+| **1. Lower-Bound Interval Covering** | $\sum_{l_j \le i \le r_j} x_j \ge A_i$, $\min \sum c_j x_j$ | Subtract surplus $y_i \ge 0$: $\sum x_j - y_i = A_i$, take $E_i - E_{i-1}$ | $l_j \xrightarrow{\text{cap } u_j, \text{cost } c_j} r_j + 1$ | $i + 1 \xrightarrow{\text{cap } \infty, \text{cost } 0} i$ *(backward)* | **NOI2008 志愿者招募 (`#148`)**, **Luogu P4311** |
+| **2. Upper-Bound Interval Packing** | $\sum_{l_j \le i < r_j} x_j \le K_i$, $\max \sum w_j x_j$ | Add unused slack $y_i \ge 0$: $\sum x_j + y_i = K_i$, take $E_i - E_{i-1}$ | $l_j \xrightarrow{\text{cap } 1, \text{cost } -w_j} r_j$ | $i \xrightarrow{\text{cap } \infty, \text{cost } 0} i + 1$ *(forward)* | **Luogu P3358 (`#145`)**, **POJ 3680 (`#146`)**, **CF 164C** |
+| **3. Two-Sided Sliding Window** | $L_i \le \sum_{j=i}^{i+k-1} x_j \le R_i$, $\max \sum w_j x_j$ | Add bounded slack $y_i \in [0, R_i - L_i]$: $\sum x_j + y_i = R_i$, take $E_i - E_{i-1}$ | $l_j \xrightarrow{\text{cap } 1, \text{cost } -w_j} r_j + 1$ | $i \xrightarrow{\text{cap } R_i - L_i, \text{cost } 0} i + 1$ *(forward)* | **NEERC 2016 Delight for a Cat (`#151`)**, **BZOJ 1283 (`#150`)** |
+| **4. 2D Segment Vertical-Stab Packing** | Vertical line $x = x_0$ stabs $\le K$ segments | Double coordinates $x \mapsto (2x, 2x+1)$ before taking $E_i - E_{i-1}$ | Vertical: $2x \to 2x+1$; Open non-vert: $2x_1+1 \to 2x_2$ | $i \xrightarrow{\text{cap } \infty, \text{cost } 0} i + 1$ *(forward)* | **Luogu P3357 (`#147`)** |
+| **5. Row-Interval Covering with Large Point Capacities** | $\sum_{i=l_j}^{r_j} d_i \ge D_j$, $0 \le d_i \le C_i$, $\min \sum a_i d_i$ | Take **LP Dual** ($A \mapsto A^T$) to move intervals from rows to columns, then take $E_i - E_{i-1}$ | Dual variable $y_j$: $l_j \xrightarrow{\text{cap } \infty, \text{cost } -D_j} r_j + 1$ | Dual slack $z_i$: $i \xrightarrow{\text{cap } \infty, \text{cost } C_i} i + 1$ | **ZJOI2013 防守战线 (Luogu P3337)** |
+| **6. Rooted Tree Ancestor-Chain Covering** | $\sum_{j : u \in \text{path}(p_j, q_j)} x_j \ge A_u$ ($p_j$ ancestor of $q_j$) | Subtract subtree equations: $\Delta^{\text{tree}} E_u = E_u - \sum_{v \in \text{child}(u)} E_v$ | $q_j \xrightarrow{\text{cap } \infty, \text{cost } c_j} \text{parent}(p_j)$ | $u \xrightarrow{\text{cap } \infty, \text{cost } 0} \text{parent}(u)$ | **LOJ #6405 (`#152`)** |
+
+### 5.2 LP Dual Transposition: When Intervals Live on Rows (`[ZJOI2013 / Luogu P3337] 防守战线`)
+
+Suppose we are given $n$ positions $i \in \{1, \dots, n\}$, where placing a defense tower at position $i$ costs $a_i$ per tower (up to $C_i$ towers, or $C_i = 1$), and $m$ interval requirements stating that the total number of towers in interval $[l_j, r_j]$ must be at least $D_j$:
+
+$$
+\text{Minimize} \quad \sum_{i=1}^{n} a_i d_i \quad \text{subject to} \quad \sum_{i=l_j}^{r_j} d_i \ge D_j \quad (j = 1, \dots, m), \qquad 0 \le d_i \le C_i.
+$$
+
+- **When $n$ is small ($n \le 1000$) and $m \le 1000$**: Notice that variable $d_i$ appears in constraint $j$ iff $l_j \le i \le r_j$. If $m$ constraints have arbitrary intervals $[l_j, r_j]$, the columns $d_i$ do **not** have consecutive ones unless the intervals $[l_j, r_j]$ have fixed length $k$ (sliding windows)! Instead, the **rows** $j$ have consecutive ones over the columns $i \in [l_j, r_j]$!
+- **Can we use Prefix Sums $P_i = \sum_{t=1}^i d_t$ (Difference Constraints)?** Only when $a_i$ is uniform! When each position $i$ has an arbitrary unit cost $a_i$, shortest-path difference constraints cannot express $\min \sum_{i=1}^n a_i (P_i - P_{i-1})$.
+- **The LP Dual Transposition Trick**: Because a matrix $A$ is Totally Unimodular if and only if its transpose $A^T$ is Totally Unimodular (`Ch 18`), taking the **Linear Programming Dual** transposes the constraint matrix $A \mapsto A^T$, moving the consecutive-ones intervals $[l_j, r_j]$ from the **rows** to the **columns**!
+
+Specifically, associating dual variables $y_j \ge 0$ with the interval constraints $\sum_{i=l_j}^{r_j} d_i \ge D_j$ and dual variables $z_i \ge 0$ with the upper-bound constraints $-d_i \ge -C_i$, the LP Dual of the above problem is:
+
+$$
+\begin{aligned}
+\text{Maximize} \quad & \sum_{j=1}^{m} D_j y_j - \sum_{i=1}^{n} C_i z_i \\
+\text{subject to} \quad & \sum_{j \,:\, l_j \le i \le r_j} y_j - z_i \le a_i, \qquad i = 1, 2, \dots, n, \\
+& y_j \ge 0, \quad z_i \ge 0.
+\end{aligned}
+$$
+
+Look at the dual constraint for each position $i \in \{1, \dots, n\}$: the dual variable $y_j$ appears in row $i$ iff $i \in [l_j, r_j]$—which is a **contiguous range of rows**! Adding an unused-slack variable $s_i \ge 0$ gives $\sum_{l_j \le i \le r_j} y_j - z_i + s_i = a_i$, which compiles via $\Delta E_i = E_i - E_{i-1}$ directly into a $n+1$-vertex MCMF network!
+
+### 5.3 Rooted Tree Equation Differencing (`树上流守恒差分`: $\Delta^{\text{tree}} E_u = E_u - \sum_{v \in \text{child}(u)} E_v$)
+
+The Consecutive-Ones equation-difference method is not restricted to 1D lines! Suppose we have a rooted tree $T$ with root $r$ (append a virtual super-root $0 = \text{parent}(r)$ with equation $E_0 : 0 = 0$), where each node $u \in V(T)$ has a coverage requirement $E_u : \sum_{j : u \in P_j} x_j - y_u = A_u$, and each available operation $j$ covers a **vertical ancestor-descendant chain** $P_j = \text{path}(p_j, q_j)$ where $p_j$ is an ancestor of $q_j$ (**[LOJ #6405] 无源汇有上下界最小流 / 树上志愿者招募 (`#152`)**).
+
+If we tried to order the tree nodes linearly and take $E_i - E_{i-1}$, a vertical path $p_j \to q_j$ would break into $\Theta(n)$ disjoint pieces. Instead, what is the natural tree generalization of $E_i - E_{i-1}$?
+
+::: {.callout-important title="Theorem 19.3: Rooted Tree Equation Differencing (`树上流守恒差分`)"}
+For every node $u \in V(T) \cup \{0\}$ in a rooted tree (with virtual super-root $0 = \text{parent}(r)$ and $E_0 : 0 = 0$), define the **tree-differenced equation** at node $u$ by subtracting the sum of the equations of all direct children of $u$ from $E_u$:
+
+$$
+\Delta^{\text{tree}} E_u \;:=\; E_u - \sum_{v \in \text{child}(u)} E_v \qquad \bigl(\forall u \in V(T) \cup \{0\}\bigr).
+$$
+
+Then for any vertical ancestor-descendant chain $P_j = \text{path}(p_j, q_j)$ (where $p_j$ is an ancestor of $q_j$):
+
+1. If $u = q_j$ (the **bottom** endpoint of the chain), $x_j$ appears in $E_{q_j}$ ($+1$) and in **none** of $q_j$'s children ($0$), so its net coefficient in $\Delta^{\text{tree}} E_{q_j}$ is **$+1$**.
+2. If $u \in P_j \setminus \{q_j\}$ (any interior node or $p_j$ on the chain), $x_j$ appears in $E_u$ ($+1$) and in **exactly one** child $v \in \text{child}(u)$ on the chain ($+1$), so its net coefficient in $\Delta^{\text{tree}} E_u$ is $1 - 1 = \mathbf{0}$!
+3. If $u = \text{parent}(p_j)$ (the **strict parent of the top endpoint**), $x_j$ does not appear in $E_{\text{parent}(p_j)}$ ($0$) but appears in the single child $p_j \in \text{child}(\text{parent}(p_j))$ ($+1$), so its net coefficient in $\Delta^{\text{tree}} E_{\text{parent}(p_j)}$ is $0 - 1 = \mathbf{-1}$!
+4. For all other nodes $u$, $x_j$ has coefficient $\mathbf{0}$.
+
+Therefore, under $\Delta^{\text{tree}} E_u = E_u - \sum_{v \in \text{child}(u)} E_v$:
+
+- Every vertical path variable $x_j$ on $\text{path}(p_j, q_j)$ compiles to a single directed arc from the bottom endpoint to the parent of the top endpoint:
+
+  $$
+  e_{x_j} = \bigl(q_j \to \text{parent}(p_j)\bigr), \qquad \text{cap} = u_j, \qquad \text{cost} = c_j.
+  $$
+
+- Every surplus slack variable $-y_u$ (a chain of length $1$ with $p = q = u$, appearing as $-y_u$ in $\Delta^{\text{tree}} E_u$ and $+y_u$ in $\Delta^{\text{tree}} E_{\text{parent}(u)}$) compiles to a downward tree arc:
+
+  $$
+  e_{y_u} = \bigl(\text{parent}(u) \to u\bigr), \qquad \text{cap} = \infty, \qquad \text{cost} = 0.
+  $$
+
+- Every node $u \in V(T) \cup \{0\}$ has net supply/demand:
+
+  $$
+  b_u = A_u - \sum_{v \in \text{child}(u)} A_v \qquad (A_0 = 0).
+  $$
+:::
+
+Look how clean Theorem 19.3 is: when the tree $T$ is a 1D chain $0 \gets 1 \gets 2 \gets \dots \gets n$ (where $\text{parent}(i) = i - 1$ and $\text{child}(i - 1) = \{i\}$), Theorem 19.3 reduces immediately to $\Delta E_{i-1} = E_{i-1} - E_i$ (the exact sign-flipped form of Theorem 19.1)!
+
+### 5.4 The Tractability Boundary: Multi-Period Coupling (`[ONTAK 2010] Vacation`) vs. Equal-Flow NP-Hardness (`FM-19d`)
+
+What happens if a decision variable $x_j$ appears in **two or more disjoint contiguous blocks** of equations $[l_{j,1}, r_{j,1}] \cup [l_{j,2}, r_{j,2}]$?
+
+- **In General: NP-Hard (The Equal-Flow Boundary `FM-19d`)**:
+  If $x_j$ covers $[l_{j,1}, r_{j,1}]$ and $[l_{j,2}, r_{j,2}]$ ($r_{j,1} + 1 < l_{j,2}$), taking $\Delta E_i = E_i - E_{i-1}$ leaves **four** non-zero coefficients for $x_j$: $+1$ at $l_{j,1}$, $-1$ at $r_{j,1} + 1$, $+1$ at $l_{j,2}$, and $-1$ at $r_{j,2} + 1$. In graph terms, $x_j$ would have to simultaneously send equal flow along **two separate arcs** $(l_{j,1} \to r_{j,1} + 1)$ and $(l_{j,2} \to r_{j,2} + 1)$. This is the **Integer Equal-Flow Problem**, which is strongly NP-hard (reducing from 3-SAT / Exact Cover).
+- **The Remarkable Exception — Coupled Two-Scale Sliding Windows (`[ONTAK 2010 / BZOJ 3550] Vacation` `#152`)**:
+  Suppose $N = 3K$ days are divided into $3$ consecutive blocks of length $K$ ($[1, K]$, $[K+1, 2K]$, $[2K+1, 3K]$), and we must satisfy **both**:
+  1. Every sliding window of length $K$ contains at most $L_1$ chosen elements: $\sum_{t=i}^{i+K-1} x_t \le L_1$ for $i = 1, \dots, 2K + 1$.
+  2. The entire $3K$-day horizon $[1, 3K]$ contains at most $L_2$ chosen elements: $\sum_{t=1}^{3K} x_t \le L_2$.
+
+  Even though this looks like two different window sizes ($K$ and $3K$), notice that for the middle block $t \in [K+1, 2K]$, variable $x_t$ affects windows $i \in [t - K + 1, t]$, whereas for $t \in [1, K]$ and $t \in [2K+1, 3K]$, pairing $x_t$ ($t \le K$), $x_{t+K}$ ($K < t+K \le 2K$), and $x_{t+2K}$ ($2K < t+2K \le 3K$) along residue classes modulo $K$ allows the global constraint $\sum_{t=1}^{3K} x_t \le L_2$ to act as a **single $L_2$-capacity choke edge** in the flow network! We will derive the exact algebraic compilation of **BZOJ 3550 (`#152`)** in Section 6.8 below.
+
+---
+
+## 6. Worked Examples & The 8-Problem Difficulty Ladder (`#145`–`#152`)
+
+We now work through the complete 8-problem curriculum ladder (`#145`–`#152`) spanning **Stepping Stone (`SS`)**, **Intermediate (`Int`)**, **Advanced (`Adv`)**, and **Mastery (`Mas`)** tiers.
+
+---
+
+### 6.1 Problem `#145` (`SS-1`): [Luogu P3358] 最长k可重区间集问题 ($K$-Overlapping Intervals)
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P3358](https://www.luogu.com.cn/problem/P3358)
+- **Difficulty Tier**: Stepping Stone (`SS-1`)
+- **Constraints**: $1 \le n \le 500$ open intervals $I_j = (L_j, R_j)$, $1 \le K \le 3$, $0 \le L_j < R_j \le 10^5$. Weight of interval $j$ is its length $w_j = R_j - L_j$. Maximize the total length of selected intervals such that no real point $x \in \mathbb{R}$ is covered by more than $K$ selected intervals.
+
+#### Step 1: Non-Graph Diagnostic Signal
+- Open intervals $(L_j, R_j)$ with weight $w_j = R_j - L_j$ and point overlap cap $K$. Since $K > 1$, greedy fails, and since $L_j, R_j \le 10^5$ with $n \le 500$, coordinate compression reduces the active coordinates to $V \le 2n \le 1000$ vertices.
+
+#### Step 2: Intermediate Algebraic Representation
+- Compress the distinct endpoints $\{L_j, R_j\}$ into $1 < 2 < \dots < M$ ($M \le 2n$).
+- For each elementary half-open segment $[i, i+1)$ ($i = 1, \dots, M-1$) and unused capacity slack $y_i \ge 0$:
+
+  $$
+  E_i : \quad \sum_{j \,:\, l_j \le i < r_j} x_j + y_i = K \qquad (i = 1, \dots, M-1), \qquad \min \sum_{j=1}^n (-w_j) x_j.
+  $$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Compilation)
+- Taking $\Delta E_i = E_i - E_{i-1}$ ($i = 1, \dots, M$ with $E_0 = E_M = 0$):
+  - Source $S \xrightarrow{\text{cap } K, \text{cost } 0} 1$ (since $b_1 = +K$) and $M \xrightarrow{\text{cap } K, \text{cost } 0} T$ (since $b_M = -K$).
+  - For each slack $y_i$ ($1 \le i < M$): forward backbone edge $i \xrightarrow{\text{cap } \infty, \text{cost } 0} i + 1$.
+  - For each interval $j$ ($1 \le j \le n$): forward bypass edge $l_j \xrightarrow{\text{cap } 1, \text{cost } -w_j} r_j$.
+- Because all initial edges go from smaller index to larger index ($u < v$), we initialize $\pi_0$ in $O(M + n)$ time via topological DAG DP and run $K$ steps of Dijkstra SSP.
+
+#### Step 4: Toy Trace & Boundary Verification
+- Suppose $K = 1$ and two intervals are $(1, 3)$ (weight $2$) and $(3, 5)$ (weight $2$). Compressed coordinates: $1 \mapsto 1, 3 \mapsto 2, 5 \mapsto 3$. Arcs: $1 \to 2$ (cost $-2$) and $2 \to 3$ (cost $-2$). Because the intervals are open, they touch at vertex $2$ ($x = 3$) and a single unit of flow traverses $1 \to 2 \to 3$ for total weight $4$.
+
+:::: {.callout-note collapse="true" title="Progressive Hints for Luogu P3358 (#145)"}
+- **Hint 1 (Coordinate Compression & Touching Endpoints)**: Because the intervals are open $(L_j, R_j)$, two intervals $(1, 3)$ and $(3, 5)$ can both be chosen by the same track of flow. Coordinate-compress all $L_j$ and $R_j$ values directly without shifting $R_j$.
+- **Hint 2 (Algebraic-to-Graph Compilation)**: Write $E_i : \sum_{l_j \le i < r_j} x_j + y_i = K$ for each elementary segment $[i, i+1)$. Subtracting $E_i - E_{i-1}$ gives $l_j \to r_j$ (cap $1$, cost $-(R_j - L_j)$) and backbone $i \to i+1$ (cap $K$, cost $0$).
+- **Hint 3 (Anti-SPFA Potential Initialization)**: Since every edge satisfies $u < v$, compute $\pi_0[v] = \min(\pi_0[v-1], \min_{r_j = v} (\pi_0[l_j] - w_j))$ in a single loop for $v = 1 \dots M$, then run $K$ steps of Dijkstra.
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution — Luogu P3358 (#145)"}
+```cpp
+// Luogu P3358 — 最长k可重区间集问题 (#145)
+// Method: Equation Differencing + O(N+M) DAG DP Potential Initialization + K-step Dijkstra MCMF
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 1e18;
+
+struct Edge {
+    int to, rev, cap;
+    long long cost;
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n, K;
+    if (!(cin >> n >> K)) return 0;
+
+    vector<long long> L(n), R(n), W(n), coords;
+    for (int i = 0; i < n; ++i) {
+        cin >> L[i] >> R[i];
+        if (L[i] > R[i]) swap(L[i], R[i]);
+        W[i] = R[i] - L[i];
+        coords.push_back(L[i]);
+        coords.push_back(R[i]);
+    }
+
+    sort(coords.begin(), coords.end());
+    coords.erase(unique(coords.begin(), coords.end()), coords.end());
+    int M = (int)coords.size();
+
+    // Vertices: 0 = S, 1..M = compressed coordinates, M+1 = T
+    int S = 0, T = M + 1, V = M + 2;
+    vector<vector<Edge>> adj(V);
+    auto add_edge = [&](int u, int v, int cap, long long cost) {
+        adj[u].push_back({v, (int)adj[v].size(), cap, cost});
+        adj[v].push_back({u, (int)adj[u].size() - 1, 0, -cost});
+    };
+
+    // Source and Sink supplies/demands from b_1 = +K, b_M = -K
+    add_edge(S, 1, K, 0);
+    add_edge(M, T, K, 0);
+
+    // Forward slack backbone arcs y_i: i -> i + 1
+    for (int i = 1; i < M; ++i) {
+        add_edge(i, i + 1, K, 0);
+    }
+
+    // Interval bypass arcs x_j: l_j -> r_j
+    vector<long long> pi(V, INF);
+    pi[S] = 0;
+    pi[1] = 0;
+    vector<vector<pair<int, long long>>> dag_edges(M + 1);
+    for (int i = 0; i < n; ++i) {
+        int l = (int)(lower_bound(coords.begin(), coords.end(), L[i]) - coords.begin()) + 1;
+        int r = (int)(lower_bound(coords.begin(), coords.end(), R[i]) - coords.begin()) + 1;
+        add_edge(l, r, 1, -W[i]);
+        dag_edges[l].push_back({r, -W[i]});
+    }
+
+    // O(N + M) Topological DAG DP to initialize Johnson potentials pi[]
+    for (int u = 1; u <= M; ++u) {
+        if (u < M) pi[u + 1] = min(pi[u + 1], pi[u]);
+        for (auto [v, c] : dag_edges[u]) {
+            pi[v] = min(pi[v], pi[u] + c);
+        }
+    }
+    pi[T] = pi[M];
+
+    // Run at most K iterations of Dijkstra SSP
+    long long min_cost = 0;
+    vector<long long> dist(V);
+    vector<int> pv(V), pe(V);
+
+    while (true) {
+        fill(dist.begin(), dist.end(), INF);
+        priority_queue<pair<long long, int>, vector<pair<long long, int>>, greater<>> pq;
+        dist[S] = 0;
+        pq.push({0, S});
+
+        while (!pq.empty()) {
+            auto [d, u] = pq.top();
+            pq.pop();
+            if (d != dist[u]) continue;
+            for (int i = 0; i < (int)adj[u].size(); ++i) {
+                const auto& e = adj[u][i];
+                if (e.cap > 0) {
+                    long long nd = d + e.cost + pi[u] - pi[e.to];
+                    if (nd < dist[e.to]) {
+                        dist[e.to] = nd;
+                        pv[e.to] = u;
+                        pe[e.to] = i;
+                        pq.push({nd, e.to});
+                    }
+                }
+            }
+        }
+
+        if (dist[T] == INF) break;
+        for (int v = 0; v < V; ++v) {
+            if (dist[v] < INF) pi[v] += dist[v];
+        }
+        // If shortest path has >= 0 true cost, we still push because S->1->...->M->T has 0 cost slack
+        int pushed = K;
+        for (int v = T; v != S; v = pv[v]) {
+            pushed = min(pushed, adj[pv[v]][pe[v]].cap);
+        }
+        for (int v = T; v != S; v = pv[v]) {
+            auto& e = adj[pv[v]][pe[v]];
+            e.cap -= pushed;
+            adj[v][e.rev].cap += pushed;
+        }
+        min_cost += 1LL * pushed * pi[T];
+    }
+
+    cout << -min_cost << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### 6.2 Problem `#146` (`SS-2`): [POJ 3680] Intervals & [CF 164C] Machine Programming
+
+- **Judge URL**: [http://poj.org/problem?id=3680](http://poj.org/problem?id=3680) / [https://codeforces.com/problemset/problem/164/C](https://codeforces.com/problemset/problem/164/C)
+- **Difficulty Tier**: Stepping Stone (`SS-2`)
+- **Constraints**:
+  - **POJ 3680**: $T_{\text{cases}} \le 200$, $N \le 200$ open intervals $(a_j, b_j)$ with arbitrary positive weights $w_j \le 10^5$, $K \le 10^5$ ($a_j < b_j \le 10^5$). Maximize total weight of selected intervals with point overlap $\le K$.
+  - **CF 164C**: $N \le 1000$ tasks $[s_j, s_j + t_j)$ with arbitrary profit $c_j \le 10^9$, $K \le 50$ machines. Output both the maximum profit and the binary selection vector $x_j \in \{0, 1\}$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+- Identical mathematical structure to `#145`, except the interval profits $w_j$ are **arbitrary** (decoupled from interval length $b_j - a_j$), and in **CF 164C** we must also reconstruct the exact binary indicators $x_j \in \{0, 1\}$ from the residual capacities of the bypass edges $e_{x_j} = (l_j \to r_j)$.
+
+#### Step 2: Intermediate Algebraic Representation
+- After coordinate-compressing the $2N$ endpoints into $1 < 2 < \dots < M$, each interval $j$ covers elementary segments $i \in \{l_j, \dots, r_j - 1\}$.
+- Introducing slack $y_i \ge 0$ for each segment $i \in \{1, \dots, M-1\}$ gives $E_i : \sum_{l_j \le i < r_j} x_j + y_i = K$, with objective $\min \sum_{j=1}^N (-w_j) x_j$.
+
+#### Step 3: Reverse-Engineering Scratchpad
+- Taking $\Delta E_i = E_i - E_{i-1}$ produces:
+  - $S \xrightarrow{\text{cap } K, \text{cost } 0} 1$ and $M \xrightarrow{\text{cap } K, \text{cost } 0} T$.
+  - Slack arcs $i \xrightarrow{\text{cap } K, \text{cost } 0} i + 1$ for $1 \le i < M$.
+  - Decision arcs $l_j \xrightarrow{\text{cap } 1, \text{cost } -w_j} r_j$ for $1 \le j \le N$.
+- **Choice Reconstruction**: After the MCMF terminates, interval $j$ is selected ($x_j = 1$) if and only if the residual capacity of its forward bypass edge $l_j \to r_j$ is $0$ (equivalently, its reverse edge has residual capacity $1$).
+
+:::: {.callout-note collapse="true" title="Progressive Hints for POJ 3680 / CF 164C (#146)"}
+- **Hint 1**: For half-open task intervals $[s_j, s_j + t_j)$ in CF 164C, a task ending at time $s_a + t_a$ frees its machine immediately for another task starting at $s_b = s_a + t_a$. So compress $L_j = s_j$ and $R_j = s_j + t_j$ directly.
+- **Hint 2**: Store the adjacency-list index of each task's forward edge $(l_j \to r_j)$ when building the graph so you can read off $x_j = 1 - \text{cap}(e_{x_j})$ in $O(1)$ per task after MCMF finishes.
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution — POJ 3680 / CF 164C (#146)"}
+```cpp
+// CF 164C (Machine Programming) & POJ 3680 (Intervals) (#146)
+// Method: Equation Differencing + DAG DP Potentials + Dijkstra MCMF + Decision Reconstruction
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 1e18;
+
+struct Edge {
+    int to, rev, cap;
+    long long cost;
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n, K;
+    if (!(cin >> n >> K)) return 0;
+
+    vector<long long> L(n), R(n), W(n), coords;
+    for (int i = 0; i < n; ++i) {
+        long long s, t, c;
+        cin >> s >> t >> c; // For POJ 3680, read L[i] >> R[i] >> W[i] directly
+        L[i] = s;
+        R[i] = s + t;
+        W[i] = c;
+        coords.push_back(L[i]);
+        coords.push_back(R[i]);
+    }
+
+    sort(coords.begin(), coords.end());
+    coords.erase(unique(coords.begin(), coords.end()), coords.end());
+    int M = (int)coords.size();
+
+    int S = 0, T = M + 1, V = M + 2;
+    vector<vector<Edge>> adj(V);
+    auto add_edge = [&](int u, int v, int cap, long long cost) -> pair<int, int> {
+        int idx = (int)adj[u].size();
+        adj[u].push_back({v, (int)adj[v].size(), cap, cost});
+        adj[v].push_back({u, idx, 0, -cost});
+        return {u, idx};
+    };
+
+    add_edge(S, 1, K, 0);
+    add_edge(M, T, K, 0);
+    for (int i = 1; i < M; ++i) {
+        add_edge(i, i + 1, K, 0);
+    }
+
+    vector<pair<int, int>> task_edge(n);
+    vector<vector<pair<int, long long>>> dag_edges(M + 1);
+    for (int i = 0; i < n; ++i) {
+        int l = (int)(lower_bound(coords.begin(), coords.end(), L[i]) - coords.begin()) + 1;
+        int r = (int)(lower_bound(coords.begin(), coords.end(), R[i]) - coords.begin()) + 1;
+        task_edge[i] = add_edge(l, r, 1, -W[i]);
+        dag_edges[l].push_back({r, -W[i]});
+    }
+
+    vector<long long> pi(V, INF);
+    pi[S] = pi[1] = 0;
+    for (int u = 1; u <= M; ++u) {
+        if (u < M) pi[u + 1] = min(pi[u + 1], pi[u]);
+        for (auto [v, c] : dag_edges[u]) {
+            pi[v] = min(pi[v], pi[u] + c);
+        }
+    }
+    pi[T] = pi[M];
+
+    vector<long long> dist(V);
+    vector<int> pv(V), pe(V);
+    while (true) {
+        fill(dist.begin(), dist.end(), INF);
+        priority_queue<pair<long long, int>, vector<pair<long long, int>>, greater<>> pq;
+        dist[S] = 0;
+        pq.push({0, S});
+        while (!pq.empty()) {
+            auto [d, u] = pq.top();
+            pq.pop();
+            if (d != dist[u]) continue;
+            for (int i = 0; i < (int)adj[u].size(); ++i) {
+                const auto& e = adj[u][i];
+                if (e.cap > 0) {
+                    long long nd = d + e.cost + pi[u] - pi[e.to];
+                    if (nd < dist[e.to]) {
+                        dist[e.to] = nd;
+                        pv[e.to] = u;
+                        pe[e.to] = i;
+                        pq.push({nd, e.to});
+                    }
+                }
+            }
+        }
+        if (dist[T] == INF) break;
+        for (int v = 0; v < V; ++v) {
+            if (dist[v] < INF) pi[v] += dist[v];
+        }
+        int pushed = K;
+        for (int v = T; v != S; v = pv[v]) {
+            pushed = min(pushed, adj[pv[v]][pe[v]].cap);
+        }
+        for (int v = T; v != S; v = pv[v]) {
+            auto& e = adj[pv[v]][pe[v]];
+            e.cap -= pushed;
+            adj[v][e.rev].cap += pushed;
+        }
+    }
+
+    for (int i = 0; i < n; ++i) {
+        auto [u, idx] = task_edge[i];
+        int chosen = (adj[u][idx].cap == 0) ? 1 : 0;
+        cout << chosen << (i + 1 == n ? '\n' : ' ');
+    }
+    return 0;
+}
+```
+::::
+
+---
+
+### 6.3 Problem `#147` (`Int-1`): [Luogu P3357] 最长k可重线段集问题 ($K$-Overlapping 2D Segments)
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P3357](https://www.luogu.com.cn/problem/P3357)
+- **Difficulty Tier**: Intermediate (`Int-1`)
+- **Constraints**: $1 \le n \le 500$ open 2D segments $((x_{j,1}, y_{j,1}), (x_{j,2}, y_{j,2}))$, $1 \le K \le 10$, integer coordinates $|x|, |y| \le 10^5$. Weight of segment $j$ is $w_j = \lfloor \sqrt{(x_{j,1} - x_{j,2})^2 + (y_{j,1} - y_{j,2})^2} \rfloor$. No vertical line $x = x_0$ ($x_0 \in \mathbb{R}$) may intersect more than $K$ selected segments.
+
+#### Step 1: Non-Graph Diagnostic Signal
+- The vertical-line intersection constraint depends only on $x$-coordinates, while $y$-coordinates only determine $w_j$. However, **vertical segments** ($x_{j,1} = x_{j,2}$) have positive weight $w_j = |y_{j,1} - y_{j,2}| > 0$ and project to single points $[x, x]$ on the $x$-axis!
+
+#### Step 2: Intermediate Algebraic Representation (Coordinate Doubling $x \mapsto (2x, 2x+1)$)
+- Apply the **Coordinate Doubling Compiler** from Section 4.2:
+  - Replace every endpoint $x$-coordinate by its doubled pair $(2x, 2x+1)$.
+  - If segment $j$ is **vertical** ($x_1 = x_2 = x$), it covers the point-slice $[2x, 2x + 1)$.
+  - If segment $j$ is **non-vertical** ($x_1 < x_2$, open endpoints under P3357 convention), it covers the open interval $(x_1, x_2)$, which corresponds to the half-open doubled interval $[2x_1 + 1, 2x_2)$.
+
+#### Step 3: Reverse-Engineering Scratchpad
+- After transforming each segment $j$ to its doubled half-open interval $[L'_j, R'_j)$ (where $L'_j < R'_j$ is now strictly guaranteed even for vertical segments!), coordinate-compress the $2n$ doubled endpoints $\{L'_j, R'_j\}$ into $1 < 2 < \dots < M$ and compile via Equation Differencing exactly as in `#145`.
+
+:::: {.callout-note collapse="true" title="Progressive Hints for Luogu P3357 (#147)"}
+- **Hint 1**: Ensure $x_{j,1} \le x_{j,2}$ by swapping the two endpoints if $x_{j,1} > x_{j,2}$ before inspecting verticality.
+- **Hint 2**: Map vertical segments ($x_1 = x_2$) to $[2x_1, 2x_1 + 1)$ and non-vertical open segments ($x_1 < x_2$) to $[2x_1 + 1, 2x_2)$. Notice that $L'_j < R'_j$ always holds, eliminating all self-loops!
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution — Luogu P3357 (#147)"}
+```cpp
+// Luogu P3357 — 最长k可重线段集问题 (#147)
+// Method: Coordinate Doubling x -> (2x, 2x+1) + Equation Differencing + DAG DP Potentials + Dijkstra MCMF
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 1e18;
+
+struct Edge {
+    int to, rev, cap;
+    long long cost;
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n, K;
+    if (!(cin >> n >> K)) return 0;
+
+    vector<long long> L(n), R(n), W(n), coords;
+    for (int i = 0; i < n; ++i) {
+        long long x1, y1, x2, y2;
+        cin >> x1 >> y1 >> x2 >> y2;
+        long long dx = x1 - x2, dy = y1 - y2;
+        W[i] = (long long)sqrt((long double)(dx * dx + dy * dy));
+        if (x1 > x2) swap(x1, x2);
+        if (x1 == x2) {
+            // Vertical segment at x1: covers [2*x1, 2*x1 + 1)
+            L[i] = 2 * x1;
+            R[i] = 2 * x1 + 1;
+        } else {
+            // Open non-vertical segment (x1, x2): covers [2*x1 + 1, 2*x2)
+            L[i] = 2 * x1 + 1;
+            R[i] = 2 * x2;
+        }
+        coords.push_back(L[i]);
+        coords.push_back(R[i]);
+    }
+
+    sort(coords.begin(), coords.end());
+    coords.erase(unique(coords.begin(), coords.end()), coords.end());
+    int M = (int)coords.size();
+
+    int S = 0, T = M + 1, V = M + 2;
+    vector<vector<Edge>> adj(V);
+    auto add_edge = [&](int u, int v, int cap, long long cost) {
+        adj[u].push_back({v, (int)adj[v].size(), cap, cost});
+        adj[v].push_back({u, (int)adj[u].size() - 1, 0, -cost});
+    };
+
+    add_edge(S, 1, K, 0);
+    add_edge(M, T, K, 0);
+    for (int i = 1; i < M; ++i) {
+        add_edge(i, i + 1, K, 0);
+    }
+
+    vector<vector<pair<int, long long>>> dag_edges(M + 1);
+    for (int i = 0; i < n; ++i) {
+        int l = (int)(lower_bound(coords.begin(), coords.end(), L[i]) - coords.begin()) + 1;
+        int r = (int)(lower_bound(coords.begin(), coords.end(), R[i]) - coords.begin()) + 1;
+        add_edge(l, r, 1, -W[i]);
+        dag_edges[l].push_back({r, -W[i]});
+    }
+
+    vector<long long> pi(V, INF);
+    pi[S] = pi[1] = 0;
+    for (int u = 1; u <= M; ++u) {
+        if (u < M) pi[u + 1] = min(pi[u + 1], pi[u]);
+        for (auto [v, c] : dag_edges[u]) {
+            pi[v] = min(pi[v], pi[u] + c);
+        }
+    }
+    pi[T] = pi[M];
+
+    long long min_cost = 0;
+    vector<long long> dist(V);
+    vector<int> pv(V), pe(V);
+    while (true) {
+        fill(dist.begin(), dist.end(), INF);
+        priority_queue<pair<long long, int>, vector<pair<long long, int>>, greater<>> pq;
+        dist[S] = 0;
+        pq.push({0, S});
+        while (!pq.empty()) {
+            auto [d, u] = pq.top();
+            pq.pop();
+            if (d != dist[u]) continue;
+            for (int i = 0; i < (int)adj[u].size(); ++i) {
+                const auto& e = adj[u][i];
+                if (e.cap > 0) {
+                    long long nd = d + e.cost + pi[u] - pi[e.to];
+                    if (nd < dist[e.to]) {
+                        dist[e.to] = nd;
+                        pv[e.to] = u;
+                        pe[e.to] = i;
+                        pq.push({nd, e.to});
+                    }
+                }
+            }
+        }
+        if (dist[T] == INF) break;
+        for (int v = 0; v < V; ++v) {
+            if (dist[v] < INF) pi[v] += dist[v];
+        }
+        int pushed = K;
+        for (int v = T; v != S; v = pv[v]) {
+            pushed = min(pushed, adj[pv[v]][pe[v]].cap);
+        }
+        for (int v = T; v != S; v = pv[v]) {
+            auto& e = adj[pv[v]][pe[v]];
+            e.cap -= pushed;
+            adj[v][e.rev].cap += pushed;
+        }
+        min_cost += 1LL * pushed * pi[T];
+    }
+
+    cout << -min_cost << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### 6.4 Problem `#148` (`Int-2`, Chapter Flagship): [Luogu P3980 / NOI2008] 志愿者招募 (Volunteer Recruitment)
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P3980](https://www.luogu.com.cn/problem/P3980)
+- **Difficulty Tier**: Intermediate (`Int-2`, Chapter Flagship)
+- **Constraints**: $n \le 1000$ days, $m \le 10000$ volunteer types. Day $i$ requires at least $A_i$ volunteers ($0 \le A_i \le 2^{31}-1$). Volunteer type $j$ works from day $l_j$ to day $r_j$ inclusive at cost $c_j \ge 0$ per person (unlimited supply per type; in the bounded variant **Luogu P4311 / BZOJ 1061**, type $j$ has an upper limit $u_j$ on the number of volunteers). Find the minimum total cost.
+
+#### Summary of the 4-Step Compilation (Derived in Full in Sections 1 & 2.1)
+1. **Equality System**: $\sum_{j : l_j \le i \le r_j} x_j - y_i = A_i$ ($i = 1, \dots, n$), with $E_0 : 0 = 0$ and $E_{n+1} : 0 = 0$.
+2. **Consecutive Differences $\Delta E_i = E_i - E_{i-1}$ ($i = 1, \dots, n + 1$)**:
+   - Nodal balance $b_i = A_i - A_{i-1}$ ($A_0 = A_{n+1} = 0$): if $b_i > 0$, add $S \xrightarrow{\text{cap } b_i, \text{cost } 0} i$; if $b_i < 0$, add $i \xrightarrow{\text{cap } -b_i, \text{cost } 0} T$.
+   - Volunteer arc $x_j$: $l_j \xrightarrow{\text{cap } \infty \text{ (or } u_j\text{)}, \text{cost } c_j} r_j + 1$.
+   - Backward surplus slack arc $y_i$: $i + 1 \xrightarrow{\text{cap } \infty, \text{cost } 0} i$ for $i = 1, \dots, n$.
+3. **Why $\pi_0 \equiv 0$ Works Immediately for Dijkstra**: Even though the network has directed cycles ($l_j \to r_j + 1 \to \dots \to l_j$), every initial edge has cost $c_j \ge 0$ or $0$, so $\pi_0(v) = 0$ satisfies $w(u, v) + \pi_0(u) - \pi_0(v) \ge 0$ everywhere!
+
+:::: {.callout-note collapse="true" title="Progressive Hints for Luogu P3980 [NOI2008 志愿者招募] (#148)"}
+- **Hint 1**: Don't forget node $n + 1$! Because $E_{n+1} - E_n$ has right-hand side $A_{n+1} - A_n = 0 - A_n = -A_n$, node $n + 1$ always has an edge to $T$ of capacity $A_n$.
+- **Hint 2**: The slack variable $y_i \ge 0$ has coefficient $-1$ in $E_i$, so in $\Delta E_i = E_i - E_{i-1}$ it has coefficient $-1$ (entering node $i$) and in $\Delta E_{i+1} = E_{i+1} - E_i$ it has coefficient $+1$ (leaving node $i+1$). Thus the slack edge goes **backward** from $i + 1 \to i$.
+- **Hint 3**: Since all initial costs are non-negative, initialize `pi` to all zeros and run pure Dijkstra + Primal-Dual augmentations for fast execution.
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution — Luogu P3980 [NOI2008 志愿者招募] (#148)"}
+```cpp
+// Luogu P3980 [NOI2008] — 志愿者招募 (Volunteer Recruitment) (#148)
+// Method: Consecutive Equation Differencing (\Delta E_i = E_i - E_{i-1}) + Primal-Dual Dijkstra MCMF
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 4e18;
+
+struct Edge {
+    int to, rev;
+    long long cap, cost;
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n, m;
+    if (!(cin >> n >> m)) return 0;
+
+    vector<long long> A(n + 2, 0);
+    for (int i = 1; i <= n; ++i) {
+        cin >> A[i];
+    }
+
+    int S = 0, T = n + 2, V = n + 3;
+    vector<vector<Edge>> adj(V);
+    auto add_edge = [&](int u, int v, long long cap, long long cost) {
+        adj[u].push_back({v, (int)adj[v].size(), cap, cost});
+        adj[v].push_back({u, (int)adj[u].size() - 1, 0, -cost});
+    };
+
+    // 1. Supply/demand edges from b_i = A_i - A_{i-1} for i = 1..n+1
+    for (int i = 1; i <= n + 1; ++i) {
+        long long b = A[i] - A[i - 1];
+        if (b > 0) {
+            add_edge(S, i, b, 0);
+        } else if (b < 0) {
+            add_edge(i, T, -b, 0);
+        }
+    }
+
+    // 2. Backward surplus slack spine y_i: (i + 1) -> i with cap INF, cost 0
+    for (int i = 1; i <= n; ++i) {
+        add_edge(i + 1, i, INF, 0);
+    }
+
+    // 3. Volunteer interval edges x_j: l_j -> r_j + 1 with cap INF, cost c_j
+    for (int j = 0; j < m; ++j) {
+        int l, r;
+        long long c;
+        cin >> l >> r >> c;
+        add_edge(l, r + 1, INF, c);
+    }
+
+    // All initial edge costs are >= 0, so pi_0 == 0 is immediately valid!
+    vector<long long> pi(V, 0), dist(V);
+    vector<int> cur(V);
+    vector<bool> vis(V);
+    long long min_cost = 0;
+
+    auto dijkstra = [&]() -> bool {
+        fill(dist.begin(), dist.end(), INF);
+        priority_queue<pair<long long, int>, vector<pair<long long, int>>, greater<>> pq;
+        dist[S] = 0;
+        pq.push({0, S});
+        while (!pq.empty()) {
+            auto [d, u] = pq.top();
+            pq.pop();
+            if (d != dist[u]) continue;
+            for (const auto& e : adj[u]) {
+                if (e.cap > 0) {
+                    long long nd = d + e.cost + pi[u] - pi[e.to];
+                    if (nd < dist[e.to]) {
+                        dist[e.to] = nd;
+                        pq.push({nd, e.to});
+                    }
+                }
+            }
+        }
+        if (dist[T] == INF) return false;
+        for (int v = 0; v < V; ++v) {
+            if (dist[v] < INF) pi[v] += dist[v];
+        }
+        return true;
+    };
+
+    auto dfs = [&](auto& self, int u, long long pushed) -> long long {
+        if (u == T || pushed == 0) return pushed;
+        vis[u] = true;
+        long long total = 0;
+        for (int& i = cur[u]; i < (int)adj[u].size(); ++i) {
+            auto& e = adj[u][i];
+            if (!vis[e.to] && e.cap > 0 && pi[u] + e.cost - pi[e.to] == 0) {
+                long long tr = self(self, e.to, min(pushed, e.cap));
+                if (tr > 0) {
+                    e.cap -= tr;
+                    adj[e.to][e.rev].cap += tr;
+                    pushed -= tr;
+                    total += tr;
+                    min_cost += tr * e.cost;
+                    if (pushed == 0) break;
+                }
+            }
+        }
+        vis[u] = false;
+        return total;
+    };
+
+    while (dijkstra()) {
+        fill(cur.begin(), cur.end(), 0);
+        fill(vis.begin(), vis.end(), false);
+        while (dfs(dfs, S, INF) > 0) {}
+    }
+
+    cout << min_cost << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### 6.5 Problem `#149` (`Int-3`): [CF 717G] Underfail & [CF 1288F] Red-Blue Graph
+
+- **Judge URL**: [https://codeforces.com/problemset/problem/717/G](https://codeforces.com/problemset/problem/717/G) / [https://codeforces.com/problemset/problem/1288/F](https://codeforces.com/problemset/problem/1288/F)
+- **Difficulty Tier**: Intermediate (`Int-3`)
+- **Constraints**:
+  - **CF 717G (Underfail)**: A string $S$ of length $n \le 500$, $m \le 100$ dictionary words $(p_d, w_d)$ with profit $w_d$, and an integer $x \le 100$. Each occurrence of $p_d$ in $S$ at $[i, i + |p_d| - 1]$ can be chosen at most once, and each character index $t \in \{1, \dots, n\}$ can be covered by at most $x$ chosen word occurrences. Maximize total profit.
+  - **CF 1288F (Red-Blue Graph)**: Bipartite graph $(N_1, N_2, M \le 200)$ where each edge $e$ can be colored Red ($x_e = 1$, cost $R$), Blue ($y_e = 1$, cost $B$), or Uncolored ($x_e = y_e = 0$, cost $0$), subject to vertex color-difference constraints $|d_R(v) - d_B(v)| \ge 1$ for colored vertices (`R` requires $d_R(v) - d_B(v) \ge 1$; `B` requires $d_B(v) - d_R(v) \ge 1$).
+
+#### Step 1: Non-Graph Diagnostic Signal
+- In **CF 717G**, finding all substring matches of each dictionary word $p_d$ in $S$ yields at most $n \cdot m \le 5 \times 10^4$ closed character intervals $[l_j, r_j] = [i, i + |p_d| - 1]$ with weight $w_d$, where no character index $t \in [1, n]$ may be covered more than $x$ times.
+- In **CF 1288F**, each edge $e = (u, v)$ ($u \in V_1, v \in V_2$) contributes $+1$ to $d_R(u) - d_B(u)$ and $d_R(v) - d_B(v)$ if colored Red, or $-1$ if colored Blue. By shifting the baseline (say, pre-coloring or using lower-bound circulation `[1, deg(v)]` on nodal net flow), the two-sided inequality on each vertex's net degree difference compiles into a single bounded-slack nodal conservation law (`Ch 04` / `Ch 17`).
+
+#### Step 2 & Step 3: Algebraic Compilation of Substring Interval Packing (CF 717G)
+- Each match of word $p_d$ starting at $1$-based index $i \in [1, n - |p_d| + 1]$ covers the closed character interval $[i, i + |p_d| - 1]$, which is the half-open interval $[i, i + |p_d|)$.
+- For each character $t \in \{1, \dots, n\}$, $\sum_{j : l_j \le t \le r_j} x_j + y_t = x$ ($y_t \ge 0$).
+- Taking $\Delta E_t = E_t - E_{t-1}$ ($t = 1, \dots, n + 1$) compiles each match at $[i, i + |p_d| - 1]$ to the forward bypass arc $i \xrightarrow{\text{cap } 1, \text{cost } -w_d} i + |p_d|$ and each slack $y_t$ to $t \xrightarrow{\text{cap } x, \text{cost } 0} t + 1$.
+
+:::: {.callout-note collapse="true" title="Progressive Hints for CF 717G (#149)"}
+- **Hint 1**: A match of word $p_d$ of length $L = |p_d|$ starting at $1$-based character $i$ covers characters $i, i+1, \dots, i+L-1$. Under $\Delta E_t = E_t - E_{t-1}$, its arc goes from $i$ to $(i + L - 1) + 1 = i + L$.
+- **Hint 2**: Because all arcs $i \to i + L$ and $t \to t + 1$ satisfy $u < v$ on vertices $1 \dots n + 1$, initialize potentials $\pi_0$ via $O(n + \text{matches})$ DAG DP and run $x$ steps of Dijkstra.
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution — CF 717G Underfail (#149)"}
+```cpp
+// CF 717G — Underfail (#149)
+// Method: Substring Match Interval Extraction + Equation Differencing + DAG DP Potentials + Dijkstra MCMF
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 1e18;
+
+struct Edge {
+    int to, rev, cap;
+    long long cost;
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n;
+    string s;
+    if (!(cin >> n >> s)) return 0;
+
+    int m;
+    cin >> m;
+
+    // Vertices: 0 = Source, 1..n+1 = string positions, n+2 = Sink
+    int S = 0, T = n + 2, V = n + 3;
+    vector<vector<Edge>> adj(V);
+    auto add_edge = [&](int u, int v, int cap, long long cost) {
+        adj[u].push_back({v, (int)adj[v].size(), cap, cost});
+        adj[v].push_back({u, (int)adj[u].size() - 1, 0, -cost});
+    };
+
+    vector<vector<pair<int, long long>>> dag_edges(n + 2);
+    for (int d = 0; d < m; ++d) {
+        string p;
+        long long w;
+        cin >> p >> w;
+        int len = (int)p.size();
+        for (int i = 0; i + len <= n; ++i) {
+            if (s.compare(i, len, p) == 0) {
+                int u = i + 1, v = i + len + 1;
+                add_edge(u, v, 1, -w);
+                dag_edges[u].push_back({v, -w});
+            }
+        }
+    }
+
+    int X;
+    cin >> X;
+
+    add_edge(S, 1, X, 0);
+    add_edge(n + 1, T, X, 0);
+    for (int i = 1; i <= n; ++i) {
+        add_edge(i, i + 1, X, 0);
+    }
+
+    vector<long long> pi(V, INF);
+    pi[S] = pi[1] = 0;
+    for (int u = 1; u <= n + 1; ++u) {
+        if (u <= n) pi[u + 1] = min(pi[u + 1], pi[u]);
+        for (auto [v, c] : dag_edges[u]) {
+            pi[v] = min(pi[v], pi[u] + c);
+        }
+    }
+    pi[T] = pi[n + 1];
+
+    long long min_cost = 0;
+    vector<long long> dist(V);
+    vector<int> pv(V), pe(V);
+    while (true) {
+        fill(dist.begin(), dist.end(), INF);
+        priority_queue<pair<long long, int>, vector<pair<long long, int>>, greater<>> pq;
+        dist[S] = 0;
+        pq.push({0, S});
+        while (!pq.empty()) {
+            auto [d, u] = pq.top();
+            pq.pop();
+            if (d != dist[u]) continue;
+            for (int i = 0; i < (int)adj[u].size(); ++i) {
+                const auto& e = adj[u][i];
+                if (e.cap > 0) {
+                    long long nd = d + e.cost + pi[u] - pi[e.to];
+                    if (nd < dist[e.to]) {
+                        dist[e.to] = nd;
+                        pv[e.to] = u;
+                        pe[e.to] = i;
+                        pq.push({nd, e.to});
+                    }
+                }
+            }
+        }
+        if (dist[T] == INF) break;
+        for (int v = 0; v < V; ++v) {
+            if (dist[v] < INF) pi[v] += dist[v];
+        }
+        int pushed = X;
+        for (int v = T; v != S; v = pv[v]) {
+            pushed = min(pushed, adj[pv[v]][pe[v]].cap);
+        }
+        for (int v = T; v != S; v = pv[v]) {
+            auto& e = adj[pv[v]][pe[v]];
+            e.cap -= pushed;
+            adj[v][e.rev].cap += pushed;
+        }
+        min_cost += 1LL * pushed * pi[T];
+    }
+
+    cout << -min_cost << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### 6.6 Problem `#150` (`Adv-1`): [BZOJ 1283] 序列 (Sequence Sliding-Window Sum)
+
+- **Judge URL**: [https://hydro.ac/d/bzoj/p/1283](https://hydro.ac/d/bzoj/p/1283)
+- **Difficulty Tier**: Advanced (`Adv-1`)
+- **Constraints**: Sequence of $n \le 1000$ positive integers $c_1, c_2, \dots, c_n$. Select a subset of indices $x_j \in \{0, 1\}$ to maximize $\sum_{j=1}^n c_j x_j$ such that **every contiguous subsequence of length $m$** contains **at most $K$** selected elements.
+
+#### Step 1: Non-Graph Diagnostic Signal
+- Selecting point variables $x_j \in \{0, 1\}$ subject to sliding-window upper bounds $\sum_{j=i}^{i+m-1} x_j \le K$ for $i = 1, \dots, W$ ($W = n - m + 1$). Note that if $n \le m$, there is at most $1$ window and we simply pick the $K$ largest elements; otherwise $W = n - m + 1 \ge 1$.
+
+#### Step 2: Intermediate Algebraic Representation (Dualizing Points into Window Intervals)
+- Decision variable $x_j$ ($1 \le j \le n$) appears in window equation $E_i$ ($1 \le i \le W$) iff $i \le j \le i + m - 1 \iff \max(1, j - m + 1) \le i \le \min(W, j)$.
+- Thus $x_j$ covers the contiguous range of window equations $[l_j, r_j]$ where $l_j = \max(1, j - m + 1)$ and $r_j = \min(W, j)$.
+- Adding unused-capacity slack $y_i \ge 0$ gives $E_i : \sum_{j : l_j \le i \le r_j} x_j + y_i = K$ for $i = 1, \dots, W$.
+
+#### Step 3: Reverse-Engineering Scratchpad
+- Taking $\Delta E_i = E_i - E_{i-1}$ for $i = 1, \dots, W + 1$ (with $E_0 = E_{W+1} = 0$):
+  - Supply $b_1 = +K \implies S \xrightarrow{\text{cap } K, \text{cost } 0} 1$; Demand $b_{W+1} = -K \implies W + 1 \xrightarrow{\text{cap } K, \text{cost } 0} T$.
+  - Slack $y_i$ ($1 \le i \le W$): forward spine arc $i \xrightarrow{\text{cap } K, \text{cost } 0} i + 1$.
+  - Point decision $x_j$ ($1 \le j \le n$): forward bypass arc $l_j \xrightarrow{\text{cap } 1, \text{cost } -c_j} r_j + 1$.
+  - *(Equivalent $n+1$-vertex formulation)*: You can also write the equation on all $n$ positions where $x_j$ spans $j \to \min(n + 1, j + m)$! Both networks are isomorphic because windows $i > n - m + 1$ are simply contracted into vertex $W + 1$.
+
+:::: {.callout-note collapse="true" title="Progressive Hints for BZOJ 1283 (#150)"}
+- **Hint 1**: There are $W = \max(1, n - m + 1)$ sliding windows of length $\min(n, m)$. Window $i \in [1, W]$ constrains $\sum_{j=i}^{i+m-1} x_j \le K$.
+- **Hint 2**: Variable $x_j$ appears in windows $l_j = \max(1, j - m + 1)$ through $r_j = \min(W, j)$, so in the differenced network on vertices $1 \dots W+1$, $x_j$ is a directed edge $l_j \to r_j + 1$ with capacity $1$ and cost $-c_j$.
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution — BZOJ 1283 序列 (#150)"}
+```cpp
+// BZOJ 1283 — 序列 (Sequence Sliding-Window Sum) (#150)
+// Method: Sliding Window Dualization + Equation Differencing + DAG DP Potentials + Dijkstra MCMF
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 1e18;
+
+struct Edge {
+    int to, rev, cap;
+    long long cost;
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n, m, K;
+    if (!(cin >> n >> m >> K)) return 0;
+
+    vector<long long> c(n + 1);
+    for (int j = 1; j <= n; ++j) {
+        cin >> c[j];
+    }
+
+    int W = max(1, n - m + 1);
+    int S = 0, T = W + 2, V = W + 3;
+    vector<vector<Edge>> adj(V);
+    auto add_edge = [&](int u, int v, int cap, long long cost) {
+        adj[u].push_back({v, (int)adj[v].size(), cap, cost});
+        adj[v].push_back({u, (int)adj[u].size() - 1, 0, -cost});
+    };
+
+    add_edge(S, 1, K, 0);
+    add_edge(W + 1, T, K, 0);
+    for (int i = 1; i <= W; ++i) {
+        add_edge(i, i + 1, K, 0);
+    }
+
+    vector<vector<pair<int, long long>>> dag_edges(W + 2);
+    for (int j = 1; j <= n; ++j) {
+        int l = max(1, j - m + 1);
+        int r = min(W, j);
+        add_edge(l, r + 1, 1, -c[j]);
+        dag_edges[l].push_back({r + 1, -c[j]});
+    }
+
+    vector<long long> pi(V, INF);
+    pi[S] = pi[1] = 0;
+    for (int u = 1; u <= W + 1; ++u) {
+        if (u <= W) pi[u + 1] = min(pi[u + 1], pi[u]);
+        for (auto [v, cost] : dag_edges[u]) {
+            pi[v] = min(pi[v], pi[u] + cost);
+        }
+    }
+    pi[T] = pi[W + 1];
+
+    long long min_cost = 0;
+    vector<long long> dist(V);
+    vector<int> pv(V), pe(V);
+    while (true) {
+        fill(dist.begin(), dist.end(), INF);
+        priority_queue<pair<long long, int>, vector<pair<long long, int>>, greater<>> pq;
+        dist[S] = 0;
+        pq.push({0, S});
+        while (!pq.empty()) {
+            auto [d, u] = pq.top();
+            pq.pop();
+            if (d != dist[u]) continue;
+            for (int i = 0; i < (int)adj[u].size(); ++i) {
+                const auto& e = adj[u][i];
+                if (e.cap > 0) {
+                    long long nd = d + e.cost + pi[u] - pi[e.to];
+                    if (nd < dist[e.to]) {
+                        dist[e.to] = nd;
+                        pv[e.to] = u;
+                        pe[e.to] = i;
+                        pq.push({nd, e.to});
+                    }
+                }
+            }
+        }
+        if (dist[T] == INF) break;
+        for (int v = 0; v < V; ++v) {
+            if (dist[v] < INF) pi[v] += dist[v];
+        }
+        int pushed = K;
+        for (int v = T; v != S; v = pv[v]) {
+            pushed = min(pushed, adj[pv[v]][pe[v]].cap);
+        }
+        for (int v = T; v != S; v = pv[v]) {
+            auto& e = adj[pv[v]][pe[v]];
+            e.cap -= pushed;
+            adj[v][e.rev].cap += pushed;
+        }
+        min_cost += 1LL * pushed * pi[T];
+    }
+
+    cout << -min_cost << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### 6.7 Problem `#151` (`Adv-2`): [Luogu P6967 / ICPC NEERC 2016 D] Delight for a Cat
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P6967](https://www.luogu.com.cn/problem/P6967) / [https://codeforces.com/gym/101190](https://codeforces.com/gym/101190)
+- **Difficulty Tier**: Advanced (`Adv-2`)
+- **Constraints**: $1 \le k \le n \le 1000$, $0 \le m_s, m_e \le k$ with $m_s + m_e \le k$. Arrays $s_1, \dots, s_n$ and $e_1, \dots, e_n$ ($0 \le s_j, e_j \le 10^9$). In every sliding window of length $k$, at least $m_s$ hours must be `S` (sleep) and at least $m_e$ hours must be `E` (eat). Output the maximum total happiness and the length-$n$ string of `S`/`E` choices.
+
+#### Summary of the 4-Step Compilation (Derived in Full in Section 2.2)
+1. **Baseline & Decision Variable**: Start with all hours sleeping ($S_{\text{base}} = \sum_{j=1}^n s_j$). Let $x_j \in \{0, 1\}$ indicate switching hour $j$ to eating (`E`), with cost $c_j = s_j - e_j$.
+2. **Two-Sided Window Inequality**: For each window $i \in \{1, \dots, W\}$ ($W = n - k + 1$), $L \le \sum_{j : l_j \le i \le r_j} x_j \le R$, where $L = m_e$, $R = k - m_s$, $l_j = \max(1, j - k + 1)$, and $r_j = \min(W, j)$.
+3. **Variant A (Upper-Slack Forward-DAG Compilation)**:
+   - Introduce bounded slack $y_i \in [0, R - L]$ so $\sum_{j : l_j \le i \le r_j} x_j + y_i = R$.
+   - Taking $\Delta E_i = E_i - E_{i-1}$ ($i = 1, \dots, W + 1$) produces a **pure topological DAG** on vertices $1, \dots, W + 1$:
+     - Supply $S \xrightarrow{\text{cap } R, \text{cost } 0} 1$ and demand $W + 1 \xrightarrow{\text{cap } R, \text{cost } 0} T$.
+     - Bounded slack spine $i \xrightarrow{\text{cap } R - L, \text{cost } 0} i + 1$ for $i = 1, \dots, W$.
+     - Decision arc $l_j \xrightarrow{\text{cap } 1, \text{cost } s_j - e_j} r_j + 1$ for $j = 1, \dots, n$.
+4. **Why Variant A Beats SPFA**: Because every edge $(u \to v)$ has $u < v$ and $R = k - m_s$ is the exact required flow from $S$ to $T$ (every feasible schedule corresponds to a flow of value $R$), we initialize $\pi_0$ in $O(n + W)$ via DAG DP and run Primal-Dual Dijkstra until $R$ units of flow reach $T$!
+
+:::: {.callout-note collapse="true" title="Progressive Hints for NEERC 2016 Delight for a Cat (#151)"}
+- **Hint 1**: Notice that the upper-slack variable $y_i = R - \sum_{j=i}^{i+k-1} x_j$ must satisfy $0 \le y_i \le R - L = (k - m_s) - m_e$. If you forget the upper capacity $R - L$ on the slack edge $i \to i + 1$, the lower bound $\sum x_j \ge m_e$ will be violated!
+- **Hint 2**: Unlike `#145` where positive-cost paths can bypass $T$, here we **must** push all $R = k - m_s$ units of flow from $S$ to $T$ even if a shortest path has positive cost $s_j - e_j > 0$, because the cat is **forced** to eat at least $m_e$ hours per window (and the slack arcs $i \to i + 1$ only have capacity $R - L$, forcing at least $L = m_e$ units onto the $x_j$ arcs!).
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution — Luogu P6967 [NEERC 2016] Delight for a Cat (#151)"}
+```cpp
+// Luogu P6967 [ICPC NEERC 2016 D] — Delight for a Cat (#151)
+// Method: Two-Sided Sliding Window Upper-Slack Forward-DAG + DAG DP Potentials + Primal-Dual Dijkstra
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 4e18;
+
+struct Edge {
+    int to, rev, cap;
+    long long cost;
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n, k, ms, me;
+    if (!(cin >> n >> k >> ms >> me)) return 0;
+
+    vector<long long> s(n + 1), e(n + 1);
+    long long base_sum = 0;
+    for (int j = 1; j <= n; ++j) {
+        cin >> s[j];
+        base_sum += s[j];
+    }
+    for (int j = 1; j <= n; ++j) {
+        cin >> e[j];
+    }
+
+    int W = n - k + 1;
+    int L_bound = me, R_bound = k - ms;
+    int S = 0, T = W + 2, V = W + 3;
+
+    vector<vector<Edge>> adj(V);
+    auto add_edge = [&](int u, int v, int cap, long long cost) -> pair<int, int> {
+        int idx = (int)adj[u].size();
+        adj[u].push_back({v, (int)adj[v].size(), cap, cost});
+        adj[v].push_back({u, idx, 0, -cost});
+        return {u, idx};
+    };
+
+    // Total required flow is R_bound = k - ms
+    add_edge(S, 1, R_bound, 0);
+    add_edge(W + 1, T, R_bound, 0);
+
+    // Bounded forward slack arcs y_i in [0, R_bound - L_bound]: i -> i + 1
+    vector<vector<pair<int, long long>>> dag_edges(W + 2);
+    for (int i = 1; i <= W; ++i) {
+        if (R_bound - L_bound > 0) {
+            add_edge(i, i + 1, R_bound - L_bound, 0);
+            dag_edges[i].push_back({i + 1, 0});
+        }
+    }
+
+    // Hour decision arcs x_j: l_j -> r_j + 1 with cap 1, cost s_j - e_j
+    vector<pair<int, int>> hour_edge(n + 1);
+    for (int j = 1; j <= n; ++j) {
+        int l = max(1, j - k + 1);
+        int r = min(W, j);
+        long long cost = s[j] - e[j];
+        hour_edge[j] = add_edge(l, r + 1, 1, cost);
+        dag_edges[l].push_back({r + 1, cost});
+    }
+
+    // O(n + W) Topological DAG DP for initial Johnson potentials pi[]
+    vector<long long> pi(V, INF);
+    pi[S] = pi[1] = 0;
+    for (int u = 1; u <= W + 1; ++u) {
+        if (pi[u] == INF) continue;
+        for (auto [v, c] : dag_edges[u]) {
+            pi[v] = min(pi[v], pi[u] + c);
+        }
+    }
+    pi[T] = pi[W + 1];
+
+    long long min_cost = 0;
+    vector<long long> dist(V);
+    vector<int> cur(V);
+    vector<bool> vis(V);
+
+    auto dijkstra = [&]() -> bool {
+        fill(dist.begin(), dist.end(), INF);
+        priority_queue<pair<long long, int>, vector<pair<long long, int>>, greater<>> pq;
+        dist[S] = 0;
+        pq.push({0, S});
+        while (!pq.empty()) {
+            auto [d, u] = pq.top();
+            pq.pop();
+            if (d != dist[u]) continue;
+            for (const auto& ed : adj[u]) {
+                if (ed.cap > 0) {
+                    long long nd = d + ed.cost + pi[u] - pi[ed.to];
+                    if (nd < dist[ed.to]) {
+                        dist[ed.to] = nd;
+                        pq.push({nd, ed.to});
+                    }
+                }
+            }
+        }
+        if (dist[T] == INF) return false;
+        for (int v = 0; v < V; ++v) {
+            if (dist[v] < INF) pi[v] += dist[v];
+        }
+        return true;
+    };
+
+    auto dfs = [&](auto& self, int u, int pushed) -> int {
+        if (u == T || pushed == 0) return pushed;
+        vis[u] = true;
+        int total = 0;
+        for (int& i = cur[u]; i < (int)adj[u].size(); ++i) {
+            auto& ed = adj[u][i];
+            if (!vis[ed.to] && ed.cap > 0 && pi[u] + ed.cost - pi[ed.to] == 0) {
+                int tr = self(self, ed.to, min(pushed, ed.cap));
+                if (tr > 0) {
+                    ed.cap -= tr;
+                    adj[ed.to][ed.rev].cap += tr;
+                    pushed -= tr;
+                    total += tr;
+                    min_cost += 1LL * tr * ed.cost;
+                    if (pushed == 0) break;
+                }
+            }
+        }
+        vis[u] = false;
+        return total;
+    };
+
+    while (dijkstra()) {
+        fill(cur.begin(), cur.end(), 0);
+        fill(vis.begin(), vis.end(), false);
+        while (dfs(dfs, S, R_bound) > 0) {}
+    }
+
+    cout << base_sum - min_cost << "\n";
+    string ans(n, 'S');
+    for (int j = 1; j <= n; ++j) {
+        auto [u, idx] = hour_edge[j];
+        if (adj[u][idx].cap == 0) ans[j - 1] = 'E';
+    }
+    cout << ans << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### 6.8 Problem `#152` (`Mas-1`): [BZOJ 3550 / ONTAK 2010] Vacation & [LOJ #6405] Rooted Tree Equation Differencing (`树上流守恒差分`)
+
+We conclude the ladder with two Mastery problems that push Equation Differencing beyond a single 1D consecutive-ones system: **multi-scale coupled sliding windows** (**[ONTAK 2010 / BZOJ 3550] Vacation**) and **rooted tree ancestor-chain differencing** (**[LOJ #6405] 无源汇有上下界最小流 / 树上流守恒差分**).
+
+- **Judge URLs**: [https://hydro.ac/d/bzoj/p/3550](https://hydro.ac/d/bzoj/p/3550) (`BZOJ 3550`) / [https://loj.ac/p/6405](https://loj.ac/p/6405) (`LOJ #6405`)
+- **Difficulty Tier**: Mastery (`Mas-1`)
+- **Constraints**:
+  - **BZOJ 3550 [ONTAK 2010] Vacation**: $3K$ days ($K \le 200$, so $N = 3K \le 600$) with profits $c_1, \dots, c_{3K}$. Maximize $\sum_{j=1}^{3K} c_j x_j$ ($x_j \in \{0, 1\}$) such that:
+    1. Every contiguous window of length $K$ has at most $L_1$ selected days ($\sum_{j=i}^{i+K-1} x_j \le L_1$ for $i = 1, \dots, 2K + 1$).
+    2. The entire $3K$-day horizon $[1, 3K]$ has at most $L_2$ selected days ($\sum_{j=1}^{3K} x_j \le L_2$, or equivalently every window of length $2K$ / $3K$ is bounded).
+  - **LOJ #6405**: A rooted tree $T$ with $n \le 5000$ vertices where each tree edge $e = (\text{parent}(u), u)$ has a lower bound $A_u$ on flow, and $m$ upward back-edges $q_j \to p_j$ ($p_j$ ancestor of $q_j$) have cost $c_j$. Find the minimum-cost circulation (or minimum-cost vertical chain cover).
+
+#### Part A: 4-Step Compilation of BZOJ 3550 [ONTAK 2010] Vacation
+
+1. **Diagnostic Signal**: We are given $N = 3K$ vacation days with profits $c_1, \dots, c_{3K}$ and must choose $x_j \in \{0, 1\}$ to maximize $\sum_{j=1}^{3K} c_j x_j$ subject to the sliding-window upper bound $\sum_{j=i}^{i+K-1} x_j \le L$ for every contiguous $K$-day window $i = 1, 2, \dots, 2K + 1$.
+2. **Intermediate Algebraic System**:
+   - Let $W = 2K + 1$ be the number of sliding windows of length $K$. Introducing unused-capacity slack variables $y_i \ge 0$ for each window $i \in \{1, \dots, 2K + 1\}$ yields:
+
+     $$
+     E_i : \quad \sum_{j=i}^{i+K-1} x_j + y_i = L \qquad (i = 1, 2, \dots, 2K + 1), \qquad E_0 : 0 = 0, \quad E_{2K+2} : 0 = 0.
+     $$
+
+   - Notice how the $3K$ decision variables partition cleanly into three consecutive blocks of length $K$:
+     - **Period 1 ($1 \le j \le K$)**: $x_j$ appears in windows $E_1, \dots, E_j$ (entering at $\Delta E_1$ and exiting at $\Delta E_{j+1}$).
+     - **Period 2 ($K + 1 \le j \le 2K$)**: $x_j$ appears in windows $E_{j-K+1}, \dots, E_j$ (entering at $\Delta E_{j-K+1}$ and exiting at $\Delta E_{j+1}$).
+     - **Period 3 ($2K + 1 \le j \le 3K$)**: $x_j$ appears in windows $E_{j-K+1}, \dots, E_{2K+1}$ (entering at $\Delta E_{j-K+1}$ and exiting at $\Delta E_{2K+2}$).
+3. **Reverse-Engineering Scratchpad**:
+   - Taking $\Delta E_i = E_i - E_{i-1}$ for $i = 1, \dots, 2K + 2$ produces a 3-layer topological DAG on vertices $1, \dots, 2K + 2$:
+     - Supply $b_1 = +L \implies S \xrightarrow{\text{cap } L, \text{cost } 0} 1$; Demand $b_{2K+2} = -L \implies 2K + 2 \xrightarrow{\text{cap } L, \text{cost } 0} T$.
+     - Slack spine $y_i$ ($1 \le i \le 2K + 1$): $i \xrightarrow{\text{cap } L, \text{cost } 0} i + 1$.
+     - Day decision $x_j$ ($1 \le j \le 3K$): $\max(1, j - K + 1) \xrightarrow{\text{cap } 1, \text{cost } -c_j} \min(2K + 1, j) + 1$.
+
+#### Part B: 4-Step Compilation of LOJ #6405 (Rooted Tree Equation Differencing `树上流守恒差分`)
+
+1. **Diagnostic Signal**: Each vertex $u \in \{2, \dots, n\}$ in a rooted tree (root $1$) has a coverage demand $A_u \ge 0$ on the tree edge $(\text{parent}(u), u)$, and we are given $m$ vertical ancestor-descendant paths $P_j = \text{path}(p_j, q_j)$ ($p_j$ is an ancestor of $q_j$) with cost $c_j$ (plus the ability to add extra flow along any root-to-vertex or downward tree edge at cost $d_u$).
+2. **Intermediate Algebraic Representation**:
+   - For each node $u \in \{2, \dots, n\}$, let $E_u : \sum_{j : u \in \text{path}(p_j, q_j)} x_j - y_u = A_u$ ($y_u \ge 0$), with root equation $E_1 : 0 = 0$.
+3. **Reverse-Engineering Scratchpad (Applying Theorem 19.3 $\Delta^{\text{tree}} E_u = E_u - \sum_{v \in \text{child}(u)} E_v$)**:
+   - Nodal balance at $u \in \{1, \dots, n\}$: $b_u = A_u - \sum_{v \in \text{child}(u)} A_v$ ($A_1 = 0$).
+   - Every vertical path variable $x_j$ covering $u \in \text{path}(p_j, q_j) \setminus \{p_j\}$ (all tree edges on the path from $p_j$ down to $q_j$) enters at $\Delta^{\text{tree}} E_{q_j}$ with $+1$ and exits at $\Delta^{\text{tree}} E_{p_j}$ with $-1$, compiling to the upward arc $q_j \xrightarrow{\text{cap } \infty, \text{cost } c_j} p_j$!
+   - Every surplus slack $y_u$ on edge $(\text{parent}(u), u)$ compiles to the downward tree arc $\text{parent}(u) \xrightarrow{\text{cap } \infty, \text{cost } d_u} u$!
+
+:::: {.callout-note collapse="true" title="Progressive Hints for BZOJ 3550 & LOJ #6405 (#152)"}
+- **Hint 1 (BZOJ 3550)**: Across $N = 3K$ days with window length $K$, there are $W = 2K + 1$ windows. Day $j \in [1, 3K]$ covers windows $l_j = \max(1, j - K + 1)$ through $r_j = \min(2K + 1, j)$, compiling to the DAG edge $l_j \to r_j + 1$ with capacity $1$ and cost $-c_j$.
+- **Hint 2 (LOJ #6405 — Rooted Tree Differencing)**: Do not flatten the tree with Heavy-Light Decomposition! Simply compute $b_u = A_u - \sum_{v \in \text{child}(u)} A_v$ at every vertex $u \in \{1, \dots, n\}$. A vertical path covering the tree edges between ancestor $p_j$ and descendant $q_j$ becomes a **single edge** $q_j \to p_j$, and the surplus slack on edge $(\text{parent}(u), u)$ becomes a **single downward edge** $\text{parent}(u) \to u$.
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solutions — BZOJ 3550 [ONTAK 2010] Vacation & LOJ #6405 Rooted Tree Differencing (#152)"}
+```cpp
+// Solution 1: BZOJ 3550 [ONTAK 2010] — Vacation (#152A)
+// Method: Consecutive Equation Differencing on 3K Horizon + DAG DP Potentials + Dijkstra MCMF
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 1e18;
+
+struct Edge {
+    int to, rev, cap;
+    long long cost;
+};
+
+void solve_bzoj3550() {
+    int K, L;
+    if (!(cin >> K >> L)) return;
+    int n = 3 * K;
+    vector<long long> c(n + 1);
+    for (int j = 1; j <= n; ++j) cin >> c[j];
+
+    int W = 2 * K + 1;
+    int S = 0, T = W + 2, V = W + 3;
+    vector<vector<Edge>> adj(V);
+    auto add_edge = [&](int u, int v, int cap, long long cost) {
+        adj[u].push_back({v, (int)adj[v].size(), cap, cost});
+        adj[v].push_back({u, (int)adj[u].size() - 1, 0, -cost});
+    };
+
+    add_edge(S, 1, L, 0);
+    add_edge(W + 1, T, L, 0);
+    for (int i = 1; i <= W; ++i) {
+        add_edge(i, i + 1, L, 0);
+    }
+
+    vector<vector<pair<int, long long>>> dag_edges(W + 2);
+    for (int j = 1; j <= n; ++j) {
+        int l = max(1, j - K + 1);
+        int r = min(W, j);
+        add_edge(l, r + 1, 1, -c[j]);
+        dag_edges[l].push_back({r + 1, -c[j]});
+    }
+
+    vector<long long> pi(V, INF);
+    pi[S] = pi[1] = 0;
+    for (int u = 1; u <= W + 1; ++u) {
+        if (u <= W) pi[u + 1] = min(pi[u + 1], pi[u]);
+        for (auto [v, cost] : dag_edges[u]) {
+            pi[v] = min(pi[v], pi[u] + cost);
+        }
+    }
+    pi[T] = pi[W + 1];
+
+    long long min_cost = 0;
+    vector<long long> dist(V);
+    vector<int> pv(V), pe(V);
+    while (true) {
+        fill(dist.begin(), dist.end(), INF);
+        priority_queue<pair<long long, int>, vector<pair<long long, int>>, greater<>> pq;
+        dist[S] = 0;
+        pq.push({0, S});
+        while (!pq.empty()) {
+            auto [d, u] = pq.top();
+            pq.pop();
+            if (d != dist[u]) continue;
+            for (int i = 0; i < (int)adj[u].size(); ++i) {
+                const auto& e = adj[u][i];
+                if (e.cap > 0) {
+                    long long nd = d + e.cost + pi[u] - pi[e.to];
+                    if (nd < dist[e.to]) {
+                        dist[e.to] = nd;
+                        pv[e.to] = u;
+                        pe[e.to] = i;
+                        pq.push({nd, e.to});
+                    }
+                }
+            }
+        }
+        if (dist[T] == INF) break;
+        for (int v = 0; v < V; ++v) {
+            if (dist[v] < INF) pi[v] += dist[v];
+        }
+        int pushed = L;
+        for (int v = T; v != S; v = pv[v]) {
+            pushed = min(pushed, adj[pv[v]][pe[v]].cap);
+        }
+        for (int v = T; v != S; v = pv[v]) {
+            auto& e = adj[pv[v]][pe[v]];
+            e.cap -= pushed;
+            adj[v][e.rev].cap += pushed;
+        }
+        min_cost += 1LL * pushed * pi[T];
+    }
+
+    cout << -min_cost << "\n";
+}
+
+// Solution 2: Rooted Tree Equation Differencing (\Delta^{tree} E_u = E_u - \sum_{v \in child(u)} E_v) (#152B)
+// Compiles vertical ancestor-descendant path covering on a rooted tree into O(N + M) MCMF without HLD.
+long long solve_tree_volunteer_recruitment(
+    int n,
+    const vector<int>& parent,          // parent[u] for u = 2..n (root is 1, parent[1] = 0)
+    const vector<long long>& A,         // A[u] = minimum coverage required at node u (u = 1..n)
+    const vector<tuple<int, int, long long>>& chains // (p_j, q_j, cost_j) covering path(p_j, q_j)
+) {
+    int S = n + 1, T = n + 2, V = n + 3; // Node 0 is virtual super-root parent(1)
+    vector<vector<Edge>> adj(V);
+    auto add_edge = [&](int u, int v, int cap, long long cost) {
+        adj[u].push_back({v, (int)adj[v].size(), cap, cost});
+        adj[v].push_back({u, (int)adj[u].size() - 1, 0, -cost});
+    };
+
+    // 1. Compute tree-differenced nodal balance b_u = A_u - \sum_{v \in child(u)} A_v
+    vector<long long> b(n + 1, 0);
+    for (int u = 1; u <= n; ++u) {
+        b[u] += A[u];
+        b[parent[u]] -= A[u];
+    }
+    for (int u = 0; u <= n; ++u) {
+        if (b[u] > 0) add_edge(S, u, (int)b[u], 0);
+        else if (b[u] < 0) add_edge(u, T, (int)(-b[u]), 0);
+    }
+
+    // 2. Downward surplus slack arcs y_u: parent(u) -> u with cap INF, cost 0
+    const int INF_CAP = 1e9;
+    for (int u = 1; u <= n; ++u) {
+        add_edge(parent[u], u, INF_CAP, 0);
+    }
+
+    // 3. Vertical chain arcs x_j: q_j -> parent(p_j) with cap INF, cost c_j
+    for (auto [p, q, cost] : chains) {
+        add_edge(q, parent[p], INF_CAP, cost);
+    }
+
+    // All initial costs are >= 0, so pi_0 == 0 is valid for Primal-Dual Dijkstra!
+    vector<long long> pi(V, 0), dist(V);
+    vector<int> pv(V), pe(V);
+    long long min_cost = 0;
+    while (true) {
+        fill(dist.begin(), dist.end(), INF);
+        priority_queue<pair<long long, int>, vector<pair<long long, int>>, greater<>> pq;
+        dist[S] = 0;
+        pq.push({0, S});
+        while (!pq.empty()) {
+            auto [d, u] = pq.top();
+            pq.pop();
+            if (d != dist[u]) continue;
+            for (int i = 0; i < (int)adj[u].size(); ++i) {
+                const auto& e = adj[u][i];
+                if (e.cap > 0) {
+                    long long nd = d + e.cost + pi[u] - pi[e.to];
+                    if (nd < dist[e.to]) {
+                        dist[e.to] = nd;
+                        pv[e.to] = u;
+                        pe[e.to] = i;
+                        pq.push({nd, e.to});
+                    }
+                }
+            }
+        }
+        if (dist[T] == INF) break;
+        for (int v = 0; v < V; ++v) {
+            if (dist[v] < INF) pi[v] += dist[v];
+        }
+        int pushed = INF_CAP;
+        for (int v = T; v != S; v = pv[v]) {
+            pushed = min(pushed, adj[pv[v]][pe[v]].cap);
+        }
+        for (int v = T; v != S; v = pv[v]) {
+            auto& e = adj[pv[v]][pe[v]];
+            e.cap -= pushed;
+            adj[v][e.rev].cap += pushed;
+        }
+        min_cost += 1LL * pushed * pi[T];
+    }
+    return min_cost;
+}
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    solve_bzoj3550();
+    return 0;
+}
+```
+::::
+
+---
+
+## 7. Pre-Submission Checklist (`FM-19` Audit) & Quarantined Template Problems
+
+Before submitting any interval-covering, interval-packing, or equation-differencing MCMF solution, run through this 6-point verification checklist:
+
+1. **Off-by-One Endpoint Audit (`r_j + 1` vs. `r_j`, `FM-19a`)**:
+   - Did you write out the discrete equation indices $E_i$ ($i = 1, \dots, n$) that contain $x_j$?
+   - If $x_j$ appears in equations $i \in \{l_j, l_j + 1, \dots, r_j\}$ (inclusive), then in $\Delta E_i = E_i - E_{i-1}$ the $-1$ coefficient appears at row $\mathbf{r_j + 1}$, so the arc is $l_j \to \mathbf{r_j + 1}$ and the graph has $\mathbf{n + 1}$ equation nodes ($1, \dots, n + 1$) with $A_0 = A_{n+1} = 0$.
+   - If $x_j$ is an open interval $(L_j, R_j)$ over compressed coordinates $1 \dots M$, it covers elementary segments $i \in \{l_j, \dots, r_j - 1\}$, so the $-1$ coefficient appears at $(r_j - 1) + 1 = \mathbf{r_j}$.
+2. **Slack Arc Orientation Audit (`FM-19`, `H-21`)**:
+   - Lower-bound covering ($\sum x_j \ge A_i \iff \sum x_j - y_i = A_i$): slack $-y_i$ has coefficient $-1$ in $\Delta E_i$ and $+1$ in $\Delta E_{i+1}$, so the slack arc points **backward** ($i + 1 \to i$).
+   - Upper-bound packing ($\sum x_j \le K_i \iff \sum x_j + y_i = K_i$): slack $+y_i$ has coefficient $+1$ in $\Delta E_i$ and $-1$ in $\Delta E_{i+1}$, so the slack arc points **forward** ($i \to i + 1$).
+3. **Two-Sided Sliding Window Capacity Audit (`FM-19c`)**:
+   - For $L_i \le \sum x_j \le R_i$, did you bound the slack arc capacity by $\mathbf{R_i - L_i}$? Leaving the slack capacity as $\infty$ drops the lower bound $L_i$ (in Variant A) or drops the upper bound $R_i$ (in Variant B).
+4. **2D Vertical Segment Self-Loop Audit (`FM-19b`)**:
+   - In 2D segment projection problems (`Luogu P3357`), did you double coordinates $x \mapsto (2x, 2x + 1)$ so vertical segments $x_1 = x_2 = x$ map to $2x \to 2x + 1$ instead of zero-length self-loops $x \to x$?
+5. **DAG DP vs. $\pi_0 \equiv 0$ Potential Initialization Audit**:
+   - In lower-bound covering (`NOI2008 志愿者招募`), all initial edge costs are $\ge 0$, so $\pi_0 \equiv 0$ is immediately valid for Dijkstra despite directed cycles.
+   - In upper-bound packing (`P3358`, `POJ 3680`, `CF 164C`, `NEERC 2016 Delight for a Cat` Variant A), initial edge costs $-w_j < 0$ are negative, but all edges satisfy $u < v$ (a topological DAG), so a single $O(N + M)$ left-to-right DP pass computes exact initial Johnson potentials $\pi_0$ without SPFA!
+6. **Consecutive-Ones Contiguity Audit (`FM-19d`)**:
+   - Does every variable $x_j$ appear in a **single contiguous interval** of equations? If a variable spans two disjoint intervals of equations, stop—that is the NP-hard Equal-Flow problem unless a global block sum telescopes onto slack variables.
+
+### Quarantined Template Problems Table
+
+To keep the main problem ladder focused on distinct structural techniques, the following near-duplicate exercises are quarantined here for additional drill practice:
+
+| Quarantined Problem | Judge / Source | Structural Isomorphism to Main Ladder |
+| :--- | :--- | :--- |
+| **[Luogu P4311 / BZOJ 1061] 志愿者招募加强版** | Luogu P4311 | Identical to `#148` (`NOI2008 志愿者招募`), except each volunteer type $j$ has a finite upper bound $u_j$ on headcount ($l_j \xrightarrow{\text{cap } u_j, \text{cost } c_j} r_j + 1$). |
+| **[CF 164C] Machine Programming** | Codeforces 164C | Identical to `#146` (`POJ 3680`), requiring $0/1$ task choice reconstruction from residual capacities. |
+| **[ZJOI2013 / Luogu P3337] 防守战线** | Luogu P3337 | Row-interval covering with large point capacities; LP Dual transposes rows and columns into `#148` (`Section 5.2`). |
+| **[AtCoder AGC 034 D] Manhattan Max Matching** | AtCoder AGC034D | Uses auxiliary hub vertices to linearize $\ell_1$ distance $|x_1 - x_2| + |y_1 - y_2|$ into 4 sign cases (covered in `Ch 17`). |
+
+---
+
+## 8. Chapter Summary, Bridge to Chapter 20, and Multilingual Bibliography
+
+### Key Takeaways of Chapter 19
+
+- **The Consecutive-Ones Property is the Soul of Interval Flow**: Any linear program whose constraint matrix $A \in \{0, 1\}^{n \times m}$ has contiguous $1$s in every column reduces mechanically via consecutive row subtraction $\Delta E_i = E_i - E_{i-1}$ (`流守恒差分建模法`) to a node-arc incidence matrix of a directed flow network on $n + 1$ vertices.
+- **No More Guessing Edge Directions**: Slack sign dictates arc direction—surplus slack $-y_i$ in $\ge A_i$ constraints compiles to backward arcs $i + 1 \to i$, unused slack $+y_i$ in $\le K_i$ constraints compiles to forward arcs $i \to i + 1$, and two-sided bounds $L_i \le \text{sum}_i \le R_i$ compile to capacity-bounded slack arcs of capacity $R_i - L_i$.
+- **Coordinate Doubling & Tree Differencing**: Coordinate doubling $x \mapsto (2x, 2x+1)$ resolves 2D vertical segment self-loops (`Luogu P3357`), and subtree equation differencing $\Delta^{\text{tree}} E_u = E_u - \sum_{v \in \text{child}(u)} E_v$ extends the compiler from 1D intervals to vertical ancestor-descendant chains on rooted trees.
+
+### Bridge to Chapter 20: Convex Cost Scaling, Incremental Slope Arrays, and Non-Linear MCMF
+
+Throughout Chapters 17–19, every decision variable $x_j$ had a **linear** unit cost $c_j x_j$. What happens when the cost of routing $x_j$ units of flow along an edge—or the penalty of a degree imbalance, project tardiness, or worker fatigue—is a **nonlinear convex function** $\Phi_j(x_j)$ such as $a x_j^2 + b x_j$, $x_j \ln x_j$, or an arbitrary convex piecewise-linear curve? In **Chapter 20**, we open the **Convex Cost & Non-Linear MCMF** toolkit:
+
+- **The Incremental Finite-Difference / Parallel-Edge Gadget (`拆边费用流`)**: How discrete convexity $\Delta^2 \Phi(k) = \Phi(k+1) - 2\Phi(k) + \Phi(k-1) \ge 0$ guarantees that SSP Dijkstra greedily saturates parallel unit-capacity edges in exact order $k = 1, 2, \dots, u$.
+- **Dynamic On-the-Fly Edge Generation (`动态加边`)**: How to avoid $O(U)$ parallel edges by inserting the $(k+1)$-th marginal edge $\Delta \Phi(k+1) = \Phi(k+1) - \Phi(k)$ only when the $k$-th edge becomes saturated.
+- **Capacity-Scaling MCMF ($O(M^2 \log U \log V)$)**: How binary bit-scaling handles huge capacities $U \le 10^9$ when explicit parallel edges are impossible.
+
+---
+
+### Multilingual Bibliography & Seminal References
+
+1. **`[ZH]` Shen, Y. (申奥, 2008)**, *"NOI2008 志愿者招募 (Volunteer Recruitment) Official Problem Analysis & Linear Programming Equation-Difference Formulation"*, NOI 2008 National Olympiad in Informatics Proceedings (`流守恒差分建模法` origin in competitive programming).
+2. **`[ZH]`刘汝佳 (Liu, R.), 陈锋 (Chen, F.) (2012)**, *《算法竞赛入门经典：训练指南》(AOAPC II: Training Guide)*, Chapter 6 (Network Flows — Linear Programming and Consecutive Equation Differencing).
+3. **`[ZH]` 李煜东 (Li, Y.) (2018)**, *《算法竞赛进阶指南》(Advanced Guide to Algorithm Competitions)*, Sections 0x68–0x69 (Bipartite Matching & Network Flow / Min-Cost Max-Flow Models).
+4. **`[EN]` Ahuja, R. K., Magnanti, T. L., & Orlin, J. B. (1993)**, *Network Flows: Theory, Algorithms, and Applications*, Prentice Hall — Chapter 9 (Minimum Cost Flows) & Section 19.3 (Transformations of Consecutive-Ones Linear Programs to Network Flow Problems).
+5. **`[EN]` Fulkerson, D. R., & Gross, O. A. (1965)**, *"Incidence matrices and interval graphs"*, Pacific Journal of Mathematics, 15(3), 835–855 (foundational theorem connecting Consecutive-Ones matrices, Total Unimodularity, and interval network incidence matrices).
+6. **`[JA]` snuke / maspypy / noshi91 (2019–2023)**, *"双対性と最小費用流 / 区間被覆 LP の差分変換 (LP Duality, Consecutive-Ones Transformations, and Min-Cost Flow Compilation)"*, AtCoder Editorial & Competitive Programming Treatises.

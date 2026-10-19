@@ -1,0 +1,1115 @@
+---
+title: "Chapter 3 — Vertex Splitting, Time-Expanded Layered DAGs, and Path Decomposition"
+subtitle: "From Edge-Only Conservation to Node Bottlenecks, Menger Connectivity, Multi-Stage Routing, and Dynamic Time Horizons"
+---
+
+## Prerequisites & Learning Objectives
+
+::: {.callout-note title="Prerequisites"}
+
+Before starting this chapter, verify that you are fluent with the following concepts from Chapters 1 and 2:
+
+1. **Skew-Symmetric Conservation & Residual Cancellation (Chapter 1)**: Every flow $f: E \to \mathbb{R}_{\ge 0}$ satisfies $0 \le f(u, v) \le c(u, v)$ and Kirchhoff conservation $\sum_{u} f(u, v) = \sum_{w} f(v, w)$ for all $v \notin \{s, t\}$. Pushing $\Delta > 0$ units along a reverse residual arc $(v, u)$ in $G_f$ cancels $\Delta$ units of previously committed forward flow on $(u, v)$ and splices two crossing paths into two non-crossing paths.
+2. **Dinitz's Three Complexity Regimes (Chapter 1)**: On general networks, Dinic runs in $O(V^2 E)$; on unit-capacity networks ($c(e) = 1$), Dinic runs in $O(E \min(V^{2/3}, E^{1/2}))$; and on **unit vertex networks** ($\min(\deg^-(v), \deg^+(v)) \le 1$ with unit capacities), Dinic runs in $O(E \sqrt{V})$ by Even and Tarjan's theorem (1975).
+3. **Canonical Extremal Cuts $S_{\min}$ and Residual Incrementalism (Chapter 2)**: The source-reachable set $S_{\min} = \{v \in V : s \leadsto_{G_{f^*}} v\}$ identifies the unique source-minimal minimum cut, and adding new vertices or arcs to $G_{f^*}$ allows incremental re-augmentation without rebuilding the network from scratch.
+:::
+
+::: {.callout-tip title="Learning Objectives"}
+
+By the end of this chapter, you will be able to:
+
+1. **Decompose Flows Constructively**: Prove the **Flow Decomposition Theorem (`流分解定理`)** and implement an $O(V E)$ path-and-cycle stripping algorithm to recover explicit $s$-$t$ trajectories from residual capacities—while diagnosing why naive greedy shortest-path stripping without residual uncrossing fails on the **6-Vertex Diamond-Bridge** counterexample.
+2. **Compile Vertex Capacities & Multi-Stage Decisions via Node Splitting**: Transform vertex throughput bounds $F(v) \le C_v$ into internal bridge arcs $v_{\text{in}} \xrightarrow{C_v} v_{\text{out}}$ under the strict **$\text{out} \to \text{in}$ port invariant**, establish the exact bijection between node cuts and arc cuts, avoid the **`FM-04` Undirected Vertex-Split Bypass Trap**, and prove all **Four Variants of Menger's Connectivity Theorem**.
+3. **Unroll Discrete Time Horizons & DP Subgraphs**: Construct **Time-Expanded Layered Networks (`分层图`)** over $V \times \{0, 1, \dots, T\}$ with holdover and transit arcs, apply **Incremental Dynamic Layer Addition (`动态加层`)** to find minimum completion times without binary search, and layer optimal **DP / Shortest-Path DAGs** to count disjoint optimal structures.
+4. **Sparsify Dense Transition Cliques via Hub Vertices**: Collapse $\Theta(H W (H + W))$ row/column jump cliques into $O(H + W)$ bipartite hub networks (`[ARC 074 D] Lotus Leaves`) and eliminate interior grid vertices via perimeter Cut-DP (`[CF 1368H1]`).
+:::
+
+---
+
+## 1. Motivation: Compiling Node Bottlenecks, Multi-Stage Decisions, and Time Horizons into Arcs
+
+In Chapters 1 and 2, every capacity constraint lived directly on a directed arc $e = (u \to v)$:
+
+$$0 \le f(u, v) \le c(u, v).$$
+
+Vertices $v \notin \{s, t\}$ were treated as frictionless, infinite-bandwidth junctions whose only role was to enforce Kirchhoff flow conservation:
+
+$$\sum_{u : (u, v) \in E} f(u, v) = \sum_{w : (v, w) \in E} f(v, w).$$
+
+Real contest problems, however, rarely hand you a pre-built edge-capacitated graph. Instead, the problem statement hides the flow structure behind three non-arc bottlenecks:
+
+1. **Physical Node Bottlenecks**: Routers overheat after forwarding $C_v$ packets (`[CQOI2015] 网络吞吐量`), stone pillars crumble after $h_{r,c}$ lizard jumps (`[SCOI2007] 蜥蜴`), or thin ice floes sink after a single survivor steps off them (`[UVa 11380] Down Went The Titanic`). Here, the limit constrains the **total flow passing through a vertex $v$**, regardless of which incoming edge it arrives on or which outgoing edge it leaves on.
+2. **Multi-Stage Entity Coupling**: A hotel guest is satisfied only if assigned **both** a liked room $r \in \mathcal{R}$ **and** a liked dish $d \in \mathcal{D}$ (`[Luogu P1402] 酒店之王`). If we model the guest as a single vertex $g$ between rooms and dishes ($r \to g \to d$), conservation at $g$ guarantees that the number of rooms assigned to $g$ equals the number of dishes assigned to $g$, **but it does not stop a single guest with two liked rooms and two liked dishes from absorbing $2$ units of flow**!
+3. **Temporal & Sequential Coupling**: Space shuttles cycle periodically between stations over discrete time steps $t = 0, 1, 2, \dots$ (`[CTSC1999] 家园`). An edge that exists at $t = 1$ may vanish at $t = 2$, and passengers can wait at stations across time steps. On a static graph, flow is instantaneous: a unit of flow entering $u$ at $t = 5$ could illegally depart along an edge that was only available at $t = 1$.
+
+All three phenomena share a single mathematical cure: **state-space expansion**. Rather than modifying Dinic's solver to track vertex budgets or timestamps, we **compile** vertex capacities, multi-stage roles, and discrete time horizons into ordinary directed arcs by splitting each logical entity into fine-grained state vertices:
+
+- **Vertex Capacity Splitting**: $v \mapsto (v_{\text{in}} \xrightarrow{C_v} v_{\text{out}})$ turns node throughput into an internal arc capacity.
+- **Time-Expanded Layering (`分层图`)**: $v \mapsto (v, 0) \xrightarrow{\infty} (v, 1) \xrightarrow{\infty} \dots \xrightarrow{\infty} (v, T)$ turns temporal causality into a Directed Acyclic Graph (DAG).
+- **Hub Sparsification**: Replacing an $m$-clique of valid jumps with a shared hub vertex $H_{\text{row}}$ turns $\Theta(m^2)$ transitions into $2m$ arcs.
+
+Before we build these state-expanded graphs, however, we need a rigorous bridge back from **aggregate arc flows** $f(e)$ to **individual physical trajectories** (paths of lizards, survivors, astronauts, or subsequences). That bridge is the **Flow Decomposition Theorem**.
+
+---
+
+## 2. The Flow Decomposition Theorem & Constructive Path Extraction
+
+A maximum-flow solver computes a single scalar $f(e) \in [0, c(e)]$ on each arc $e \in E$. Yet many problems ask not merely for the scalar throughput $|f|$, but for the **explicit trajectories** of the $|f|$ agents, or rely on the equivalence between an aggregate flow of value $k$ and $k$ mutually disjoint $s$-$t$ paths.
+
+### 2.1 Statement and Constructive Proof of the Flow Decomposition Theorem
+
+::: {.callout-important title="Theorem 3.1 (Flow Decomposition Theorem — Ford & Fulkerson, 1962; `流分解定理`)"}
+
+Let $G = (V, E, c)$ be a directed network with source $s$ and sink $t$, and let $f: E \to \mathbb{R}_{\ge 0}$ be any feasible $s$-$t$ flow of value $|f| \ge 0$. Then there exists a collection of simple directed $s$-$t$ paths $\mathcal{P} = \{P_1, \dots, P_p\}$ and simple directed cycles $\mathcal{C} = \{C_1, \dots, C_q\}$ with positive weights $\alpha(P_i) > 0$ and $\beta(C_j) > 0$ such that:
+
+1. **Arc-wise Decomposition**: For every directed arc $e \in E$,
+
+   $$f(e) = \sum_{i : e \in P_i} \alpha(P_i) + \sum_{j : e \in C_j} \beta(C_j).$$
+
+2. **Value Conservation**: The weights of the $s$-$t$ paths sum to the total flow value:
+
+   $$\sum_{i=1}^{p} \alpha(P_i) = |f|.$$
+
+3. **Sparsity Bound**: The total number of paths and cycles satisfies
+
+   $$p + q \le |E|.$$
+
+4. **Integrality Preservation**: If $f(e) \in \mathbb{Z}_{\ge 0}$ for all $e \in E$, then every path weight $\alpha(P_i)$ and cycle weight $\beta(C_j)$ can be chosen as a positive integer. In particular, an integer flow of value $|f|$ decomposes into $|f|$ unit-weight $s$-$t$ paths (possibly repeating) plus integer-weighted directed cycles.
+:::
+
+#### Constructive Proof via Bottleneck Stripping
+
+Define the **support** of $f$ as the active arc set $\operatorname{supp}(f) = \{e \in E : f(e) > 0\}$. We proceed by induction on $|\operatorname{supp}(f)| \le |E|$.
+
+If $\operatorname{supp}(f) = \emptyset$, then $|f| = 0$ and the empty collection $\mathcal{P} = \emptyset, \mathcal{C} = \emptyset$ satisfies all claims.
+
+Otherwise, pick any active arc $e_0 = (u_0 \to u_1) \in \operatorname{supp}(f)$ and extend a walk forward $u_0 \to u_1 \to u_2 \to \dots$ along active arcs whenever possible:
+
+- **Case 1 (Positive net outflow at $s$, i.e., $|f| > 0$)**: Start the walk at $u_0 = s$. For every intermediate vertex $v \notin \{s, t\}$ reached by the walk, Kirchhoff conservation guarantees
+
+  $$\sum_{w} f(v, w) = \sum_{u} f(u, v) \ge f(u_{\text{prev}}, v) > 0,$$
+
+  so $v$ must possess at least one outgoing active arc $(v \to w)$ with $f(v, w) > 0$. Thus the walk can never get stuck at an internal vertex $v \notin \{s, t\}$. Since $V$ is finite, the walk either:
+  - reaches $t$ without repeating a vertex, yielding a simple directed $s$-$t$ path $P$, or
+  - repeats a vertex $v$ before reaching $t$, in which case the sub-walk between the two visits to $v$ forms a simple directed cycle $C$.
+
+- **Case 2 ($|f| = 0$ but $\operatorname{supp}(f) \neq \emptyset$)**: Start from any active arc $(u_0 \to u_1) \in \operatorname{supp}(f)$. Since every vertex now has zero net excess, the walk can never get stuck and must eventually repeat a vertex, extracting a simple directed cycle $C$.
+
+In either case, we obtain a simple structure $\Gamma \in \{P, C\}$ (either a simple $s$-$t$ path $P$ or a simple directed cycle $C$) contained entirely in $\operatorname{supp}(f)$. Define its bottleneck weight:
+
+$$\delta(\Gamma) = \min_{e \in \Gamma} f(e) > 0.$$
+
+Subtract $\delta(\Gamma)$ from $f(e)$ for every $e \in \Gamma$ to obtain a residual flow $f'$:
+
+$$f'(e) = \begin{cases} f(e) - \delta(\Gamma) & \text{if } e \in \Gamma, \\ f(e) & \text{otherwise.} \end{cases}$$
+
+Observe that:
+
+1. If $\Gamma = P$ is an $s$-$t$ path, subtracting $\delta(P)$ decreases both the inflow and outflow of every internal vertex of $P$ by $\delta(P)$, preserves conservation everywhere, and reduces $|f'|$ to $|f| - \delta(P)$.
+2. If $\Gamma = C$ is a directed cycle, subtracting $\delta(C)$ decreases both the inflow and outflow of every vertex on $C$ by $\delta(C)$, leaving $|f'| = |f|$ unchanged.
+3. Because $\delta(\Gamma) = \min_{e \in \Gamma} f(e)$, at least one bottleneck arc $e^* \in \Gamma$ drops to $f'(e^*) = 0$, strictly decreasing the support size:
+
+   $$|\operatorname{supp}(f')| \le |\operatorname{supp}(f)| - 1.$$
+
+Since $|\operatorname{supp}(f)| \le |E|$ initially and each step extracts one path or cycle while zeroing out at least one active arc, the process terminates in $p + q \le |E|$ steps. If $f$ is integral, $\delta(\Gamma) = \min_{e \in \Gamma} f(e)$ is an integer at every step, proving (4). $\blacksquare$
+
+### 2.2 Constructive $O(V E)$ Path & Cycle Stripping Algorithm
+
+First, how do we recover $f(e)$ from our Dinic adjacency list after termination?
+
+1. **Standard Directed Arc $e = (u \to v)$** stored at half-edge index `2k` (forward) and `2k+1` (reverse, initialized to capacity $0$): the net flow pushed along $e$ is stored directly in the reverse residual capacity:
+
+   $$f(u \to v) = c_f(\text{rev}(e)) = \text{cap}[2k + 1].$$
+
+2. **Compact Undirected Pair $\{u, v\}$** stored at `2k` and `2k+1` (both initialized to capacity $C$): as derived in Chapter 1, $\text{cap}[2k] + \text{cap}[2k+1] = 2C$, and at most one direction carries positive net physical flow:
+
+   $$f_{\text{phys}}(u \to v) = \max(0, C - \text{cap}[2k]), \qquad f_{\text{phys}}(v \to u) = \max(0, C - \text{cap}[2k+1]).$$
+
+Once the active positive flows $f(e) > 0$ are extracted, we strip $s$-$t$ paths in $O(V E)$ time by maintaining a stack of visited vertices `vis_stack` and an on-stack boolean flag `on_stack[u]`:
+
+- Walk forward from $s$ along any active arc $e = (u \to v)$ with $f(e) > 0$ (using a `cur[u]` pointer to skip zeroed arcs).
+- If the walk hits a vertex $v$ with `on_stack[v] == true`, pop the cycle $C$ above $v$ from the stack, compute $\delta(C) = \min_{e \in C} f(e)$, subtract $\delta(C)$ from all $e \in C$, and resume the walk from $v$.
+- When the walk reaches $t$, the stack holds a simple $s$-$t$ path $P$; subtract $\delta(P) = \min_{e \in P} f(e)$ and record $(P, \delta(P))$.
+
+Each step advances at most $V$ times before either hitting $t$ or closing a cycle, and every path or cycle extraction zeroes at least one arc (or in the unit-capacity case, consumes $1$ unit of flow per arc in $O(|E|)$ total time).
+
+::: {.callout-note title="Shortcut When the Active Support Is Already a DAG"}
+
+On **unit-capacity networks** after shortest-path Dinic augmentation, or on **Time-Expanded Layered DAGs (`分层图`)** and **Shortest-Path DAGs**, the active support $\operatorname{supp}(f^*)$ contains no directed cycles (or any residual cycle can be ignored because $|f^*|$ paths are guaranteed to reach $t$). In that case, a simple DFS from $s$ that decrements $f(e) \gets f(e) - 1$ on each traversed arc extracts all $|f^*|$ unit $s$-$t$ paths in $O(|f^*| \cdot V)$ time.
+:::
+
+### 2.3 Why Naive Greedy Path Stripping Without Residual Uncrossing Fails
+
+A classic beginner mistake is to confuse **decomposing an already-computed maximum flow $f^*$** (where $f^*$ was found using reverse residual arcs) with **greedily stripping shortest $s$-$t$ paths directly from the original graph $G$**.
+
+::: {.callout-warning title="Broken-Gadget Counterexample `FM-01` — The 6-Vertex Diamond-Bridge Greedy Failure"}
+
+Suppose we want to find the maximum number of edge-disjoint directed paths from $s$ to $t$, and we try the following "Greedy Shortest-Path Stripping" heuristic:
+
+> *Repeat until $t$ is unreachable from $s$: find a shortest $s$-$t$ path $P$ in $G$ via BFS, output $P$, and delete all edges of $P$ from $G$.*
+
+Why does this fail even when we pick the **unique shortest $s$-$t$ path** at Step 1? Consider the **6-Vertex Diamond-Bridge Graph** $G = (V, E)$ with $V = \{s, a, b, u, v, t\}$ and $7$ unit-capacity directed edges:
+
+- **Top entry and bottom exit of the bridge**: $s \xrightarrow{1} u$ and $v \xrightarrow{1} t$.
+- **Central bridge**: $u \xrightarrow{1} v$.
+- **Two length-2 bypasses**: $u \xrightarrow{1} b \xrightarrow{1} t$ (upper right) and $s \xrightarrow{1} a \xrightarrow{1} v$ (lower left).
+
+```{mermaid}
+flowchart LR
+    s(("s")) -->|"1"| u(("u"))
+    s -->|"1"| a(("a"))
+    u -->|"1 (bridge)"| v(("v"))
+    u -->|"1"| b(("b"))
+    b -->|"1"| t(("t"))
+    a -->|"1"| v
+    v -->|"1"| t
+```
+
+Let us trace **Naive Greedy BFS** vs. **Dinic Residual Uncrossing + Flow Decomposition**:
+
+1. **Step 1 (Both Algorithms)**: What are the $s$-$t$ path lengths in $G$?
+   - $P_{\text{bridge}} = (s \to u \to v \to t)$ has length **$3$**.
+   - $P_{\text{upper}} = (s \to u \to b \to t)$ has length **$3$** (or **$4$** if we subdivide $b \to b_1 \to b_2$ so $P_{\text{bridge}}$ is the **strictly unique** shortest path of length $3$, while $P_{\text{upper}}$ and $P_{\text{lower}}$ have length $4$).
+   - Even without subdivision, suppose BFS discovers the length-$3$ path $P_{\text{bridge}} = (s \to u \to v \to t)$ first.
+2. **Naive Greedy Deletion Terminates with $1$ Path**:
+   - Greedy deletes the three edges $(s \to u)$, $(u \to v)$, and $(v \to t)$.
+   - In the remaining graph $G \setminus P_{\text{bridge}}$, the only edge leaving $s$ is $s \to a \to v$, and the only edge entering $t$ is $u \to b \to t$. Vertex $v$ is a dead end (its only outgoing edge $v \to t$ was deleted), and vertex $u$ is unreachable from $s$ (its only incoming edge $s \to u$ was deleted).
+   - Thus $t$ is unreachable from $s$, and Naive Greedy outputs **$1$ path** instead of $2$!
+3. **How Residual Uncrossing + Flow Decomposition Recovers $2$ Disjoint Paths**:
+   - After Dinic pushes $1$ unit along $s \to u \to v \to t$, the residual graph $G_f$ activates the **reverse residual arc** $v \xrightarrow{1} u$.
+   - In Phase 2, Dinic finds the augmenting path
+
+     $$P_{\text{aug}} = (s \to a \to v \xrightarrow{\text{rev}} u \to b \to t).$$
+
+   - Pushing $1$ unit along $v \to u$ cancels the flow on the central bridge $u \to v$ ($f(u \to v) = 1 - 1 = 0$), leaving the active support $\operatorname{supp}(f^*)$ as:
+
+     $$f^*(s \to u) = f^*(u \to b) = f^*(b \to t) = 1, \qquad f^*(s \to a) = f^*(a \to v) = f^*(v \to t) = 1, \qquad f^*(u \to v) = 0.$$
+
+   - Running Flow Decomposition (Theorem 3.1) on $\operatorname{supp}(f^*)$ immediately extracts the **$2$ edge-disjoint paths** $P_1 = (s \to u \to b \to t)$ and $P_2 = (s \to a \to v \to t)$!
+
+**Takeaway**: Never strip paths greedily before finishing all augmentations. Always compute the full maximum flow $f^*$ using residual reverse arcs first, and only run Flow Decomposition on the final support $\operatorname{supp}(f^*)$ after Dinic terminates.
+:::
+
+
+---
+
+## 3. Vertex Capacity Splitting ($v_{\text{in}} \to v_{\text{out}}$), Multi-Stage Chains, and Menger's Four Connectivity Theorems
+
+We now apply our 4-Step English-to-Graph Compilation framework to our first major non-arc constraint: **vertex throughput and destruction capacities**.
+
+### 3.1 The 4-Step Compilation of Vertex Throughput ($v_{\text{in}} \xrightarrow{C_v} v_{\text{out}}$)
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+The problem statement restricts the throughput, durability, or destruction cost of **locations / entities (vertices)** rather than transitions (edges):
+
+- *"At most $C_v$ paths, packets, or agents may pass through vertex $v$."*
+- *"Destroying vertex $v$ costs $w_v$; find the minimum-cost set of vertices whose removal disconnects $s$ from $t$."*
+- *"Each entity $g$ must be matched to one left resource $a \in \mathcal{A}$ AND one right resource $b \in \mathcal{B}$, and each $g$ can be used at most $C_g = 1$ time."*
+
+Why can't we simply place capacity $C_v$ on all incoming edges $(u \to v)$ or all outgoing edges $(v \to w)$? Because if $v$ has $\deg^-(v) = 2$ incoming edges and $\deg^+(v) = 2$ outgoing edges, giving each incident edge capacity $C_v = 1$ still allows $2$ units of flow to pass through $v$ in parallel!
+
+#### Step 2: Intermediate Algebraic Representation
+
+In a standard edge-capacitated flow network, Kirchhoff conservation at any internal vertex $v \notin \{s, t\}$ states that the total throughput $F(v)$ traversing $v$ is equal to both its total inflow and its total outflow:
+
+$$F(v) := \sum_{e \in \delta^-(v)} f(e) = \sum_{e \in \delta^+(v)} f(e).$$
+
+A vertex capacity constraint requires that for every $v \in V$,
+
+$$0 \le F(v) \le C_v.$$
+
+To enforce $0 \le F(v) \le C_v$ using a solver that only understands **arc capacities** $0 \le f(e) \le c(e)$, we must introduce a single dedicated arc $e_v$ whose flow $f(e_v)$ is algebraically forced by Kirchhoff's law to equal the entire sum $F(v) = \sum_{e \in \delta^-(v)} f(e)$.
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+How do we force every unit of flow entering $v$ to cross a single dedicated arc $e_v$ before leaving $v$? We separate the **arrival event at $v$** from the **departure event from $v$** by splitting each vertex $v \in V$ into two half-vertices:
+
+- an **in-port** $v_{\text{in}}$ that collects all incoming flow $\delta^-(v)$, and
+- an **out-port** $v_{\text{out}}$ that distributes all outgoing flow $\delta^+(v)$,
+
+connected by a single directed **internal bridge arc**:
+
+$$e_v = (v_{\text{in}} \to v_{\text{out}}), \qquad c(v_{\text{in}} \to v_{\text{out}}) = C_v.$$
+
+Now let us check how original transitions must be wired:
+
+1. **The Strict $\text{out} \to \text{in}$ Port Invariant**: Every original directed edge $e = (u \to v)$ with edge capacity $c(u, v)$ represents a departure from $u$ followed by an arrival at $v$. Therefore, it **must** leave $u$'s out-port and enter $v$'s in-port:
+
+   $$(u \to v) \quad\longmapsto\quad \big(u_{\text{out}} \xrightarrow{c(u, v)} v_{\text{in}}\big).$$
+
+   If original edges have no capacity limit of their own (pure vertex-cut problems), set $c(u_{\text{out}} \to v_{\text{in}}) = \infty$.
+2. **Proof of Algebraic Equivalence**: Because the only outgoing arc from $v_{\text{in}}$ is the internal bridge $(v_{\text{in}} \to v_{\text{out}})$, Kirchhoff conservation at $v_{\text{in}}$ forces:
+
+   $$f(v_{\text{in}} \to v_{\text{out}}) = \sum_{u : (u, v) \in E} f(u_{\text{out}} \to v_{\text{in}}) = F(v).$$
+
+   Similarly, because the only incoming arc to $v_{\text{out}}$ is $(v_{\text{in}} \to v_{\text{out}})$, conservation at $v_{\text{out}}$ forces $\sum_{w} f(v_{\text{out}} \to w_{\text{in}}) = f(v_{\text{in}} \to v_{\text{out}}) = F(v)$. Thus the arc capacity $0 \le f(v_{\text{in}} \to v_{\text{out}}) \le C_v$ is **100% equivalent** to the vertex throughput constraint $0 \le F(v) \le C_v$!
+3. **Source and Sink Conventions**:
+   - If the source $s$ and sink $t$ **cannot** be destroyed / have infinite vertex capacity ($C_s = C_t = \infty$), we can either set $c(s_{\text{in}} \to s_{\text{out}}) = c(t_{\text{in}} \to t_{\text{out}}) = \infty$ and route from $s_{\text{in}}$ to $t_{\text{out}}$, or simply route directly from **$s_{\text{out}}$ to $t_{\text{in}}$**.
+   - If $s$ and $t$ **do** have finite vertex capacities $C_s, C_t < \infty$, route from **$s_{\text{in}}$ to $t_{\text{out}}$** so that all flow must cross both $s_{\text{in}} \xrightarrow{C_s} s_{\text{out}}$ and $t_{\text{in}} \xrightarrow{C_t} t_{\text{out}}$.
+
+#### Exact Cut Bijection & Recovering the Minimum Vertex Cut from $S_{\min}$
+
+Suppose every original edge $(u \to v)$ is compiled to $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$ and each vertex $v \notin \{s, t\}$ has internal bridge $v_{\text{in}} \xrightarrow{C_v} v_{\text{out}}$. Let $(S, \bar{S})$ be any finite-capacity $s_{\text{out}}$-$t_{\text{in}}$ cut in the split network $G_{\text{split}}$.
+
+- Because every transition arc $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$ has infinite capacity, a finite cut $(S, \bar{S})$ can **never** satisfy $u_{\text{out}} \in S \land v_{\text{in}} \in \bar{S}$.
+- Consequently, the only arcs crossing from $S$ to $\bar{S}$ are internal vertex bridges $v_{\text{in}} \xrightarrow{C_v} v_{\text{out}}$ where
+
+  $$v_{\text{in}} \in S \quad\text{and}\quad v_{\text{out}} \in \bar{S}.$$
+
+- Define the cut vertex set $U(S) := \{v \in V \setminus \{s, t\} : v_{\text{in}} \in S \text{ and } v_{\text{out}} \in \bar{S}\}$. Along any original $s$-$t$ path $s = v_0 \to v_1 \to \dots \to v_k = t$, we have $(v_0)_{\text{out}} = s_{\text{out}} \in S$ and $(v_k)_{\text{in}} = t_{\text{in}} \in \bar{S}$. Since no transition arc $(v_i)_{\text{out}} \to (v_{i+1})_{\text{in}}$ can cross from $S$ to $\bar{S}$ (otherwise the cut capacity would be $\infty$), there must be at least one index $i \in \{1, \dots, k-1\}$ where $(v_i)_{\text{in}} \in S$ and $(v_i)_{\text{out}} \in \bar{S}$, meaning $v_i \in U(S)$!
+
+Conversely, any vertex cut $U \subseteq V \setminus \{s, t\}$ induces a valid finite cut $(S_U, \bar{S}_U)$ of capacity $\sum_{v \in U} C_v$ by placing in $S_U$ all half-vertices reachable from $s_{\text{out}}$ after deleting $\{v_{\text{in}} \to v_{\text{out}} : v \in U\}$.
+
+::: {.callout-tip title="Recovering the Canonical Source-Minimal Vertex Cut"}
+
+After running Dinic from $s_{\text{out}}$ to $t_{\text{in}}$, let $S_{\min}$ be the set of half-vertices reachable from $s_{\text{out}}$ in the final residual graph $G_{f^*}$. Then the canonical source-minimal minimum vertex cut is:
+
+$$U_{\min} = \big\{v \in V \setminus \{s, t\} \;\big|\; v_{\text{in}} \in S_{\min} \;\land\; v_{\text{out}} \notin S_{\min}\big\}.$$
+:::
+
+### 3.2 Step 4: Broken-Gadget Counterexample `FM-04` — The Undirected Vertex-Split Bypass Trap
+
+What happens when the underlying graph $G = (V, E)$ is **undirected** and vertices have capacities $C_v$?
+
+In Section 5.2 of Wave 1A (and Chapter 1), we saw that on an *edge-capacitated* undirected graph, an undirected edge $\{u, v\}$ of capacity $C$ can be represented by a single compact pair of half-edges `(2k, 2k+1)` between $u$ and $v$ with $\text{cap}[2k] = \text{cap}[2k+1] = C$.
+
+When vertices are split into $(u_{\text{in}}, u_{\text{out}})$ and $(v_{\text{in}}, v_{\text{out}})$, one of the deadliest bugs in competitive programming is trying to connect $u$ and $v$ with a **single undirected pair** (such as $u_{\text{in}} \leftrightarrow v_{\text{in}}$, $u_{\text{out}} \leftrightarrow v_{\text{out}}$, or $u_{\text{out}} \leftrightarrow v_{\text{in}}$)!
+
+::: {.callout-caution title="Broken-Gadget Counterexample `FM-04` — Why Undirected Edges on Split Vertices Require TWO Directed Arcs ($u_{\text{out}} \to v_{\text{in}}$ AND $v_{\text{out}} \to u_{\text{in}}$)"}
+
+Consider a 4-vertex undirected path $s - u - v - t$ where internal vertices $u$ and $v$ each have vertex capacity $C_u = C_v = 1$, and edges have capacity $\infty$. Obviously, at most **$1$** unit of flow can travel from $s$ to $t$.
+
+Now watch how **three common mis-wirings** of the undirected edge $\{u, v\}$ catastrophically fail:
+
+1. **Bug A (Connecting in-ports: $u_{\text{in}} \leftrightarrow v_{\text{in}}$ with cap $\infty$)**:
+   Flow travels $s_{\text{out}} \to u_{\text{in}} \to v_{\text{in}} \xrightarrow{1} v_{\text{out}} \to t_{\text{in}}$. Notice that flow arrived at $u_{\text{in}}$ and immediately jumped to $v_{\text{in}}$ **without ever crossing the internal bridge $u_{\text{in}} \xrightarrow{1} u_{\text{out}}$**! Vertex $u$'s capacity constraint is completely bypassed ($C_u$ might as well be $\infty$).
+2. **Bug B (Using a bidirectional undirected edge between $u_{\text{out}}$ and $v_{\text{in}}$: $u_{\text{out}} \leftrightarrow v_{\text{in}}$ with cap $\infty$ in both directions)**:
+   Suppose we also have edges $s - v$ and $u - t$, and we wire $\{u, v\}$ as an undirected edge $u_{\text{out}} \leftrightarrow v_{\text{in}}$ (so both $u_{\text{out}} \to v_{\text{in}}$ and $v_{\text{in}} \to u_{\text{out}}$ have initial capacity $\infty$).
+   Then flow can travel:
+
+   $$s_{\text{out}} \to v_{\text{in}} \xrightarrow{\text{via } v_{\text{in}} \to u_{\text{out}}} u_{\text{out}} \to t_{\text{in}}!$$
+
+   This path carries $\infty$ flow from $s$ to $t$ while **bypassing BOTH $v_{\text{in}} \xrightarrow{1} v_{\text{out}}$ AND $u_{\text{in}} \xrightarrow{1} u_{\text{out}}$**, yielding MaxFlow $= \infty$ when the true answer is $2$!
+
+```{mermaid}
+flowchart LR
+    subgraph Correct["Correct: 2 Independent Directed Arcs"]
+        u_in1["u_in"] -->|"C_u = 1"| u_out1["u_out"]
+        v_in1["v_in"] -->|"C_v = 1"| v_out1["v_out"]
+        u_out1 -->|"cap = inf"| v_in1
+        v_out1 -->|"cap = inf"| u_in1
+    end
+    subgraph BugB["FM-04 Bug: Undirected u_out <-> v_in"]
+        u_in2["u_in"] -->|"C_u = 1"| u_out2["u_out"]
+        v_in2["v_in"] -->|"C_v = 1"| v_out2["v_out"]
+        u_out2 <-->|"BOTH dirs inf (BYPASS!)"| v_in2
+    end
+```
+
+**The Ironclad Rule for Undirected Edges on Split Vertices**:
+Every undirected edge $\{u, v\}$ of capacity $c_{uv}$ on a vertex-split graph **must** be compiled into **two independent directed arcs** (4 half-edges total in your adjacency list):
+
+1. Forward transition $u \to v$: `add_edge(u_out, v_in, c_uv)` (whose reverse residual arc `v_in -> u_out` starts with capacity **$0$**, so it can only cancel previously committed flow from `u_out` to `v_in`).
+2. Backward transition $v \to u$: `add_edge(v_out, u_in, c_uv)` (whose reverse residual arc `u_in -> v_out` starts with capacity **$0$**).
+
+Never violate the **$\text{out} \to \text{in}$ port invariant**: every physical transition arc in $G_{\text{split}}$ must originate at an `out`-port and terminate at an `in`-port.
+:::
+
+### 3.3 Menger's Four Connectivity Theorems (1927) & The $O(E \sqrt{V})$ Unit-Vertex Regime
+
+By combining the Integrality Theorem, the Flow Decomposition Theorem (Theorem 3.1), and Vertex Capacity Splitting (§3.1), Ford–Fulkerson duality immediately yields all four classical connectivity theorems proved by Karl Menger in 1927:
+
+::: {.callout-important title="Theorem 3.2 (Menger's Four Connectivity Theorems — Menger, 1927)"}
+
+Let $G = (V, E)$ be a directed or undirected graph and let $s, t \in V$ be two distinct vertices.
+
+1. **Directed Edge-Connectivity ($\lambda_{\text{dir}}(s, t)$)**: The maximum number of arc-disjoint directed $s$-$t$ paths equals the minimum number of directed arcs whose removal destroys all directed $s$-$t$ paths.
+2. **Undirected Edge-Connectivity ($\lambda_{\text{undir}}(s, t)$)**: The maximum number of edge-disjoint undirected $s$-$t$ paths equals the minimum number of undirected edges whose removal disconnects $s$ and $t$.
+3. **Directed Vertex-Connectivity ($\kappa_{\text{dir}}(s, t)$, assuming $(s \to t) \notin E$)**: The maximum number of internally vertex-disjoint directed $s$-$t$ paths equals the minimum number of vertices in $V \setminus \{s, t\}$ whose removal destroys all directed $s$-$t$ paths.
+4. **Undirected Vertex-Connectivity ($\kappa_{\text{undir}}(s, t)$, assuming $\{s, t\} \notin E$)**: The maximum number of internally vertex-disjoint undirected $s$-$t$ paths equals the minimum number of vertices in $V \setminus \{s, t\}$ whose removal disconnects $s$ and $t$.
+:::
+
+#### Mechanical Graph Compilation and Asymptotic Complexity Table
+
+| Menger Variant | Graph Compilation Gadget | Why Even–Tarjan Applies | Dinic Time Complexity |
+| :--- | :--- | :--- | :--- |
+| **1. Directed Arc-Disjoint** | Each arc $(u \to v)$ gets capacity $1$. | Unit edge capacities $c(e) = 1$. | $O\big(E \min(E^{1/2}, V^{2/3})\big)$ |
+| **2. Undirected Edge-Disjoint** | Each edge $\{u, v\}$ becomes compact pair $\text{cap}[2k] = \text{cap}[2k+1] = 1$ (no vertex splitting). | Unit edge capacities $c(e) = 1$. | $O\big(E \min(E^{1/2}, V^{2/3})\big)$ |
+| **3. Directed Vertex-Disjoint** ($(s \to t) \notin E$) | Split $v \notin \{s, t\}$ into $v_{\text{in}} \xrightarrow{1} v_{\text{out}}$; compile $(u \to v)$ to $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$ (or cap $1$). Route $s_{\text{out}} \to t_{\text{in}}$. | $\deg^+(v_{\text{in}}) = 1$ and $\deg^-(v_{\text{out}}) = 1$! | **$O(E \sqrt{V})$** |
+| **4. Undirected Vertex-Disjoint** ($\{s, t\} \notin E$) | Split $v \notin \{s, t\}$ into $v_{\text{in}} \xrightarrow{1} v_{\text{out}}$; compile $\{u, v\}$ to **two directed arcs** $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$ and $v_{\text{out}} \xrightarrow{\infty} u_{\text{in}}$. Route $s_{\text{out}} \to t_{\text{in}}$. | $\deg^+(v_{\text{in}}) = 1$ and $\deg^-(v_{\text{out}}) = 1$! | **$O(E \sqrt{V})$** |
+
+Why do Variants 3 and 4 run in $O(E \sqrt{V})$ rather than $O(E V^{2/3})$? Because after splitting every internal vertex $v$ into $v_{\text{in}} \xrightarrow{1} v_{\text{out}}$, **every single vertex $x$ in $G_{\text{split}} \setminus \{s_{\text{out}}, t_{\text{in}}\}$ satisfies $\min(\deg^-(x), \deg^+(x)) = 1$**:
+
+- $v_{\text{in}}$ has **out-degree $1$** (only $v_{\text{in}} \xrightarrow{1} v_{\text{out}}$), and
+- $v_{\text{out}}$ has **in-degree $1$** (only $v_{\text{in}} \xrightarrow{1} v_{\text{out}}$).
+
+Thus $G_{\text{split}}$ is a **unit vertex network**, and by Even and Tarjan's theorem (Chapter 1, §1.3), Dinic terminates in at most $2\sqrt{V}$ blocking-flow phases and $O(E \sqrt{V})$ total time!
+
+### 3.4 Multi-Stage Chains: Compiling Three-Way Coupling ($A \to V_{\text{in}} \to V_{\text{out}} \to B$)
+
+In bipartite matching, an edge $(a, b) \in \mathcal{A} \times \mathcal{B}$ couples two types of entities. What if each agent $v \in \mathcal{V}$ must simultaneously consume **one resource $a \in \mathcal{A}_v$ from Stage 1** AND **one resource $b \in \mathcal{B}_v$ from Stage 2**?
+
+Examples include:
+
+- **`[Luogu P1402] 酒店之王` (`#017`)**: Guest $g$ needs $1$ liked Room $r \in \mathcal{R}_g$ and $1$ liked Dish $d \in \mathcal{D}_g$.
+- **`[USACO07OPEN / Luogu P2891] Dining`**: Cow $i$ needs $1$ liked Food $f \in \mathcal{F}_i$ and $1$ liked Drink $d \in \mathcal{D}_i$.
+
+Why can't we put the agents on the left ($S \to g$) and connect $g \to r \to T$ and $g \to d \to T$ in parallel? Because then a guest could send $1$ unit of flow to a room and $0$ units to a dish (or $2$ units to rooms and $0$ to dishes)! To force a **logical AND** (1 Room **AND** 1 Dish per unit of flow), the Room and the Dish must lie **in series** along the same $s$-$t$ path, with the Guest $g$ placed in the middle as the bridge between them:
+
+$$S \xrightarrow{1} r \xrightarrow{1} g_{\text{in}} \xrightarrow{1} g_{\text{out}} \xrightarrow{1} d \xrightarrow{1} T.$$
+
+- Because $r$ and $d$ are in series, **every unit of $s$-$t$ flow simultaneously saturates one room $r$, one guest $g$, and one dish $d$**.
+- Because $g$ is split into $g_{\text{in}} \xrightarrow{1} g_{\text{out}}$, no single guest can absorb two room-dish pairs!
+
+---
+
+## 4. Time-Expanded Layered Networks (`分层图`) & Dynamic Layer Addition (`动态加层`)
+
+### 4.1 The 4-Step Compilation of Discrete Time Horizons
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+Agents move across a physical graph $G = (V, E)$ over discrete time steps $t = 0, 1, 2, \dots, T$:
+
+- Traversing an edge $e = (u \to v)$ takes $\tau_e \ge 1$ seconds and admits at most $c_e$ agents per step.
+- Agents can wait (hold inventory) at vertex $v$ from time $t$ to $t+1$ (up to capacity $h_v$, typically $\infty$).
+- The available edges or their endpoints may vary with $t$ (e.g., periodic shuttles moving between space stations in `[CTSC1999] 家园`).
+- We want either the maximum number of agents delivered by a fixed deadline $T$, or the **minimum time $T^*$** required to deliver $K$ agents.
+
+#### Step 2: Intermediate Algebraic Representation
+
+Because flow conservation in a static graph has no memory of *when* flow arrived at $v$, we must promote time $t \in \{0, 1, \dots, T\}$ into the vertex index itself. Let $f_{\text{hold}}(v, t)$ denote the number of agents waiting at location $v$ across the interval $[t, t+1]$, and let $f_{\text{trans}}(e, t)$ denote the number of agents departing along transition $e = (u \to v)$ at time $t$ (arriving at $v$ at time $t + \tau_e$).
+
+At every spacetime coordinate $(v, t) \in V \times \{0, 1, \dots, T\}$, spacetime Kirchhoff conservation requires:
+
+$$\underbrace{f_{\text{hold}}(v, t-1)}_{\text{waited at } v} + \sum_{e=(u \to v)} \underbrace{f_{\text{trans}}(e, t - \tau_e)}_{\text{arrived at } v \text{ at time } t} = \underbrace{f_{\text{hold}}(v, t)}_{\text{stays at } v} + \sum_{e=(v \to w)} \underbrace{f_{\text{trans}}(e, t)}_{\text{departs } v \text{ at time } t}.$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+This spacetime balance equation compiles directly into a **Time-Expanded Layered DAG (`分层图`)** $G_T = (V_T, E_T)$:
+
+1. **Spacetime Vertices**: For each location $v \in V$ and each discrete timestamp $t \in \{0, 1, \dots, T\}$, create a state vertex $(v, t)$. Add a super-source $S$ and super-sink $T_{\text{sink}}$.
+2. **Initial Supply ($t = 0$)**: If $a_v$ agents start at location $v$ at $t = 0$, add arc $S \xrightarrow{a_v} (v, 0)$.
+3. **Holdover / Waiting Arcs (`滞留边`)**: For each $v \in V$ and $0 \le t < T$, add a directed arc representing agents waiting at $v$ from time $t$ to $t+1$:
+
+   $$(v, t) \xrightarrow{h_v} (v, t+1) \qquad (\text{usually } h_v = \infty).$$
+
+4. **Transit Arcs (`转移边`)**: Whenever a road or shuttle allows up to $c_e$ agents to depart $u$ at time $t$ and arrive at $v$ at time $t + \tau_e \le T$, add:
+
+   $$(u, t) \xrightarrow{c_e} (v, t + \tau_e).$$
+
+5. **Destination Sink Collection**: If $v_{\text{dest}}$ is the target location, connect $(v_{\text{dest}}, t) \xrightarrow{\infty} T_{\text{sink}}$ for every $t \in \{0, 1, \dots, T\}$ (or simply connect $(v_{\text{dest}}, T) \xrightarrow{\infty} T_{\text{sink}}$ if holdover arcs at $v_{\text{dest}}$ have capacity $\infty$).
+
+```{mermaid}
+flowchart LR
+    subgraph Layer0["Time t = 0"]
+        u0["(u, 0)"]
+        v0["(v, 0)"]
+    end
+    subgraph Layer1["Time t = 1"]
+        u1["(u, 1)"]
+        v1["(v, 1)"]
+    end
+    subgraph Layer2["Time t = 2"]
+        u2["(u, 2)"]
+        v2["(v, 2)"]
+    end
+    S(("S")) -->|"K"| u0
+    u0 -->|"hold (inf)"| u1
+    v0 -->|"hold (inf)"| v1
+    u1 -->|"hold (inf)"| u2
+    v1 -->|"hold (inf)"| v2
+    u0 -->|"transit c_e"| v1
+    v1 -->|"transit c_e"| u2
+    v1 -->|"inf"| Tsink(("T_sink"))
+    v2 -->|"inf"| Tsink
+```
+
+::: {.callout-warning title="Step 4: Broken-Gadget Guard — Omitting Holdover Arcs (`FM-03`)"}
+
+If you forget to add the holdover arcs $(u, t) \xrightarrow{\infty} (u, t+1)$, an agent arriving at station $u$ at time $t = 1$ is forced to **immediately board an outgoing shuttle at $t = 1$** or vanish! Whenever agents are allowed to wait at vertices for later connections, holdover arcs $(u, t) \to (u, t+1)$ are mandatory. Furthermore, if vertices also have a *simultaneous occupancy limit* at time $t$, split $(u, t)$ into $(u, t)_{\text{in}} \to (u, t)_{\text{out}}$.
+:::
+
+### 4.2 Incremental Dynamic Layer Addition (`动态加层`) vs. Binary Search on $T$
+
+Suppose a problem asks for the **minimum time $T^*$** needed to route $K$ agents from $s$ to $t$ (as in `[CTSC1999] 家园 / 星际转移问题`, `#020`).
+
+A naive approach binary searches $T \in [1, T_{\max}]$ and rebuilds the entire $T$-layer graph from scratch at each midpoint, costing $O(\log T_{\max})$ full Dinic executions.
+
+Instead, notice that **adding layer $t$ to $G_{t-1}$ only appends new vertices $V \times \{t\}$ and new forward arcs from layer $t-1$ to layer $t$ (and from $(v_{\text{dest}}, t)$ to $T_{\text{sink}}$)**. Every flow pushed in $G_{t-1}$ remains a valid feasible flow in $G_t$!
+
+::: {.callout-tip title="Algorithmic Invariant — Incremental Dynamic Layer Addition (`动态加层`)"}
+
+Maintain a **single persistent residual network $G_f$** and a running scalar `total_flow = 0`:
+
+1. **Pre-Check Reachability**: Before unrolling time, use Disjoint Set Union (DSU) or BFS on the static union of all transitions to verify that $v_{\text{dest}}$ is reachable from $v_{\text{start}}$. If not, immediately return `Impossible` (preventing an infinite loop!).
+2. **Incremental Unrolling ($t = 1, 2, 3, \dots$)**:
+   - Allocate new vertex IDs for $(u, t)$ ($u \in V$).
+   - Add holdover arcs $(u, t-1) \xrightarrow{\infty} (u, t)$, transit arcs $(u, t-1) \xrightarrow{c_e} (v, t)$, and sink collection $(v_{\text{dest}}, t) \xrightarrow{\infty} T_{\text{sink}}$ directly into the existing adjacency list of $G_f$.
+   - Execute `total_flow += dinic(S, T_sink)` on the **existing residual graph $G_f$**.
+   - Stop at the first timestamp $t = T^*$ where `total_flow >= K`.
+
+Because previous flow is preserved in $G_f$ and reverse residual arcs in layers $0 \dots t-1$ allow Dinic to seamlessly reroute earlier trajectories to exploit newly opened shuttles at time $t$, the total work across all layers $t = 1 \dots T^*$ is roughly **a single Dinic run on $G_{T^*}$**!
+:::
+
+---
+
+## 5. DP-Subgraph Layering (`Luogu P2766` LIS) & Hub Sparsification (`ARC 074 D`)
+
+### 5.1 Packing Disjoint Optimal Trajectories on Shortest-Path & DP DAGs
+
+Many problems ask: *"How many mutually disjoint optimal paths (or optimal subsequences) can be packed simultaneously?"*
+
+1. **Shortest-Path DAG Extraction (`[CQOI2015] 网络吞吐量`, `#024`)**:
+   Suppose packets from $1$ to $N$ may only travel along **shortest paths** with respect to edge weights $w_e > 0$, while vertices have throughput capacities $C_v$.
+   - First, run Dijkstra from vertex $1$ to compute shortest-path distances $d[1 \dots N]$.
+   - An edge $(u \to v)$ of weight $w_{uv}$ belongs to at least one shortest path from $1$ if and only if it is **tight**:
+
+     $$d[u] + w_{uv} = d[v].$$
+
+   - Because $w_{uv} > 0$, the subgraph $E_{\text{DAG}} = \{(u \to v) : d[u] + w_{uv} = d[v]\}$ is a **Directed Acyclic Graph (DAG)**! Combining $E_{\text{DAG}}$ with vertex splitting $v_{\text{in}} \xrightarrow{C_v} v_{\text{out}}$ immediately compiles the problem into standard Max-Flow.
+
+2. **DP Layering (`[Luogu P2766] 最长不下降子序列问题`, `#021`)**:
+   Given an array $x_1, \dots, x_n$, let $dp[i]$ be the length of the longest non-decreasing subsequence (LNDS) ending at index $i$, and let $s = \max_{1 \le i \le n} dp[i]$ be the global LNDS length. We want the maximum number of **index-disjoint** non-decreasing subsequences of length $s$.
+   - Notice that $dp[i] \in \{1, 2, \dots, s\}$ naturally partitions the indices $\{1, \dots, n\}$ into **$s$ sequential DP layers**!
+   - A pair $(i, j)$ can serve as consecutive elements of a valid LNDS if and only if:
+
+     $$i < j, \qquad x_i \le x_j, \qquad \text{and} \qquad dp[j] = dp[i] + 1.$$
+
+   - Every directed path from a layer-$1$ vertex ($dp[i] = 1$) to a layer-$s$ vertex ($dp[i] = s$) along these admissible transitions has length exactly $s$ and forms a valid LNDS of maximum length!
+   - Splitting each index $i$ into $i_{\text{in}} \xrightarrow{1} i_{\text{out}}$ and wiring $S \xrightarrow{1} i_{\text{in}}$ (for $dp[i]=1$), $i_{\text{out}} \xrightarrow{1} j_{\text{in}}$ (for admissible transitions), and $i_{\text{out}} \xrightarrow{1} T$ (for $dp[i]=s$) reduces disjoint LNDS packing to unit-vertex-network Max-Flow in $O(E \sqrt{V})$ time!
+
+### 5.2 Row/Column Hub Sparsification (`[AtCoder ARC 074 D] Lotus Leaves`)
+
+Suppose a frog on an $H \times W$ pond ($H, W \le 100$) can jump between **any two lotus leaves in the same row or the same column**. Destroying a lotus leaf at $(r, c)$ costs $1$, except for the start leaf $S$ and target leaf $T$, which cannot be destroyed. Find the minimum number of leaves to remove to disconnect $S$ from $T$.
+
+#### Why Naive Vertex Splitting Is Too Dense—and How Hub Vertices Collapse the Graph
+
+If we split every lotus leaf $(r, c)$ into $(r, c)_{\text{in}} \xrightarrow{1} (r, c)_{\text{out}}$ and add directed edges between all pairs of leaves in the same row or column, each row of length $W$ induces a directed clique of $W(W-1)$ edges, creating $\Theta(H W (H + W))$ edges ($\approx 2 \times 10^6$ edges).
+
+We can sparsify this by introducing **auxiliary Hub Vertices (`中介点 / 行列虚点`)**:
+
+1. **Step 1 (Introduce Row and Column Hubs)**: Create $H$ **Row Hubs** $R_1, \dots, R_H$ and $W$ **Column Hubs** $C_1, \dots, C_W$. Since rows and columns are abstract geometric lines that cannot themselves be destroyed, their vertex capacity is $\infty$.
+2. **Step 2 (Route Leaves Through Hubs)**: Instead of connecting leaf $(r, c)$ directly to all other leaves in row $r$ and column $c$, connect $(r, c)$ to its Row Hub $R_r$ and Column Hub $C_c$:
+
+   $$(r, c)_{\text{out}} \xrightarrow{\infty} R_r \xrightarrow{\infty} (r, c)_{\text{in}}, \qquad (r, c)_{\text{out}} \xrightarrow{\infty} C_c \xrightarrow{\infty} (r, c)_{\text{in}}.$$
+
+   Now any jump from $(r, c_1)$ to $(r, c_2)$ simply travels $(r, c_1)_{\text{out}} \to R_r \to (r, c_2)_{\text{in}}$ in two hops! The edge count drops from $\Theta(HW(H+W))$ to $4HW$.
+3. **Step 3 (The Ultimate Bipartite Collapse — Eliminating Cell Vertices Entirely!)**:
+   Look closely at a lotus leaf $(r, c)$ in the hub graph. Why would a frog ever visit $(r, c)$? Only to switch from **Row $r$ to Column $c$**, or from **Column $c$ to Row $r$**! (Jumping from Row $r$ to $(r, c)$ and back to Row $r$ is redundant since the frog was already at $R_r$).
+   Therefore, each destroyable leaf $(r, c)$ is nothing more than an **undirected bridge of capacity $1$ between Row Hub $R_r$ and Column Hub $C_c$**:
+
+   $$R_r \xleftrightarrow{\text{cap } = 1} C_c!$$
+
+   - For the start leaf $(r_S, c_S)$, connect $S \xrightarrow{\infty} R_{r_S}$ and $S \xrightarrow{\infty} C_{c_S}$.
+   - For the target leaf $(r_T, c_T)$, connect $R_{r_T} \xrightarrow{\infty} T$ and $C_{c_T} \xrightarrow{\infty} T$.
+   - For every other leaf $(r, c)$, add an undirected edge of capacity $1$ between $R_r$ and $C_c$.
+
+```{mermaid}
+flowchart LR
+    subgraph Naive["Step 2: Split Cell + Row/Col Hubs (4 arcs/cell)"]
+        Rr1(("R_r")) -->|"inf"| cin["(r,c)_in"]
+        Cc1(("C_c")) -->|"inf"| cin
+        cin -->|"cap = 1"| cout["(r,c)_out"]
+        cout -->|"inf"| Rr1
+        cout -->|"inf"| Cc1
+    end
+    subgraph Collapsed["Step 3: Direct Bipartite Bridge (1 undirected edge/cell!)"]
+        Rr2(("R_r")) <-->|"cap = 1 (leaf (r,c))"| Cc2(("C_c"))
+    end
+```
+
+This algebraic simplification collapses a $2HW$-vertex, $HW(H+W)$-edge vertex-cut network into a **$200$-vertex, $10^4$-edge unit-capacity bipartite graph**, solving `[ARC 074 D]` in under $1$ millisecond in $O(H W \sqrt{H + W})$ time!
+
+
+---
+
+## 6. Curated 4-Tier Practice Ladder (`#017`–`#024`)
+
+The eight problems below progress systematically from 3-stage node splitting (`#017`) and heterogeneous grid cell capacities (`#018`–`#019`) to incremental time-expanded layered DAGs (`#020`), 3-subtask LIS DP-layering (`#021`), BFS horizon compaction (`#022`), perimeter Cut-DP elimination (`#023`), and shortest-path DAG router bottlenecks (`#024`).
+
+| Tier | Global ID | Problem & Judge URL | Core Gadget & Compilation Archetype | Dinic Regime & Complexity |
+| :---: | :---: | :--- | :--- | :--- |
+| **`S1`** | `#017` | **[Luogu P1402] 酒店之王 (King of the Hotel)** (`[ZH]`) | 3-Stage Chain $S \to \text{Room} \to \text{Guest}_{\text{in}} \xrightarrow{1} \text{Guest}_{\text{out}} \to \text{Dish} \to T$ | Unit Vertex Network: $O\big((NP + NQ)\sqrt{N+P+Q}\big)$ |
+| **`S2`** | `#018` | **[UVa 11380] Down Went The Titanic** (`[EN]`) | Grid Vertex Splitting $(r,c)_{\text{in}} \xrightarrow{C_{r,c}} (r,c)_{\text{out}}$ with $C_{r,c} \in \{1, \infty\}$ | Unit-Dominated Grid: $O\big((XY)^{3/2}\big)$ |
+| **`I1`** | `#019` | **[SCOI2007 / Luogu P2472] 蜥蜴 (Lizards)** (`[ZH]`) | Euclidean Jump Graph + Pillar Durability Split $(r,c)_{\text{in}} \xrightarrow{h_{r,c}} (r,c)_{\text{out}}$ | Small Integer Cap ($h \le 3$): $O\big((RC)^{3/2} d^2\big)$ |
+| **`I2`** | `#020` | **[CTSC1999 / Luogu P2754] 家园 / 星际转移问题** (`[ZH]`) | Periodic Shuttle Time-Expanded DAG + Incremental Dynamic Layer Addition (`动态加层`) | Incremental Residual: $O\big(T^* (N+M) \sqrt{T^* N}\big)$ |
+| **`A1`** | `#021` | **[Luogu P2766] 最长不下降子序列问题 (LNDS)** (`[ZH]`) | 3-Subtask LIS DP-Layering ($dp[j] = dp[i]+1$) + Endpoint $\infty$-Multiplicity | Incremental Unit / Cap Update: $O\big(n^2 \sqrt{n}\big)$ |
+| **`A2`** | `#022` | **[CF 78E] Evacuation** (`[EN]`) | Reactor Multi-Source BFS + Scientist Time-Bounded Escape BFS $\implies$ Bipartite Flow | Compacted Bipartite Network: $O(N^4)$ |
+| **`M1`** | `#023` | **[CF 1368H1] Breadboard Capacity (Easy)** (`[EN]`) | $N \times M = 10^{10}$ Grid Perimeter Port Routing $\implies$ Monochromatic Line Cut-DP | Dual- eliminated Cut-DP: $O(N + M)$ |
+| **`M2`** | `#024` | **[CQOI2015 / Luogu P3171] 网络吞吐量** (`[ZH]`) | Dijkstra Shortest-Path DAG ($d[u]+w_{uv}=d[v]$) + Router Split $u_{\text{in}} \xrightarrow{c_u} u_{\text{out}}$ | General Capacities (`int64_t`): $O(M \log N + N^2 M)$ |
+
+---
+
+### `#017` [Stepping Stone 1] — [Luogu P1402] 酒店之王 (King of the Hotel)
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P1402](https://www.luogu.com.cn/problem/P1402) (`[ZH]`, practically identical to **[USACO07OPEN / Luogu P2891] Dining** `[EN]`)
+- **Constraints**: $N \le 100$ guests, $P \le 100$ rooms, $Q \le 100$ dishes. Time Limit: $1.0\text{ s}$.
+- **Problem Statement**: A hotel has $N$ guests, $P$ rooms, and $Q$ signature dishes. Each room can accommodate at most $1$ guest, and each dish can be served to at most $1$ guest. You are given two boolean preference matrices: $A_{i, r} \in \{0, 1\}$ indicating whether guest $i$ likes room $r$, and $B_{i, d} \in \{0, 1\}$ indicating whether guest $i$ likes dish $d$. A guest is satisfied **if and only if** they receive **both** one room they like **and** one dish they like. Compute the maximum number of guests that can be simultaneously satisfied.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Parallel Matching Fails and Why Rooms & Dishes Must Be in Series"}
+
+Suppose we connect $S \xrightarrow{2} \text{Guest}_i$, and from $\text{Guest}_i$ we add edges to liked rooms $r \to T$ and liked dishes $d \to T$. Why does this fail? Because a guest could push $2$ units of flow into two rooms and $0$ dishes! To force $1$ room **AND** $1$ dish per unit of flow, every $s$-$t$ path must traverse a room first and a dish second, with the guest acting as the intermediate bridge between them:
+
+$$S \to \text{Room}_r \to \text{Guest}_i \to \text{Dish}_d \to T.$$
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — The Unsplit Central Entity Bug"}
+
+If you place a single unsplit vertex $\text{Guest}_i$ between $\text{Room}_r$ and $\text{Dish}_d$ with all edge capacities equal to $1$, what happens when Guest $1$ likes two rooms $\{r_1, r_2\}$ and two dishes $\{d_1, d_2\}$? Two units of flow can pass through $\text{Guest}_1$ simultaneously ($S \to r_1 \to g_1 \to d_1 \to T$ and $S \to r_2 \to g_1 \to d_2 \to T$), counting Guest $1$ **twice**! How do you cap the total throughput of $\text{Guest}_i$ at $1$?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — [Luogu P1402] 酒店之王"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+We have a **three-way matching** $(\text{Room } r, \text{Guest } i, \text{Dish } d)$ with $N, P, Q \le 100$. Unlike general 3D Matching (which is NP-hard when preferences are arbitrary triples $(r, i, d)$), here the preference factors independently into $(r, i)$ and $(i, d)$ with **Guest $i$ as the central hinge**. Greedy matching of rooms first can assign a room to a guest who has no available dish left, while residual augmentation can reassign rooms and dishes simultaneously.
+
+#### Step 2: Intermediate Algebraic Representation
+
+Let $x_{r, i} \in \{0, 1\}$ indicate whether room $r$ is assigned to guest $i$ (allowed only if $A_{i, r} = 1$), and $y_{i, d} \in \{0, 1\}$ indicate whether dish $d$ is assigned to guest $i$ (allowed only if $B_{i, d} = 1$). Let $F_i \in \{0, 1\}$ be the indicator that guest $i$ is satisfied. The constraints are:
+
+$$\sum_{i=1}^N x_{r, i} \le 1 \quad (\forall r), \qquad \sum_{i=1}^N y_{i, d} \le 1 \quad (\forall d),$$
+
+$$\sum_{r=1}^P x_{r, i} = F_i = \sum_{d=1}^Q y_{i, d}, \qquad 0 \le F_i \le 1 \quad (\forall i).$$
+
+Notice that $\sum_r x_{r,i} = F_i = \sum_d y_{i,d}$ is literally **Kirchhoff flow conservation** at Guest $i$, and $0 \le F_i \le 1$ is a **vertex throughput capacity** of $1$ on Guest $i$!
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+We construct a 4-layer unit-capacity network with $|V| = 2 + P + 2N + Q$ vertices:
+
+1. **Stage 1 (Rooms)**: For each room $r \in \{1, \dots, P\}$, add $S \xrightarrow{1} r$ (enforcing $\sum_i x_{r,i} \le 1$).
+2. **Stage 2 (Split Guests)**: Split each guest $i \in \{1, \dots, N\}$ into $i_{\text{in}}$ and $i_{\text{out}}$ connected by internal bridge $i_{\text{in}} \xrightarrow{1} i_{\text{out}}$ (enforcing $F_i \le 1$).
+3. **Room-to-Guest Transitions**: For each $(i, r)$ with $A_{i, r} = 1$, add $r \xrightarrow{1} i_{\text{in}}$.
+4. **Guest-to-Dish Transitions**: For each $(i, d)$ with $B_{i, d} = 1$, add $i_{\text{out}} \xrightarrow{1} d$.
+5. **Stage 3 (Dishes)**: For each dish $d \in \{1, \dots, Q\}$, add $d \xrightarrow{1} T$ (enforcing $\sum_i y_{i,d} \le 1$).
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+Suppose $N = 1$ guest, $P = 2$ rooms $\{r_1, r_2\}$, $Q = 2$ dishes $\{d_1, d_2\}$, and Guest $1$ likes everything ($A_{1,1}=A_{1,2}=B_{1,1}=B_{1,2}=1$).
+
+- **With $1_{\text{in}} \xrightarrow{1} 1_{\text{out}}$**: Both $r_1$ and $r_2$ send capacity $1$ into $1_{\text{in}}$, but the bridge $1_{\text{in}} \xrightarrow{1} 1_{\text{out}}$ bottlenecks the total flow to **$1$** (correct).
+- **Without splitting (Failure Guard)**: Flow $S \to r_1 \to 1 \to d_1 \to T$ ($1$ unit) and $S \to r_2 \to 1 \to d_2 \to T$ ($1$ unit) both pass, giving **$2$** satisfied guests when only $1$ guest exists!
+
+**Solver Contract**: $|V| = P + 2N + Q + 2 \le 402$, $|E| = P + Q + N + NP + NQ \le 20300$. Every internal vertex has either in-degree $1$ or out-degree $1$ with unit capacities, so Dinic runs in $O(E \sqrt{V}) \approx 4 \times 10^5$ operations.
+::::
+
+---
+
+### `#018` [Stepping Stone 2] — [UVa 11380] Down Went The Titanic
+
+- **Judge URL**: [https://onlinejudge.org/external/113/11380.pdf](https://onlinejudge.org/external/113/11380.pdf) (`[EN]`)
+- **Constraints**: Grid dimensions $X, Y \le 30$, lifeboat capacity $P \le 1000$. Time Limit: $3.0\text{ s}$.
+- **Problem Statement**: After the Titanic strikes an iceberg, survivors are scattered on an $X \times Y$ grid with 5 cell types:
+  - `~` (**Water**): Cold and impassable; no one can enter.
+  - `.` (**Floating Ice**): Thin ice that vanishes after **$1$** person steps off it.
+  - `*` (**Person on Floating Ice**): Contains $1$ survivor initially, resting on thin `.` ice (so the cell itself also vanishes as soon as that survivor steps off it; no other survivor may pass through it!).
+  - `@` (**Large Iceberg**): Thick ice; **infinitely many** people may step on and off it.
+  - `#` (**Lifeboat**): Thick ice (infinite pass-through capacity), and up to **$P$** people can permanently board the lifeboat at this cell to be rescued.
+  People move 4-directionally (`N, S, E, W`). Compute the maximum number of survivors who can reach a lifeboat.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Classifying Cell Durability as Vertex Capacities"}
+
+Every cell $(r, c)$ restricts how many times people can pass through it—a pure **vertex capacity** $C_{r, c}$:
+
+- `~`: $C_{r, c} = 0$ (skip).
+- `.` and `*`: $C_{r, c} = 1$ (thin ice collapses after 1 person leaves).
+- `@` and `#`: $C_{r, c} = \infty$ (never collapses).
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Where Should $S$ Connect for a `*` Cell: $(r, c)_{\text{in}}$ or $(r, c)_{\text{out}}$?"}
+
+A survivor starting at a `*` cell is standing on thin ice of capacity $1$. If you connect $S \xrightarrow{1} (r, c)_{\text{out}}$, then the starting survivor bypasses the internal bridge $(r, c)_{\text{in}} \xrightarrow{1} (r, c)_{\text{out}}$, allowing a **second** survivor from an adjacent cell to enter $(r, c)_{\text{in}}$, cross the bridge, and also use the `*` cell! Which port must $S$ connect to so that the starting survivor immediately consumes the `*` cell's capacity $1$?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — [UVa 11380] Down Went The Titanic"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+Survivors move along grid paths to `#` cells, constrained by cell collapse limits ($1$ for `.` and `*`, $\infty$ for `@` and `#`) and lifeboat boarding limits ($P$ per `#` cell). Because multiple survivors' paths compete for shared thin-ice cells and lifeboats, and $X, Y \le 30$ ($XY \le 900$), this is a vertex-capacitated multi-source multi-sink max-flow problem.
+
+#### Step 2: Intermediate Algebraic Representation
+
+For each non-water cell $u = (r, c)$, let $F(u)$ be the total number of survivors who ever occupy and depart (or get rescued at) cell $u$. Then:
+
+$$F(u) = \mathbb{I}[u \text{ is } \text{'*'}] + \sum_{v \in N_4(u)} f(v \to u) = \text{rescued}(u) + \sum_{w \in N_4(u)} f(u \to w),$$
+
+subject to the vertex durability constraint:
+
+$$0 \le F(u) \le C_u, \qquad C_u = \begin{cases} 1 & \text{if } grid[u] \in \{\text{'.'}, \text{'*'}\}, \\ \infty & \text{if } grid[u] \in \{\text{'@'}, \text{'\#'}\}, \end{cases}$$
+
+and the lifeboat boarding constraint $0 \le \text{rescued}(u) \le P$ if $grid[u] = \text{'\#'}$ (and $0$ otherwise).
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+Split every non-water cell $u = (r, c)$ into $u_{\text{in}}$ and $u_{\text{out}}$:
+
+1. **Internal Cell Durability Bridge**: Add $u_{\text{in}} \xrightarrow{C_u} u_{\text{out}}$ where $C_u = 1$ for `.` and `*`, and $C_u = \infty$ for `@` and `#`.
+2. **Initial Survivors (`*`)**: If $grid[u] = \text{'*'}$, add $S \xrightarrow{1} u_{\text{in}}$. (By entering $u_{\text{in}}$, the survivor starting at $u$ immediately saturates $u_{\text{in}} \xrightarrow{1} u_{\text{out}}$, blocking any other survivor from stepping onto $u$!)
+3. **Lifeboat Boarding (`#`)**: If $grid[u] = \text{'\#'}$, add $u_{\text{out}} \xrightarrow{P} T$. (Note that because $C_u = \infty$ for `#`, any number of survivors can walk *through* a `#` cell to reach other cells, while at most $P$ can exit to $T$ at this lifeboat.)
+4. **4-Directional Grid Transitions**: For every pair of 4-adjacent non-water cells $(u, v)$, add two directed arcs $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$ and $v_{\text{out}} \xrightarrow{\infty} u_{\text{in}}$.
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+Consider a $1 \times 3$ row `* * #` with $P = 2$:
+
+- Cell $1$ (`*`) has $S \xrightarrow{1} 1_{\text{in}} \xrightarrow{1} 1_{\text{out}}$.
+- Cell $2$ (`*`) has $S \xrightarrow{1} 2_{\text{in}} \xrightarrow{1} 2_{\text{out}}$.
+- Because $2_{\text{in}} \xrightarrow{1} 2_{\text{out}}$ has capacity $1$ and is already saturated by Survivor $2$, Survivor $1$ at $1_{\text{out}} \to 2_{\text{in}}$ **cannot** pass through Cell $2$! Total rescued $= 1$.
+- **Failure Guard**: If we had wired $S \xrightarrow{1} 2_{\text{out}}$ instead of $2_{\text{in}}$, Survivor $2$ would leave from $2_{\text{out}} \to 3_{\text{in}}$ while Survivor $1$ simultaneously traversed $1_{\text{out}} \to 2_{\text{in}} \xrightarrow{1} 2_{\text{out}} \to 3_{\text{in}}$, falsely rescuing $2$ people across a thin-ice cell that can only support $1$!
+
+**Solver Contract**: $|V| \le 2XY + 2 \le 1802$, $|E| \le 6XY \le 5400$. Dinic runs in $O((XY)^{3/2}) \approx 8 \times 10^4$ operations per testcase.
+::::
+
+---
+
+### `#019` [Intermediate 1] — [SCOI2007 / Luogu P2472] 蜥蜴 (Lizards)
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P2472](https://www.luogu.com.cn/problem/P2472) (`[ZH]`)
+- **Constraints**: Grid $R, C \le 20$, jump distance $d \le 4$, pillar heights $h_{r, c} \in \{0, 1, 2, 3\}$. Time Limit: $1.0\text{ s}$.
+- **Problem Statement**: In an $R \times C$ maze, each cell $(r, c)$ ($1 \le r \le R, 1 \le c \le C$) has a stone pillar of height $h_{r, c} \in \{0, 1, 2, 3\}$ ($0$ means no pillar). Some pillars initially have a single lizard standing on them. In one jump, a lizard can leap to any pillar (or outside the boundary of the $R \times C$ grid) whose **Euclidean distance** from its current cell is at most $d$. Every time a lizard jumps **off** a pillar $(r, c)$, that pillar's height decreases by $1$; once $h_{r, c} = 0$, the pillar collapses and no lizard can land on it anymore. At most one lizard may stand on any remaining pillar at a time (though pillars only block lizards when they collapse to height $0$). Find the **minimum number of lizards that cannot escape** outside the grid.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Complement Objective & Pillar Durability"}
+
+Let $L_{\text{total}}$ be the initial number of lizards. Then:
+
+$$\min(\text{trapped lizards}) = L_{\text{total}} - \max(\text{escaped lizards}).$$
+
+Since a pillar at $(r, c)$ loses $1$ unit of height each time a lizard jumps off it, at most $h_{r, c}$ lizards can ever pass through (land on and jump off) cell $(r, c)$. How do we model this?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Boundary Escape Condition vs. Pillar-to-Pillar Euclidean Distance"}
+
+1. When can a lizard on pillar $(r, c)$ ($1 \le r \le R, 1 \le c \le C$) jump directly outside the grid in a single leap of length $\le d$? Whenever $(r, c)$ is within distance $d$ of Row $0$, Row $R+1$, Col $0$, or Col $C+1$:
+
+   $$r \le d \quad\lor\quad R + 1 - r \le d \quad\lor\quad c \le d \quad\lor\quad C + 1 - c \le d.$$
+
+2. When can a lizard jump from $(r_1, c_1)$ to another pillar $(r_2, c_2)$? Whenever $(r_1 - r_2)^2 + (c_1 - c_2)^2 \le d^2$ (Euclidean distance, **not** Manhattan distance!).
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — [SCOI2007 / Luogu P2472] 蜥蜴"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+Each pillar $(r, c)$ has a finite jump-off durability $h_{r, c} \in \{1, 2, 3\}$, and $R, C \le 20$ ($RC \le 400$). Because pillars only restrict how many total jumps can originate from $(r, c)$, the order in which lizards move does not matter: any set of path-flows satisfying the vertex throughput bounds $F(r, c) \le h_{r, c}$ can be scheduled sequentially without collisions.
+
+#### Step 2: Intermediate Algebraic Representation
+
+For every pillar $u = (r, c)$ with $h_u > 0$, let $F(u)$ be the total number of lizards that jump off $u$:
+
+$$F(u) = \mathbb{I}[\text{lizard starts at } u] + \sum_{v : \|v - u\|_2 \le d} f(v \to u) = f(u \to T) + \sum_{w : \|u - w\|_2 \le d} f(u \to w),$$
+
+subject to $0 \le F(u) \le h_u$. We want to maximize $|f| = \sum_u f(u \to T)$ and output $L_{\text{total}} - |f^*|$.
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+Create source $S$, sink $T$, and for each cell $u = (r, c)$ with $h_{r, c} > 0$, split $u$ into $u_{\text{in}}$ and $u_{\text{out}}$:
+
+1. **Pillar Durability Bridge**: Add $u_{\text{in}} \xrightarrow{h_{r, c}} u_{\text{out}}$.
+2. **Initial Lizards**: If a lizard starts at $u = (r, c)$, add $S \xrightarrow{1} u_{\text{in}}$ and increment $L_{\text{total}}$.
+3. **Boundary Escape Arcs**: If $\min(r, R + 1 - r, c, C + 1 - c) \le d$, the lizard can leap off the grid in one jump: add $u_{\text{out}} \xrightarrow{\infty} T$.
+4. **Pillar-to-Pillar Jump Arcs**: For every ordered pair of distinct pillars $u = (r_1, c_1)$ and $v = (r_2, c_2)$ with $h_u > 0, h_v > 0$, and $(r_1 - r_2)^2 + (c_1 - c_2)^2 \le d^2$, add $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$.
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+Suppose $R = 1, C = 3, d = 1$, heights are `1 2 1`, and lizards start at $(1, 1)$ and $(1, 2)$. Since $R = 1$ and $d = 1$, every cell has $r = 1 \le d$, so **every pillar can jump directly outside to $T$** (`(1,1)` jumps north to row $0$, `(1,2)` jumps north to row $0$). Both lizards escape immediately ($L_{\text{total}} - |f^*| = 2 - 2 = 0$).
+
+- **Failure Guard 1 (Manhattan vs. Euclidean Distance)**: When $d = 2$, a diagonal jump of $(\Delta r, \Delta c) = (1, 1)$ has Manhattan distance $2 \le 2$ AND Euclidean distance $\sqrt{2} \le 2$, whereas $(\Delta r, \Delta c) = (2, 1)$ has Euclidean distance $\sqrt{5} > 2$. Always check `dr * dr + dc * dc <= d * d`!
+- **Failure Guard 2 (Connecting $S \to u_{\text{out}}$)**: Just as in `#018`, a lizard starting on $u$ uses up $1$ unit of $u$'s height when it jumps off $u$. Thus $S$ **must** connect to $u_{\text{in}}$, not $u_{\text{out}}$.
+
+**Solver Contract**: $|V| \le 2RC + 2 \le 802$, $|E| \le RC(2 + \pi d^2) \approx 2 \times 10^4$, max flow $\le RC = 400$. Dinic terminates in $< 5\text{ ms}$.
+::::
+
+---
+
+### `#020` [Intermediate 2] — [CTSC1999 / Luogu P2754] 家园 / 星际转移问题 (`网络流 24 题 #16`)
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P2754](https://www.luogu.com.cn/problem/P2754) (`[ZH]`)
+- **Constraints**: $N \le 13$ space stations, $M \le 20$ periodic space shuttles, $K \le 50$ people. Time Limit: $1.0\text{ s}$.
+- **Problem Statement**: There are $N$ space stations numbered $1 \dots N$, plus Earth (numbered $0$) and the Moon (numbered $-1$, which we remap to $N + 1$). There are $M$ space shuttles. Shuttle $i$ has passenger capacity $H_i$ and cyclically visits a sequence of $r_i$ stations $(S_{i, 0}, S_{i, 1}, \dots, S_{i, r_i - 1})$:
+  - At time $t = 0$, shuttle $i$ is at $S_{i, 0}$.
+  - In general, at time $t \ge 0$, shuttle $i$ is at station $\operatorname{pos}_i(t) := S_{i, \, t \bmod r_i}$, and travels from $\operatorname{pos}_i(t - 1)$ to $\operatorname{pos}_i(t)$ during the interval $[t - 1, t]$ (taking $1$ unit of time).
+  - Stations can hold infinitely many waiting passengers across time steps. At each integer timestamp $t$, shuttles at the same station can exchange passengers instantaneously.
+  Initially at $t = 0$, all $K$ people are on Earth ($0$). Find the **minimum time $T^*$** at which all $K$ people can reach the Moon ($N + 1$), or output `0` if it is impossible.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why You Must Check Reachability Before Unrolling Time"}
+
+What if Earth ($0$) and the Moon ($N + 1$) belong to completely disconnected components of shuttle routes? If you dynamically add layers $t = 1, 2, 3, \dots$ until `total_flow >= K`, an unreachable instance will loop forever! How can you check in $O(M \cdot \max r_i)$ time whether all $K$ people can eventually reach the Moon?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Incremental Dynamic Layer Addition (`动态加层`)"}
+
+Once reachability is verified with a DSU (unioning all stations on each shuttle's cyclic route), do **not** binary search on $T$. Instead, maintain a single Dinic residual graph $G_f$:
+
+- At $t = 0$, connect $S \xrightarrow{K} (0, 0)$ and $(N+1, 0) \xrightarrow{\infty} T_{\text{sink}}$.
+- In a loop $t = 1, 2, 3, \dots$, allocate layer-$t$ vertices $(u, t)$ for $u \in \{0, \dots, N+1\}$, add holdover arcs $(u, t-1) \xrightarrow{\infty} (u, t)$, add shuttle transit arcs $(\operatorname{pos}_i(t-1), t-1) \xrightarrow{H_i} (\operatorname{pos}_i(t), t)$ for $i = 1 \dots M$, connect $(N+1, t) \xrightarrow{\infty} T_{\text{sink}}$, and call `flow += dinic(S, T_sink)` on the **existing residual network**!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — [CTSC1999 / Luogu P2754] 家园"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+Shuttles move deterministically as a function of $t \bmod r_i$, passengers can wait at stations across time steps, and we seek the **earliest timestamp $T^*$** where cumulative arrivals at the Moon reach $K \le 50$. This is the canonical archetype for a **Time-Expanded Layered DAG (`分层图`) with Incremental Dynamic Layer Addition (`动态加层`)** (§4.1–4.2).
+
+#### Step 2: Intermediate Algebraic Representation
+
+Let $V = \{0, 1, \dots, N, N+1\}$ where $0$ is Earth and $N+1$ is the Moon. For each station $u \in V$ and timestamp $t \ge 0$:
+
+- Let $f_{\text{hold}}(u, t-1 \to t) \in [0, \infty)$ be the number of passengers waiting at station $u$ from $t - 1$ to $t$.
+- Let $f_{\text{shuttle}}(i, t-1 \to t) \in [0, H_i]$ be the number of passengers aboard shuttle $i$ during $[t - 1, t]$, moving from $u_i(t-1) = S_{i, (t-1)\bmod r_i}$ to $v_i(t) = S_{i, t \bmod r_i}$.
+
+Spacetime conservation at $(u, t)$ requires:
+
+$$f_{\text{hold}}(u, t-1 \to t) + \sum_{i : v_i(t) = u} f_{\text{shuttle}}(i, t-1 \to t) = f_{\text{hold}}(u, t \to t+1) + \sum_{j : u_j(t) = u} f_{\text{shuttle}}(j, t \to t+1).$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+1. **Step 0 (DSU Reachability Guard)**: Initialize a DSU over $\{0, 1, \dots, N+1\}$. For each shuttle $i$ and each $j \in \{0, \dots, r_i - 1\}$, union $S_{i, j}$ with $S_{i, (j+1) \bmod r_i}$. If `find(0) != find(N + 1)`, output `0` and terminate immediately.
+2. **Base Layer ($t = 0$)**: Define vertex ID encoding `id(u, t) = 2 + t * (N + 2) + u` (reserving `0` for $S$ and `1` for $T_{\text{sink}}$). Add:
+   - $S \xrightarrow{K} \operatorname{id}(0, 0)$ (all $K$ people start on Earth at $t = 0$; or simply $S \xrightarrow{\infty} \operatorname{id}(0, 0)$ and check when `total_flow >= K`).
+   - $\operatorname{id}(N + 1, 0) \xrightarrow{\infty} T_{\text{sink}}$.
+3. **Incremental Layer Loop ($t = 1, 2, 3, \dots$)**:
+   - **Station Holdover Arcs**: For every $u \in \{0, \dots, N\}$, add $\operatorname{id}(u, t - 1) \xrightarrow{\infty} \operatorname{id}(u, t)$.
+   - **Shuttle Transit Arcs**: For each shuttle $i \in \{1, \dots, M\}$, let $u = S_{i, (t-1) \bmod r_i}$ and $v = S_{i, t \bmod r_i}$. Add $\operatorname{id}(u, t - 1) \xrightarrow{H_i} \operatorname{id}(v, t)$.
+   - **Moon Collection Arc**: Add $\operatorname{id}(N + 1, t) \xrightarrow{\infty} T_{\text{sink}}$.
+   - **Incremental Augmentation**: Run `total_flow += dinic(S, T_sink)` on the **current residual network** without resetting previous flows. If `total_flow >= K`, return $t$!
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+Suppose $N = 1$ station, $K = 2$ people, Shuttle $1$ ($H_1 = 1$) cycles $(0 \leftrightarrow 1)$ with period $2$, and Shuttle $2$ ($H_2 = 1$) cycles $(1 \leftrightarrow 2)$ (where $2$ is the Moon) with period $2$, starting at $S_{2,0} = 2, S_{2,1} = 1$:
+
+- **$t = 1$**: Shuttle $1$ moves $0 \to 1$ ($1$ person reaches Station $1$); Shuttle $2$ moves $2 \to 1$ (empty). Moon flow $= 0$.
+- **$t = 2$**: Shuttle $1$ moves $1 \to 0$; Shuttle $2$ moves $1 \to 2$ ($1$ person reaches Moon!). Moon flow $= 1 < 2$.
+- **$t = 3$**: Person $2$ (who waited on Earth via holdover arcs $(0,0) \to (0,1) \to (0,2)$!) takes Shuttle $1$ from $0 \to 1$ at $t=3$, and Shuttle $2$ from $1 \to 2$ at $t=4$. Total time $T^* = 4$.
+- **Failure Guard**: If you omit holdover arcs $(u, t-1) \xrightarrow{\infty} (u, t)$, Person $2$ cannot wait on Earth from $t=0$ to $t=2$, and the flow gets stuck at $1$!
+
+**Solver Contract**: On Luogu testdata, $T^* \le 100$ whenever reachable, so $|V_{T^*}| \le 1500$ and incremental Dinic finishes in $< 3\text{ ms}$.
+::::
+
+
+---
+
+### `#021` [Advanced 1] — [Luogu P2766] 最长不下降子序列问题 (`网络流 24 题 #06`)
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P2766](https://www.luogu.com.cn/problem/P2766) (`[ZH]`)
+- **Constraints**: Sequence length $n \le 500$. Time Limit: $1.0\text{ s}$.
+- **Problem Statement**: Given an integer sequence $x_1, x_2, \dots, x_n$:
+  1. Compute the length $s$ of its **longest non-decreasing subsequence (LNDS)**.
+  2. Compute the maximum number of non-decreasing subsequences of length $s$ that can be extracted simultaneously if **each index $i \in \{1, \dots, n\}$ may be used at most once**.
+  3. Compute the maximum number of non-decreasing subsequences of length $s$ if **indices $1$ and $n$ ($x_1$ and $x_n$) may be used infinitely many times** (while every other index $i \in \{2, \dots, n-1\}$ is still used at most once, and all extracted subsequences use distinct index tuples).
+
+:::: {.callout-note collapse="true" title="Hint 1 — Layering the Sequence by DP Value $dp[i]$"}
+
+First compute $dp[i] = 1 + \max(\{0\} \cup \{dp[k] : 1 \le k < i, x_k \le x_i\})$ in $O(n^2)$ time, and let $s = \max_{1 \le i \le n} dp[i]$.
+
+When can index $i$ be immediately followed by index $j$ in a valid LNDS of length $s$? If and only if:
+
+$$i < j, \qquad x_i \le x_j, \qquad \text{and} \qquad dp[j] = dp[i] + 1!$$
+
+Why does restricting edges to $dp[j] = dp[i] + 1$ guarantee that **every** path from $\{i : dp[i] = 1\}$ to $\{i : dp[i] = s\}$ has length exactly $s$?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Incremental Update for Subtask 3 & The Deadly $s = 1$ Corner Case"}
+
+For Subtask 2, split every index $i$ into $i_{\text{in}} \xrightarrow{1} i_{\text{out}}$, connect $S \xrightarrow{1} i_{\text{in}}$ if $dp[i] = 1$, connect $i_{\text{out}} \xrightarrow{1} T$ if $dp[i] = s$, and connect $i_{\text{out}} \xrightarrow{1} j_{\text{in}}$ if $i < j, x_i \le x_j, dp[j] = dp[i] + 1$.
+
+For Subtask 3, we allow index $1$ and index $n$ to be used $\infty$ times. Which 4 arcs need their capacity upgraded to $\infty$? And **what goes catastrophically wrong when $s = 1$** if you upgrade $S \xrightarrow{\infty} 1_{\text{in}} \xrightarrow{\infty} 1_{\text{out}} \xrightarrow{\infty} T$?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — [Luogu P2766] 最长不下降子序列问题"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+Subtask 1 is standard $O(n^2)$ DP. Subtasks 2 and 3 ask for the maximum number of **vertex-disjoint paths** across the $s$ layers of the DP transition DAG! Why does greedy LNDS extraction fail? Because just like the 6-Vertex Diamond-Bridge counterexample (§2.3), greedily deleting one LNDS can sever two other disjoint LNDSs that residual uncrossing would decouple.
+
+#### Step 2: Intermediate Algebraic Representation
+
+Let $dp[i] \in \{1, \dots, s\}$ be the longest non-decreasing subsequence ending at index $i$, and define the admissible transition set:
+
+$$\mathcal{E}_{\text{DP}} = \big\{(i \to j) \;\big|\; 1 \le i < j \le n,\;\; x_i \le x_j,\;\; dp[j] = dp[i] + 1\big\}.$$
+
+Every directed path $i_1 \to i_2 \to \dots \to i_s$ in $\mathcal{E}_{\text{DP}}$ starting at $dp[i_1] = 1$ and ending at $dp[i_s] = s$ steps strictly from layer $k$ to layer $k+1$, so it automatically contains $s$ indices and satisfies $x_{i_1} \le x_{i_2} \le \dots \le x_{i_s}$.
+
+Let $F(i)$ be the number of chosen subsequences passing through index $i$. In Subtask 2, $0 \le F(i) \le 1$ for all $i \in \{1, \dots, n\}$. In Subtask 3, $F(1), F(n) \in [0, \infty)$ while $F(i) \le 1$ for $2 \le i \le n - 1$, and each transition $(i \to j) \in \mathcal{E}_{\text{DP}}$ still has capacity $1$ (since $i$ and $j$ cannot both be in $\{1, n\}$ unless $s = 2$, and even then the subsequence $(1, n)$ can only be chosen once if distinct index tuples are required, or we keep transition capacities at $1$).
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+1. **Corner Case Guard ($s = 1$)**: If $s = 1$ (the sequence is strictly decreasing), every single element $(x_i)$ is already an LNDS of length $1$. Even if $x_1$ and $x_n$ can be reused, a subsequence of length $1$ is uniquely determined by its single index (or in Luogu's testdata convention for $s = 1$, both Subtask 2 and Subtask 3 output $n$). **Always check `if (s == 1) { print(1, n, n); return; }` first!**
+2. **Subtask 2 Network ($s \ge 2$)**:
+   - Split each $i \in \{1, \dots, n\}$ into $i_{\text{in}} \xrightarrow{1} i_{\text{out}}$.
+   - If $dp[i] = 1$, add $S \xrightarrow{1} i_{\text{in}}$.
+   - If $dp[i] = s$, add $i_{\text{out}} \xrightarrow{1} T$.
+   - For all $1 \le i < j \le n$ with $x_i \le x_j$ and $dp[j] = dp[i] + 1$, add $i_{\text{out}} \xrightarrow{1} j_{\text{in}}$.
+   - Run `ans2 = dinic(S, T)`.
+3. **Subtask 3 Incremental Upgrade ($s \ge 2$)**:
+   Without rebuilding the graph, append capacity $\infty$ to the existing residual network on:
+   - $1_{\text{in}} \xrightarrow{\infty} 1_{\text{out}}$, and if $dp[1] = 1$, $S \xrightarrow{\infty} 1_{\text{in}}$.
+   - $n_{\text{in}} \xrightarrow{\infty} n_{\text{out}}$, and if $dp[n] = s$, $n_{\text{out}} \xrightarrow{\infty} T$.
+   - (Note: Keep all transition arcs $i_{\text{out}} \xrightarrow{1} j_{\text{in}}$ at capacity $1$!)
+   - Run `ans3 = ans2 + dinic(S, T)` on the updated residual network!
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+Consider $n = 4$ and $X = [3, 6, 2, 5]$:
+
+- $dp = [1, 2, 1, 2]$, so $s = 2$.
+- Layer $1$ ($dp = 1$): indices $\{1, 3\}$. Layer $2$ ($dp = 2$): indices $\{2, 4\}$.
+- Admissible transitions ($i < j, x_i \le x_j, dp[j] = dp[i]+1$):
+  - From $i = 1$ ($x_1 = 3$): $(1 \to 2)$ ($3 \le 6$) and $(1 \to 4)$ ($3 \le 5$).
+  - From $i = 3$ ($x_3 = 2$): $(3 \to 4)$ ($2 \le 5$).
+- **Subtask 2**: Both $(1 \to 2)$ and $(3 \to 4)$ are disjoint! `ans2 = 2`.
+- **Subtask 3**: Index $1$ and Index $4$ get $\infty$ capacity on $(S \to 1_{\text{in}} \to 1_{\text{out}})$ and $(4_{\text{in}} \to 4_{\text{out}} \to T)$. Now the unused transition $1_{\text{out}} \xrightarrow{1} 4_{\text{in}}$ unlocks a **third** subsequence $(x_1, x_4) = (3, 5)$! `ans3 = 3`.
+- **Failure Guard**: When $s = 1$ (e.g., $X = [5, 4, 3]$), $dp[1] = 1 = s$, so Index $1$ connects **both** to $S$ and to $T$. Upgrading $S \to 1_{\text{in}} \to 1_{\text{out}} \to T$ to $\infty$ creates an $\infty$-capacity path from $S$ to $T$, outputting `INF` instead of $n$! That is why guarding `s == 1` upfront is mandatory.
+
+**Solver Contract**: $|V| = 2n + 2 \le 1002$, $|E| \le n^2 / 2 + 3n \le 1.3 \times 10^5$. Unit-vertex network runs in $O(n^2 \sqrt{n}) \approx 2.5 \times 10^6$ operations.
+::::
+
+---
+
+### `#022` [Advanced 2] — [CF 78E] Evacuation
+
+- **Judge URL**: [https://codeforces.com/problemset/problem/78/E](https://codeforces.com/problemset/problem/78/E) (`[EN]`)
+- **Constraints**: Grid size $N \times N$ with $N \le 10$, evacuation time limit $T \le 60$. Time Limit: $1.0\text{ s}$.
+- **Problem Statement**: On an $N \times N$ laboratory grid, some cells are impassable walls (`Y`), exactly one cell is a malfunctioning nuclear reactor (`Z`), and the remaining cells contain $A_{r, c} \in \{0, \dots, 9\}$ scientists initially and $B_{r, c} \in \{0, \dots, 9\}$ rescue capsules.
+  - At $t = 0$, the reactor at `Z` explodes. Every $1$ second, radiation spreads 4-directionally to all adjacent non-wall cells.
+  - Scientists also move 4-directionally at up to $1$ cell per second (any number of scientists may occupy or pass through the same corridor cell simultaneously).
+  - A scientist **cannot** step onto a cell $(r, c)$ at time $t$ if radiation reached $(r, c)$ at time $< t$.
+  - **Crucial Boundary Rule**: If a scientist reaches cell $(r, c)$ at the exact second $t = \operatorname{rad}(r, c)$ when radiation hits $(r, c)$ (with $t \le T$), the scientist **can immediately board an available rescue capsule at $(r, c)$** and survive, **but cannot walk out of $(r, c)$** at time $t + 1$!
+  Compute the maximum number of scientists who can board rescue capsules within $T$ seconds.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why We Don't Need a $60 \times 100$ Time-Expanded Flow Network"}
+
+Notice that corridor cells have **infinite** walking capacity—scientists never block one another while walking! Only the starting scientist counts $A_{r_1, c_1}$ and the final rescue capsule capacities $B_{r_2, c_2}$ are finite. What does this imply about the time-expanded DAG between starting cells and capsule cells?
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Precomputing Safe Reachability via Two BFS Passes"}
+
+1. First, run a BFS from the reactor `Z` to compute $\operatorname{rad}(r, c)$, the earliest time radiation hits $(r, c)$.
+2. Second, from each starting cell $u = (r_1, c_1)$, run a BFS to find all capsule cells $v = (r_2, c_2)$ that a scientist starting at $u$ can reach by time $\le T$.
+3. When expanding the scientist BFS from $x$ at time $d$ to a neighbor $y$ at time $d + 1 \le T$:
+   - If $d + 1 < \operatorname{rad}(y)$, the scientist can **both** board a capsule at $y$ **and** continue walking from $y$ (push $y$ into the BFS queue).
+   - If $d + 1 == \operatorname{rad}(y)$, the scientist can **board a capsule at $y$**, but **must NOT push $y$ into the BFS queue**!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — [CF 78E] Evacuation"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+At first glance, radiation spreading over $T \le 60$ steps on an $N \times N$ grid looks like a time-expanded DAG with $T N^2 \le 6000$ vertices. However, because **intermediate corridor transitions have $\infty$ capacity**, a group of scientists at $u$ can reach a capsule at $v$ before the deadline if and only if there exists *at least one* safe spacetime walk from $(u, 0)$ to $(v, t)$ with $t \le \min(T, \operatorname{rad}(v))$. Thus the entire time horizon collapses via BFS precomputation into a tiny **2-layer Bipartite Flow Network**!
+
+#### Step 2: Intermediate Algebraic Representation
+
+Let $\operatorname{rad}(v) \in \mathbb{Z}_{\ge 0} \cup \{\infty\}$ be the shortest-path distance from the reactor `Z` to cell $v$ avoiding walls `Y`. For each cell $u$, let $\operatorname{Reach}(u)$ be the set of cells $v$ reachable by a walk $u = w_0 \to w_1 \to \dots \to w_k = v$ of length $k \le T$ such that:
+
+$$t < \operatorname{rad}(w_t) \quad \forall t \in \{0, 1, \dots, k - 1\}, \qquad \text{and} \qquad k \le \operatorname{rad}(w_k).$$
+
+Once $\operatorname{Reach}(u)$ is known, let $f(u \to v) \ge 0$ be the number of scientists starting at $u$ who evacuate in capsules at $v \in \operatorname{Reach}(u)$, subject to $\sum_v f(u \to v) \le A_u$ and $\sum_u f(u \to v) \le B_v$.
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+1. **Pass 1 (Reactor BFS)**: Run BFS from `Z` (with `rad[Z] = 0`, walls impassable) to compute $\operatorname{rad}(v)$ for all cells $v$.
+2. **Pass 2 (Scientist Safe-Horizon BFS from each $u$)**:
+   For each cell $u$ with $A_u > 0$ and $\operatorname{rad}(u) > 0$:
+   - Initialize `dist[u] = 0`, `can_board[u] = true`, and push $u$ into a queue $Q$.
+   - While $Q$ is non-empty, pop $x$. If `dist[x] == T`, continue.
+   - For each 4-neighbor $y$ of $x$ (not a wall):
+     - Let $nt = \operatorname{dist}[x] + 1$.
+     - If $nt \le \operatorname{rad}(y)$, mark `can_board[y] = true` (a scientist from $u$ can reach and board a capsule at $y$ at time $nt$).
+     - If $nt < \operatorname{rad}(y)$ and $y$ has not been pushed to $Q$ yet, set $\operatorname{dist}[y] = nt$ and push $y$ into $Q$.
+3. **Pass 3 (Bipartite Max-Flow)**:
+   - Create left vertices $u_{\text{sci}}$ for all cells $u$ with $A_u > 0$: add $S \xrightarrow{A_u} u_{\text{sci}}$.
+   - Create right vertices $v_{\text{cap}}$ for all cells $v$ with $B_v > 0$: add $v_{\text{cap}} \xrightarrow{B_v} T_{\text{sink}}$.
+   - Whenever `can_board[v] == true` from source $u$, add $u_{\text{sci}} \xrightarrow{\infty} v_{\text{cap}}$.
+   - Output `dinic(S, T_sink)`.
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+Suppose `u -- x -- v` where $u$ has $1$ scientist, $v$ has $1$ capsule, and $\operatorname{rad}(x) = 1, \operatorname{rad}(v) = 2$:
+
+- At $t = 1$, the scientist reaches $x$ at the exact moment $1 = \operatorname{rad}(x)$.
+- Can the scientist board a capsule at $x$? **Yes** (`nt <= rad[x]`).
+- Can the scientist continue walking from $x$ to $v$ at $t = 2$? **No** (`nt < rad[x]` is false, because $x$ is already flooded with radiation at $t = 1$!).
+- **Failure Guard**: If you push $y$ into the BFS queue whenever `nt <= rad[y]` instead of strictly `nt < rad[y]`, scientists will illegally walk *through* irradiated cells! Conversely, if you only record `can_board[y] = true` when `nt < rad[y]`, you miss capsules boarded at the exact second $t = \operatorname{rad}(y)$.
+
+**Solver Contract**: BFS takes $O(N^4) \le 10^4$ operations; the bipartite flow network has $|V| \le 202, |E| \le 10^4$, solving in $< 2\text{ ms}$.
+::::
+
+---
+
+### `#023` [Mastery 1] — [CF 1368H1] Breadboard Capacity (Easy Version)
+
+- **Judge URL**: [https://codeforces.com/problemset/problem/1368/H1](https://codeforces.com/problemset/problem/1368/H1) (`[EN]`)
+- **Constraints**: Grid dimensions $N, M \le 10^5$ ($N \times M \le 10^{10}$ internal nodes!). Time Limit: $2.0\text{ s}$.
+- **Problem Statement**: A breadboard is an $N \times M$ undirected grid of internal junctions $(r, c)$ ($1 \le r \le N, 1 \le c \le M$), where adjacent internal junctions are connected by unit-capacity undirected wires. Along the four outer boundaries of the grid sit $2(N + M)$ **ports**:
+  - $N$ ports on the Left (`L[1..N]`), each wired with capacity $1$ to $(r, 1)$;
+  - $N$ ports on the Right (`R[1..N]`), each wired with capacity $1$ to $(r, M)$;
+  - $M$ ports on the Top (`U[1..M]`), each wired with capacity $1$ to $(1, c)$;
+  - $M$ ports on the Bottom (`D[1..M]`), each wired with capacity $1$ to $(N, c)$.
+  Each of the $2(N + M)$ boundary ports is colored either **Red (`R`)** or **Blue (`B`)**. Each wire (internal or port-to-grid) has capacity $1$, and internal junctions have **infinite** vertex capacity (only wires are unit-capacitated). Compute the maximum number of edge-disjoint paths connecting Red ports to Blue ports.
+
+:::: {.callout-note collapse="true" title="Hint 1 — From $10^{10}$-Vertex Max-Flow to Planar Grid Min-Cut"}
+
+With $N \times M = 10^{10}$ vertices, running Dinic on the grid is impossible. Switch immediately to **Max-Flow Min-Cut Duality**: every $S$-$T$ cut assigns each internal grid cell $(r, c)$ a color $x_{r, c} \in \{\text{Red}, \text{Blue}\}$, and pays $1$ for every wire (internal horizontal, internal vertical, or boundary port wire) whose two endpoints have different colors!
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Structural Geometry Lemma: Why an Optimal Grid Cut Is Either Row-Monochromatic or Column-Monochromatic"}
+
+Suppose a cut colors the $N \times M$ grid so that **neither** does any monochromatic horizontal stripe span all the way across, **nor** do all rows/columns stay monochromatic.
+
+Consider any connected component $C$ of Red cells. If $C$ does not touch all four sides, smoothing its boundary into straight horizontal or vertical lines across the entire grid **never increases** the internal perimeter length! Specifically, one can prove that there always exists a minimum cut on the $N \times M$ grid where **either**:
+
+1. Every row $r \in \{1, \dots, N\}$ is **monochromatic** (all $M$ cells in row $r$ have the same color $c_r \in \{\text{R}, \text{B}\}$), **OR**
+2. Every column $c \in \{1, \dots, M\}$ is **monochromatic** (all $N$ cells in column $c$ have the same color $d_c \in \{\text{R}, \text{B}\}$)!
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — [CF 1368H1] Breadboard Capacity"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+The problem asks for the maximum edge-disjoint routing between Red ($S$) and Blue ($T$) boundary ports on an $N \times M$ grid with $N, M \le 10^5$. This is our **first glimpse of Cut-DP Elimination** (explored systematically in Part IV): when a flow network is a highly regular geometric grid of size $10^{10}$, we dualize Max-Flow to Min-Cut and optimize the cut partition $(S, T)$ directly via Dynamic Programming!
+
+#### Step 2: Intermediate Algebraic Representation
+
+Let $x_{r, c} \in \{0, 1\}$ denote the cut side of cell $(r, c)$ ($0 = \text{Red}, 1 = \text{Blue}$). The capacity of the cut $x$ is:
+
+$$\operatorname{Cut}(x) = \sum_{r=1}^N \sum_{c=1}^{M-1} |x_{r,c} - x_{r,c+1}| + \sum_{r=1}^{N-1} \sum_{c=1}^M |x_{r,c} - x_{r+1,c}| + \text{BoundaryMismatch}(x).$$
+
+**Geometric Rectification Theorem**: Suppose row $r$ is *not* monochromatic, so $\sum_{c=1}^{M-1} |x_{r,c} - x_{r,c+1}| \ge 1$. Each non-monochromatic row pays at least $1$ internal horizontal cut edge, plus at most $2$ boundary mismatches (`L[r]` and `R[r]`) can be saved by making row $r$ bichromatic instead of monochromatic—and only when `L[r] != R[r]`, where a monochromatic row also pays $1$ boundary mismatch! By submodular cut uncrossing and boundary projection, any minimum cut can be rectified without increasing its cost so that **either all rows are monochromatic ($x_{r, 1} = \dots = x_{r, M} = c_r$) OR all columns are monochromatic ($x_{1, c} = \dots = x_{N, c} = d_c$)**.
+
+#### Step 3: Reverse-Engineering Scratchpad (Two 1D Sweeping DPs)
+
+1. **Case 1: Row-Monochromatic Cut ($x_{r, c} = c_r \in \{0, 1\}$ for all $c$)**:
+   - Within row $r$, horizontal internal wires cost $0$.
+   - Left and right ports of row $r$ cost $[L_r \neq c_r] + [R_r \neq c_r]$.
+   - At row $1$, top ports cost $\sum_{c=1}^M [U_c \neq c_1]$. At row $N$, bottom ports cost $\sum_{c=1}^M [D_c \neq c_N]$.
+   - Between row $r-1$ and row $r$, all $M$ vertical wires are cut if $c_r \neq c_{r-1}$ (cost $M$), or $0$ if $c_r = c_{r-1}$.
+   - Define `dp_row[r][col]` for $r = 1 \dots N, \text{col} \in \{0, 1\}$:
+
+     $$\text{dp\_row}[1][\text{col}] = \sum_{c=1}^M [U_c \neq \text{col}] + [L_1 \neq \text{col}] + [R_1 \neq \text{col}],$$
+
+     $$\text{dp\_row}[r][\text{col}] = [L_r \neq \text{col}] + [R_r \neq \text{col}] + \min\big(\text{dp\_row}[r-1][\text{col}],\;\; \text{dp\_row}[r-1][1 - \text{col}] + M\big),$$
+
+     and add $\sum_{c=1}^M [D_c \neq \text{col}]$ at $r = N$.
+
+2. **Case 2: Column-Monochromatic Cut ($x_{r, c} = d_c \in \{0, 1\}$ for all $r$)**:
+   By exact $90^\circ$ symmetry (swapping $N \leftrightarrow M$, $(L, R) \leftrightarrow (U, D)$), run the identical 2-state DP `dp_col[c][col]` across columns $c = 1 \dots M$ with transition penalty $N$.
+3. **Final Answer**: $\min(\text{ans}_{\text{row}}, \text{ans}_{\text{col}})$.
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+Suppose $N = 2, M = 3$, all `U` ports are Red (`R`), all `D` ports are Blue (`B`), and all `L, R` ports are Red (`R`).
+
+- If we assign Row $1$ all Red ($c_1 = \text{R}$) and Row $2$ all Blue ($c_2 = \text{B}$):
+  - Row $1$ pays $0$ (`U`, `L[1]`, `R[1]` are all Red).
+  - Transition $c_1 \neq c_2$ cuts $M = 3$ vertical internal wires.
+  - Row $2$ pays $2$ (`L[2]` and `R[2]` are Red vs. $c_2 = \text{B}$, while `D` is all Blue). Total cost $= 3 + 2 = 5$.
+- If instead we make the entire grid Red ($c_1 = c_2 = \text{R}$), we only cut the $3$ bottom `D` port wires! Total cost $= 3$. Both states are explored automatically by `dp_row`.
+- **Failure Guard**: Only running `dp_row` and forgetting `dp_col` fails whenever $N \ll M$ and the optimal cut runs vertically across $N$ wires instead of horizontally across $M$ wires! Always take $\min(\text{ans}_{\text{row}}, \text{ans}_{\text{col}})$.
+
+**Solver Contract**: Two linear passes of length $N$ and $M$ run in **$O(N + M)$** time and $O(1)$ auxiliary space ($< 10\text{ ms}$ for $N, M = 10^5$).
+::::
+
+---
+
+### `#024` [Mastery 2] — [CQOI2015 / Luogu P3171] 网络吞吐量 (Network Throughput)
+
+- **Judge URL**: [https://www.luogu.com.cn/problem/P3171](https://www.luogu.com.cn/problem/P3171) (`[ZH]`)
+- **Constraints**: $N \le 500$ routers, $M \le 10^5$ undirected bidirectional links, link distances $w_e \in [1, 10^9]$, router capacities $c_u \in [1, 10^9]$. Time Limit: $1.0\text{ s}$.
+- **Problem Statement**: A communication network consists of $N$ routers and $M$ undirected fiber links. Each link $\{u, v\}$ has a propagation delay $w_{uv} > 0$ (and infinite bandwidth). By routing protocol rules, all data packets traveling from the source router $1$ to the destination router $N$ **must follow shortest paths** with respect to total propagation delay. However, each router $u \in \{2, \dots, N - 1\}$ has a finite CPU forwarding capacity $c_u$ (routers $1$ and $N$ have infinite CPU capacity). Compute the maximum total throughput that can be routed from $1$ to $N$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Extracting the Directed Shortest-Path DAG from an Undirected Graph"}
+
+Run Dijkstra's algorithm starting from vertex $1$ to compute the shortest-path delay $d[u]$ for every $u \in \{1, \dots, N\}$.
+
+Given an **undirected** link $\{u, v\}$ of delay $w_{uv} > 0$, when can packets travel along $\{u, v\}$ in the direction $u \to v$ as part of a shortest path from $1$ to $N$? Whenever:
+
+$$d[u] + w_{uv} = d[v]!$$
+
+And because $w_{uv} > 0$, can both $d[u] + w_{uv} = d[v]$ and $d[v] + w_{uv} = d[u]$ hold simultaneously? No! So orienting all tight edges produces a strict **Directed Acyclic Graph (DAG)**.
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Combining Shortest-Path DAG Orientation with Router Vertex Splitting"}
+
+Once you identify all directed tight transitions $(u \to v)$ satisfying $d[u] + w_{uv} = d[v]$, how do you enforce the CPU forwarding limit $c_u$ on each intermediate router $u \in \{2, \dots, N-1\}$? And what integer type must you use when $c_u \le 10^9$?
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & Solution — [CQOI2015 / Luogu P3171] 网络吞吐量"}
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+The problem combines two independent structural constraints:
+
+1. **Routing Policy Constraint**: Packets only traverse **shortest paths** from $1$ to $N$ (with respect to delays $w_e$).
+2. **Hardware Bottleneck Constraint**: Intermediate routers $u \in \{2, \dots, N-1\}$ have **vertex throughput capacities** $c_u \le 10^9$.
+
+As established in §5.1, a shortest-path restriction on an undirected weighted graph compiles via Dijkstra's tightness condition $d[u] + w_{uv} = d[v]$ into a directed DAG, and router CPU limits compile via vertex splitting $u_{\text{in}} \xrightarrow{c_u} u_{\text{out}}$.
+
+#### Step 2: Intermediate Algebraic Representation
+
+Let $d: V \to \mathbb{Z}_{\ge 0}$ be the unique shortest-path distance vector from vertex $1$:
+
+$$d[1] = 0, \qquad d[v] = \min_{\{u, v\} \in E} (d[u] + w_{uv}).$$
+
+Define the directed **Shortest-Path Admissibility Set**:
+
+$$E_{\text{SP}} = \big\{(u \to v) \;\big|\; \{u, v\} \in E \;\land\; d[u] + w_{uv} = d[v]\big\}.$$
+
+Any directed path from $1$ to $N$ using only arcs in $E_{\text{SP}}$ has total length $\sum_{(u \to v) \in P} w_{uv} = \sum_{(u \to v) \in P} (d[v] - d[u]) = d[N] - d[1] = d[N]$, which is a shortest $1$-$N$ path! Conversely, any shortest $1$-$N$ path uses only arcs in $E_{\text{SP}}$. Thus we seek a maximum $1$-$N$ flow supported on $E_{\text{SP}}$ subject to vertex throughput $F(u) \le c_u$ for $u \in \{2, \dots, N-1\}$.
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+1. **Phase 1 (Dijkstra from Vertex $1$)**: Compute `d[1..N]` in $O((N + M) \log N)$ time using `int64_t` distances.
+2. **Phase 2 (Vertex Splitting)**: Split each router $u \in \{1, \dots, N\}$ into $u_{\text{in}} = u$ and $u_{\text{out}} = u + N$:
+   - For $u \in \{1, N\}$, add $u_{\text{in}} \xrightarrow{\infty} u_{\text{out}}$.
+   - For $u \in \{2, \dots, N-1\}$, add $u_{\text{in}} \xrightarrow{c_u} u_{\text{out}}$.
+3. **Phase 3 (Wiring Tight Shortest-Path Arcs)**: For each original undirected link $\{u, v\}$ with delay $w$:
+   - If $d[u] + w == d[v]$, add directed arc $u_{\text{out}} \xrightarrow{\infty} v_{\text{in}}$.
+   - If $d[v] + w == d[u]$, add directed arc $v_{\text{out}} \xrightarrow{\infty} u_{\text{in}}$.
+4. **Phase 4 (Max-Flow)**: Run Dinic from $S = 1_{\text{in}}$ (or $1_{\text{out}}$) to $T = N_{\text{out}}$ (or $N_{\text{in}}$) using 64-bit integer capacities (`long long` / `int64_t`, with $\infty = 10^{18}$).
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+Suppose $N = 4$, links are $\{1, 2\}$ ($w=2$), $\{2, 4\}$ ($w=2$), $\{1, 3\}$ ($w=1$), $\{3, 2\}$ ($w=1$), $\{3, 4\}$ ($w=5$), and router capacities are $c_2 = 10, c_3 = 4$:
+
+- Dijkstra distances from $1$: $d[1] = 0$, $d[3] = 1$, $d[2] = 2$ (via both $1 \to 2$ and $1 \to 3 \to 2$!), $d[4] = 4$ (via $2 \to 4$; note $3 \to 4$ has $d[3] + 5 = 6 > 4$, so $3 \to 4$ is **not** tight!).
+- Tight DAG arcs: $1_{\text{out}} \to 2_{\text{in}}$, $1_{\text{out}} \to 3_{\text{in}}$, $3_{\text{out}} \to 2_{\text{in}}$, and $2_{\text{out}} \to 4_{\text{in}}$.
+- Notice that even though $1 \to 2$ and $1 \to 3 \to 2$ can together supply $10 + 4 = 14$ units into $2_{\text{in}}$, router $2$'s internal bridge $2_{\text{in}} \xrightarrow{10} 2_{\text{out}}$ caps total throughput at **$10$**.
+- **Failure Guard (`int32_t` Overflow)**: Because $c_u \le 10^9$ and up to $N = 500$ routers can contribute in parallel, the maximum flow and $\infty$ constants exceed $2^{31} - 1$. Using `int` instead of `long long` overflows immediately!
+
+**Solver Contract**: $|V| = 2N \le 1000$, $|E| \le N + M \le 10^5$. Because $E_{\text{SP}}$ is a sparse DAG, Dinic terminates in $< 20\text{ ms}$.
+::::
+
+---
+
+## 7. Chapter 3 Verification Checklist & Failure Mode Summary
+
+Before submitting any problem involving path extraction, vertex capacities, multi-stage chains, or time-expanded DAGs, run through the following diagnostic checklist:
+
+| Failure Mode ID | Anti-Pattern / Bug | Root Cause | Ironclad Fix |
+| :---: | :--- | :--- | :--- |
+| **`FM-01`** | **Greedy Shortest-Path Stripping Before Full Augmentation** | Deleting a shortest $s$-$t$ path from $G$ without reverse residual arcs strands crossing paths (6-Vertex Diamond-Bridge, §2.3). | Run Dinic to completion first; apply Flow Decomposition (Theorem 3.1) **only** on the final support $\operatorname{supp}(f^*)$. |
+| **`FM-03`** | **Omitting Holdover Arcs in Time-Expanded DAGs (`分层图`)** | Without $(u, t-1) \xrightarrow{\infty} (u, t)$, agents arriving at $u$ at $t-1$ cannot wait at $u$ for a later shuttle (`#020`). | Always add holdover arcs $(u, t-1) \xrightarrow{h_u} (u, t)$ whenever waiting at vertices is permitted. |
+| **`FM-04`** | **Undirected Vertex-Split Bypass Trap ($u_{\text{in}} \leftrightarrow v_{\text{in}}$ or $u_{\text{out}} \leftrightarrow v_{\text{in}}$)** | Wiring an undirected edge with bidirectional positive capacity between split ports lets flow jump $v_{\text{in}} \to u_{\text{out}}$, bypassing **both** internal bridges (§3.2). | Compile every undirected edge $\{u, v\}$ on split vertices into **two independent directed arcs**: `add_edge(u_out, v_in, c)` AND `add_edge(v_out, u_in, c)`. |
+| **`FM-05`** | **Connecting $S \to u_{\text{out}}$ When Initial Agents Consume Vertex Durability** | In `#018` (`*` cells) and `#019` (initial lizards), connecting $S \to u_{\text{out}}$ skips $u_{\text{in}} \to u_{\text{out}}$, giving $u$ an extra $+1$ durability. | Connect $S \xrightarrow{1} u_{\text{in}}$ whenever an agent starting at $u$ consumes $1$ unit of $u$'s pass-through budget upon departure. |
+| **`FM-06`** | **Degenerate $s = 1$ Single-Layer $\infty$ Path (`#021` `Luogu P2766`)** | When the LIS length is $s = 1$, index $1$ satisfies both $dp[1] = 1$ and $dp[1] = s$, creating $S \xrightarrow{\infty} 1_{\text{in}} \xrightarrow{\infty} 1_{\text{out}} \xrightarrow{\infty} T$. | Explicitly guard `if (s == 1)` before building the network (or keep transition arcs at cap $1$ and handle $s=1$ separately). |
+
+---
+
+## 8. Chapter Revision Summary & Multilingual Bibliography
+
+### Key Takeaways
+
+1. **Flow Decomposition (`流分解定理`, Theorem 3.1)**: Every feasible flow $f$ decomposes into $\le |E|$ simple $s$-$t$ paths and simple cycles in $O(VE)$ time via bottleneck stripping on $\operatorname{supp}(f)$.
+2. **Vertex Capacity Splitting ($\text{out} \to \text{in}$ Invariant)**: A vertex throughput bound $0 \le F(v) \le C_v$ compiles into $v_{\text{in}} \xrightarrow{C_v} v_{\text{out}}$ with all external transitions wired strictly from `out`-ports to `in`-ports ($u_{\text{out}} \to v_{\text{in}}$). On unit-capacity vertex-split graphs, $\min(\deg^-(x), \deg^+(x)) = 1$ holds at every internal vertex, unlocking Even and Tarjan's **$O(E \sqrt{V})$** complexity bound and proving all **Four Variants of Menger's Theorem**.
+3. **Time-Expanded Layered DAGs (`分层图`) & Incremental Dynamic Layer Addition (`动态加层`)**: Promoting discrete time $t \in \{0, \dots, T\}$ into the vertex state $(u, t)$ turns temporal routing into a DAG with holdover arcs $(u, t-1) \to (u, t)$ and transit arcs $(u, t-1) \to (v, t)$. Appending layers incrementally onto a persistent residual graph $G_f$ finds the minimum completion time $T^*$ without binary search.
+4. **Graph Sparsification & Dual Elimination**: Shortest-path restrictions ($d[u] + w_{uv} = d[v]$) and DP transitions ($dp[j] = dp[i] + 1$) extract sparse DAGs; Row/Column Hub vertices (`[ARC 074 D]`) collapse $\Theta(HW(H+W))$ cliques into $O(H+W)$ bipartite graphs; and on $10^{10}$-vertex regular grids (`[CF 1368H1]`), Min-Cut geometry eliminates the interior graph entirely in favor of $O(N+M)$ Cut-DP.
+
+### Multilingual Bibliography & Classic References
+
+- **`[EN]`** L. R. Ford, Jr. and D. R. Fulkerson, *Flows in Networks*, Princeton University Press, 1962 (Flow Decomposition Theorem, Vertex Capacities, and Menger Duality).
+- **`[EN]`** S. Even and R. E. Tarjan, *"Network Flow and Testing Graph Connectivity,"* SIAM Journal on Computing, 4(4):507–518, 1975 (proving the $O(E \sqrt{V})$ bound for Dinic's algorithm on unit vertex networks `Type 2`).
+- **`[ZH]`** 刘汝佳 (Rujia Liu), 《算法竞赛入门经典：训练指南》 (*AOAPC II: Training Guide*), Tsinghua University Press, 2012 (拆点 `Vertex Splitting`, 分层图网络流 `Time-Expanded Layered Flow`, and UVa 11380 / CTSC1999 analyses).
+- **`[ZH]`** 李煜东 (Yudong Li), 《算法竞赛进阶指南》 (*Advanced Guide to Algorithmic Competitions*), 2018 (系统总结拆点、动态加层与最短路 DAG 网络流).
+- **`[JA]`** AtCoder Regular Contest 074 Editorial — *Task F (ARC 074 D): Lotus Leaves* (Row/Column Hub Sparsification `行・列の超頂点` reducing vertex-cut on grid lines to bipartite edge-cut).

@@ -1,0 +1,1152 @@
+---
+title: "Chapter 22 — Data-Structure-Accelerated Flow Graphs & General Non-Bipartite Matching"
+---
+
+## Prerequisites & Learning Objectives
+
+::: {.callout-note title="Prerequisites"}
+Before studying this chapter, make sure you are comfortable with:
+
+- **Chapter 07 (Bipartite Matching, König's Theorem & Dulmage–Mendelsohn Decomposition)**: augmenting paths on bipartite graphs, alternating trees, and the canonical 3-way vertex partition $V = \mathcal{E} \sqcup \mathcal{O} \sqcup \mathcal{U}$.
+- **Chapter 09 (Project Selection, Maximum Weight Closure & Monotone Chains)**: translating logical implications $x_u \implies x_v$ into directed $\infty$-capacity edges $u \xrightarrow{\infty} v$ under the convention $x_u = [u \in S]$.
+- **Chapter 12 (Minimum-Cost Max-Flow & Successive Shortest Paths)**: reduced costs, DAG path covers with costs, and why negative cycles destroy standard SSP unless eliminated or transformed.
+- **Chapter 17 (Minimum Path Cover, Dilworth's Theorem & DAG Reachability)**: vertex-splitting bipartite reductions $(i_{\text{out}}, i_{\text{in}})$ for DAG path covers (`星际竞速` archetype).
+:::
+
+::: {.callout-tip title="Learning Objectives"}
+By the end of this chapter, you will be able to:
+
+1. **Factorize Dense Flow Bicliques (`数据结构优化建图`)**: Replace $O(N^2)$ interval, prefix-rectangle, tree-path, Manhattan, and string-substring transition families with $O(N \log^k N)$ **Virtual Hub DAGs** while rigorously preserving minimum cuts, maximum flows, and minimum-cost flows.
+2. **Enforce the Idempotency Boundary (`Theorem 22.1`)**: Distinguish when overlapping covers are legal (unbundled $\infty$-capacity implication closures where $1 \vee 1 = 1$) versus when **strictly disjoint canonical covers** and **Bridge Bottleneck Hubs** $b_{\text{in}} \xrightarrow{c, w} b_{\text{out}}$ are mandatory (bundled-capacity min-cuts, maximum matchings, and additive-cost MCMF).
+3. **Avoid Persistent & Bidirectional Hub Pitfalls (`FM-22` / `H-22`)**: Implement the **Duplicate-Key Leaf Chaining Fix** on prefix persistent segment trees (`主席树`) so equal keys are never orphaned, and keep Out-Trees and In-Trees strictly separated so internal hubs never create zero-cost shortcut leaks.
+4. **Master Non-Bipartite Matching Theory (Module 22B)**: Prove why odd cycles produce half-integral LP optima ($x_e = 1/2, y_v = 1/2$ on $K_3$), why the Bipartite Double Cover $G \times K_2$ fails to enforce simple matching constraints, and derive the **Tutte–Berge Formula** and **Gallai–Edmonds Canonical Decomposition** $V = D(G) \sqcup A(G) \sqcup C(G)$.
+5. **Compile Non-Bipartite Gadgets & Algebraic Oracles**: Implement **Edmonds' Blossom Contraction (`带花树`)** with lazy DSU + LCA, design **2-Vertex Twin** and **3-Vertex Triangle Blossom Gadgets** (`[WC2016] 挑战 NPC`) with mandatory two-phase execution, understand **Weighted Blossom LP Duals (`UOJ #81`)**, and deploy the **Randomized Skew-Symmetric Tutte Matrix $T(G)$** to classify all feasible (`可行边`) and essential (`必须边`) matching edges in $O(N^3)$.
+:::
+
+---
+
+## 1. Module 22A — The Virtual Hub DAG Sparsification Principle (`数据结构优化建图`)
+
+In Chapters 07 through 21, we treated the number of edges $M$ in a compiled flow network as a linear function of the problem description. Yet in a vast class of advanced competitive programming problems, the algebraic or logical model is completely clean — a Project Selection closure (Chapter 09), a Bipartite Matching (Chapter 07), or a DAG Minimum-Cost Path Cover (Chapter 17) — **except that the edge set is defined implicitly by geometric, order-theoretic, or string predicates**:
+
+- *"Selecting item $i$ conflicts with every item $j < i$ whose weight satisfies $L_i \le w_j \le R_i$."* (`[BZOJ 3218] a + b Problem`)
+- *"Weapon $i$ can destroy any spaceship in the contiguous interval $[l_i, r_i]$."* (`[CF 1045A] Last Chance`)
+- *"Connecting node $i$ to an earlier node $j < i$ as its predecessor costs $|a_i - a_j|$."* (`[SDOI2019] 通信`)
+- *"A rook at $(r, c)$ can attack any unblocked cell in the same row or column outside $Q$ forbidden rectangles."* (`[CF 793G] Oleg and chess`)
+
+If $N = 5 \times 10^4$, materializing these transitions pairwise creates $\Theta(N^2) \approx 2.5 \times 10^9$ edges, causing both Memory Limit Exceeded (MLE) and Time Limit Exceeded (TLE) long before Dinic or MCMF even starts. **Data-Structure-Accelerated Graph Construction (`数据结构优化建图`)** resolves this bottleneck not by inventing a new flow algorithm, but by **algebraically factoring** dense bipartite cliques $A_k \times B_k$ through a sparse **Virtual Hub DAG** $\mathcal{H}$.
+
+### 1.1 The 4-Step Compilation of a Dense Biclique Family
+
+Let us apply our 4-Step Zero Magic Gadgets protocol to the general problem of sparsifying a family of $K$ dense transition blocks $\{(A_k, B_k, c_k, w_k)\}_{k=1}^K$ over an original vertex set $V$ ($|V| = N$).
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+
+You have already reduced the problem statement to a standard flow or cut formulation over $N \le 10^5$ original entities, but the transitions are given as $K \le 10^5$ bulk rules where each rule $k$ connects a structured source subset $A_k \subseteq V$ to a structured target subset $B_k \subseteq V$. Naive edge generation yields $\sum_{k=1}^K |A_k|\cdot |B_k| = \Theta(N^2)$ edges, whereas each subset $A_k$ or $B_k$ is a 1D interval, a 2D prefix rectangle, a tree path, a subtree, a Manhattan ball, or a string prefix/substring locus.
+
+#### Step 2: Intermediate Algebraic / Logical Representation
+
+Before drawing a single data-structure node, write down the exact algebraic role of the transition family $(A_k, B_k)$ in the optimization objective. Across all network flow problems, dense transition rules fall into **two fundamentally different algebraic regimes**:
+
+1. **Regime I — Unbundled Pairwise Implication Closure (`Pairwise-Infinite`)**:
+   Every pair $(u, v) \in A_k \times B_k$ independently enforces a hard logical implication $x_u \le x_v$ (i.e., if $u \in S$ then $v \in S$, or else pay $\infty$):
+
+   $$\Psi_k^{\text{imp}}(x) = \sum_{u \in A_k} \sum_{v \in B_k} \infty \cdot x_u (1 - x_v) = \infty \cdot \left[\left(\max_{u \in A_k} x_u\right) > \left(\min_{v \in B_k} x_v\right)\right]$$
+
+2. **Regime II — Bundled-Capacity Cut Penalty or Flow Routing (`Bundled-Finite`)**:
+   Either the entire block $(A_k, B_k)$ shares a **single bundled penalty** $c_k < \infty$ paid at most once if *any* $u \in A_k$ is chosen ($x_u = 1$) while *at least one* $v \in B_k$ is not chosen ($x_v = 0$):
+
+   $$\Psi_k^{\text{bundle}}(x) = c_k \cdot \max_{u \in A_k,\, v \in B_k} x_u (1 - x_v) = \min_{z_k \in \{0, 1\}} \left\{ c_k \cdot z_k + \sum_{u \in A_k} \infty \cdot x_u(1 - z_k) + \sum_{v \in B_k} \infty \cdot (z_k \text{ without } c_k\text{-cut})(1 - x_v) \right\}$$
+
+   or in the dual circulation / MCMF perspective, rule $k$ is a **shared pipe** that can transport up to $c_k$ units of flow from vertices in $A_k$ to vertices in $B_k$ at unit cost $w_k$:
+
+   $$\sum_{u \in A_k} f_{u \to k} = f_k = \sum_{v \in B_k} f_{k \to v} \le c_k, \qquad \text{Cost}_k = w_k \cdot f_k$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Graph Compilation)
+
+Suppose we construct an auxiliary **Virtual Hub DAG** $\mathcal{H} = (V_{\mathcal{H}}, E_{\mathcal{H}})$ containing the original vertices $V \subseteq V_{\mathcal{H}}$ plus virtual hub nodes $V_{\text{hub}} = V_{\mathcal{H}} \setminus V$ whose internal edges carry capacity $\infty$ and cost $0$. To replace the $\Theta(|A_k|\cdot |B_k|)$ direct edges of rule $k$:
+
+- Suppose each target subset $B_k$ can be decomposed as the union of reachability sets of $r_k \ll |B_k|$ **Out-Hubs** $\{h_1^+, \dots, h_{r_k}^+\} \subseteq V_{\text{hub}}$:
+
+  $$B_k = \bigcup_{j=1}^{r_k} \operatorname{Reach}_{\mathcal{H}^+}(h_j^+)$$
+
+- Symmetrically, suppose each source subset $A_k$ can be decomposed as the union of co-reachability sets of $\ell_k \ll |A_k|$ **In-Hubs** $\{h_1^-, \dots, h_{\ell_k}^-\} \subseteq V_{\text{hub}}$:
+
+  $$A_k = \bigcup_{i=1}^{\ell_k} \operatorname{CoReach}_{\mathcal{H}^-}(h_i^-)$$
+
+- Finally, introduce a **Bridge Bottleneck Pair** $(b_{\text{in}, k}, b_{\text{out}, k})$ connected by a single bridge edge $b_{\text{in}, k} \xrightarrow{\text{cap } c_k, \text{ cost } w_k} b_{\text{out}, k}$, wire every $h_i^- \xrightarrow{\infty, 0} b_{\text{in}, k}$, and wire $b_{\text{out}, k} \xrightarrow{\infty, 0} h_j^+$. (When $|A_k| = 1$, i.e. $A_k = \{u\}$, we omit the In-Hubs and wire $u \xrightarrow{c_k, w_k} b_{\text{out}, k}$ directly; when $c_k = \infty$ and $w_k = 0$ as well, we wire $u \xrightarrow{\infty, 0} h_j^+$ directly.)
+
+```{mermaid}
+flowchart LR
+  subgraph A_Set["Source Set A_k"]
+    u1["u_1"]
+    u2["u_2"]
+    u3["u_3"]
+  end
+  subgraph In_Hubs["In-Tree Hubs H^-"]
+    hm1["h_1^-"]
+    hm2["h_2^-"]
+  end
+  subgraph Bridge["Rule k Bridge"]
+    bin["b_{in,k}"]
+    bout["b_{out,k}"]
+  end
+  subgraph Out_Hubs["Out-Tree Hubs H^+"]
+    hp1["h_1^+"]
+    hp2["h_2^+"]
+  end
+  subgraph B_Set["Target Set B_k"]
+    v1["v_1"]
+    v2["v_2"]
+    v3["v_3"]
+  end
+  u1 & u2 -->|"cap inf, cost 0"| hm1
+  u3 -->|"cap inf, cost 0"| hm2
+  hm1 & hm2 -->|"cap inf, cost 0"| bin
+  bin -->|"cap c_k, cost w_k"| bout
+  bout -->|"cap inf, cost 0"| hp1 & hp2
+  hp1 -->|"cap inf, cost 0"| v1 & v2
+  hp2 -->|"cap inf, cost 0"| v3
+```
+
+### 1.2 Theorem 22.1: Hub-Factorization Cut-Preservation & The Idempotency Boundary
+
+When is it legal for the hub cover $B_k = \bigcup_{j=1}^{r_k} \operatorname{Reach}(h_j^+)$ to have **overlapping** sets (as in a Sparse Table or overlapping binary-lifting blocks), and when must the decomposition be a **strictly disjoint partition** with a **unique path** in $\mathcal{H}$? The following theorem provides the exact boundary.
+
+::: {.callout-important title="Theorem 22.1 (Hub-Factorization Cut-Preservation & The Idempotency Boundary)"}
+Let $G_{\text{dense}}$ be the network formed by replacing each rule $(A_k, B_k, c_k, w_k)$ with a single bridge $b_{\text{in},k} \xrightarrow{c_k, w_k} b_{\text{out},k}$ connected directly to all $u \in A_k$ and all $v \in B_k$ by $(\infty, 0)$ edges, and let $G_{\mathcal{H}}$ be the Virtual Hub DAG network compiled via In-Hubs $\mathcal{H}^-$ and Out-Hubs $\mathcal{H}^+$.
+
+1. **Exactness of Reachability Closures**: Suppose every internal edge of $\mathcal{H}^-$ and $\mathcal{H}^+$ has capacity $\infty$ and cost $0$, and no internal hub in $\mathcal{H}^+$ can reach any node outside $B_k$ (nor can any node outside $A_k$ reach an In-Hub of $A_k$). Then:
+
+   - **Min-Cut Equivalence**: In any finite-capacity $S$-$T$ cut of $G_{\mathcal{H}}$, no $(\infty, 0)$ hub edge can be severed. For each rule $k$, if there exist $u \in A_k \cap S$ and $v \in B_k \cap T$, then $b_{\text{in},k}$ is forced into $S$ (by upward $(\infty, 0)$ edges from $u$) and $b_{\text{out},k}$ is forced into $T$ (by downward $(\infty, 0)$ edges to $v$). Hence the bridge edge $b_{\text{in},k} \to b_{\text{out},k}$ of capacity $c_k$ is cut if and only if $(A_k \cap S) \neq \emptyset$ and $(B_k \cap T) \neq \emptyset$. Thus $\text{MinCut}(G_{\mathcal{H}}) = \text{MinCut}(G_{\text{dense}})$.
+   - **Idempotency vs. Disjointness**:
+     - If $c_k = \infty$ and $w_k = 0$ (Regime I: pure logical implication closure), Boolean OR is idempotent ($1 \vee 1 = 1$). Overlapping covers $\bigcup_{j=1}^{r_k} \operatorname{Reach}(h_j^+) = B_k$ (such as Sparse Table intervals or overlapping binary-lifting blocks) **preserve the minimum cut** without needing a bridge node or disjointness!
+     - If $c_k < \infty$ is placed directly on individual query-to-hub edges $u \to h_j^+$ *without* a single bottleneck bridge $b_{\text{in},k} \to b_{\text{out},k}$, or if $w_k \neq 0$ in an MCMF network where multiple paths between $u \in A_k$ and $v \in B_k$ carry different costs or allow double-routing, then overlapping covers **corrupt the objective** (charging $2c_k$ instead of $c_k$ in a cut). To ensure exact bijection of flows and cuts, one must either (a) funnel the rule through a **single bridge edge** $b_{\text{in},k} \xrightarrow{c_k, w_k} b_{\text{out},k}$, or (b) decompose $B_k = \bigsqcup_{j=1}^{r_k} \operatorname{Reach}(h_j^+)$ into a **disjoint union** where each leaf $v \in V$ has a single finite-capacity entry/exit edge $(v_{\text{in}}, v_{\text{out}})$.
+:::
+
+---
+
+## 2. The Seven Virtual Hub Architectures & Broken-Gadget Counterexamples
+
+Once you understand Theorem 22.1, every data-structure-accelerated flow graph in competitive programming is simply a choice of which **hierarchical index** $\mathcal{H}$ decomposes the problem's query predicates $A_k, B_k$ into $O(\log^d N)$ canonical hubs.
+
+### 2.1 Architecture 1: 1D Dual Segment Trees (Out-Tree & In-Tree)
+
+To support range transitions over $V = \{1, 2, \dots, N\}$, we build two separate segment trees sharing the **exact same $N$ leaf vertices**:
+
+- **The Out-Tree $\mathcal{T}_{\text{out}}$ (Top-Down, for $u \to [l, r]$)**: Every internal node $p$ corresponding to $[L, R]$ has directed edges to its children:
+
+  $$p_{\text{out}} \xrightarrow{\text{cap } \infty,\text{ cost } 0} lc_{\text{out}}, \qquad p_{\text{out}} \xrightarrow{\text{cap } \infty,\text{ cost } 0} rc_{\text{out}}$$
+
+  At $L = R = i$, the leaf node $p_{\text{out}}$ is identified directly with original vertex $i$ (or wired $p_{\text{out}} \xrightarrow{\infty, 0} i$). Any query $u \xrightarrow{c, w} [l, r]$ decomposes $[l, r]$ into $r_k \le 2\lceil\log_2 N\rceil$ disjoint canonical nodes $\{h_1^+, \dots, h_{r_k}^+\}$ and attaches through a single bottleneck hub $b_k$:
+
+  $$u \xrightarrow{c, w} b_k, \qquad b_k \xrightarrow{\infty, 0} h_j^+ \quad (j = 1, \dots, r_k)$$
+
+  *(If $c = \infty$ and $w = 0$, we omit $b_k$ and add $u \xrightarrow{\infty, 0} h_j^+$ directly.)*
+- **The In-Tree $\mathcal{T}_{\text{in}}$ (Bottom-Up, for $[l, r] \to v$)**: Every internal node $p_{\text{in}}$ receives directed edges from its children:
+
+  $$lc_{\text{in}} \xrightarrow{\text{cap } \infty,\text{ cost } 0} p_{\text{in}}, \qquad rc_{\text{in}} \xrightarrow{\text{cap } \infty,\text{ cost } 0} p_{\text{in}}$$
+
+  Any range-to-range transition $[l_1, r_1] \xrightarrow{c, w} [l_2, r_2]$ creates one bridge edge $b_{\text{in}} \xrightarrow{c, w} b_{\text{out}}$, wires the $O(\log N)$ In-Tree nodes of $[l_1, r_1]$ into $b_{\text{in}}$, and wires $b_{\text{out}}$ into the $O(\log N)$ Out-Tree nodes of $[l_2, r_2]$.
+- **Complexity**: $|V_{\mathcal{H}}| \le 3N + 2K$, $|E_{\mathcal{H}}| = O(N + K \log N)$.
+
+### 2.2 Architecture 2: Prefix Persistent Segment Tree (`主席树`) & The Duplicate-Key Chaining Fix
+
+Suppose a transition from index $i$ targets all **earlier** indices $j < i$ whose keys $a_j$ lie in a value range $[L_i, R_i]$:
+
+$$B_i = \{ j \in \{1, \dots, i-1\} : L_i \le a_j \le R_i \}$$
+
+This is a 2D orthogonal half-infinite box $[1, i-1] \times [L_i, R_i]$. A naive 2D Segment Tree costs $O(N \log^2 N)$ vertices and edges, which often exceeds memory limits in Dinic. Instead, we sweep $i = 1, 2, \dots, N$ and maintain a **Persistent Out-Segment Tree** over the coordinate-compressed value domain $[1, U]$ ($U \le N$):
+
+1. Let $\text{root}_{i-1}$ be the root of the persistent segment tree after inserting indices $1, 2, \dots, i-1$.
+2. Before inserting $i$, we query $\text{root}_{i-1}$ on the value interval $[L_i, R_i]$, obtaining $O(\log N)$ persistent hub nodes that reach **only** indices $j \le i - 1$ with $a_j \in [L_i, R_i]$. We add edges from $i$ (or $i$'s auxiliary conflict node) to these $O(\log N)$ hubs.
+3. Then we insert index $i$ at position $\text{pos}(a_i)$ to create $\text{root}_i$ by cloning the $O(\log N)$ nodes along the root-to-leaf path: each newly created internal node $u_{\text{new}}$ connects $u_{\text{new}} \xrightarrow{\infty, 0} lc(u_{\text{new}})$ and $u_{\text{new}} \xrightarrow{\infty, 0} rc(u_{\text{new}})$.
+
+::: {.callout-warning title="The Duplicate-Key Leaf Chaining Fix (`主席树重值叶子串联`)"}
+What happens if two indices $j < i$ have the **exact same value** $a_j = a_i$? When creating version $\text{root}_i$, the leaf node for value $a_i$ is replaced by a new leaf $u_{\text{new}}$. If $u_{\text{new}}$ only points to original vertex $i$, then the older vertex $j$ (which was attached to the overwritten leaf $u_{\text{old}}$ in version $\text{root}_{i-1}$) becomes **completely unreachable** from $\text{root}_i$ and all subsequent versions $\text{root}_k$ ($k \ge i$)!
+
+**Mandatory Fix**: Whenever you clone a node $u_{\text{new}}$ from an existing node $u_{\text{old}}$ during persistent path-copying (or specifically at the leaf $L = R$), you **must** add a version-chaining edge:
+
+$$u_{\text{new}} \xrightarrow{\text{cap } \infty,\text{ cost } 0} u_{\text{old}}$$
+
+alongside $u_{\text{new}} \xrightarrow{\infty, 0} i$. For internal nodes $L < R$, connecting $u_{\text{new}} \to lc(u_{\text{new}}), rc(u_{\text{new}})$ already covers the unchanged child and the updated child (which in turn chains to its old leaf), or you can chain $u_{\text{new}} \to u_{\text{old}}$ at every cloned node. This guarantees that $\text{root}_i$ reaches the entire multiset of indices $\{j \le i : a_j = v\}$ in $O(N \log N)$ total vertices and edges.
+:::
+
+### 2.3 Architecture 3: Sweep-Line + Persistent Segment Tree Subtree Splicing
+
+In 2D grid matching problems with $Q$ forbidden rectangles (such as **[CF 793G] Oleg and chess**, Problem `#171`), the set of available column intervals changes dynamically as we sweep across rows $x = 1 \dots N$. Rather than rebuilding a segment tree at every row, we maintain a persistent Out-Tree over rows $[1, N]$ where:
+
+- Initially ($y = 1$), a master Out-Tree covers all rows $[1, N]$ with leaf $r$ wired $r \xrightarrow{1} T$.
+- When a forbidden rectangle $[x_1, x_2] \times [y_1, y_2]$ **starts** at column $y_1$, we update $[x_1, x_2]$ in the persistent tree by setting those canonical segment-tree pointers to `0` (null), severing reachability to rows $[x_1, x_2]$ in $O(\log N)$ new persistent nodes.
+- When that rectangle **ends** at column $y_2 + 1$, how do we restore rows $[x_1, x_2]$ without paying $\Theta(x_2 - x_1)$? Because $[x_1, x_2]$ was untouched during $[y_1, y_2]$, we simply **splice the canonical subtrees of $[x_1, x_2]$ directly from the initial master tree $\text{root}_0$** back into the current persistent version in $O(\log N)$ time!
+- At each column $y$, the column source edge $S \xrightarrow{1} \text{col}_y \xrightarrow{\infty} \text{root}_y$ automatically connects column $y$ to all currently unblocked rows. Because every persistent node has only $\infty$-capacity internal edges and unit capacities sit only at $S \to \text{col}_y$ and $\text{row}_x \to T$, Dinic runs in $O(E\sqrt{V}) = O((N + Q \log N)\sqrt{N})$!
+
+### 2.4 Architecture 4: CDQ Divide-and-Conquer + 1D Bi-Directional Value Chain (`CDQ 分治优化建图`)
+
+Consider a 2D transition with an **additive 1D Manhattan cost** over indices and values (`[SDOI2019] 通信`, Problem `#172`):
+
+$$i \xrightarrow{\text{cap } 1,\text{ cost } |a_i - a_j|} j \qquad \text{for all } 1 \le j < i \le N$$
+
+A Persistent Segment Tree can isolate the subset $\{j < i\}$, but it cannot assign the continuous cost $|a_i - a_j|$ because $|a_i - a_j|$ depends on *both* $a_i$ and $a_j$. How do we decouple both the order constraint $j < i$ and the absolute-value cost $|a_i - a_j|$ simultaneously?
+
+1. **Eliminate $j < i$ via CDQ Divide-and-Conquer**: Call $\text{CDQ}(L, R)$ on the index interval $[L, R]$ with midpoint $M = \lfloor(L+R)/2\rfloor$. Every valid pair $(j, i)$ with $L \le j < i \le R$ is uniquely captured at the recursion level where $j \in [L, M]$ (left half) and $i \in [M+1, R]$ (right half).
+2. **Eliminate $|a_i - a_j|$ via a 1D Bi-Directional Sorted Value Chain**: Inside a single CDQ step $(L, R)$, collect all distinct values $v_1 < v_2 < \dots < v_k$ appearing among $\{a_t : t \in [L, R]\}$ ($k \le R - L + 1$). Create $k$ chain hubs $h_1, h_2, \dots, h_k$ connected into a **bidirectional adjacent chain** where consecutive hubs carry the exact difference cost:
+
+   $$h_m \xrightarrow{\text{cap } \infty,\text{ cost } v_{m+1} - v_m} h_{m+1}, \qquad h_{m+1} \xrightarrow{\text{cap } \infty,\text{ cost } v_{m+1} - v_m} h_m \qquad (1 \le m < k)$$
+
+3. **Attach Right-Half Sources and Left-Half Sinks**:
+   - For every **right-half** index $i \in [M+1, R]$ with $a_i = v_m$, add a directed zero-cost entry edge $i_{\text{out}} \xrightarrow{\infty, 0} h_m$.
+   - For every **left-half** index $j \in [L, M]$ with $a_j = v_{m'}$, add a directed zero-cost exit edge $h_{m'} \xrightarrow{\infty, 0} j_{\text{in}}$.
+
+Because the hubs inside a single CDQ slab only allow entry from $[M+1, R]$ and exit to $[L, M]$, flow can **only** travel from some $i \in [M+1, R]$ to some $j \in [L, M]$! And the shortest path along the bidirectional chain from $h_m$ to $h_{m'}$ has cost $\sum |\Delta v| = |v_m - v_{m'}| = |a_i - a_j|$. Across all $\log_2 N$ levels of the CDQ recursion tree, the total number of hubs and edges is strictly $O(N \log N)$!
+
+### 2.5 Architectures 5–7: Tree Paths, 2D KD-Trees / Manhattan Hubs, and String Automata
+
+The same Virtual Hub principle extends cleanly to trees, 2D metric spaces, and strings:
+
+- **Architecture 5 — Tree Path Sparsification (HLD + Prefix Chain vs. Binary Lifting)**:
+  - *Regime I ($\infty$-capacity Min-Cut / 2-SAT on tree paths)*: By Theorem 22.1, overlapping covers are legal! Use **Binary Lifting (`倍增优化建图`)** where $\text{up}[u][k]$ covers the $2^k$ ancestors of $u$ with $\text{up}[u][k] \xrightarrow{\infty} \text{up}[u][k-1]$ and $\text{up}[u][k] \xrightarrow{\infty} \text{up}[\text{anc}(u, 2^{k-1})][k-1]$. Then any path $u \leftrightarrow v$ (with $l = \operatorname{LCA}(u, v)$) is covered by **at most 4 hubs** in $O(1)$ edges per query!
+  - *Regime II (Finite-capacity or MCMF on tree paths)*: Overlapping covers are illegal. Use **Heavy-Light Decomposition (HLD)** to split $u \leftrightarrow v$ into $O(\log N)$ disjoint heavy-chain intervals. Furthermore, in the 90% of problems where queries are ancestor-to-descendant paths, each heavy chain interval $[top_c, x]$ is a **prefix** of the heavy chain — so a simple $O(N)$ **1D Prefix Out-Chain** $h_1 \xrightarrow{\infty} h_2 \dots$ along each heavy chain replaces the segment tree, reducing $O(N \log^2 N)$ to $O(N \log N)$!
+- **Architecture 6 — 2D KD-Tree Bounding-Box Hubs & 4-Sign Manhattan Hubs**:
+  - *2D Orthogonal Range Queries under Tight Memory (`[NOI2019] 弹跳`, Problem `#176`)*: A 2D Segment Tree uses $O(N \log^2 N)$ nodes. A **2D KD-Tree** alternating $x$- and $y$-median splits uses strictly $2N - 1 = O(N)$ nodes, and each node stores its exact axis-aligned bounding box $[x_{\min}, x_{\max}] \times [y_{\min}, y_{\max}]$ so rectangle queries decompose into $O(\sqrt{N})$ canonical subtree hubs.
+  - *2D Manhattan Max-Cost Matching (`[AGC 034D] Manhattan Max Matching`)*: Since $|x_i - x_j| + |y_i - y_j| = \max_{s_x, s_y \in \{\pm 1\}} \big[(s_x x_i + s_y y_i) + (-s_x x_j - s_y y_j)\big]$, any complete bipartite graph with Manhattan edge weights factors through **just 4 intermediate sign hubs** $H_{(+1,+1)}, H_{(+1,-1)}, H_{(-1,+1)}, H_{(-1,-1)}$, collapsing $O(N^2)$ edges to $4N$ edges!
+- **Architecture 7 — String Automaton Link Trees (SAM / AC Automaton / PAM)**:
+  Whenever choosing substring $s$ forces choosing all substrings containing $s$ (or all suffixes of $s$), the implication closure is already encoded by the **Suffix Automaton (`SAM`) parent-link tree** (`link[u] <-> u`), the **Aho–Corasick fail tree**, or the **Palindromic Tree (`PAM`) fail links**, reducing $\Theta(|S|^2)$ substring implications to $O(|S|)$ tree edges (`[NOI2017] 蚯蚓排队`, `[CF 616F]`).
+
+---
+
+### 2.6 Broken-Gadget Counterexamples (`FM-22` & `H-22`): Two Fatal Hub Bugs
+
+Let us trace a concrete 4-leaf ($N = 4$) segment tree on $V = \{1, 2, 3, 4\}$ to prove why two tempting implementation shortcuts completely corrupt the flow network.
+
+::: {.callout-caution title="Broken Gadget 22A (`FM-22`): Finite Capacity on Internal Segment-Tree Edges vs. Query Bottleneck"}
+**Scenario**: Suppose leaves $1, 2, 3, 4$ can each absorb $1$ unit of flow to the sink ($i \xrightarrow{\text{cap } 1} T$). We have two range-supply rules:
+
+- Rule A ($u_A \to [1, 2]$ with total capacity $1$), and
+- Rule B ($u_B \to [1, 2]$ with total capacity $1$).
+
+Together, Rules A and B should be able to deliver $1 + 1 = 2$ units of flow to leaves $\{1, 2\}$ (e.g., $u_A \to 1 \to T$ and $u_B \to 2 \to T$, Max-Flow $= 2$).
+
+- **Broken Construction**: A contestant forgets to put $\infty$ capacity on the internal Out-Tree node $h_{[1,2]}$ or puts capacity $1$ on the internal tree edge $\text{root}_{[1,4]} \xrightarrow{1} h_{[1,2]}$ (or reuses a single finite-capacity edge on $h_{[1,2]}$). Then both $u_A$ and $u_B$ are throttled by the shared internal edge of capacity $1$, yielding a **false Max-Flow of $1$** instead of $2$!
+- **Reverse Broken Construction**: Conversely, suppose a single Rule C ($u_C \to [1, 3]$ with bundled capacity $1$) is decomposed into canonical Out-Tree nodes $h_{[1,2]}$ and $h_{[3,3]}$. If the contestant wires $u_C \xrightarrow{\text{cap } 1} h_{[1,2]}$ and $u_C \xrightarrow{\text{cap } 1} h_{[3,3]}$ **without** a single bottleneck edge $S \xrightarrow{1} u_C$ (or bridge $u_C \xrightarrow{1} b_C$), then $u_C$ pushes $1$ unit through $h_{[1,2]} \to 1$ and $1$ unit through $h_{[3,3]} \to 3$, yielding a **false Max-Flow of $2$** instead of $1$!
+- **The Invariant**: Internal tree edges of $\mathcal{T}_{\text{out}}$ and $\mathcal{T}_{\text{in}}$ **must always have capacity $\infty$ and cost $0$**. Finite capacity $c_k$ and cost $w_k$ belong **exclusively** on the unique bottleneck bridge $b_{\text{in},k} \xrightarrow{c_k, w_k} b_{\text{out},k}$ (or on the leaf attachment edges $v_{\text{in}} \to v_{\text{out}}$).
+:::
+
+::: {.callout-caution title="Broken Gadget 22B (`H-22`): Merging In-Tree and Out-Tree into One Bidirectional Hub Tree"}
+**Scenario**: On $V = \{1, 2, 3, 4\}$, suppose we want to add a range-to-range rule $[1, 2] \xrightarrow{\text{cap } 1} [3, 4]$. To save memory, a contestant builds a **single** segment tree where every parent-child edge is bidirectional with capacity $\infty$: $p \xleftrightarrow{\infty} lc$ and $p \xleftrightarrow{\infty} rc$.
+
+- **The Fatal Leak**: In this merged tree, leaf $1$ can walk **up** to $h_{[1,2]} \xrightarrow{\infty} \text{root}_{[1,4]}$ and then walk **down** to $h_{[3,4]} \xrightarrow{\infty} \text{leaf } 3$ using only internal tree edges of capacity $\infty$ and cost $0$ — **even if we never added any query edge between $[1, 2]$ and $[3, 4]$!** Every vertex in $\{1, 2, 3, 4\}$ becomes mutually reachable with capacity $\infty$ and cost $0$, collapsing the entire graph into a single giant connected component.
+- **The Invariant**: $\mathcal{T}_{\text{in}}$ (strictly bottom-up: $\text{child} \to \text{parent}$) and $\mathcal{T}_{\text{out}}$ (strictly top-down: $\text{parent} \to \text{child}$) must be **two disjoint sets of internal hub vertices**, touching only at the $N$ bottom leaves and across explicit query bridges $b_{\text{in}, k} \to b_{\text{out}, k}$.
+:::
+
+---
+
+## 3. Module 22B — When Bipartiteness Fails: Odd Cycles, Half-Integrality & The Tutte–Berge Formula
+
+Throughout Part II (Chapters 07–11), our entire matching and min-cut toolkit rested on a single foundational pillar: **total unimodularity of the bipartite incidence matrix $A$**. When $G = (L \sqcup R, E)$ is bipartite, the linear program
+
+$$\max \sum_{e \in E} x_e \quad \text{s.t.} \quad \sum_{e \in \delta(v)} x_e \le 1 \;\; (\forall v \in V), \quad x_e \ge 0$$
+
+has exclusively **integral** extreme points $x_e \in \{0, 1\}$, and its dual LP is the Minimum Vertex Cover LP $\min \sum_{v \in V} y_v$ s.t. $y_u + y_v \ge 1$, giving König's Theorem $\nu(G) = \tau(G)$.
+
+What breaks the moment $G$ contains a single **odd cycle**?
+
+### 3.1 The Triangle Counterexample ($K_3$) and the Failure of the Bipartite Double Cover (`FM-22` / `H-08`)
+
+Consider the simplest non-bipartite graph: a triangle $K_3$ on vertices $\{1, 2, 3\}$ with edges $e_{12}, e_{23}, e_{31}$.
+
+- **Integral Matching vs. Integral Vertex Cover**: At most one edge of $K_3$ can be chosen without sharing an endpoint, so $\nu(K_3) = 1$. Conversely, at least two vertices must be chosen to cover all three edges, so $\tau(K_3) = 2$. König's equality $\nu = \tau$ fails!
+- **Half-Integral LP Relaxation**: In the degree-constrained fractional matching LP above, setting $x_{12} = x_{23} = x_{31} = \frac{1}{2}$ satisfies $\sum_{e \in \delta(v)} x_e = \frac{1}{2} + \frac{1}{2} = 1$ at every vertex and achieves a fractional objective of $\frac{3}{2} > 1 = \nu(K_3)$! Symmetrically, the dual fractional vertex cover sets $y_1 = y_2 = y_3 = \frac{1}{2}$ with objective $\frac{3}{2} < 2 = \tau(K_3)$. By the **Balinski–Nemhauser–Trotter Theorem**, the extreme points of the fractional matching/vertex-cover polytope on *any* general graph are half-integral ($x_e, y_v \in \{0, \frac{1}{2}, 1\}$), where the $\frac{1}{2}$-components form vertex-disjoint **odd cycles**.
+
+::: {.callout-caution title="Broken Gadget 22C (`FM-22` / `H-08`): Why Splitting $v \mapsto (v_{\text{out}}, v_{\text{in}})$ Fails on General Graphs"}
+When faced with a non-bipartite matching problem in contest, a classic trap is to construct the **Bipartite Double Cover** $G \times K_2$: split every vertex $v \in V$ into $v_{\text{out}} \in L$ and $v_{\text{in}} \in R$, replace every undirected edge $\{u, v\} \in E$ with two directed bipartite edges $u_{\text{out}} \to v_{\text{in}}$ and $v_{\text{out}} \to u_{\text{in}}$, run Dinic, and divide the maximum flow by $2$.
+
+**Why It Fails on $K_3$**: On $K_3 = \{1, 2, 3\}$, the bipartite double cover has a perfect matching of size $3$:
+
+$$M_{\text{double}} = \{(1_{\text{out}}, 2_{\text{in}}),\; (2_{\text{out}}, 3_{\text{in}}),\; (3_{\text{out}}, 1_{\text{in}})\}$$
+
+Dividing by $2$ reports a matching size of $3 / 2 = 1.5$ (or $\lfloor 3/2 \rfloor = 1$, hiding which vertices are actually matched). Worse, on two disjoint triangles $K_3 \sqcup K_3$ (where true $\nu(G) = 2$), the bipartite double cover finds a perfect matching of size $6$ and reports $6/2 = 3$! Why? Because the bipartite double cover computes the **maximum 2-factor / half-integral matching** $\nu_{\text{frac}}(G)$ (packing vertex-disjoint edges and odd cycles), completely ignoring the symmetry constraint $f(u_{\text{out}} \to v_{\text{in}}) = f(v_{\text{out}} \to u_{\text{in}})$.
+:::
+
+### 3.2 The Tutte–Berge Formula & Gallai–Edmonds Canonical Decomposition
+
+How do we repair König's duality when odd cycles can trap at most $\frac{|C|-1}{2}$ matched edges and leave at least $1$ vertex of each odd component exposed? Suppose we delete a barrier set of vertices $U \subseteq V$ from $G$. Look at the connected components of $G \setminus U$ that have an **odd** number of vertices; let $\operatorname{odd}(G \setminus U)$ denote the number of such odd-sized connected components.
+
+In any valid matching $M$ of $G$, every odd component $C_i$ of $G \setminus U$ ($|V(C_i)| = 2k_i + 1$) has an odd number of vertices. Any edge of $M$ with both endpoints inside $C_i$ pairs up $2$ vertices of $C_i$, so at least one vertex of $C_i$ must either be **unmatched** in $M$ or be **matched to a vertex in the barrier $U$**! Since $U$ has only $|U|$ vertices in total, $U$ can rescue at most $|U|$ odd components of $G \setminus U$. The remaining $\max(0, \operatorname{odd}(G \setminus U) - |U|)$ odd components must each contain at least one unmatched vertex!
+
+::: {.callout-important title="Theorem 22.2 (The Tutte–Berge Formula & Gallai–Edmonds Canonical Decomposition)"}
+For any undirected graph $G = (V, E)$, the number of unmatched vertices in a maximum matching is given by the maximum deficiency over all barrier sets $U \subseteq V$:
+
+$$|V| - 2\nu(G) = \max_{U \subseteq V} \big(\operatorname{odd}(G \setminus U) - |U|\big) \quad \Longleftrightarrow \quad \nu(G) = \frac{1}{2} \min_{U \subseteq V} \big(|V| + |U| - \operatorname{odd}(G \setminus U)\big)$$
+
+Moreover, there exists a **canonical, matching-independent 3-way partition** of the vertex set $V = D(G) \sqcup A(G) \sqcup C(G)$ — the **Gallai–Edmonds Decomposition** — defined uniquely by:
+
+- **$D(G)$ (Inessential / Deficient Vertices)**: The set of vertices $v \in V$ that are **missed by at least one maximum matching** of $G$ (i.e., $\nu(G \setminus \{v\}) = \nu(G)$).
+- **$A(G)$ (Barrier / Essential Neighbor Vertices)**: The set of vertices $u \in V \setminus D(G)$ that are adjacent in $G$ to at least one vertex in $D(G)$.
+- **$C(G)$ (Critical / Even-Component Vertices)**: The remaining vertices $V \setminus (D(G) \cup A(G))$.
+
+**Structural Properties of $(D(G), A(G), C(G))$**:
+
+1. **Canonical Tutte Barrier**: Choosing $U = A(G)$ achieves the exact maximum in the Tutte–Berge formula: $\operatorname{odd}(G \setminus A(G)) - |A(G)| = |V| - 2\nu(G)$.
+2. **Even Components $C(G)$**: Every connected component of $G[C(G)]$ has an **even** number of vertices and possesses a **perfect matching** in every maximum matching of $G$.
+3. **Factor-Critical Odd Components $D(G)$**: Every connected component $K$ of $G[D(G)]$ has an **odd** number of vertices and is **factor-critical** — deleting *any* single vertex $v \in K$ leaves a subgraph $K \setminus \{v\}$ that has a perfect matching of size $\frac{|K|-1}{2}$!
+4. **Every Maximum Matching's Anatomy**: In *every* maximum matching $M$ of $G$: (a) $G[C(G)]$ is perfectly matched internally; (b) every vertex $u \in A(G)$ is matched to a vertex in a **distinct** factor-critical component $K_u \subseteq D(G)$; and (c) the remaining $\operatorname{odd}(G[D(G)]) - |A(G)|$ components of $D(G)$ each have $1$ exposed vertex and are matched internally on their remaining $|K|-1$ vertices.
+:::
+
+#### Extracting $D(G), A(G), C(G)$ in $O(N^3)$ and the General-Graph Walk Game
+
+Once we have found *any* maximum matching $M$ via Edmonds' Blossom algorithm (Section 4), how do we extract $(D(G), A(G), C(G))$?
+
+- Start a **multi-source alternating Blossom BFS** simultaneously from **all $M$-unmatched vertices** $r \in V \setminus V(M)$ as outer (even-distance, `vis = 1`) roots.
+- Contract any odd blossoms encountered during the search just as in Edmonds' algorithm.
+- When the alternating forest saturates without finding an augmenting path:
+  - **$D(G)$** is the exact set of vertices with `vis == 1` (outer / even-alternating-distance vertices from unmatched roots, including all vertices inside contracted blossoms, because rotating an odd blossom makes every vertex inside it reachable at even alternating length!).
+  - **$A(G)$** is the exact set of vertices with `vis == 2` (inner / odd-alternating-distance vertices).
+  - **$C(G)$** is the exact set of unvisited vertices with `vis == 0`.
+
+**Application to 2-Player Walk Games on General Graphs (`[JSOI2009] 游戏` on General Graphs / `QOJ #5437`)**: A token starts at $s \in V$, and two players alternately move the token to an unvisited neighbor; the last player to move wins. Just as on bipartite graphs (Chapter 07), the first player has a winning strategy starting from $s$ **if and only if $s$ belongs to EVERY maximum matching of $G$** ($\nu(G \setminus \{s\}) < \nu(G)$) — which by Theorem 22.2 holds **if and only if $s \notin D(G)$** (i.e. $s \in A(G) \cup C(G)$)!
+
+---
+
+## 4. Edmonds' Blossom Contraction (`带花树`), Non-Bipartite Gadgets & Tutte Pfaffians
+
+Why does standard bipartite alternating BFS fail on a general graph? Suppose we grow an alternating tree from an unmatched root $r$ (`vis[r] = 1`, outer) where tree edges alternate:
+
+$$r \xrightarrow{\text{unmatched}} u_1 \xrightarrow{\text{matched}} v_1 \xrightarrow{\text{unmatched}} u_2 \xrightarrow{\text{matched}} \dots$$
+
+In a bipartite graph, an unmatched edge from an outer node (`vis = 1`) can only lead to an opposite-parity vertex (`vis = 0` or `vis = 2`). In a general graph, however, an unmatched edge $(u, v)$ can connect **two outer vertices** (`vis[u] == 1` and `vis[v] == 1`)! Tracing $u$ and $v$ back to their lowest common ancestor $b = \operatorname{LCA}(u, v)$ in the alternating tree (taking the current DSU blossom representatives) reveals an **odd alternating cycle $B$ of length $2k + 1$** — a **Blossom (`花`)** — whose base $b$ (`花托`) is the unique vertex in $B$ not matched to another vertex inside $B$.
+
+### 4.1 Proof of Edmonds' Blossom Shrinking Theorem & Lazy DSU Implementation
+
+::: {.callout-important title="Theorem 22.3 (Edmonds' Blossom Shrinking Theorem, 1965)"}
+Let $M$ be a matching in $G$, and let $B$ be a blossom of length $2k+1$ with base $b$ discovered along an even-length alternating walk $P_b$ from an unmatched root $r$ to $b$. Let $G / B$ be the graph obtained by contracting all $2k+1$ vertices of $B$ into a single super-vertex $v_B$, and let $M / B$ be the induced matching on $G / B$. Then **$G$ has an $M$-augmenting path if and only if $G / B$ has an $(M / B)$-augmenting path**.
+:::
+
+**Proof ($\Longleftarrow$, Lifting an Augmenting Path Out of $B$)**: This is the constructive direction that makes the algorithm work. By rotating the alternating path $P_b$ first if necessary, we may assume $b$ is itself an unmatched root ($P_b = \emptyset$). Suppose $P'$ is an $(M/B)$-augmenting path in $G/B$. If $P'$ does not touch $v_B$, $P'$ is already an $M$-augmenting path in $G$. Otherwise, since $v_B$ is unmatched in $M/B$, $P'$ starts at $v_B$ and exits $v_B$ via some unmatched edge $(w, x)$ where $w \in B$ and $x \notin B$. Because $B$ is an odd cycle of $2k+1$ vertices where the $2k$ vertices $B \setminus \{b\}$ are paired by $k$ edges of $M$, traveling from the base $b$ to *any* vertex $w \in B$ around the cycle $B$ in one direction uses an **even** number of edges (starting with an $M$-unmatched edge and ending with an $M$-matched edge at $w$), while traveling around $B$ in the opposite direction uses an **odd** number of edges! We simply choose the **even-length alternating arc** inside $B$ from $b$ to $w$ and append $(w, x)$ followed by the rest of $P'$. This yields a valid simple $M$-augmenting path in $G$! $\blacksquare$
+
+#### The $O(N^3)$ Lazy DSU + LCA Blossom Algorithm Contract
+
+Instead of physically rebuilding the graph $G / B$ every time a blossom is found, we maintain a Disjoint Set Union array `orig[x]` storing the current blossom base $b$ of vertex $x$, alongside `match[x]` (matched partner), `pre[x]` (unmatched-edge predecessor in the alternating tree), and `vis[x]` (`0` = unvisited, `1` = outer/even, `2` = inner/odd):
+
+```{mermaid}
+flowchart LR
+  r["Unmatched Root r (vis=1)"] -.->|"Even Alt Path"| b["Blossom Base b = LCA(u,v) (vis=1)"]
+  b -->|"unmatched"| x1["x_1 (vis=2)"]
+  x1 ===|"matched"| y1["y_1 (vis=1)"]
+  y1 -->|"unmatched"| u["u (vis=1)"]
+  b -->|"unmatched"| x2["x_2 (vis=2)"]
+  x2 ===|"matched"| y2["y_2 (vis=1)"]
+  y2 -->|"unmatched"| v["v (vis=1)"]
+  u <-->|"Odd Bridge (u,v)!"| v
+```
+
+1. **Finding $b = \operatorname{LCA}(u, v)$**: Hop $u \gets \text{orig}[\text{pre}[\text{match}[u]]]$ and $v \gets \text{orig}[\text{pre}[\text{match}[v]]]$ alternately using a timestamp array ` tim[x] = timer` until a vertex is visited twice.
+2. **Contracting Both Sides (`contract(u, v, b)` and `contract(v, u, b)`)**: Walk $x$ from $u$ up to $b$ (and symmetrically from $v$ up to $b$):
+   - Set `pre[x] = y` (where $(x, y)$ starts as the odd bridge $(u, v)$ and then steps up $y \gets \text{match}[x], x \gets \text{pre}[y]$). **Why?** If an augmenting path later exits the blossom through an originally inner vertex $y$ (`vis[y] == 2`), `pre[y]` must point *around the blossom bridge* $(u, v)$ so the path traces the even-length arc around $B$!
+   - Whenever `vis[y] == 2` (an inner vertex on the cycle), flip it to **outer** (`vis[y] = 1`) and **push $y$ into the BFS queue** so it can scan its unmatched incident edges!
+   - Union both $x$ and $y$ into the base $b$: `if (orig[x] == x) orig[x] = b; if (orig[y] == y) orig[y] = b;`.
+3. **Why `vis[v] == 2` Edges Are Ignored**: If an outer vertex $u$ sees an already-visited inner vertex $v$ (`vis[v] == 2`), adding $(u, v)$ creates an **even** alternating cycle in the alternating tree, which neither augments $M$ nor flips the parity of any inner vertex.
+
+---
+
+### 4.2 Canonical Non-Bipartite Gadgets for General Degree & Step-Function Objectives
+
+Just as Project Selection (Chapter 09) has canonical min-cut gadgets, General Graph Matching has three canonical **vertex-splitting & edge-subdivision gadgets** that reduce non-unit capacities and concave/non-monotone degree step rewards to standard $1$-matching:
+
+1. **The 2-Vertex Twin Gadget (Capacity $2$ with Optional Internal Pairing — `[CF 1089B]`)**:
+   Suppose a vertex $v$ can match up to $2$ neighbors, or if it matches fewer than $2$ external neighbors, two leftover slots can pair with each other (worth $+1$ match). Create two twin vertices $v_1, v_2$, connect **both** $v_1$ and $v_2$ to all original neighbors $u \in N(v)$, and add an **internal edge $(v_1, v_2)$**:
+   - If $2$ external neighbors match $v_1$ and $v_2$, $v$ contributes $2$ to the matching.
+   - If $0$ external neighbors match $v$, the internal edge $(v_1, v_2)$ matches itself (+1).
+   - If $1$ external neighbor matches $v_1$, $v_2$ is free (contributing $+1$ from the external edge).
+2. **The 3-Vertex Triangle Blossom Gadget (`[WC2016] 挑战 NPC`, Problem `#173`)**:
+   Suppose a basket $j$ can accept $c_j \in \{1, 2, 3\}$ balls, and we want every ball to be placed while **maximizing the number of baskets that receive $\le 1$ ball** (equivalently, each basket gives $+1$ bonus if it holds $\le 1$ ball, and $0$ bonus if it holds $2$ or $3$ balls).
+   - Split basket $j$ into **three vertices** $b_{j,1}, b_{j,2}, b_{j,3}$, connect all three to every compatible ball $i$, and add a **single internal edge $(b_{j,2}, b_{j,3})$** between the second and third slots!
+   - Check the maximum matching contribution of basket $j$ as a function of the number of balls $c_j \in \{0, 1, 2, 3\}$ assigned to it:
+     - $c_j = 0$ balls: $b_{j,1}$ is unmatched, while $(b_{j,2}, b_{j,3})$ matches internally $\implies \mathbf{+1}$ match.
+     - $c_j = 1$ ball: the ball matches $b_{j,1}$, while $(b_{j,2}, b_{j,3})$ matches internally $\implies \mathbf{+2}$ matches ($1$ ball $+ 1$ bonus!).
+     - $c_j = 2$ balls: the two balls match $b_{j,1}$ and $b_{j,2}$, breaking $(b_{j,2}, b_{j,3})$ $\implies \mathbf{+2}$ matches ($2$ balls $+ 0$ bonus!).
+     - $c_j = 3$ balls: the three balls match $b_{j,1}, b_{j,2}, b_{j,3}$ $\implies \mathbf{+3}$ matches ($3$ balls $+ 0$ bonus!).
+   - In every case, Basket $j$'s contribution to the matching is **$\text{balls}(j) + [c_j \le 1]$**!
+
+::: {.callout-warning title="Mandatory Two-Phase Blossom Ordering (`先球后筐`)"}
+In the 3-Vertex Triangle Blossom Gadget above, if we immediately add all internal edges $(b_{j,2}, b_{j,3})$ and run Blossom in a single pass, could the solver leave $1$ ball unmatched in order to save $2$ internal basket edges? Actually, switching $2$ balls from one basket to leave a basket empty preserves total matches, **unless** a ball has no valid basket at all or we need to guarantee that all $N$ balls are matched first! Worse, if we build the graph dynamically, **Phase 1** must first augment from all ball vertices $i = 1 \dots N$ (ensuring all $N$ balls are matched), and **Phase 2** then attempts to augment from the internal basket vertices $b_{j,2}, b_{j,3}$! Because augmenting paths never unmatch an already-matched vertex, every ball matched in Phase 1 remains permanently matched throughout Phase 2, so Total Matches $- N$ equals the exact maximum number of baskets with $\le 1$ ball!
+:::
+
+3. **Tutte's General $[l_v, r_v]$-Factor Subdivision (`[HDU 3551]`)**:
+   To decide whether $G$ has a subgraph where every vertex $v$ has degree $d_v$ (or $d_v \in [l_v, r_v]$) and every edge $e = (u, v)$ is used at most once: split each vertex $v$ into $d_v$ clones $C_v = \{v_1, \dots, v_{d_v}\}$, and subdivide each original edge $e = (u, v)$ by creating **two edge-portal vertices $e_u, e_v$ connected by an internal edge $(e_u, e_v)$**, with $e_u$ connected to all of $C_u$ and $e_v$ connected to all of $C_v$.
+   - If $e$ is **selected** in the factor, $e_u$ matches a clone in $C_u$ and $e_v$ matches a clone in $C_v$ (consuming $1$ degree at $u$ and $1$ at $v$).
+   - If $e$ is **not selected**, $e_u$ and $e_v$ match **each other** via $(e_u, e_v)$ (consuming $0$ degree at $u$ and $v$).
+   Thus $G$ has a $d$-factor iff this subdivided graph of $\sum d_v + 2|E|$ vertices has a **perfect matching**!
+
+---
+
+### 4.3 Weighted Blossom LP Duals (`带权带花树`, `UOJ #81`)
+
+To find a **Maximum-Weight Matching** in a general graph $G = (V, E, w)$, why aren't vertex potentials $y_v$ ($y_u + y_v \ge w_e$) enough? Because on $K_3$ with edge weights $w = 10$, setting $y_1 = y_2 = y_3 = 5$ gives $\sum y_v = 15$, whereas the best integral matching has weight $10$!
+
+Edmonds proved (1965) that adding the **Odd-Set (Blossom) Inequalities** makes the matching polytope **100% integral**:
+
+$$\max \sum_{e \in E} w_e x_e \quad \text{s.t.} \quad \sum_{e \in \delta(v)} x_e \le 1 \;\; (\forall v \in V), \quad \sum_{e \in E(B)} x_e \le \frac{|B|-1}{2} \;\; (\forall B \subseteq V, |B| \ge 3 \text{ odd}), \quad x_e \ge 0$$
+
+In the **Dual LP**, we maintain a potential $y_v \ge 0$ for every vertex $v \in V$ and a **Blossom Dual Variable $z_B \ge 0$** for every non-trivial contracted odd blossom $B$ ($|B| = 2k+1 \ge 3$), subject to the reduced-slack invariant:
+
+$$\operatorname{slack}(u, v) = y_u + y_v - w(u, v) + \sum_{B \ni u, v} z_B \ge 0 \qquad (\forall (u, v) \in E)$$
+
+Only **tight edges** ($\operatorname{slack}(u, v) = 0$) may enter the alternating tree or be matched, and only **tight blossoms** ($z_B > 0 \implies |M \cap E(B)| = \frac{|B|-1}{2}$) may remain contracted. When the alternating BFS gets stuck, we adjust potentials by $\Delta = \min(\Delta_1, \Delta_2, \Delta_3, \Delta_4)$:
+
+- $y_v \gets y_v - \Delta$ for outer vertices (`vis[v] == 1`) and $y_v \gets y_v + \Delta$ for inner vertices (`vis[v] == 2`);
+- $z_B \gets z_B + 2\Delta$ for outer root blossoms (`vis[B] == 1`) and **$z_B \gets z_B - 2\Delta$ for inner root blossoms (`vis[B] == 2`)**!
+- **Why Inner Blossom Expansion ($\Delta_4 = \min_{\text{vis}[B]=2} z_B / 2$) Is Mandatory**: When an inner blossom $B$'s dual variable hits $z_B = 0$, the odd-set constraint on $B$ is no longer tight; we **must expand (`拆花`)** $B$ back into its constituent sub-blossoms along its even alternating arc so its internal vertices can be re-explored independently.
+
+---
+
+### 4.4 The Randomized Skew-Symmetric Tutte Matrix $T(G)$ & Pfaffian Oracles
+
+When $N \le 500$ and a problem asks not for a single matching, but to **classify all $M$ edges into Feasible (`可行边`) and Essential (`必须边`) matching edges** (`Problem #175`) or to find a **Maximum-Weight Matching Matroid Basis** (`CF Gym 102155 J`), running Blossom $M$ times takes $O(M \cdot N^3) = O(N^5)$, which TLEs. The **Tutte Matrix** solves all $M$ queries simultaneously in a single $O(N^3)$ matrix inversion!
+
+Define the $N \times N$ **Skew-Symmetric Tutte Matrix** $T(G)$ over a large prime field $\mathbb{F}_p$ ($p = 998244353$) by assigning an independent uniform random variable $x_{u,v} \in \{1, \dots, p-1\}$ to each edge $\{u, v\} \in E$ ($u < v$):
+
+$$T_{u,v} = \begin{cases} +x_{u,v} & \text{if } \{u, v\} \in E \text{ and } u < v, \\ -x_{v,u} & \text{if } \{u, v\} \in E \text{ and } u > v, \\ 0 & \text{if } \{u, v\} \notin E. \end{cases}$$
+
+::: {.callout-important title="Theorem 22.4 (Tutte's Theorem, Pfaffian Factorization & Inverse Oracle)"}
+1. **Why Odd Cycles Cancel Identically**: In the Leibniz expansion $\det T(G) = \sum_{\sigma \in S_N} \operatorname{sgn}(\sigma) \prod_{i=1}^N T_{i, \sigma(i)}$, decompose each permutation $\sigma$ into disjoint cycles. If $\sigma$ contains any **odd-length cycle** $C = (v_1 \to v_2 \to \dots \to v_{2k+1} \to v_1)$, reversing the first odd cycle $C \mapsto C^{-1}$ preserves $\operatorname{sgn}(\sigma)$ while multiplying $\prod_{e \in C} T_e$ by $(-1)^{2k+1} = -1$! Thus all permutations containing at least one odd cycle **cancel in pairs**, and $\det T(G) = (\operatorname{Pf} T(G))^2$, where the **Pfaffian** sums exclusively over perfect matchings $M \in \mathcal{M}_{\text{perf}}(G)$:
+
+   $$\operatorname{Pf} T(G) = \sum_{M \in \mathcal{M}_{\text{perf}}(G)} \operatorname{sgn}(M) \prod_{\{u, v\} \in M} x_{u, v}$$
+
+2. **Rank & Maximum Matching**: For any general graph $G$, $\operatorname{rank}(T(G)) = 2\nu(G)$ with probability $\ge 1 - \frac{N}{p}$ by the Schwartz–Zippel Lemma.
+3. **Universal Reduction to Perfect Matching via $d = N - 2\nu(G)$ Dummy Vertices**: Adding $d = N - 2\nu(G)$ universal dummy vertices $w_1, \dots, w_d$ connected to all original vertices $v \in V$ produces an $(N+d) \times (N+d)$ invertible skew-symmetric matrix $\hat{T}$ whose perfect matchings correspond precisely to maximum matchings of $G$ (each covering the $d$ exposed original vertices with the $d$ universal dummies!).
+4. **All-Edges Feasible & Essential Classification via $B = \hat{T}^{-1}$**: Let $B = \hat{T}^{-1} \pmod p$. For any original edge $e = (u, v) \in E$:
+   - **Feasible Edge (`可行边`, belongs to AT LEAST ONE maximum matching)**: By Jacobi's cofactor identity $\operatorname{Pf}(\hat{T}_{\setminus \{u,v\}}) = \pm B_{u,v} \operatorname{Pf}(\hat{T})$, edge $(u, v)$ belongs to at least one maximum matching of $G$ **if and only if**:
+
+     $$B_{u, v} \not\equiv 0 \pmod p$$
+
+   - **Essential Edge (`必须边`, belongs to EVERY maximum matching)**: Deleting edge $(u, v)$ from $G$ is a rank-2 update $\hat{T}' = \hat{T} - T_{u,v}(e_u e_v^\top - e_v e_u^\top)$. By the Matrix Determinant Lemma, $\det(\hat{T}') = \det(\hat{T}) \cdot (1 - T_{u,v} B_{v,u})^2$. Hence deleting $(u, v)$ destroys *all* maximum matchings ($\det(\hat{T}') = 0$) **if and only if**:
+
+     $$T_{u, v} \cdot B_{v, u} \equiv 1 \pmod p \quad \Longleftrightarrow \quad -T_{u, v} \cdot B_{u, v} \equiv 1 \pmod p$$
+:::
+
+---
+
+## 5. The 4-Step Compilation Protocol for Virtual Hub Graphs & Non-Bipartite Matching
+
+Before tackling the 8-problem ladder, use this master decision table to select the exact sparsification architecture or non-bipartite matching gadget required by your problem statement.
+
+| Surface Signal & Transition Predicate | Underlying Base Model | Sparsification / Non-Bipartite Architecture | Total $\|V\|$, $\|E\|$ & Critical Invariant |
+| :--- | :--- | :--- | :--- |
+| **Pure Boolean implications $x_u \implies x_v$ without weights** | 2-SAT (Tarjan SCC, **NOT** Flow!) | Dual implication tree + Tarjan SCC in $O(V + E)$ | **Boundary Alert**: Only use Flow/Min-Cut when maximizing $\sum w_i x_i$ or cutting finite-capacity edges! |
+| **1D Interval $[l, r]$ transitions ($u \to [l, r]$ or $[l_1, r_1] \to [l_2, r_2]$)** | Max-Flow / Min-Cut / MCMF (`CF 1045A`) | **Dual 1D Segment Trees** ($\mathcal{T}_{\text{out}}$ top-down, $\mathcal{T}_{\text{in}}$ bottom-up) + Bridge $b_{\text{in}} \xrightarrow{c, w} b_{\text{out}}$ | $3N$ nodes, $O(N + K \log N)$ edges; never merge $\mathcal{T}_{\text{in}}$ and $\mathcal{T}_{\text{out}}$ (`H-22`). |
+| **2D Prefix-Index + Value-Range $\{j < i : a_j \in [L_i, R_i]\}$ (unweighted/$\infty$)** | Project Selection Closure (`BZOJ 3218`) | **Prefix Persistent Segment Tree (`主席树`)** + auxiliary penalty node $p_i$ | $O(N \log N)$ nodes & edges; **must** chain $u_{\text{new}} \xrightarrow{\infty} u_{\text{old}}$ at duplicate keys! |
+| **2D Grid with $Q$ Forbidden Rectangles $[x_1, x_2] \times [y_1, y_2]$** | Bipartite Vertex Cover / Matching (`CF 793G`) | **Sweep-Line + Persistent Out-Tree Subtree Splicing** from $\text{root}_0$ | $O(N + Q \log N)$ nodes & edges; unit capacities only on leaves $\implies O(E\sqrt{V})$ Dinic. |
+| **2D Prefix-Index + 1D Manhattan Cost $|a_i - a_j|$ ($j < i$)** | DAG Min-Cost Path Cover (`[SDOI2019] 通信`) | **CDQ Divide & Conquer + 1D Bi-Directional Sorted Value Chain** | $O(N \log N)$ nodes & edges; right-half enters chain, left-half exits chain. |
+| **2D Point-to-Rectangle under tight 128 MB memory** | Shortest Path / Range Min-Cut (`[NOI2019] 弹跳`) | **2D KD-Tree Bounding-Box Hubs** ($2N-1$ nodes) or Implicit Heap Pruning | $O(N)$ nodes; avoids $O(N \log^2 N)$ 2D SegTree MLE. |
+| **Non-Bipartite Matching / Walk Game / Vertex Capacity $\le 3$** | General Graph Matching (`UOJ #79`, `WC2016`) | **Edmonds' Blossom (`带花树`)** + 2-Twin / 3-Triangle Gadget + Two-Phase Order | $O(N^3)$; Phase 1 matches mandatory balls, Phase 2 matches internal bonus edges. |
+| **All-Edges Feasible / Essential Matching or Matching Matroid ($N \le 500$)** | Tutte–Berge / Linear Matroid (`CF 102155J`) | **Skew-Symmetric Tutte Matrix $T(G)$** + $d = N - 2\nu(G)$ dummies + $B = \hat{T}^{-1}$ | $O(N^3)$ via Gaussian elimination over $\mathbb{F}_{998244353}$. |
+
+---
+
+## 6. Worked Examples & Full 8-Problem Difficulty Ladder (`#169`–`#176`)
+
+### Problem `#169` (`SS-1`): General Graph Maximum Matching & Gallai–Edmonds Walk Game (`[UOJ #79 / Luogu P6113]`, `QOJ #5437`, `CF 1089B`)
+
+> **Judge Links**: [UOJ #79](https://uoj.ac/problem/79) / [Luogu P6113](https://www.luogu.com.cn/problem/P6113) / [CF 1089B](https://codeforces.com/problemset/problem/1089/B)
+> **Constraints**: $N \le 500$ (up to $1000$), $M \le \binom{N}{2}$, Time Limit $1.0\text{ s}$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+We must compute the maximum size $\nu(G)$ (and explicit edge pairing) of a set of vertex-disjoint edges in an **arbitrary undirected graph** $G = (V, E)$ that may contain odd cycles, or determine for every starting vertex $s \in V$ whether the first player wins the non-repeating vertex walk game (`QOJ #5437`), or handle vertices of capacity $2$ that can also self-pair (`CF 1089B`). Bipartite Dinic / Hopcroft–Karp fails because odd cycles break 2-coloring (`Broken Gadget 22C`).
+
+#### Step 2: Intermediate Algebraic / Logical Representation
+
+We seek $x_e \in \{0, 1\}$ maximizing $\sum_{e \in E} x_e$ subject to $\sum_{e \in \delta(v)} x_e \le 1$ and the odd-set constraints $\sum_{e \in E(B)} x_e \le \frac{|B|-1}{2}$ for every odd subset $B \subseteq V$. For the walk game variant, vertex $s$ is a first-player winning start iff $s$ is covered by **every** maximum matching of $G$, i.e., $s \notin D(G)$ in the Gallai–Edmonds decomposition $V = D(G) \sqcup A(G) \sqcup C(G)$. For `CF 1089B` (each of $N$ guests has 2 hands and can either hold hands with 2 chambers or clasp their own 2 hands together as 1 pair), each guest $i$ has the 2-Vertex Twin reward $\text{matches}(i) = c_i + [c_i = 0]$.
+
+#### Step 3: Reverse-Engineering Scratchpad (Blossom Contraction & Twin Gadget)
+
+1. **For `CF 1089B`**: Split each guest $i$ into $i_1, i_2$ with internal edge $(i_1, i_2)$ and connect both $i_1, i_2$ to all preferred chambers $j$. Then $\nu(G') - N$ equals the exact maximum number of accommodated guests!
+2. **For `UOJ #79` & Walk Game**: Iterate $i = 1 \dots N$; if `match[i] == 0`, run `bfs(i)` to grow an alternating tree rooted at $i$. When an outer-to-outer edge $(u, v)$ (`vis[u] == 1 && vis[v] == 1`) with `orig[u] != orig[v]` is scanned, compute $b = \operatorname{LCA}(u, v)$ and call `contract(u, v, b)` and `contract(v, u, b)` to flip all inner nodes on the cycle to `vis = 1` and push them into the queue.
+3. **Gallai–Edmonds Extraction**: After finding a maximum matching, initialize an empty BFS queue, push **all** unmatched vertices $r$ (`match[r] == 0`) with `vis[r] = 1, orig[r] = r` simultaneously, and run the exact same Blossom BFS (which will find no augmenting path). Then $D(G) = \{v : \text{vis}[v] == 1\}$, $A(G) = \{v : \text{vis}[v] == 2\}$, and $C(G) = \{v : \text{vis}[v] == 0\}$.
+
+#### Step 4: Hand-Checkable Toy Trace & Broken Gadget Counterexample
+
+Trace $G = K_3$ on $\{1, 2, 3\}$ with initial matching $M = \{(2, 3)\}$ and unmatched root $1$:
+
+- `bfs(1)` sets `vis[1] = 1`. Scanning edge $(1, 2)$ sees `match[2] = 3`: set `pre[2] = 1, vis[2] = 2, vis[3] = 1` and push $3$.
+- Next, outer node $3$ (`vis[3] = 1`) scans edge $(3, 1)$: both `vis[3] == 1` and `vis[1] == 1`! We found the triangle blossom $B = \{1, 2, 3\}$ with base $b = \operatorname{LCA}(3, 1) = 1$.
+- `contract(3, 1, 1)` sets `pre[3] = 1`, ` contract(1, 3, 1)` sets `pre[2] = 3`, flips `vis[2] = 1` (pushing $2$ into the queue!), and sets `orig[1] = orig[2] = orig[3] = 1`.
+- Now if vertex $2$ had an external edge $(2, 4)$ to an unmatched vertex $4$, `2` (now outer, `vis[2] = 1`!) would immediately augment along $4 \gets 2 \gets_{\text{pre}} 3 \Longleftrightarrow_{\text{match}} 2 \dots$ wait: `augment(4)` sets `match[4] = 2`, jumps to `x = pre[2] = 3` (which `contract` rewired across the bridge $(3, 1)$!), and pairs $(3, 1)$, yielding the 2-edge matching $\{(4, 2), (3, 1)\}$!
+- **What Breaks If You Omit `pre[x] = y` in `contract`?** Without `pre[2] = 3`, `pre[2]` remains `1`, so augmenting from $(2, 4)$ leaves vertex $3$ completely orphaned (`match[3] = 0`) and fails to match $(3, 1)$!
+
+:::: {.callout-note collapse="true" title="Progressive Hints for Problem #169"}
+- **Hint 1**: In `lca(u, v)`, always jump via `u = orig[pre[match[u]]]` after first setting `u = orig[u]`, because intermediate blossoms may have already been contracted along the path to the root.
+- **Hint 2**: In `contract(u, v, b)`, start with `int x = u, y = v;` and loop `while (orig[x] != b)`: inside the loop, set `pre[x] = y; y = match[x]; if (vis[y] == 2) { vis[y] = 1; q.push(y); } orig[x] = orig[y] = b; x = pre[y];`.
+- **Hint 3**: In `augment(v)`, walk `while (v)`: save `int pv = pre[v], nv = match[pv]; match[v] = pv; match[pv] = v; v = nv;`. Notice how `pre[x] = y` inside `contract` makes `augment(v)` work without ever expanding blossoms!
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Implementation Contract — Problem #169 (Edmonds' Blossom & Gallai–Edmonds)"}
+```cpp
+struct BlossomSolver {
+    int n, timer = 0;
+    vector<vector<int>> adj;
+    vector<int> match, pre, vis, orig, tim;
+    queue<int> q;
+
+    BlossomSolver(int n) : n(n), adj(n + 1), match(n + 1, 0),
+        pre(n + 1, 0), vis(n + 1, 0), orig(n + 1, 0), tim(n + 1, 0) {}
+
+    void add_edge(int u, int v) {
+        adj[u].push_back(v);
+        adj[v].push_back(u);
+    }
+
+    int find_orig(int x) {
+        return orig[x] == x ? x : orig[x] = find_orig(orig[x]);
+    }
+
+    int lca(int u, int v) {
+        ++timer;
+        u = find_orig(u); v = find_orig(v);
+        while (tim[u] != timer) {
+            tim[u] = timer;
+            u = find_orig(pre[match[u]]);
+            if (v) swap(u, v);
+        }
+        return u;
+    }
+
+    void contract(int u, int v, int b) {
+        int x = u, y = v;
+        while (find_orig(x) != b) {
+            pre[x] = y;
+            y = match[x];
+            if (vis[y] == 2) { vis[y] = 1; q.push(y); }
+            orig[x] = orig[y] = b;
+            x = pre[y];
+        }
+    }
+
+    void augment(int v) {
+        while (v) {
+            int pv = pre[v], nv = match[pv];
+            match[v] = pv; match[pv] = v;
+            v = nv;
+        }
+    }
+
+    bool bfs(int root) {
+        fill(vis.begin(), vis.end(), 0);
+        fill(pre.begin(), pre.end(), 0);
+        iota(orig.begin(), orig.end(), 0);
+        while (!q.empty()) q.pop();
+        q.push(root); vis[root] = 1;
+        while (!q.empty()) {
+            int u = q.front(); q.pop();
+            for (int v : adj[u]) {
+                if (find_orig(u) == find_orig(v) || vis[v] == 2) continue;
+                if (!vis[v]) {
+                    vis[v] = 2; pre[v] = u;
+                    if (!match[v]) { augment(v); return true; }
+                    vis[match[v]] = 1; q.push(match[v]);
+                } else {
+                    int b = lca(u, v);
+                    contract(u, v, b); contract(v, u, b);
+                }
+            }
+        }
+        return false;
+    }
+
+    int solve() {
+        int ans = 0;
+        for (int i = 1; i <= n; ++i)
+            if (!match[i] && bfs(i)) ++ans;
+        return ans;
+    }
+};
+```
+::::
+
+---
+
+### Problem `#170` (`SS-2`): `[BZOJ 3218 / Luogu P3218]` a + b Problem
+
+> **Judge Links**: [Luogu P3218](https://www.luogu.com.cn/problem/P3218) / [BZOJ 3218](https://darkbzoj.cc/problem/3218)
+> **Constraints**: $N \le 5000$, $0 \le a_i, l_i, r_i \le 10^9$, $0 \le b_i, w_i, p_i \le 10^5$, Time Limit $2.0\text{ s}$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+Each cell $i \in \{1, \dots, N\}$ is painted either **Black** (reward $b_i$) or **White** (reward $w_i$). However, if cell $i$ is painted Black **and** there exists *at least one* earlier cell $j < i$ painted White whose value $a_j$ lies in $[l_i, r_i]$, cell $i$ becomes "strange" and incurs a **single bundled penalty $p_i$** (paid at most once regardless of how many such $j$ exist). Binary choices with a bundled implication penalty scream **Chapter 09 Project Selection Min-Cut**, and the 2D prefix-range predicate $\{j < i : l_i \le a_j \le r_i\}$ requires a **Prefix Persistent Segment Tree (`主席树`)**.
+
+#### Step 2: Intermediate Algebraic / Logical Representation
+
+Let $x_i \in \{0, 1\}$ be $1$ if cell $i$ is painted Black ($i \in S$) and $0$ if White ($i \in T$). Starting from the ideal reward $\sum_{i=1}^N (b_i + w_i)$, we minimize the lost reward plus penalties by introducing a binary penalty indicator $z_i \in \{0, 1\}$ for each cell $i$:
+
+$$\min_{x, z \in \{0, 1\}^N} \sum_{i=1}^N \Big[ w_i (1 - x_i) + b_i x_i + p_i x_i (1 - z_i) + \sum_{\substack{1 \le j < i \\ l_i \le a_j \le r_i}} \infty \cdot z_i (1 - x_j) \Big]$$
+
+Check the logic: if cell $i$ is Black ($x_i = 1$) and sets $z_i = 1$ to avoid paying $p_i$, then the $\infty$-penalty forces $x_j = 1$ (Black) for **every** $j < i$ with $a_j \in [l_i, r_i]$. If any such $j$ is White ($x_j = 0$), we are forced to set $z_i = 0$ and pay $p_i$!
+
+#### Step 3: Reverse-Engineering Scratchpad (Persistent SegTree Compilation)
+
+1. For each cell $i$, connect $S \xrightarrow{b_i} i$ and $i \xrightarrow{w_i} T$, and create an auxiliary penalty hub $u_i^{\text{pen}}$ wired $i \xrightarrow{p_i} u_i^{\text{pen}}$.
+2. Coordinate-compress all $a_1, \dots, a_N$ into $[1, U]$ ($U \le N$). Maintain a Persistent Out-Segment Tree where version $\text{root}_{i-1}$ contains leaves for cells $1 \dots i-1$.
+3. For cell $i$, query $\text{root}_{i-1}$ on the compressed range $[l_i, r_i]$ and wire $u_i^{\text{pen}} \xrightarrow{\infty} h$ for each of the $O(\log N)$ returned persistent hubs $h$.
+4. Insert cell $i$ at $\text{pos}(a_i)$ into $\text{root}_{i-1}$ to create $\text{root}_i$: at the new leaf $v_{\text{new}}$, wire $v_{\text{new}} \xrightarrow{\infty} i$ **AND** if an old leaf $v_{\text{old}}$ already existed at $\text{pos}(a_i)$, wire $v_{\text{new}} \xrightarrow{\infty} v_{\text{old}}$ (**Duplicate-Key Leaf Chaining Fix**)!
+
+#### Step 4: Hand-Checkable Toy Trace & Broken Gadget Counterexample
+
+Suppose $N = 3$ with $a_1 = 5, a_2 = 5, a_3 = 10$, and cell $3$ queries $[l_3, r_3] = [5, 5]$.
+
+- Version $1$ creates leaf $L_1 \xrightarrow{\infty} 1$ at key $5$.
+- Version $2$ inserts cell $2$ at the **same key $5$**, creating leaf $L_2 \xrightarrow{\infty} 2$ and chaining $L_2 \xrightarrow{\infty} L_1$.
+- When cell $3$ queries key $5$ in $\text{root}_2$, it connects $u_3^{\text{pen}} \xrightarrow{\infty} L_2$, which reaches **both** $2$ (directly) and $1$ (via $L_2 \to L_1$).
+- **What Breaks Without $L_2 \to L_1$?** If $L_2$ overwrote $L_1$ without chaining, cell $1$ could be painted White ($1 \in T$) while cell $2$ is Black ($2 \in S$) and cell $3$ is Black ($3 \in S$) **without** severing $i \xrightarrow{p_3} u_3^{\text{pen}}$, dodging the mandatory penalty $p_3$!
+
+:::: {.callout-note collapse="true" title="Progressive Hints for Problem #170"}
+- **Hint 1**: What is the base Project Selection graph before data-structure optimization? $S \xrightarrow{b_i} i \xrightarrow{w_i} T$, plus $i \xrightarrow{p_i} u_i^{\text{pen}} \xrightarrow{\infty} j$ for all $j < i$ with $a_j \in [l_i, r_i]$.
+- **Hint 2**: Only compress the values $a_1, \dots, a_N$ (size $U \le N$); for each query $[l_i, r_i]$, use `lower_bound` and `upper_bound` on the sorted compressed array to find the index interval $[L, R]$.
+- **Hint 3**: In `insert(prev_root, 1, U, pos, i)`, allocate a new node `u = ++tot`, copy children from `prev_root`, connect `u -> i` if `L == R`, and **always** if `prev_root > 0`, add `add_edge(u, prev_root, INF)`!
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Implementation Contract — Problem #170 (Persistent SegTree + Min-Cut)"}
+```cpp
+// Inside Persistent SegTree builder coupled with Dinic:
+int lc[MAX_NODE], rc[MAX_NODE], root[MAXN], tot_nodes;
+
+void insert_pst(int &u, int prev, int l, int r, int pos, int cell_id, Dinic &dinic) {
+    u = ++tot_nodes;
+    lc[u] = lc[prev]; rc[u] = rc[prev];
+    if (prev) dinic.add_edge(u, prev, INF); // Mandatory duplicate-key / version chain!
+    if (l == r) {
+        dinic.add_edge(u, cell_id, INF);
+        return;
+    }
+    int mid = (l + r) >> 1;
+    if (pos <= mid) {
+        insert_pst(lc[u], lc[prev], l, mid, pos, cell_id, dinic);
+        dinic.add_edge(u, lc[u], INF);
+    } else {
+        insert_pst(rc[u], rc[prev], mid + 1, r, pos, cell_id, dinic);
+        dinic.add_edge(u, rc[u], INF);
+    }
+}
+
+void query_pst(int u, int l, int r, int ql, int qr, int pen_node, Dinic &dinic) {
+    if (!u || ql > qr) return;
+    if (ql <= l && r <= qr) {
+        dinic.add_edge(pen_node, u, INF);
+        return;
+    }
+    int mid = (l + r) >> 1;
+    if (ql <= mid) query_pst(lc[u], l, mid, ql, qr, pen_node, dinic);
+    if (qr > mid)  query_pst(rc[u], mid + 1, r, ql, qr, pen_node, dinic);
+}
+```
+::::
+
+---
+
+### Problem `#171` (`Int-1`): `[CF 793G]` Oleg and chess
+
+> **Judge Link**: [Codeforces 793G](https://codeforces.com/problemset/problem/793/G)
+> **Constraints**: $N \le 10^4$, $Q \le 10^4$ disjoint forbidden rectangles $[x_1, x_2] \times [y_1, y_2]$, Time Limit $2.5\text{ s}$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+We want to place the maximum number of non-attacking rooks (or equivalently cover all valid cells with the minimum number of rows and columns) on an $N \times N$ chessboard after removing $Q \le 10^4$ forbidden rectangles. By König's Theorem (Chapter 07), this is **Maximum Bipartite Matching** between $N$ rows and $N$ columns where edge $(x, y)$ exists iff cell $(x, y)$ is not inside any forbidden rectangle. Materializing $N^2 = 10^8$ edges TLEs/MLEs, so we need a **Sweep-Line + Persistent Out-Tree Subtree Splicing** architecture (Architecture 3).
+
+#### Step 2: Intermediate Algebraic / Logical Representation
+
+Let $x_r \in \{0, 1\}$ and $y_c \in \{0, 1\}$ indicate whether row $r$ and column $c$ are chosen in the Minimum Vertex Cover:
+
+$$\min \sum_{r=1}^N x_r + \sum_{c=1}^N y_c \quad \text{s.t.} \quad x_r + y_c \ge 1 \quad \forall (r, c) \notin \bigcup_{k=1}^Q [x_{1,k}, x_{2,k}] \times [y_{1,k}, y_{2,k}]$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Persistent Subtree Splicing)
+
+1. Build an initial complete Out-Segment Tree $\text{root}_0$ over rows $[1, N]$, where each row leaf $r$ connects $r \xrightarrow{\text{cap } 1} T$ and internal nodes connect $p \xrightarrow{\infty} lc, rc$.
+2. Sweep columns $c = 1 \dots N$:
+   - When a forbidden rectangle $[x_1, x_2] \times [y_1, y_2]$ **starts** at column $c = y_1$, update $\text{root}_c$ on $[x_1, x_2]$ by setting the pointers of the covered canonical segment-tree nodes to `0` (creating $O(\log N)$ cloned ancestor nodes along the boundary).
+   - When that rectangle **ends** at column $c = y_2 + 1$, update $\text{root}_c$ on $[x_1, x_2]$ by **copying the node pointers directly from $\text{root}_0$** at the covered canonical intervals! Because the rectangles are disjoint, every cell in $[x_1, x_2]$ becomes completely free at column $y_2 + 1$.
+3. At each column $c$, after applying all events at $c$, connect $S \xrightarrow{\text{cap } 1} \text{root}_c$.
+
+#### Step 4: Hand-Checkable Toy Trace & Broken Gadget Counterexample
+
+On $N = 4$ with one forbidden rectangle $[2, 3] \times [2, 2]$:
+
+- At $c = 1$: $S \xrightarrow{1} \text{root}_0$ reaches all rows $\{1, 2, 3, 4\}$.
+- At $c = 2$: $[2, 3]$ is nulled out in $\text{root}_2$, so $S \xrightarrow{1} \text{root}_2$ reaches only leaves $1$ and $4$.
+- At $c = 3$: $[2, 3]$ is spliced back from $\text{root}_0$ into $\text{root}_3$, restoring reachability to $\{1, 2, 3, 4\}$ in $O(\log N)$ nodes!
+
+:::: {.callout-note collapse="true" title="Progressive Hints for Problem #171"}
+- **Hint 1**: Why don't we need a 2D rectangle decomposition into $O(Q)$ disjoint free rectangles? Because persistent subtree splicing from $\text{root}_0$ automatically maintains the exact set of free rows at column $c$ in $O(\log N)$ time per rectangle boundary!
+- **Hint 2**: In `modify(u_prev, u_full, l, r, ql, qr, type)`, `u_full` is the corresponding node in $\text{root}_0$. If `ql <= l && r <= qr`, return `type == REMOVE ? 0 : u_full` without allocating any new node!
+- **Hint 3**: Only allocate a new persistent node when `ql <= l && r <= qr` is false (partial overlap), and only add Dinic edges `u -> lc[u]` and `u -> rc[u]` if the child pointer is non-zero.
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Implementation Contract — Problem #171 (Persistent Subtree Splicing)"}
+```cpp
+int build_full(int l, int r, Dinic &dinic, int T) {
+    int u = ++tot_nodes;
+    if (l == r) {
+        dinic.add_edge(u, T, 1);
+        return u;
+    }
+    int mid = (l + r) >> 1;
+    lc[u] = build_full(l, mid, dinic, T);
+    rc[u] = build_full(mid + 1, r, dinic, T);
+    dinic.add_edge(u, lc[u], INF);
+    dinic.add_edge(u, rc[u], INF);
+    return u;
+}
+
+int modify_pst(int prev, int full_u, int l, int r, int ql, int qr, bool enable, Dinic &dinic) {
+    if (ql <= l && r <= qr) return enable ? full_u : 0;
+    int u = ++tot_nodes;
+    int mid = (l + r) >> 1;
+    lc[u] = (ql <= mid) ? modify_pst(lc[prev], lc[full_u], l, mid, ql, qr, enable, dinic) : lc[prev];
+    rc[u] = (qr > mid)  ? modify_pst(rc[prev], rc[full_u], mid + 1, r, ql, qr, enable, dinic) : rc[prev];
+    if (lc[u]) dinic.add_edge(u, lc[u], INF);
+    if (rc[u]) dinic.add_edge(u, rc[u], INF);
+    return u;
+}
+```
+::::
+
+---
+
+### Problem `#172` (`Int-2`): `[LOJ #3093 / Luogu P5331 / SDOI2019]` 通信 (Communication)
+
+> **Judge Links**: [LOJ #3093](https://loj.ac/p/3093) / [Luogu P5331](https://www.luogu.com.cn/problem/P5331)
+> **Constraints**: $N \le 1000$, $W \le 10^9$, $0 \le a_i \le 10^9$, Time Limit $2.0\text{ s}$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+Each station $i \in \{1, \dots, N\}$ must either connect directly to the control center at cost $W$, or connect to a **strictly earlier** station $j < i$ at cost $|a_i - a_j|$, where **each earlier station $j$ can serve as the target for at most one later station $i$**. This is the exact **DAG Minimum-Cost Path Cover (`星际竞速`, `#155`)** model on $N$ vertices, except that the $O(N^2)$ bipartite edges $(i_{\text{out}}, j_{\text{in}})$ ($j < i$) carry cost $|a_i - a_j|$. On $N = 1000$, $O(N^2) = 5 \times 10^5$ edges in MCMF will TLE; we must compress the graph to $O(N \log N)$ edges using **CDQ Divide-and-Conquer + 1D Bi-Directional Sorted Value Chain** (Architecture 4).
+
+#### Step 2: Intermediate Algebraic / Logical Representation
+
+Using the standard vertex-splitting path cover formulation ($S \xrightarrow{1, 0} i_{\text{out}}$ and $j_{\text{in}} \xrightarrow{1, 0} T$), every station $i$ must send $1$ unit of flow from $i_{\text{out}}$ either directly to $T$ at cost $W$ ($i_{\text{out}} \xrightarrow{1, W} T$) or to some $j_{\text{in}}$ ($j < i$) at cost $|a_i - a_j|$:
+
+$$\min \sum_{i=1}^N W \cdot f_{i \to T} + \sum_{1 \le j < i \le N} |a_i - a_j| \cdot f_{i \to j} \quad \text{s.t.} \quad f_{i \to T} + \sum_{j < i} f_{i \to j} = 1, \quad \sum_{i > j} f_{i \to j} \le 1$$
+
+#### Step 3: Reverse-Engineering Scratchpad (CDQ + 1D Value Chain)
+
+Call `cdq(l, r)` recursively on $[1, N]$:
+
+1. Let $mid = (l + r) / 2$, and recursively call `cdq(l, mid)` and `cdq(mid + 1, r)`.
+2. Collect and sort all unique values $v_1 < v_2 < \dots < v_k$ appearing in $\{a_t : l \le t \le r\}$.
+3. Create $k$ chain hubs $h_1, \dots, h_k$ with bidirectional edges $h_m \xleftrightarrow{\text{cap } \infty,\text{ cost } v_{m+1} - v_m} h_{m+1}$.
+4. For each **right-half** station $i \in [mid + 1, r]$, connect $i_{\text{out}} \xrightarrow{\infty, 0} h_{\text{pos}(a_i)}$.
+5. For each **left-half** station $j \in [l, mid]$, connect $h_{\text{pos}(a_j)} \xrightarrow{\infty, 0} j_{\text{in}}$.
+
+#### Step 4: Hand-Checkable Toy Trace & Broken Gadget Counterexample
+
+For $N = 3$ with $a = [10, 50, 20]$ and $W = 100$:
+
+- In `cdq(1, 3)` with $mid = 2$, the sorted values are $v = [10, 20, 50]$ with chain hubs $h_{10} \xleftrightarrow{\infty, 10} h_{20} \xleftrightarrow{\infty, 30} h_{50}$.
+- Right-half $i = 3$ ($a_3 = 20$) enters $3_{\text{out}} \xrightarrow{\infty, 0} h_{20}$.
+- Left-half $j = 1$ ($a_1 = 10$) and $j = 2$ ($a_2 = 50$) exit $h_{10} \xrightarrow{\infty, 0} 1_{\text{in}}$ and $h_{50} \xrightarrow{\infty, 0} 2_{\text{in}}$.
+- Thus $3_{\text{out}}$ can reach $1_{\text{in}}$ at cost $10$ or $2_{\text{in}}$ at cost $30$, and **cannot** reach $3_{\text{in}}$!
+
+:::: {.callout-note collapse="true" title="Progressive Hints for Problem #172"}
+- **Hint 1**: Why must right-half nodes $[mid+1, r]$ ONLY have edges INTO the value chain, and left-half nodes $[l, mid]$ ONLY have edges OUT OF the value chain? To enforce $j \le mid < i$ ($j < i$) without ever allowing $i \le j$!
+- **Hint 2**: What is the total number of chain hubs across all CDQ calls? At depth $d$, the sizes sum to $\le N$, so $\le N \lceil\log_2 N\rceil \approx 10^4$ vertices and $\approx 4 \times 10^4$ edges!
+- **Hint 3**: Since all edge costs ($W$ and $v_{m+1} - v_m$) are strictly non-negative, you can run Dijkstra-with-Johnson-potentials or SPFA-Dinic MCMF directly in $O(N^2 \log N)$.
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Implementation Contract — Problem #172 (CDQ Value-Chain Builder)"}
+```cpp
+void cdq_build(int l, int r, const vector<long long> &a, MCMF &mcmf, int &tot_nodes) {
+    if (l >= r) return;
+    int mid = (l + r) >> 1;
+    cdq_build(l, mid, a, mcmf, tot_nodes);
+    cdq_build(mid + 1, r, a, mcmf, tot_nodes);
+
+    vector<long long> vals;
+    vals.reserve(r - l + 1);
+    for (int i = l; i <= r; ++i) vals.push_back(a[i]);
+    sort(vals.begin(), vals.end());
+    vals.erase(unique(vals.begin(), vals.end()), vals.end());
+
+    int k = vals.size();
+    int base = tot_nodes;
+    tot_nodes += k;
+    for (int m = 0; m + 1 < k; ++m) {
+        long long diff = vals[m + 1] - vals[m];
+        mcmf.add_edge(base + m + 1, base + m + 2, INF, diff);
+        mcmf.add_edge(base + m + 2, base + m + 1, INF, diff);
+    }
+    for (int i = l; i <= r; ++i) {
+        int pos = lower_bound(vals.begin(), vals.end(), a[i]) - vals.begin() + 1;
+        if (i <= mid) {
+            mcmf.add_edge(base + pos, in_node(i), 1, 0);   // Left half exits chain
+        } else {
+            mcmf.add_edge(out_node(i), base + pos, 1, 0);  // Right half enters chain
+        }
+    }
+}
+```
+::::
+
+---
+
+### Problem `#173` (`Adv-1`): `[WC2016 / Luogu P4258 / UOJ #171]` 挑战 NPC (Challenging NPC)
+
+> **Judge Links**: [UOJ #171](https://uoj.ac/problem/171) / [Luogu P4258](https://www.luogu.com.cn/problem/P4258)
+> **Constraints**: $T \le 30$ test cases, $N \le 3M$, $M \le 100$ ($N$ balls, $M$ baskets, so $N + 3M \le 600$ vertices), Time Limit $1.0\text{ s}$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+We must place $N$ balls into $M$ baskets (each basket $j$ holds at most $3$ balls) so that **every ball is placed**, and among all valid placements we **maximize the number of "half-empty" baskets that contain $\le 1$ ball**. Why does Bipartite Flow / MCMF fail? In an MCMF network, giving basket $j$ a $+1$ reward for having $0$ or $1$ ball and $0$ reward for having $2$ or $3$ balls corresponds to marginal step rewards $(+1, 0, -1, 0)$ for the 1st, 2nd, and 3rd ball — which is **neither convex nor concave** (the 2nd ball costs $-1$ while the 3rd ball costs $0$)! Whenever a degree reward has a parity or pair-breaking jump at capacity $2$ vs. $3$ on $V \le 600$, reach for the **3-Vertex Triangle Blossom Gadget** (Section 4.2).
+
+#### Step 2: Intermediate Algebraic / Logical Representation
+
+Let $c_j \in \{0, 1, 2, 3\}$ be the number of balls placed in basket $j$, with $\sum_{j=1}^M c_j = N$. We want to maximize:
+
+$$\sum_{j=1}^M c_j + \sum_{j=1}^M [c_j \le 1] = \sum_{j=1}^M \big(c_j + [c_j \le 1]\big)$$
+
+subject to all $N$ balls being matched ($\sum_{j=1}^M c_j = N$). Look at the table of $f(c_j) = c_j + [c_j \le 1]$:
+
+| Balls in Basket $j$ ($c_j$) | $c_j = 0$ | $c_j = 1$ | $c_j = 2$ | $c_j = 3$ |
+| :--- | :---: | :---: | :---: | :---: |
+| **Target Gadget Matches $f(c_j)$** | $0 + 1 = \mathbf{1}$ | $1 + 1 = \mathbf{2}$ | $2 + 0 = \mathbf{2}$ | $3 + 0 = \mathbf{3}$ |
+
+#### Step 3: Reverse-Engineering Scratchpad (3-Vertex Triangle Blossom Gadget & Two-Phase Order)
+
+1. Split each basket $j \in \{1, \dots, M\}$ into **three vertices** $b_{j,1}, b_{j,2}, b_{j,3}$.
+2. For each ball $i$ that can go into basket $j$, add undirected edges from $i$ to **all three** vertices $b_{j,1}, b_{j,2}, b_{j,3}$.
+3. Add a **single internal edge $(b_{j,2}, b_{j,3})$** inside basket $j$.
+4. **Why This Realizes $f(c_j)$**: If $c_j \in \{0, 1\}$, the ball (if any) matches $b_{j,1}$ while $(b_{j,2}, b_{j,3})$ remains intact ($+1$ bonus match). If $c_j \in \{2, 3\}$, the second ball must match $b_{j,2}$ or $b_{j,3}$, breaking $(b_{j,2}, b_{j,3})$ ($0$ bonus match)!
+5. **Mandatory Two-Phase Blossom Execution**:
+   - **Phase 1**: Loop over all **ball vertices** $i = 1, \dots, N$ and call `bfs(i)`. If any ball $i$ fails to match, output `0` (or impossible) immediately!
+   - **Phase 2**: Loop over all **basket vertices** $b_{j,2}, b_{j,3}$ ($j = 1, \dots, M$) and call `bfs(v)`. Because augmenting paths in Blossom never unmatch an already-matched vertex, all $N$ balls remain matched, and the total matching size $\nu(G')$ satisfies $\text{Ans} = \nu(G') - N$!
+
+#### Step 4: Hand-Checkable Toy Trace & Broken Gadget Counterexample
+
+Suppose $N = 2$ balls $\{u_1, u_2\}$ and $M = 2$ baskets $\{B_1, B_2\}$ where both balls can go into either basket:
+
+- After Phase 1 and Phase 2, $u_1$ matches $b_{1,1}$ (with $(b_{1,2}, b_{1,3})$ matched internally) and $u_2$ matches $b_{2,1}$ (with $(b_{2,2}, b_{2,3})$ matched internally). Total matches $= 4$, so $\text{Ans} = 4 - 2 = 2$ baskets with $\le 1$ ball.
+- **What Breaks If You Connect a Full Triangle $(b_{j,1}, b_{j,2}), (b_{j,2}, b_{j,3}), (b_{j,3}, b_{j,1})$?** Even with a full triangle inside $\{b_{j,1}, b_{j,2}, b_{j,3}\}$, at most $1$ internal edge can be matched when $c_j \in \{0, 1\}$, so a full triangle also works — **however**, if you run `bfs` on basket vertices *before* ball vertices without checking that all $N$ balls are matched, an isolated ball $u_1$ with no edges would leave $\nu(G') > 0$ even though no valid placement of all $N$ balls exists!
+
+:::: {.callout-note collapse="true" title="Progressive Hints for Problem #173"}
+- **Hint 1**: Write down the total number of matched edges inside basket $j$ (external ball edges + internal basket edges) when $0, 1, 2, 3$ balls enter basket $j$.
+- **Hint 2**: Split basket $j$ into $b_{j,1}, b_{j,2}, b_{j,3}$ and add $(b_{j,2}, b_{j,3})$. Verify that $c_j$ balls can achieve $c_j + [c_j \le 1]$ matched edges!
+- **Hint 3**: Always augment all $N$ ball vertices first (`for (int i = 1; i <= n; ++i) bfs(i)`), then augment the remaining basket vertices, and output `total_matches - n` along with `belong[i] = (match[i] - n - 1) / 3 + 1`.
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Implementation Contract — Problem #173 (Two-Phase Blossom Gadget)"}
+```cpp
+void solve_case() {
+    int n, m, e;
+    cin >> n >> m >> e;
+    // Vertices 1..n: balls; n + 3*(j-1) + 1..3: basket j slots
+    BlossomSolver solver(n + 3 * m);
+    for (int j = 1; j <= m; ++j) {
+        int b1 = n + 3 * (j - 1) + 1;
+        int b2 = b1 + 1, b3 = b1 + 2;
+        solver.add_edge(b2, b3); // Internal bonus edge!
+    }
+    for (int k = 0; k < e; ++k) {
+        int u, j;
+        cin >> u >> j;
+        int b1 = n + 3 * (j - 1) + 1;
+        solver.add_edge(u, b1);
+        solver.add_edge(u, b1 + 1);
+        solver.add_edge(u, b1 + 2);
+    }
+    int matched = 0;
+    // Phase 1: Match all N balls first (mandatory!)
+    for (int i = 1; i <= n; ++i)
+        if (!solver.match[i]) matched += solver.bfs(i);
+    // Phase 2: Match remaining internal basket bonus edges
+    for (int v = n + 1; v <= n + 3 * m; ++v)
+        if (!solver.match[v]) matched += solver.bfs(v);
+
+    cout << (matched - n) << "\n";
+    for (int i = 1; i <= n; ++i)
+        cout << (solver.match[i] - n - 1) / 3 + 1 << (i == n ? '\n' : ' ');
+}
+```
+::::
+
+---
+
+### Problem `#174` (`Adv-2`): `[CF 1045A]` Last Chance
+
+> **Judge Link**: [Codeforces 1045A](https://codeforces.com/problemset/problem/1045/A)
+> **Constraints**: $N \le 5000$ weapons, $M \le 5000$ spaceships, Time Limit $2.0\text{ s}$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+We have $N$ weapons of three types targeting $M$ spaceships:
+
+- **Type 0**: Fires at $1$ spaceship from an explicit list $K_i$.
+- **Type 1**: Fires at $1$ spaceship in a contiguous interval $[l_i, r_i]$ (requires **1D Segment Tree Out-Tree**).
+- **Type 2**: Fires at **either $0$ or $2$** spaceships from a given triple $\{a_i, b_i, c_i\}$, where the triples of all Type 2 weapons are **pairwise disjoint**!
+
+#### Step 2: Intermediate Algebraic / Logical Representation
+
+In standard Max-Flow, an edge $S \xrightarrow{2} w_i$ allows Type 2 weapon $w_i$ to destroy $0, 1,$ or $2$ spaceships in $\{a_i, b_i, c_i\}$. Why can we **relax** $\{0, 2\}$ to $\{0, 1, 2\}$ during Dinic and fix any degree-$1$ violation in $O(1)$ time afterward?
+
+Suppose in the maximum flow, a Type 2 weapon $w_i$ pushes only **$1$ unit of flow** (say to $a_i$), while neither $b_i$ nor $c_i$ is matched to $w_i$. Could $b_i$ be completely unmatched in the maximum flow? **No!** If $b_i$ were unmatched, $S \to w_i \to b_i \to T$ would be a valid augmenting path, contradicting maximality of the flow! Therefore, both $b_i$ and $c_i$ **must already be matched by some Type 0 or Type 1 weapon** (since Type 2 triples are pairwise disjoint!). We can simply **steal $b_i$ from that Type 0/1 weapon** and give $b_i$ to $w_i$ (so $w_i$ now destroys $2$ ships $\{a_i, b_i\}$, while the Type 0/1 weapon drops from $1$ ship to $0$ ships), preserving the total number of destroyed ships!
+
+#### Step 3: Reverse-Engineering Scratchpad (Out-Tree + Post-Flow Leaf Theft)
+
+1. Build an Out-Segment Tree over spaceships $[1, M]$ with leaves wired $\text{leaf}_s \xrightarrow{1} T$ and internal edges $p \xrightarrow{\infty} lc, rc$.
+2. Connect Type 0 weapons $S \xrightarrow{1} w_i \xrightarrow{1} \text{leaf}_s$ ($s \in K_i$), Type 1 weapons $S \xrightarrow{1} w_i \xrightarrow{1} h$ for canonical Out-Tree hubs $h \subseteq [l_i, r_i]$, and Type 2 weapons $S \xrightarrow{2} w_i \xrightarrow{1} \text{leaf}_{a_i}, \text{leaf}_{b_i}, \text{leaf}_{c_i}$.
+3. Run Dinic. Then decompose the flow on the Out-Tree DAG to find which weapon $w_i$ actually hit each matched spaceship $s$. Finally, for any Type 2 weapon $w_i$ that only hit $1$ ship $a_i$, reassign $b_i$ from its current Type 0/1 owner to $w_i$!
+
+#### Step 4: Hand-Checkable Toy Trace & Broken Gadget Counterexample
+
+Suppose Type 1 weapon $w_1$ covers $[1, 2]$ and Type 2 weapon $w_2$ covers $\{1, 2, 3\}$. If Dinic routes $w_1 \to 1, w_2 \to 2$ (and $3$ is also hit by $w_3 \to 3$), $w_2$ has degree $1$. Post-processing steals ship $1$ from $w_1$ and assigns $\{1, 2\}$ to $w_2$, leaving $w_1$ idle and $w_2$ with $\{1, 2\}$ (size $2$)!
+
+:::: {.callout-note collapse="true" title="Progressive Hints for Problem #174"}
+- **Hint 1**: Why can't a Type 2 weapon with $1$ unit of flow have an unmatched neighbor $b_i$? Because $S \to w_i$ still has residual capacity $2 - 1 = 1$, so $S \to w_i \to b_i \to T$ would augment the flow!
+- **Hint 2**: How do you reconstruct the explicit matching pairs $(w_i, \text{ship})$ through the Segment Tree Out-Tree? Run a simple DFS/path-peeling from each Type 1 weapon $w_i$ with $f(S \to w_i) = 1$ down the Out-Tree edges with $f(u \to v) > 0$, decrementing $f(u \to v)$ by $1$ along the path to the leaf!
+- **Hint 3**: After recovering `owner[ship]` for all ships, loop over Type 2 weapons; if `assigned[w].size() == 1`, pick one of its other two targets `x`, erase `x` from `owner[x]`, and assign `owner[x] = w`.
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Implementation Contract — Problem #174 (Path Peeling & Type-2 Theft)"}
+```cpp
+// After Dinic max-flow on Out-Tree:
+int find_leaf_and_decrement(int u, Dinic &dinic) {
+    if (is_ship_leaf[u]) return ship_id[u];
+    for (auto &e : dinic.adj[u]) {
+        if (e.to != parent_or_rev && e.flow > 0) {
+            e.flow--;
+            return find_leaf_and_decrement(e.to, dinic);
+        }
+    }
+    return -1;
+}
+// Post-processing for Type 2 weapons with exactly 1 assigned ship:
+for (int i = 1; i <= n; ++i) {
+    if (type[i] == 2 && hits[i].size() == 1) {
+        int taken = hits[i][0];
+        int steal = (triple[i][0] != taken) ? triple[i][0] : triple[i][1];
+        int old_w = owner[steal];
+        hits[old_w].clear();
+        owner[steal] = i;
+        hits[i].push_back(steal);
+    }
+}
+```
+::::
+
+---
+
+### Problem `#175` (`Mas-1`): All-Edges Matching Classification (`可行边` & `必须边`) & Matching Matroid Basis (`CF Gym 102155 J` / Tutte Pfaffian Oracle)
+
+> **Judge Link**: [CF Gym 102155 Problem J (Choosing Subsets)](https://codeforces.com/gym/102155/problem/J)
+> **Constraints**: $N \le 500$, $M \le \binom{N}{2}$, Vertex weights $w_v \le 10^9$, Time Limit $2.0\text{ s}$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+Given a general non-bipartite graph $G = (V, E)$ with $N \le 500$, we must either:
+
+1. **Task A (All-Edges Classification)**: Determine for **every** edge $e = (u, v) \in E$ whether $e$ belongs to **at least one** maximum matching (`可行边`) and whether $e$ belongs to **every** maximum matching (`必须边`).
+2. **Task B (`CF Gym 102155 J`, Matching Matroid Basis)**: Find a maximum-matching-saturable subset of vertices $S \subseteq V$ of **maximum total vertex weight** $\sum_{v \in S} w_v$.
+
+Both tasks require algebraic reasoning on the **Skew-Symmetric Tutte Matrix $T(G)$** (Theorem 22.4) in $O(N^3)$ time over $\mathbb{F}_{998244353}$.
+
+#### Step 2: Intermediate Algebraic / Logical Representation
+
+Let $T(G)$ be the $N \times N$ skew-symmetric Tutte matrix with random $x_{u,v} \in \mathbb{F}_p^\times$.
+
+- **For Task B (Matching Matroid)**: By Tutte's Theorem, a subset $S \subseteq V$ can be covered by some matching of $G$ iff the row space of $T(G)[S, V]$ has full rank $|S|$ — that is, the rows of $T(G)$ form a **linear matroid** over $\mathbb{F}_p$ that represents the **Matching Matroid**! Therefore, we simply sort the vertices $v_1, \dots, v_N$ in **descending order of weight $w_v$** and maintain a **Linear Basis (Gaussian Elimination)** over the rows of $T(G)$, greedily inserting row $T_{v_i, *}$ if it is linearly independent of previously chosen rows!
+- **For Task A (Feasible & Essential Edges)**: Let $r = \operatorname{rank}(T(G)) = 2\nu(G)$. Pad $T(G)$ with $d = N - r$ universal dummy vertices $w_1, \dots, w_d$ connected to all $v \in V$ with random weights to form an invertible $(N+d) \times (N+d)$ skew-symmetric matrix $\hat{T}$, and compute $B = \hat{T}^{-1} \pmod p$. Then:
+  - $(u, v)$ is **Feasible (`可行边`)** $\iff B_{u,v} \not\equiv 0 \pmod p$;
+  - $(u, v)$ is **Essential (`必须边`)** $\iff T_{u,v} \cdot B_{v,u} \equiv 1 \pmod p$.
+
+#### Step 3: Reverse-Engineering Scratchpad (Gaussian Elimination & Matrix Inversion)
+
+1. Generate $T_{u,v} = \text{rng}() \bmod (p - 1) + 1$ and $T_{v,u} = (p - T_{u,v}) \bmod p$ for each $(u, v) \in E$.
+2. For `CF Gym 102155 J`: Sort vertices by $w_v$ descending; insert each row into an $N$-dimensional Gaussian basis `basis[col]`. Every vertex whose row successfully inserts into `basis` is chosen!
+3. For All-Edges Classification: Find $r = \operatorname{rank}(T)$, append $d = N - r$ universal dummy rows/columns to build $\hat{T}$ of size $K = N + d$, invert $\hat{T}$ via Gauss–Jordan elimination to get $B = \hat{T}^{-1}$, and read off $B_{u,v} \neq 0$ and $T_{u,v} B_{v,u} \equiv 1 \pmod p$ in $O(1)$ per edge!
+
+#### Step 4: Hand-Checkable Toy Trace & Broken Gadget Counterexample
+
+On $G = K_3 = \{1, 2, 3\}$, $\nu(K_3) = 1$, so $r = 2$ and we add $d = 3 - 2 = 1$ universal dummy vertex $4$. Every pair in $\{1, 2, 3\}$ can match with the remaining vertex paired to $4$, so $B_{1,2}, B_{2,3}, B_{3,1}$ are all non-zero (**all 3 edges are feasible**), while none equals $T_{u,v}^{-1}$ (**0 edges are essential**).
+
+- **What Breaks If You Forget the $d = N - 2\nu(G)$ Dummy Vertices?** On $K_3$, $N = 3$ is odd, so $\det T(K_3) = 0$ identically (`T` is singular and cannot be inverted at all)! Even if $N$ is even, whenever $\nu(G) < N/2$, $T(G)$ is singular and must be padded with $d = N - 2\nu(G)$ universal dummies before inversion.
+
+:::: {.callout-note collapse="true" title="Progressive Hints for Problem #175"}
+- **Hint 1**: Why do the rows of $T(G)$ represent the Matching Matroid? Because if $S$ is covered by a matching $M$, then $V(M)$ is an even-sized superset of $S$ where $\det T[V(M), V(M)] \neq 0$, meaning the rows of $S$ are linearly independent in $T(G)$!
+- **Hint 2**: How do you find $d = N - 2\nu(G)$ before building $\hat{T}$? Run one Gaussian elimination on a copy of $T(G)$ to find its rank $r = 2\nu(G)$, then set $d = N - r$.
+- **Hint 3**: Once $B = \hat{T}^{-1}$ is computed in $O((N+d)^3)$, `feasible(u, v)` is `B[u][v] != 0` and `essential(u, v)` is `1LL * T[u][v] * B[v][u] % MOD == 1`.
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Implementation Contract — Problem #175 (Tutte Inverse & Matching Matroid)"}
+```cpp
+const int MOD = 998244353;
+long long qpow(long long a, long long b = MOD - 2) {
+    long long r = 1;
+    for (; b; b >>= 1, a = a * a % MOD) if (b & 1) r = r * a % MOD;
+    return r;
+}
+
+// Invert K x K matrix A mod 998244353; returns rank and writes A^{-1} into invA
+int invert_matrix(vector<vector<int>> A, vector<vector<int>> &invA) {
+    int K = A.size();
+    invA.assign(K, vector<int>(K, 0));
+    for (int i = 0; i < K; ++i) invA[i][i] = 1;
+    int rank = 0;
+    for (int col = 0; col < K; ++col) {
+        int piv = -1;
+        for (int row = rank; row < K; ++row)
+            if (A[row][col]) { piv = row; break; }
+        if (piv == -1) continue;
+        swap(A[rank], A[piv]); swap(invA[rank], invA[piv]);
+        long long inv_p = qpow(A[rank][col]);
+        for (int j = 0; j < K; ++j) {
+            A[rank][j] = A[rank][j] * inv_p % MOD;
+            invA[rank][j] = invA[rank][j] * inv_p % MOD;
+        }
+        for (int row = 0; row < K; ++row) if (row != rank && A[row][col]) {
+            long long factor = A[row][col];
+            for (int j = 0; j < K; ++j) {
+                A[row][j] = (A[row][j] - factor * A[rank][j]) % MOD;
+                if (A[row][j] < 0) A[row][j] += MOD;
+                invA[row][j] = (invA[row][j] - factor * invA[rank][j]) % MOD;
+                if (invA[row][j] < 0) invA[row][j] += MOD;
+            }
+        }
+        ++rank;
+    }
+    return rank;
+}
+```
+::::
+
+---
+
+### Problem `#176` (`Mas-2`): `[NOI2019 / Luogu P5471 / LOJ #3159]` 弹跳 (Bounce) & 2D KD-Tree / Manhattan Hub Synthesis (`AGC 034D`)
+
+> **Judge Links**: [LOJ #3159](https://loj.ac/p/3159) / [Luogu P5471](https://www.luogu.com.cn/problem/P5471) / [AtCoder AGC 034D](https://atcoder.jp/contests/agc034/tasks/agc034_d)
+> **Constraints**: $N \le 7 \times 10^4$ cities, $M \le 1.5 \times 10^5$ 2D rectangle jump devices, **Memory Limit $128\text{ MB}$**, Time Limit $2.0\text{ s}$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+In `[NOI2019] 弹跳`, each jump device at city $p_k$ can reach all cities inside a 2D axis-aligned rectangle $[L_k, R_k] \times [D_k, U_k]$ at cost $t_k$, under a **strict $128\text{ MB}$ memory limit**. In its companion `[AGC 034D] Manhattan Max Matching`, we must pair $N$ red points $(RX_i, RY_i, RC_i)$ with $N$ blue points $(BX_j, BY_j, BC_j)$ ($\sum RC_i \le 10^4$) to **maximize total Manhattan distance** $\sum (|RX_i - BX_j| + |RY_i - BY_j|)$.
+
+- In `NOI2019 弹跳`, building a 2D Segment Tree of $O(N \log^2 N)$ nodes plus $O(M \log^2 N)$ explicit graph edges requires $> 500\text{ MB}$ and immediately MLEs! We must replace it with an **$O(N)$-node 2D KD-Tree** with implicit bounding-box pruning!
+- In `AGC 034D`, building $N^2 = 10^6$ bipartite MCMF edges TLEs; we factor the 2D Manhattan norm through **4 Sign Hubs** (Architecture 6).
+
+#### Step 2: Intermediate Algebraic / Logical Representation
+
+- **2D KD-Tree Bounding-Box Decomposition**: Partition the $N$ points recursively by alternating `nth_element` on $x$ (even depth) and $y$ (odd depth). Each KD-Tree node $u$ stores its exact bounding box $[xl_u, xr_u] \times [yl_u, yr_u]$ and uses strictly $N$ nodes in total! In a Min-Cut or Flow problem on 2D rectangles, $u \xrightarrow{\infty, 0} lc_u, rc_u$ forms an $O(N)$-node Out-Tree where any rectangle query attaches to $O(\sqrt{N})$ canonical KD-Tree hubs. Under `NOI2019 弹跳`'s 128 MB limit, we don't even materialize the query-to-hub edges: the priority queue pushes `(dist, rect_id)` and lazily relaxes the KD-Tree subtrees, skipping any node $u$ whose `min_val[u] <= d`!
+- **4-Sign Manhattan Factorization (`AGC 034D`)**: Rewrite the Manhattan distance between red point $i$ and blue point $j$ as:
+
+  $$|RX_i - BX_j| + |RY_i - BY_j| = \max_{s_x, s_y \in \{+1, -1\}} \Big[ (s_x RX_i + s_y RY_i) + (-s_x BX_j - s_y BY_j) \Big]$$
+
+  Since we are **maximizing** total cost in Max-Cost Max-Flow, the $\max$ over the $4$ sign pairs $(s_x, s_y) \in \{+1, -1\}^2$ is chosen automatically by the maximum-cost flow!
+
+#### Step 3: Reverse-Engineering Scratchpad (KD-Tree & 4-Sign Hubs)
+
+1. **For `AGC 034D`**: Create **just $4$ virtual hubs** $H_0, H_1, H_2, H_3$ corresponding to $(s_x, s_y) \in \{(+1, +1), (+1, -1), (-1, +1), (-1, -1)\}$.
+   - For each red group $i$, connect $S \xrightarrow{RC_i, 0} R_i$, and for each $k \in \{0, 1, 2, 3\}$ connect $R_i \xrightarrow{\infty,\; s_x RX_i + s_y RY_i} H_k$.
+   - For each blue group $j$, connect $B_j \xrightarrow{BC_j, 0} T$, and for each $k \in \{0, 1, 2, 3\}$ connect $H_k \xrightarrow{\infty,\; -s_x BX_j - s_y BY_j} B_j$.
+   - Total vertices $= 2N + 6$, total edges $= 10N$!
+2. **For `NOI2019 弹跳`**: Build the $N$-node KD-Tree over the $N$ cities in $O(N \log N)$ time. When Dijkstra pops a rectangle jump `[L, R, D, U]` with time $d$, recursively traverse the KD-Tree:
+   - If `d >= tag[u]` or `[L, R] x [D, U]` is disjoint from `[xl[u], xr[u]] x [yl[u], yr[u]]`, prune immediately!
+   - If `[xl[u], xr[u]] x [yl[u], yr[u]]` is completely inside `[L, R] x [D, U]`, update `tag[u] = d`, relax the point at `u`, and stop!
+
+#### Step 4: Hand-Checkable Toy Trace & Broken Gadget Counterexample
+
+In `AGC 034D` with $R_1 = (1, 2)$ and $B_1 = (4, 0)$:
+
+- The 4 paths $R_1 \to H_k \to B_1$ have weights:
+  - $(+1, +1)$: $(1 + 2) + (-4 - 0) = -1$
+  - $(+1, -1)$: $(1 - 2) + (-4 + 0) = -5$
+  - $(-1, +1)$: $(-1 + 2) + (4 - 0) = \mathbf{+5} = |1 - 4| + |2 - 0|$
+  - $(-1, -1)$: $(-1 - 2) + (4 + 0) = +1$
+- Max-Cost Flow automatically routes through $H_{(-1, +1)}$ to pick the exact maximum $+5$!
+- **What Breaks If You Use 4-Sign Hubs for MINIMUM Manhattan Matching?** If you want to **minimize** $\sum (|RX_i - BX_j| + |RY_i - BY_j|)$, Min-Cost Flow picks the **minimum** over the 4 hubs ($-5$ instead of $+5$), which equals $-|RX_i - BX_j| - |RY_i - BY_j|$! The 4-Sign Hub trick works **only** when maximizing Manhattan distance (or cutting in a dual formulation); for *minimum* Manhattan distance in 1D, you must use the **CDQ Bi-Directional Sorted Value Chain** (Architecture 4, Problem `#172`)!
+
+:::: {.callout-note collapse="true" title="Progressive Hints for Problem #176"}
+- **Hint 1**: Why does `NOI2019 弹跳` give a $128\text{ MB}$ memory limit? Specifically to fail $O(M \log^2 N)$-edge 2D Segment Tree graphs! An $N$-node 2D KD-Tree uses only $O(N)$ memory.
+- **Hint 2**: In the KD-Tree traversal `apply_rect(u, L, R, D, U, d)`, always check `if (d >= sub_tag[u]) return;` at the very top of the function so each KD-Tree node is tagged at most once in increasing order of Dijkstra distance `d`!
+- **Hint 3**: For `AGC 034D`, remember to negate the costs (`-cost`) and add Johnson potentials (or Bellman-Ford initial potentials) before running Dijkstra-SSP for Max-Cost Max-Flow!
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Implementation Contract — Problem #176 (2D KD-Tree & 4-Sign Manhattan Hubs)"}
+```cpp
+// Part A: 4-Sign Manhattan Hub Compilation (AGC 034D)
+void build_manhattan_hubs(int N, MCMF &mcmf, int S, int T) {
+    int H[4] = {2 * N + 1, 2 * N + 2, 2 * N + 3, 2 * N + 4};
+    int sx[4] = {1, 1, -1, -1}, sy[4] = {1, -1, 1, -1};
+    for (int i = 1; i <= N; ++i) {
+        mcmf.add_edge(S, i, RC[i], 0);
+        for (int k = 0; k < 4; ++k)
+            mcmf.add_edge(i, H[k], INF, -(sx[k] * RX[i] + sy[k] * RY[i]));
+    }
+    for (int j = 1; j <= N; ++j) {
+        mcmf.add_edge(N + j, T, BC[j], 0);
+        for (int k = 0; k < 4; ++k)
+            mcmf.add_edge(H[k], N + j, INF, -(-sx[k] * BX[j] - sy[k] * BY[j]));
+    }
+}
+
+// Part B: 2D KD-Tree Bounding-Box Relaxation (NOI2019 Bounce, 128 MB)
+void relax_kdt(int u, int L, int R, int D, int U, long long d) {
+    if (!u || d >= sub_tag[u] || xr[u] < L || xl[u] > R || yr[u] < D || yl[u] > U)
+        return;
+    if (L <= xl[u] && xr[u] <= R && D <= yl[u] && yr[u] <= U) {
+        sub_tag[u] = d;
+        if (d < pt_dist[u]) {
+            pt_dist[u] = d;
+            pq.push({d, -u}); // -u denotes city u
+        }
+        return;
+    }
+    if (L <= px[u] && px[u] <= R && D <= py[u] && py[u] <= U && d < pt_dist[u]) {
+        pt_dist[u] = d;
+        pq.push({d, -u});
+    }
+    relax_kdt(lc[u], L, R, D, U, d);
+    relax_kdt(rc[u], L, R, D, U, d);
+}
+```
+::::
+
+---
+
+## 7. Pre-Submission Checklist (`FM-22` & `H-22` Audit)
+
+Before submitting any Data-Structure-Accelerated Flow Graph or Non-Bipartite Matching solution, verify all six invariants:
+
+1. **In-Tree vs. Out-Tree Separation (`H-22`)**: Did you keep $\mathcal{T}_{\text{in}}$ (bottom-up: $lc, rc \to p$) and $\mathcal{T}_{\text{out}}$ (top-down: $p \to lc, rc$) as strictly separate node sets? Never make a single segment tree bidirectional!
+2. **Capacity Placement (`FM-22`)**: Are all internal edges inside your Segment Tree, Persistent Segment Tree, KD-Tree, or Binary Lifting table set to **capacity $\infty$ and cost $0$**? Finite capacities $c_k$ and costs $w_k$ belong exclusively on the unique query bridge $b_{\text{in}, k} \xrightarrow{c_k, w_k} b_{\text{out}, k}$ or on the $N$ leaf edges!
+3. **Duplicate-Key Leaf Chaining (`主席树`)**: In `insert_pst(u, prev, ...)`, did you connect `dinic.add_edge(u, prev, INF)` so earlier items with identical coordinate-compressed keys are never orphaned?
+4. **4-Sign Manhattan Direction**: Are you **maximizing** $|x_1 - x_2| + |y_1 - y_2|$? Remember that 4-Sign Hubs only work for $\max$; for *minimizing* $|a_i - a_j|$ with $j < i$, use **CDQ + 1D Bi-Directional Sorted Value Chain** (`#172`).
+5. **Blossom Bridge & Two-Phase Ordering**: In Edmonds' Blossom `contract(u, v, b)`, did you set `pre[x] = y` before advancing `y = match[x]`? And in vertex-splitting step gadgets (`#173`), did you augment mandatory ball vertices **before** optional internal basket edges?
+6. **Tutte Dummy Padding**: Before inverting $T(G)$ to classify feasible/essential edges (`#175`), did you pad $T(G)$ with $d = N - 2\nu(G)$ universal dummy vertices so $\hat{T}$ has full rank $N + d$?
+
+---
+
+## 8. Chapter Summary, Quarantined Templates & Bridge to Chapter 23
+
+In this chapter, we learned how to break through the $\Theta(N^2)$ edge barrier in flow networks by factoring structured transition blocks through **Virtual Hub DAGs**, and how to cross the bipartite barrier into **General Non-Bipartite Matching** via the Tutte–Berge formula, Gallai–Edmonds decomposition, Edmonds' Blossom contraction (`带花树`), and the Randomized Skew-Symmetric Tutte Matrix $T(G)$.
+
+### Quarantined Pure-Template Problems
+
+The following problems are direct implementations of standard data-structure-optimized shortest paths or bare matching templates without new modelling reductions; we list them here for reference:
+
+| Problem ID | Title | Reason for Quarantine |
+| :--- | :--- | :--- |
+| **CF 786B** | Legacy | Pure Dual 1D Segment-Tree (`In-Tree` + `Out-Tree`) + Dijkstra template without flow/cut modelling. |
+| **UOJ #80** | 二分图最大权匹配 | Pure Kuhn–Munkres $O(N^3)$ template (covered in Chapter 13). |
+| **UOJ #81** | 一般图最大权匹配 | Pure Weighted Blossom LP Dual implementation template. |
+
+### Bridge to Chapter 23: Simulated Min-Cost Max-Flow (`模拟费用流`)
+
+What if even an $O(N \log N)$-node Virtual Hub DAG is **still too slow** for Dinic or Successive Shortest Paths — for instance, when $N = 2 \times 10^5$ and we need to send $K = 10^5$ units of flow in $O(N \log N)$ total time? In **Chapter 23 (Simulated Min-Cost Max-Flow, Regret Greedy & Slope Convexity)**, we will go one step further: instead of building the Virtual Hub DAG and feeding it to a black-box MCMF solver, we will **maintain the residual graph's augmenting paths and back-edges directly inside heaps, segment trees, and WQS/Slope Trick data structures**, simulating the exact augmenting steps of MCMF in $O(N \log N)$!
+
+---
+
+## Multilingual Bibliography (`[EN]`, `[ZH]`, `[JA]`)
+
+- **`[EN]` Edmonds, J. (1965)**. *"Paths, trees, and flowers."* Canadian Journal of Mathematics, 17, 449–467. (The foundational paper introducing Blossom contraction and the odd-set linear programming characterization of the matching polytope.)
+- **`[EN]` Tutte, W. T. (1947)**. *"The factorization of linear graphs."* Journal of the London Mathematical Society, 1(2), 107–111. (Introduces the skew-symmetric Tutte matrix $T(G)$ and the Tutte 1-factor theorem.)
+- **`[EN]` Lovász, L., & Plummer, M. D. (1986)**. *Matching Theory*. AMS Chelsea Publishing. (Definitive reference for the Gallai–Edmonds Canonical Decomposition, factor-critical graphs, and general $f$-factors.)
+- **`[EN]` Mucha, M., & Sankowski, P. (2004)**. *"Maximum matchings via Gaussian elimination."* Proceedings of the 45th Annual IEEE Symposium on Foundations of Computer Science (FOCS), 248–255. (Proves how the inverse of the Tutte matrix $B = T(G)^{-1}$ identifies feasible and essential matching edges.)
+- **`[ZH]` 国家集训队论文 / 陈立杰 (WJMZBMR) & 蔡德仁 (2015–2016)**. *《浅谈一般图匹配算法及其在竞赛中的应用（带花树与 Tutte 矩阵）》* & UOJ #79 / #81 / #171 官方题解. (Establishes the $O(N^3)$ lazy DSU + LCA Blossom implementation and the `[WC2016] 挑战 NPC` 3-vertex triangle gadget.)
+- **`[ZH]` 国家集训队论文 / 线段树、主席树与 CDQ 分治优化建图专题 (`OI-Wiki: 优化建图`)**. Covers Dual Segment Trees (`CF 786B`), Prefix Persistent Segment Trees (`BZOJ 3218`), CDQ Value-Chain MCMF (`[SDOI2019] 通信`), and 2D KD-Tree bounding-box pruning (`[NOI2019] 弹跳`).
+- **`[JA]` AtCoder Editorial & `maspypy` / `noshi91` Treatises**: *[AGC 034D] Manhattan Max Matching* (4-Sign Hub factorization for $L_1$-norm maximum-cost flow) and *General Matching & Tutte Matrix Pfaffians in Competitive Programming* (`Library Checker: Matching on General Graph`).

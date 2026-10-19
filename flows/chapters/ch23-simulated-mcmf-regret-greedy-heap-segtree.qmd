@@ -1,0 +1,1907 @@
+---
+title: "Chapter 23 — Simulated Cost Flow: Regret Greedy, Priority Queues, and Segment-Tree Augmentation"
+---
+
+## Prerequisites & Learning Objectives
+
+::: {.callout-note title="Prerequisites"}
+Before studying this chapter, make sure you are comfortable with:
+
+- **Chapter 17 (Minimum-Cost Flow Fundamentals)**: The Successive Shortest Path (SSP) algorithm, reduced costs $c^\pi(u, v) = c(u, v) + \pi(u) - \pi(v)$, and the discrete convexity of the minimum-cost flow function $C(f)$ with respect to the total flow $f$.
+- **Chapter 18 (1D Interval & Spine MCMF)**: Consecutive equation differencing ($E_t - E_{t-1}$) and why 1D interval covering or matching problems compile into flows along a directed spine.
+- **Chapter 20 & Chapter 21 (Bipartite MCMF & Linear Programming Duality)**: Complementary slackness, potential variables, and why dualizing a constrained optimization problem exposes a flow or cut network.
+:::
+
+::: {.callout-tip title="Learning Objectives"}
+By the end of this chapter, you will be able to:
+
+1. **Prove and apply the Regret-Heap Residual Isomorphism Theorem**: Translate every reverse residual arc $j \to i$ of cost $-(c_j - c_i)$ created during an SSP augmentation into an explicit **regret key** stored inside a priority queue (`反悔贪心` $\equiv$ `模拟费用流`).
+2. **Eliminate cardinality constraints via WQS / Aliens Binary Search (`CF 802 O`)**: Combine the convexity of $C(K)$ with a per-unit Lagrangian penalty $-\lambda$ so that an offline $K$-step SSP problem reduces to a single left-to-right sweep with a two-candidate regret heap in $O(N \log N \log V)$.
+3. **Simulate SSP on 1D ranges and trees (`CF 280 D`, `ICPC WF 2018 Conquer the World`, `UOJ #455`)**: Replace Bellman-Ford/Dijkstra with a Segment Tree that flips subarray signs upon augmentation, or with mergeable subtree heaps that decompose tree distances $d(u, v) = \operatorname{dep}(u) + \operatorname{dep}(v) - 2\operatorname{dep}(\operatorname{lca}(u, v))$ at each Lowest Common Ancestor.
+4. **Compile multi-state residual automata (`[NOI2019] 序列`)**: Enumerate all elementary augmenting paths and cycles on a constant-state vertex automaton, maintain each transition family in a lazy-deletion priority queue, and guard against missing cross-swap regret paths (`FM-23`).
+:::
+
+---
+
+## 23.1 Direction B for MCMF — Why Successive Shortest Paths Collapses to a Data Structure When $N \le 2 \times 10^5$
+
+In **Chapter 13**, we saw that when a Maximum Flow or Minimum Cut problem has $N \le 2 \times 10^5$ vertices, running Dinic's algorithm on an explicit graph is hopeless; instead, we use **Direction B (Graph $\to$ Data Structure)** to simulate the minimum cut via dynamic programming, segment trees, or greedy sweeps.
+
+The exact same phenomenon occurs—with even greater frequency in modern contests—for **Minimum-Cost Maximum Flow (MCMF)**. Suppose a problem has $N = 2 \times 10^5$ items, days, or tree vertices. Even if the underlying MCMF network is sparse ($|V|, |E| = O(N)$), running the explicit Successive Shortest Path (SSP) algorithm requires $F = \Theta(N)$ augmentations, each taking $\Omega(N)$ or $\Omega(N \log N)$ time via SPFA or Dijkstra with Johnson potentials—a fatal $\Theta(N^2 \log N)$ bottleneck.
+
+Yet in competitive programming, huge-scale MCMF networks are never arbitrary graphs. Their topology is almost always one of four structured families:
+
+1. **A 1D Directed Spine (Time / Prefix Order)**: Supply arrives at index $i$ and can only travel rightward to demand at index $j \ge i$.
+2. **A 1D Doubly-Linked Adjacency Chain or Interval Line**: Augmenting paths correspond to flipping the selection state of a contiguous subarray or alternating chain.
+3. **A Weighted Tree Metric**: Flow moves between subtrees, and the cost between $u$ and $v$ telescopes at $w = \operatorname{lca}(u, v)$ as $\operatorname{dep}(u) + \operatorname{dep}(v) - 2\operatorname{dep}(w)$.
+4. **A Constant-Size Hub or Vertex-State Automaton**: All $N$ items interact only through $O(1)$ global hub nodes (such as a shared token pool of capacity $K - L$).
+
+In Chinese competitive programming literature, the technique of executing the exact steps of SSP or Cycle Cancelling on these structured graphs using priority queues, segment trees, or mergeable heaps—without ever instantiating adjacency lists—is known as **Simulated Cost Flow (`模拟费用流`)**. Its priority-queue specialization is known as **Regret Greedy (`反悔贪心`)** or **Buy-Back Greedy**.
+
+### The Regret-Heap Residual Isomorphism Theorem
+
+Why do "regret heaps" work, and why do ad-hoc greedy intuition attempts so often fail on edge cases? Because **Regret Greedy is not a heuristic at all**: it is an exact, step-by-step algebraic encoding of the **residual graph** in the Successive Shortest Path algorithm.
+
+::: {.callout-important title="Theorem 23.1 (The Regret-Heap Residual Isomorphism Theorem)"}
+Consider a 1D prefix bipartite transportation network on indices $1, 2, \dots, N$ where:
+
+- Every supply node $i$ can inject $1$ unit of flow from the source $S$ at cost $-c_i$ (or acquisition cost $+c_i$).
+- Every demand node $j \ge i$ can absorb $1$ unit of flow into the sink $T$ at cost $+c_j$.
+- Thus, matching supply $i$ to demand $j$ ($i \le j$) along the forward spine costs $c_j - c_i$.
+
+Suppose that at step $j$, a unit of flow from $i$ is matched to $j$, contributing $c_j - c_i$ to the objective. In the MCMF residual network $G_f$, saturating the path $S \to i \to j \to T$ creates a **reverse residual arc** $T \to j \to i$ of residual cost $-(c_j - c_i)$.
+
+If a later demand node $k > j$ augments $1$ unit of flow by traversing this reverse residual arc $j \to i$ and continuing forward along $i \to k \to T$, the net change in total cost is:
+
+$$
+\Delta \text{Cost}(j \mapsto k) = \underbrace{-(c_j - c_i)}_{\text{reverse arc } j \to i} + \underbrace{(c_k - c_i)}_{\text{forward arc } i \to k} = c_k - c_j.
+$$
+
+Notice that the original supply cost $c_i$ **cancels out identically**! After this augmentation, the total accumulated cost is:
+
+$$
+(c_j - c_i) + (c_k - c_j) = c_k - c_i,
+$$
+
+which is the exact cost of having matched $i$ directly to $k$ in the first place. Therefore, **inserting a matched demand $j$ back into the candidate supply priority queue with a "regret key" equal to $c_j$ is $100\%$ isomorphic to exposing the reverse residual path $T \to j \to i$ in $G_f$.**
+:::
+
+*Proof.* In the explicit residual network $G_f$ on the 1D spine $1 \to 2 \to \dots \to N$:
+
+1. Before matching $(i, j)$, the arc $S \to i$ has capacity $1$ and cost $-c_i$, the spine arcs $t \to t+1$ have capacity $\infty$ and cost $0$, and the arc $j \to T$ has capacity $1$ and cost $+c_j$.
+2. Pushing $1$ unit of flow along $S \to i \to \dots \to j \to T$ saturates $S \to i$ and $j \to T$, and sends $1$ unit of positive flow along the spine segment $[i, j]$.
+3. Consequently, in $G_f$, the arc $T \to j$ (or equivalently, a virtual source arc $S_{\text{regret}} \to j$ representing the ability to **un-match $j$ from $T$**) appears with capacity $1$ and cost $-c_j$, while reverse spine arcs $t+1 \to t$ carry cost $0$ on $[i, j]$.
+4. Any future demand $k > j$ looking for the cheapest available supply in $[1, k]$ sees two classes of residual paths from $S$:
+   - **Fresh supplies** $i' \le k$ via $S \to i' \to \dots \to k \to T$ at cost $c_k - c_{i'}$.
+   - **Regret supplies** (redirected demands) $j \le k$ via $S \to i \to \dots \to j \xrightarrow{\text{cancel } j \to T} j \to \dots \to k \to T$ at incremental cost $(c_j - c_i) - (c_j - c_i) + (c_k - c_j) = c_k - c_j$.
+5. Both classes have the exact functional form $c_k - \text{key}$, where $\text{key} = c_{i'}$ for a fresh supply and $\text{key} = c_j$ for a regret supply. A single min-heap (for minimization of $c_i$, or max-heap for maximization of $c_i$) over all active keys in $[1, k]$ therefore returns the exact shortest augmenting path in $G_f$ in $O(\log N)$ time. $\blacksquare$
+
+```{mermaid}
+flowchart LR
+  subgraph Explicit["Explicit MCMF Residual Augmentation"]
+    S(("S")) -->|"-c_i (saturated)"| I(("Node i"))
+    I -->|"flow = 1"| J(("Node j"))
+    J -->|"+c_j (saturated)"| T(("T"))
+    T -.->|"Reverse Residual: -c_j"| J
+    J -.->|"Forward Spine: 0"| K(("Node k"))
+    K -->|"+c_k"| T
+  end
+  subgraph Heap["Regret-Heap Isomorphism"]
+    H1["Step j: Pop c_i from Min-Heap\nAdd (c_j - c_i) to Profit\nPush Regret Key c_j into Min-Heap"] --> H2["Step k: Pop Regret Key c_j\nAdd (c_k - c_j) to Profit\nTelescoped Total = c_k - c_i"]
+  end
+```
+
+### Worked Trace: `CF 865 D — Buy Low Sell High` and the Zero-Net-Position Relay
+
+Let us see how Theorem 23.1 immediately resolves a classic problem where naive greedy fails, and why a subtle **double-push invariant** is forced by the residual graph.
+
+#### Problem Statement (`CF 865 D`)
+You are given the stock price $p_1, p_2, \dots, p_N$ over $N \le 3 \times 10^5$ days. On each day $t$, you may do **at most one** of three actions:
+
+- **Buy** $1$ share at price $p_t$ (contributing $-p_t$ to cash),
+- **Sell** $1$ share at price $p_t$ (contributing $+p_t$ to cash, provided you hold at least $1$ share), or
+- **Do nothing** ($0$ change).
+
+You start with $0$ shares andunlimited cash. Find the maximum total profit after day $N$.
+
+#### 4-Step English-to-Graph Compilation
+
+1. **Step 1 (Diagnostic Signal)**:
+   $N = 3 \times 10^5$ rules out $O(N^2)$ DP (tracking `(day, shares_held)`) and explicit MCMF. Because each day's decision is a unit-capacity assignment $x_t \in \{-1, 0, +1\}$ with prefix non-negativity $\sum_{t=1}^k x_t \ge 0$, this is a 1D spine maximum-weight matching where a buy at $i$ pairs with a sell at $j > i$ for profit $p_j - p_i$.
+2. **Step 2 (Algebraic & Residual Model)**:
+   On day $j$, the node $j$ has capacity $1$: its net change in shares is $x_j \in \{-1, 0, +1\}$ (where $+1$ means buy, $-1$ means sell).
+   Suppose day $j$ is initially matched as a **sell** ($x_j = -1$) paired with an earlier buy at day $i < j$ ($x_i = +1$), earning $p_j - p_i$.
+   Now, as we move to future days $k > j$, what can the residual network do with vertex $j$? Because $x_j$ starts at $-1$ and is allowed to increase all the way to $+1$, **vertex $j$ has $2$ units of residual upward capacity** ($-1 \to 0$ and $0 \to +1$), both at marginal cost $p_j$!
+   - **Unit 1 (The Regret Token, $x_j : -1 \to 0$)**: Cancel the sale at day $j$, paying back $p_j$, and route the share from $i$ onward to sell at day $k$ for $+p_k$. Net change at $j$: $x_j = 0$ (do nothing!). Telescoped profit: $(p_j - p_i) + (p_k - p_j) = p_k - p_i$.
+   - **Unit 2 (The Fresh Buy Token, $x_j : 0 \to +1$)**: After cancelling the sale at $j$ (so $x_j = 0$), day $j$ is now completely idle and can **also** buy a fresh share ($x_j = +1$) at price $p_j$ to sell at some second future day $k' > j$!
+3. **Step 3 (Mechanical Heap Compilation — Why We Push $p_j$ Twice!)**:
+   Maintain a min-heap $H$ of available buy/regret prices. On day $j$:
+   - Always push $p_j$ **once** into $H$ (representing the fresh buy transition $x_j : 0 \to +1$ at cost $p_j$).
+   - Check the minimum element $x = \min(H)$. If $p_j > x$, selling at $p_j$ against $x$ is profitable:
+     - Add $p_j - x$ to `profit` and pop $x$ from $H$.
+     - Push $p_j$ a **second time** into $H$ (representing the regret transition $x_j : -1 \to 0$ that un-sells at $p_j$)!
+   Notice the symmetry: if we did not match at $j$, $p_j$ is in $H$ **once** (residual capacity $1$: $0 \to +1$). If we matched at $j$ ($x_j = -1$), $p_j$ is in $H$ **twice** (residual capacity $2$: $-1 \to 0$ and $0 \to +1$)!
+4. **Step 4 (Hand-Checkable Toy Trace & Broken-Gadget Counterexample)**:
+   Consider $N = 4$ days with prices $p = [1, 5, 10, 20]$.
+   - **Day 1 ($p_1 = 1$)**: Push $1$. $H = \{1\}$, `profit = 0`.
+   - **Day 2 ($p_2 = 5$)**: Push $5 \implies H = \{1, 5\}$. Since $5 > \min(H) = 1$, pop $1$, add $5 - 1 = 4$ to `profit`, and push regret key $5 \implies H = \{5_{\text{fresh}}, 5_{\text{regret}}\}$, `profit = 4`. (Current state: Buy at 1, Sell at 2).
+   - **Day 3 ($p_3 = 10$)**: Push $10 \implies H = \{5_{\text{fresh}}, 5_{\text{regret}}, 10\}$. Since $10 > \min(H) = 5$, pop $5_{\text{regret}}$, add $10 - 5 = 5$ to `profit`, and push regret key $10 \implies H = \{5_{\text{fresh}}, 10_{\text{fresh}}, 10_{\text{regret}}\}$, `profit = 4 + 5 = 9`. (Current state: Buy at 1, Do Nothing at 2, Sell at 3).
+   - **Day 4 ($p_4 = 20$)**: Push $20 \implies H = \{5_{\text{fresh}}, 10, 10, 20\}$. Since $20 > \min(H) = 5_{\text{fresh}}$, pop $5_{\text{fresh}}$, add $20 - 5 = 15$ to `profit`, and push regret key $20 \implies$ `profit = 9 + 15 = 24`!
+   - **Check**: Buying on Days 1 and 2 ($-1 - 5 = -6$) and selling on Days 3 and 4 ($+10 + 20 = +30$) yields $30 - 6 = 24$.
+   - **What breaks if we only push $p_j$ once on a match?** On Day 2, if we only pushed one $5$ (the regret token) and forgot the fresh-buy token $5_{\text{fresh}}$, then after Day 3 popped $5$ to form $(1, 3)$, Day 2 would have no token left in $H$! Day 4 would be forced to match with $10$ for profit $9 + (20 - 10) = 19 < 24$, missing the optimal disjoint pairs $(1, 3)$ and $(2, 4)$.
+
+::: {.callout-note title="The Slope-Trick Dual Isomorphism (`CF 713C` $\leftrightarrow$ `CF 865D`)"}
+Compare the 5-line inner loop of `CF 865 D` (min-heap):
+```cpp
+H.push(p);
+if (H.top() < p) { ans += p - H.top(); H.pop(); H.push(p); }
+```
+with the 5-line inner loop of **1D $\ell_1$ Isotonic Regression** (`CF 713 C — Sonya and Problem Wihtout a Legend`, minimizing $\sum |b'_i - a'_i|$ subject to $b'_1 \le \dots \le b'_N$ via a Slope-Trick max-heap):
+```cpp
+H.push(a);
+if (H.top() > a) { ans += H.top() - a; H.pop(); H.push(a); }
+```
+They are **literally identical up to heap orientation**! Why? By Linear Programming Duality (**Chapter 21**), minimizing $\sum_i |b'_i - a'_i|$ subject to $b'_i - b'_{i-1} \ge 0$ is the dual of a 1D spine circulation problem where each node $i$ has capacity $2$ ($f_i \in [-1, +1]$) and cost $a'_i$. Adding $|x - a'_i|$ to the Slope-Trick convex function inserts **two** slope-change breakpoints at $a'_i$, corresponding to the exact two units of residual capacity ($-1 \to 0$ and $0 \to +1$) in `CF 865 D`!
+:::
+
+---
+
+## 23.2 Prefix-Constrained Bipartite Matching ($i \le j$) & WQS / Aliens Convex Penalty Elimination (`CF 802 O — April Fools' Problem (hard)`)
+
+In `CF 865 D`, we were allowed to make **any number** of profitable transactions, and a single node $j$ could simultaneously cancel a sale and buy a fresh share. Now consider a strictly harder and ubiquitous archetype: **cardinality-constrained prefix matching** where left and right endpoints are distinct resources.
+
+### Problem Statement (`CF 802 O — April Fools' Problem (hard)`)
+Over $N \le 5 \times 10^5$ days, on day $i$ you can prepare at most $1$ problem at cost $a_i$, and on day $j$ you can print at most $1$ problem at cost $b_j$. A problem prepared on day $i$ can be printed on day $j$ if and only if $i \le j$. You must prepare and print **at least $K$** (equivalently, **exactly $K$** since $a_i, b_j \ge 0$) problems. Find the minimum total cost.
+
+### Why Naive $K$-Step Online Regret Fails (`FM-23` / `H-24`)
+Suppose we try to avoid binary search and simply run a left-to-right sweep $j = 1 \dots N$, maintaining $K$ best pairs online. Why does that fail?
+
+Because the constraint $i \le j$ is **directional**! In an online sweep without a global slope threshold $\lambda$, you only know whether a pair $(i, j)$ is "worth taking" if you know the marginal cost of the $K$-th augmentation across the **entire** array $[1, N]$. Worse still, in an explicit MCMF network:
+
+- Source $S \to u_i$ has capacity $1$, cost $a_i$.
+- Spine $u_i \to u_{i+1}$ has capacity $\infty$, cost $0$.
+- Sink $u_j \to T$ has capacity $1$, cost $b_j$.
+
+When an augmenting path uses a **reverse spine arc** $u_{t+1} \to u_t$ (meaning positive flow was already moving rightward across $u_t \to u_{t+1}$), it splits one long interval $[i_1, j_1]$ paired with an internal point into two valid intervals $[i_1, j_2]$ and $[i_2, j_1]$. A single left-to-right pass at a fixed Lagrangian slope $\lambda$ automatically simulates all such interval-splitting augmentations without ever tracking interval endpoints!
+
+### Step 1: WQS / Aliens Convex Penalty Elimination
+By **Theorem 17.3 (Convexity of the Min-Cost Flow Function)** from Chapter 17, let $C(k)$ be the minimum cost to send $k$ units of flow from $S$ to $T$ in our prefix network ($0 \le k \le N$). Because each SSP step chooses the shortest augmenting path, the marginal costs $\Delta_k = C(k) - C(k-1)$ are non-decreasing:
+
+$$
+\Delta_1 \le \Delta_2 \le \dots \le \Delta_N \implies C(k) \text{ is convex on } \{0, 1, \dots, N\}.
+$$
+
+Instead of constraining the flow to equal $K$, we apply the **WQS / Aliens Lagrangian relaxation**: subtract a reward $\lambda$ from every unit of flow reaching $T$ (equivalently, change every print cost from $b_j$ to $b_j - \lambda$). For a fixed $\lambda$, we solve the **unconstrained** minimum-cost circulation problem:
+
+$$
+g(\lambda) = \min_{0 \le k \le N} \big(C(k) - k \cdot \lambda\big),
+$$
+
+which simply pushes flow along every augmenting path whose penalized cost $a_i + b_j - \lambda$ is negative!
+
+### Step 2: The Two-Candidate Regret Heap at Fixed $\lambda$
+Once $\lambda$ is fixed, we sweep $j = 1, 2, \dots, N$ from left to right. Every matched pair has the form $a_i + (b_j - \lambda) < 0$ for some $i \le j$. What are the available options in the residual graph on day $j$?
+
+1. **Candidate Type A (Unmatched Preparation $i \le j$)**:
+   At the start of day $j$, preparation $u_j$ becomes available, so we push `(key = a_j, type = A)` into our min-heap $Q$.
+   If day $j$'s penalized print option $b_j - \lambda$ matches with a Type-A entry `key = a_i` (because $a_i + b_j - \lambda < 0$), we:
+   - Add $a_i + b_j - \lambda$ to total penalized cost,
+   - **Increment the matched pair count `cnt` by $+1$** (since we sent $1$ new unit of flow from $S$ to $T$),
+   - Pop $a_i$ from $Q$, and
+   - Push a **Type-B Regret Token** `(key = -(b_j - \lambda), type = REGRET_B)` into $Q$!
+2. **Candidate Type B (Stealing a Previous Print $j_0 < j$)**:
+   Why did we push `key = -(b_{j_0} - \lambda)` with `type = REGRET_B` when $i$ matched with $j_0$?
+   Suppose a later day $j > j_0$ has a cheaper print cost $b_j < b_{j_0}$. If day $j$ pops the regret token `key = -(b_{j_0} - \lambda)` from $Q$ and pairs with it, the incremental cost added is:
+   $$
+   \text{key} + (b_j - \lambda) = -(b_{j_0} - \lambda) + (b_j - \lambda) = b_j - b_{j_0} < 0.
+   $$
+   Adding this to the earlier cost $a_i + b_{j_0} - \lambda$ gives:
+   $$
+   (a_i + b_{j_0} - \lambda) + (b_j - b_{j_0}) = a_i + b_j - \lambda,
+   $$
+   which redirects the preparation at $i$ from print $j_0$ to print $j$!
+   Crucially:
+   - Because this transition only **redirects** an existing unit of flow from $j_0 \to T$ to $j \to T$, **the total flow count `cnt` changes by $0$ (`cnt += 0`)**!
+   - And because day $j$ is now matched to $T$, we push a new regret token `(key = -(b_j - \lambda), type = REGRET_B)` into $Q$ so a still later day $j' > j$ can steal from $j$!
+
+::: {.callout-warning title="Critical Invariant: Collinear Slope Tie-Breaking in WQS (`FM-23`)"}
+When the convex function $C(k)$ has a flat segment of slope $\lambda^*$ (so multiple values of $k$ tie for the minimum of $C(k) - k \lambda^*$), our inner check `solve(lambda)` must break ties consistently—for instance, always returning the **minimum** (or **maximum**) possible pair count `cnt` among all optimal solutions for $\lambda$.
+
+To return the **minimum** optimal pair count `cnt` (and binary search for the smallest $\lambda$ where `cnt >= K`, or largest $\lambda$ where `cnt <= K`):
+
+1. Only take an augmenting path if its penalized cost is strictly negative (`key + b[j] - lambda < 0`).
+2. Inside the min-heap $Q$ of `(key, type)`, if two entries have the **exact same `key`**, order **`type = REGRET_B` (which adds $0$ to `cnt`) before `type = A` (which adds $+1$ to `cnt`)**!
+Conversely, if you order `type = A` before `type = REGRET_B` and take paths with `<= 0`, you consistently maximize `cnt`. Either convention works cleanly as long as the binary search condition matches the tie-breaker!
+:::
+
+### Complete Reference Implementation (`CF 802 O` Engine)
+
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+struct Node {
+    long long key;
+    int delta_cnt; // 1 for fresh Type-A prep, 0 for Type-B regret token
+    // Min-heap comparator: smaller key first; on tie, prefer delta_cnt = 0 (minimum pair count)
+    bool operator>(const Node& other) const {
+        if (key != other.key) return key > other.key;
+        return delta_cnt > other.delta_cnt;
+    }
+};
+
+pair<long long, int> evaluate_slope(int n, const vector<long long>& a,
+                                    const vector<long long>& b, long long lambda) {
+    priority_queue<Node, vector<Node>, greater<Node>> pq;
+    long long penalized_cost = 0;
+    int cnt = 0;
+    for (int j = 0; j < n; ++j) {
+        // 1. Day j's preparation option becomes available
+        pq.push({a[j], 1});
+        // 2. Check if day j's print option (b[j] - lambda) can profitably match
+        long long print_val = b[j] - lambda;
+        if (pq.top().key + print_val < 0) {
+            Node best = pq.top();
+            pq.pop();
+            penalized_cost += best.key + print_val;
+            cnt += best.delta_cnt;
+            // Push regret token: cancelling print j later refunds -(b[j] - lambda) with 0 net count change
+            pq.push({-print_val, 0});
+        }
+    }
+    return {penalized_cost, cnt};
+}
+
+long long solve_cf802o(int n, int k, const vector<long long>& a, const vector<long long>& b) {
+    long long lo = 0, hi = 2000000005LL, best_lambda = 0;
+    while (lo <= hi) {
+        long long mid = lo + (hi - lo) / 2;
+        auto [cost, cnt] = evaluate_slope(n, a, b, mid);
+        if (cnt <= k) {
+            best_lambda = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    auto [cost, cnt] = evaluate_slope(n, a, b, best_lambda);
+    // Reconstruct exact unpenalized cost C(K) from the supporting line of slope best_lambda
+    return cost + 1LL * k * best_lambda;
+}
+```
+
+---
+
+## 23.3 Segment-Tree Simulated SSP (`CF 280 D`) & Tree Mergeable-Heap Flow (`ICPC WF 2018 Conquer the World`, `UOJ #455`)
+
+Priority queues are not the only data structure capable of simulating residual graphs. Whenever the residual augmenting path corresponds to a **contiguous 1D interval** or a **path between two nodes in a tree**, the shortest-path query in SSP compiles into a **Segment Tree** or a **Mergeable Heap** on subtrees.
+
+### Part A: Segment-Tree Simulated SSP ($k$-Disjoint Maximum Subarrays, `CF 280 D`)
+
+#### Problem Statement (`CF 280 D — k-Maximum Subsequence Sum`)
+Given an integer array $a_1, a_2, \dots, a_N$ ($N \le 10^5$, $|a_i| \le 500$), process $Q \le 10^5$ operations of two types:
+
+1. Point update: set $a_p \gets v$.
+2. Range query `(L, R, k)`: choose **at most $k$** ($1 \le k \le 20$) mutually disjoint subarrays inside $[L, R]$ to maximize the sum of their elements.
+
+#### 4-Step English-to-Graph Compilation
+
+1. **Step 1 (Diagnostic Signal)**:
+   For a single static array, $k$-disjoint subarrays takes $O(N k)$ DP. With $Q = 10^5$ range queries, combining DP states of size $O(k^2)$ across a Segment Tree costs $O(Q k^2 \log N)$, which is tight and messy. However, $k \le 20$ is tiny! If we can simulate $1$ unit of MCMF augmentation on $[L, R]$ in $O(\log N)$ time, then $k$ augmentations take only $O(k \log N)$ per query.
+2. **Step 2 (Explicit MCMF Network & Residual Edge Reversal)**:
+   Build a 1D spine flow network for the query range $[L, R]$:
+   - Each index $i \in [L, R]$ is split into $u_i \to v_i$ with capacity $1$ and weight $+a_i$.
+   - Spine edges $v_i \to u_{i+1}$ have capacity $1$ and weight $0$ (ensuring selected subarrays are vertex-disjoint).
+   - Source $S$ connects to every $u_i$ (capacity $1$, weight $0$) and every $v_i$ connects to sink $T$ (capacity $1$, weight $0$).
+   Sending $1$ unit of flow from $S$ to $T$ picks a single subarray $[l_1, r_1] \subseteq [L, R]$ of weight $\sum_{i=l_1}^{r_1} a_i$.
+   What happens to the residual graph $G_f$ after saturating $[l_1, r_1]$?
+   - Every forward arc $u_i \to v_i$ ($l_1 \le i \le r_1$) is saturated and replaced by its **reverse residual arc** $v_i \to u_i$ of weight **$-a_i$**!
+   - If a subsequent SSP step pushes $1$ unit of flow through a sub-interval $[l_2, r_2] \subseteq [l_1, r_1]$ using these reverse arcs of weight $-a_i$, the flow on $[l_2, r_2]$ cancels back to $0$, **splitting** $[l_1, r_1]$ into two disjoint subarrays $[l_1, l_2 - 1]$ and $[r_2 + 1, r_1]$ while increasing the total number of subarrays by $+1$!
+   - Even better: since both forward arcs (outside $[l_1, r_1]$) and reverse arcs (inside $[l_1, r_1]$) simply contribute their signed weights to any candidate walk, **every SSP augmentation is literally just a Maximum-Weight Subarray query on $[L, R]$ after negating the elements of previously chosen subarrays ($a_i \gets -a_i$)**!
+3. **Step 3 (Segment Tree Node Contract)**:
+   To support point updates, maximum-subarray queries on $[L, R]$ (returning both the sum and the exact endpoints $[l^*, r^*]$), and range sign-flips $a_i \gets -a_i$ on $[l^*, r^*]$:
+   - Each Segment Tree node maintains **both** the **Maximum Subarray** (`max_sum`, `max_pref`, `max_suff` with their endpoint indices) and the **Minimum Subarray** (`min_sum`, `min_pref`, `min_suff` with their endpoint indices), plus the `total_sum` and a boolean lazy flip tag `rev`.
+   - When `rev` is applied to a node, `total_sum` is negated, and the `max_*` tuples are swapped with the negated `min_*` tuples in $O(1)$ time!
+   - To answer a query `(L, R, k)`: repeat up to $k$ times:
+     1. Query the maximum subarray $(w^*, [l^*, r^*])$ on $[L, R]$.
+     2. If $w^* \le 0$, break early (since we need at most $k$ subarrays and $C(f)$ is concave).
+     3. Add $w^*$ to `ans`, record $[l^*, r^*]$ on a rollback stack, and apply a range sign-flip `flip(l*, r*)` on the Segment Tree!
+     4. After the loop, pop all recorded intervals $[l^*, r^*]$ from the stack and flip them back to restore the original array!
+4. **Step 4 (Hand-Checkable Toy Trace)**:
+   Suppose $a = [4, -1, 5]$ and $k = 2$.
+   - **Augmentation 1**: Max subarray on $[1, 3]$ is $[1, 3]$ with sum $4 - 1 + 5 = 8 > 0$. We add $8$ to `ans` and flip $[1, 3]$, so the active array becomes $[-4, +1, -5]$.
+   - **Augmentation 2**: Max subarray on $[1, 3]$ is now $[2, 2]$ with sum $+1 > 0$! We add $+1$ to `ans` (total $8 + 1 = 9$) and flip $[2, 2]$, leaving $[-4, -1, -5]$.
+   - Notice how picking $+1$ at index $2$ in Augmentation 2 cancelled the $-1$ from Augmentation 1, leaving the two disjoint subarrays $[1, 1]$ (val $4$) and $[3, 3]$ (val $5$) of total sum $9$!
+
+---
+
+### Part B: Tree-Structured Simulated MCMF via Mergeable Heaps (`[ICPC WF 2018] Conquer the World` & `[UOJ #455] 雪灾与外卖`)
+
+What if supplies $x_u$ and demands $y_v$ live on the vertices of an edge-weighted tree $T = (V, E, w)$ ($N \le 2.5 \times 10^5$, $w_e \ge 0$), and routing $1$ unit of flow from $u$ to $v$ costs the tree path distance $\operatorname{dist}_T(u, v)$?
+
+#### The LCA Telescoping Identity
+Root the tree arbitrarily at vertex $1$, and let $\operatorname{dep}(u)$ denote the weighted distance from the root $1$ to $u$. For any supply node $u$ and demand node $v$ whose Lowest Common Ancestor is $l = \operatorname{lca}(u, v)$, their tree distance decomposes into:
+
+$$
+\operatorname{dist}_T(u, v) = \operatorname{dep}(u) + \operatorname{dep}(v) - 2\operatorname{dep}(l).
+$$
+
+Notice that $\operatorname{dep}(u)$ depends **only** on $u$, $\operatorname{dep}(v)$ depends **only** on $v$, and $-2\operatorname{dep}(l)$ is a constant shared by all pairs whose path peaks at $l$!
+
+#### The Two-Sided Tree Regret Equations (`FM-23` / `H-23`)
+Suppose we process the tree bottom-up in post-order DFS. At each vertex $l$, we maintain two mergeable min-heaps for the subtree $T_l$:
+
+- $H_X(l)$: candidate **supply** tokens inside $T_l$ (initially storing key $a = \operatorname{dep}(u)$ for each supply unit at $u$).
+- $H_Y(l)$: candidate **demand** tokens inside $T_l$ (initially storing key $b = \operatorname{dep}(v) - M_{\infty}$ for each mandatory demand unit at $v$, where $M_{\infty} = 10^{12}$ forces all demands to be saturated).
+
+When we are at $l$ (after merging the heaps of all children of $l$), matching the minimum supply token $a \in H_X(l)$ with the minimum demand token $b \in H_Y(l)$ costs:
+
+$$
+\Delta = a + b - 2\operatorname{dep}(l).
+$$
+
+If $\Delta < 0$, we greedily match them at $l$ and add $\Delta$ to `ans`. Now, how could a later augmentation at a higher ancestor $l'$ ($\operatorname{dep}(l') \le \operatorname{dep}(l)$) modify this match using the residual graph? There are **two** symmetric residual possibilities:
+
+1. **A better supply $a' \in H_X(l')$ outside $T_l$ steals the demand $b \in T_l$**:
+   Instead of matching $(a, b)$ at LCA $l$ for cost $a + b - 2\operatorname{dep}(l)$, we want to match $(a', b)$ at LCA $l'$ for cost $a' + b - 2\operatorname{dep}(l')$. The incremental change in cost at $l'$ must be:
+   $$
+   \big(a' + b - 2\operatorname{dep}(l')\big) - \big(a + b - 2\operatorname{dep}(l)\big) = a' + \underbrace{\big(2\operatorname{dep}(l) - a\big)}_{\text{new } Y\text{-regret key } b_{\text{reg}} \in H_Y(l)} - 2\operatorname{dep}(l').
+   $$
+2. **A better demand $b' \in H_Y(l')$ outside $T_l$ steals the supply $a \in T_l$**:
+   Instead of matching $(a, b)$ at LCA $l$, we match $(a, b')$ at LCA $l'$ ( provided $b$ itself was a regret token or non-mandatory, or if another supply simultaneously covers $b$). The incremental change in cost at $l'$ is:
+   $$
+   \big(a + b' - 2\operatorname{dep}(l')\big) - \big(a + b - 2\operatorname{dep}(l)\big) = \underbrace{\big(2\operatorname{dep}(l) - b\big)}_{\text{new } X\text{-regret key } a_{\text{reg}} \in H_X(l)} + b' - 2\operatorname{dep}(l').
+   $$
+
+::: {.callout-important title="Theorem 23.2 (The Dual-Heap Tree Regret Rule & Non-Interference Guarantee)"}
+Whenever a supply token $a \in H_X(l)$ and a demand token $b \in H_Y(l)$ match at subtree root $l$ with $\Delta = a + b - 2\operatorname{dep}(l) < 0$:
+
+1. We **must** push **both** complementary regret tokens:
+   $$
+   a_{\text{reg}} = 2\operatorname{dep}(l) - b \quad\text{into } H_X(l), \qquad b_{\text{reg}} = 2\operatorname{dep}(l) - a \quad\text{into } H_Y(l).
+   $$
+2. **Non-Interference Invariant**: The two regret tokens $a_{\text{reg}}$ and $b_{\text{reg}}$ can **never** match with each other at $l$ or at any ancestor $l'$ of $l$.
+
+*Proof of (2).* At any ancestor $l'$ of $l$, we have $\operatorname{dep}(l') \le \operatorname{dep}(l)$ (since edge weights $w_e \ge 0$). The hypothetical cost of matching $a_{\text{reg}}$ with $b_{\text{reg}}$ at $l'$ is:
+
+$$
+a_{\text{reg}} + b_{\text{reg}} - 2\operatorname{dep}(l') = \big(2\operatorname{dep}(l) - b\big) + \big(2\operatorname{dep}(l) - a\big) - 2\operatorname{dep}(l') = -\underbrace{\big(a + b - 2\operatorname{dep}(l)\big)}_{< \, 0} + 2\underbrace{\big(\operatorname{dep}(l) - \operatorname{dep}(l')\big)}_{\ge \, 0} > 0.
+$$
+
+Because their combined cost is strictly positive, the condition $\text{cost} < 0$ is never satisfied for $(a_{\text{reg}}, b_{\text{reg}})$! And if a third supply $a'$ matches with $b_{\text{reg}}$ and a third demand $b'$ also matches with $a_{\text{reg}}$ at $l'$, the total accumulated cost is:
+
+$$
+(a + b - 2\operatorname{dep}(l)) + (a' + (2\operatorname{dep}(l) - a) - 2\operatorname{dep}(l')) + ((2\operatorname{dep}(l) - b) + b' - 2\operatorname{dep}(l')) = (a' + b - 2\operatorname{dep}(l')) + (a + b' - 2\operatorname{dep}(l')),
+$$
+
+which is the exact cost of routing $a' \to b$ across $l'$ and $a \to b'$ across $l'$ (i.e., cancelling the double flow on the path $l' \leftrightarrow l$)! $\blacksquare$
+:::
+
+#### Run-Length Multiplicity Batching (`[UOJ #455] 雪灾与外卖`)
+When node supplies $x_u$ or capacities $c_v$ can be up to $10^9$ (as in `[UOJ #455] 雪灾与外卖`), pushing individual tokens one by one would take $\Omega(\sum x_u)$ time. Instead, we store run-length compressed pairs `(key, count)` in $H_X$ and $H_Y$.
+
+Why is the number of heap operations still $O(N \log N)$? Whenever we pop `(a, cnt_a)` from $H_X(l)$ and `(b, cnt_b)` from $H_Y(l)$, we match $k = \min(\text{cnt}_a, \text{cnt}_b)$ units in a single $O(1)$ batch:
+
+- At least one of the two popped tuples is **completely exhausted** ($k = \text{cnt}_a$ or $k = \text{cnt}_b$).
+- Wait—what if we push a new regret tuple `(2*dep(l) - b, k)` into $H_X(l)$ and `(2*dep(l) - a, k)` into $H_Y(l)$ on every batch match? Notice that on a 1D line (`UOJ #455`), when sweeping left-to-right and processing a single deliveryman ($x_i = 1$) or a restaurant of capacity $c_j$, all deliverymen stolen by restaurant $j$ at coordinate $y_j$ receive the **exact same** restaurant regret key $-y_j + w_j$ (or all restaurants matched with $x_i$ have count $1$), so we coalesce all $k$ units absorbed by restaurant $j$ into a **single** regret entry in $H_X$! Similarly, on a tree (`Conquer the World`), $\sum y_v \le 10^6$ bounds the total number of unit matches directly.
+
+---
+
+## 23.4 Multi-Heap Residual State Automata & Flagship Case Study (`[NOI2019] 序列` `#183`)
+
+We now arrive at the crowning general methodology of Simulated Cost Flow: **Multi-Heap Residual State Automata**. Whenever $N \le 2 \times 10^5$ items each have a small finite set of selection states and interact through a single global capacity bottleneck, we can compile the explicit MCMF network into a constant number of priority queues with lazy deletion.
+
+### Flagship Case Study: `[NOI2019 / Luogu P5470] 序列 (Sequence)` (`#183`)
+
+#### Problem Statement
+You are given two arrays of positive integers $a_1, a_2, \dots, a_N$ and $b_1, b_2, \dots, b_N$ ($N \le 2 \times 10^5$, $1 \le L \le K \le N$). You must choose a subset $I \subseteq \{1, \dots, N\}$ of size $|I| = K$ from array $A$ and a subset $J \subseteq \{1, \dots, N\}$ of size $|J| = K$ from array $B$ such that **at least $L$ indices are common to both subsets**:
+
+$$
+|I \cap J| \ge L.
+$$
+
+Maximize the total sum $\sum_{i \in I} a_i + \sum_{j \in J} b_j$.
+
+#### Step 1: Non-Graph Diagnostic Signal (Recognition)
+If $L = 0$, we simply pick the $K$ largest elements of $A$ and the $K$ largest elements of $B$ independently. If $L = K$, we must pick the same $K$ indices for both, so we pick the $K$ largest values of $a_i + b_i$.
+For general $0 \le L \le K$, the condition $|I \cap J| \ge L$ is equivalent to saying that **at most $K - L$ pairs of chosen elements can be unaligned ($i \ne j$)**!
+
+#### Step 2: Explicit Small-Graph MCMF Formulation & Vertex Automaton
+Before touching a single heap, let us draw the exact MCMF network that solves the problem for small $N$:
+
+- For each index $i \in \{1, \dots, N\}$, create a left node $u_i$ (representing picking $i \in I$, connected from source $S \to u_i$ with capacity $1$, weight $a_i$) and a right node $v_i$ (representing picking $i \in J$, connected to sink $v_i \to T$ with capacity $1$, weight $b_i$).
+- **Aligned Pairs (Free of Bottleneck)**: For each $i$, add a direct edge $u_i \to v_i$ of capacity $1$ and weight $0$. Sending $1$ unit of flow along $S \to u_i \to v_i \to T$ selects both $a_i$ and $b_i$ at index $i$.
+- **Unaligned Pairs (Shared Bottleneck Hub $P \to Q$)**: Create two central hub vertices $P$ and $Q$ connected by a single bottleneck edge $P \to Q$ of **capacity $K - L$** and weight $0$. For every $i$, add $u_i \to P$ (capacity $1$, weight $0$) and $Q \to v_i$ (capacity $1$, weight $0$). Sending $1$ unit of flow along $S \to u_i \to P \to Q \to v_j \to T$ selects $a_i$ and $b_j$ ($i \ne j$) and consumes $1$ unit of capacity on $P \to Q$!
+
+```{mermaid}
+flowchart LR
+  S(("S")) -->|"(1, a_i)"| UI["u_i (A-node)"]
+  S -->|"(1, a_j)"| UJ["u_j (A-node)"]
+  UI -->|"(1, 0) Aligned"| VI["v_i (B-node)"]
+  UJ -->|"(1, 0) Aligned"| VJ["v_j (B-node)"]
+  UI -->|"(1, 0)"| P(("Hub P"))
+  UJ -->|"(1, 0)"| P
+  P -->|"(K - L, 0)\nFree Bottleneck"| Q(("Hub Q"))
+  Q -->|"(1, 0)"| VI
+  Q -->|"(1, 0)"| VJ
+  VI -->|"(1, b_i)"| T(("T"))
+  VJ -->|"(1, b_j)"| T
+```
+
+Now look at each index $i \in \{1, \dots, N\}$. Depending on whether $u_i$ is in $I$ and $v_i$ is in $J$, index $i$ is in one of **4 possible vertex states**:
+
+- **`State 0` `(0, 0)`**: Neither $a_i$ nor $b_i$ is selected.
+- **`State 1` `(1, 0)`**: Only $a_i$ is selected (so $u_i$ is routing flow through $u_i \to P$).
+- **`State 2` `(0, 1)`**: Only $b_i$ is selected (so $v_i$ is receiving flow from $Q \to v_i$).
+- **`State 3` `(1, 1)`**: Both $a_i$ and $b_i$ are selected (always routed along the direct edge $u_i \to v_i$ so as not to waste bottleneck capacity on $P \to Q$!).
+
+#### Step 3: Enumerating All 5 Elementary Residual Augmenting Walks
+We need to send $K$ units of flow from $S$ to $T$, one unit at a time. Let `free_rem` denote the remaining residual capacity on the bottleneck edge $P \to Q$ (initially `free_rem = K - L`).
+At each step, what are the **elementary (simple) augmenting paths** from $S$ to $T$ in the residual network $G_f$?
+
+1. **Candidate Walk 1 (Direct Aligned Pair, $\Delta\text{free} = 0$)**:
+   Pick an index $i$ in `State 0` and push flow along $S \to u_i \to v_i \to T$.
+   - State transition: `State[i]: 0 -> 3`.
+   - Gain: $a_i + b_i$. Bottleneck change: $\Delta\text{free} = 0$.
+2. **Candidate Walk 2 (Direct Unaligned Pair via $P \to Q$, requires `free_rem > 0`, $\Delta\text{free} = -1$)**:
+   Pick $i$ in `State 0` (maximizing $a_i$) and $j$ in `State 0` (maximizing $b_j$), and push flow along $S \to u_i \to P \to Q \to v_j \to T$.
+   - State transition: if $i \ne j$, `State[i]: 0 -> 1` and `State[j]: 0 -> 2`, consuming $1$ free token (`free_rem--`). (If $i = j$, this degenerates to Walk 1 with `free_rem` unchanged!).
+   - Gain: $a_i + b_j$.
+3. **Candidate Walk 3 (Complete an $A$-only node $j$ + Pick a fresh $A$-node $i$, $\Delta\text{free} = 0$)**:
+   Suppose index $j$ is in `State 1` `(1, 0)`, meaning flow currently goes $u_j \to P$. In the residual graph, we can traverse:
+   $$
+   S \to u_i \to P \xrightarrow{\text{reverse of } u_j \to P} u_j \to v_j \to T!
+   $$
+   In words: we add $b_j$ to complete index $j$ into an aligned pair `(1, 1)`, which frees up $j$'s slot into hub $P$, and we hand that slot in $P$ to a fresh $A$-node $u_i$ (`State[i] == 0`)!
+   - State transition: `State[j]: 1 -> 3`, `State[i]: 0 -> 1`.
+   - Gain: $b_j + a_i$. Bottleneck change: $\Delta\text{free} = 0$ (since $P \to Q$ flow does not change!).
+4. **Candidate Walk 4 (Complete a $B$-only node $i$ + Pick a fresh $B$-node $j$, $\Delta\text{free} = 0$)**:
+   Symmetrically, suppose index $i$ is in `State 2` `(0, 1)` (receiving flow from $Q \to v_i$). We traverse:
+   $$
+   S \to u_i \to v_i \xrightarrow{\text{reverse of } Q \to v_i} Q \to v_j \to T!
+   $$
+   In words: we add $a_i$ to complete index $i$ into `(1, 1)`, freeing $i$'s slot out of $Q$, and hand that slot to a fresh $B$-node $v_j$ (`State[j] == 0`)!
+   - State transition: `State[i]: 2 -> 3`, `State[j]: 0 -> 2`.
+   - Gain: $a_i + b_j$. Bottleneck change: $\Delta\text{free} = 0$.
+5. **Candidate Walk 5 (Double Completion / Cross-Swap Regret, REFUNDS $+1$ Free Token: $\Delta\text{free} = +1$!)**:
+   Suppose index $j$ is in `State 1` `(1, 0)` (sending flow $u_j \to P$) and index $i$ is in `State 2` `(0, 1)` (receiving flow $Q \to v_i$), which implies there is positive flow on $P \to Q$, so the **reverse residual edge $Q \to P$ is open**! We can traverse:
+   $$
+   S \to u_i \to v_i \xrightarrow{\text{reverse of } Q \to v_i} Q \xrightarrow{\text{reverse of } P \to Q} P \xrightarrow{\text{reverse of } u_j \to P} u_j \to v_j \to T!
+   $$
+   In words: we select $a_i$ (turning $i$ from `(0, 1)` into aligned `(1, 1)`) AND select $b_j$ (turning $j$ from `(1, 0)` into aligned `(1, 1)`), while **pushing $1$ unit of flow backward along $Q \to P$**!
+   - State transition: `State[i]: 2 -> 3`, `State[j]: 1 -> 3`.
+   - Gain: $a_i + b_j$.
+   - Bottleneck change: **$\Delta\text{free} = +1$ (`free_rem++`)**! Because two previously unaligned indices $i$ and $j$ both became aligned `(1, 1)`, we refunded a free-pair token back to the pool!
+
+#### Maintaining the 5 Priority Queues in $O(N \log N)$
+To find the maximum-gain walk among Candidates 1–5 in $O(\log N)$ time per step, we maintain 5 max-heaps with lazy state validation:
+
+- $H_{AB}$: indices $i$ with `State[i] == 0`, keyed by $a_i + b_i$.
+- $H_{A0}$: indices $i$ with `State[i] == 0`, keyed by $a_i$.
+- $H_{B0}$: indices $j$ with `State[j] == 0`, keyed by $b_j$.
+- $H_{B1}$: indices $j$ with `State[j] == 1` ($A$-only, needing $b_j$ to become `(1, 1)`), keyed by $b_j$.
+- $H_{A2}$: indices $i$ with `State[i] == 2` ($B$-only, needing $a_i$ to become `(1, 1)`), keyed by $a_i$.
+
+Look how each of the 5 candidate walks is just the top of one or two heaps:
+
+- **Walk 1**: $\max(H_{AB})$
+- **Walk 2** (if `free_rem > 0`): $\max(H_{A0}) + \max(H_{B0})$
+- **Walk 3**: $\max(H_{B1}) + \max(H_{A0})$
+- **Walk 4**: $\max(H_{A2}) + \max(H_{B0})$
+- **Walk 5**: $\max(H_{A2}) + \max(H_{B1})$
+
+Since each index $i \in \{1, \dots, N\}$ only ever advances monotonically in total selected count $(0 \to 1 \to 2)$, each node changes state at most twice! Thus there are at most $2N$ heap pushes and $2N$ lazy pops across the entire algorithm, running in $O(N \log N)$ time with $O(N)$ memory!
+
+---
+
+### Broken-Gadget Counterexample `FM-23`: Omitting Cross-Swap Token-Refunding Regret Walks
+
+::: {.callout-caution title="Broken-Gadget Counterexample `FM-23` — What Breaks If You Omit Walk 5 (Token-Refunding Cross-Swap)?"}
+A classic failure mode in contest implementations of `[NOI2019] 序列` is to include Walks 1, 2, 3, and 4, while forgetting **Walk 5** ($\max(H_{A2}) + \max(H_{B1})$, which turns an $A$-only node $j$ and a $B$-only node $i$ into two aligned `(1, 1)` nodes and increments `free_rem++`), or forgetting to increment `free_rem++` when Walk 5 is taken!
+
+#### Explicit 4-Element Numerical Counterexample
+Consider $N = 4$, $K = 3$, $L = 2$ (so at most $K - L = 1$ unaligned pair is allowed, i.e., initial `free_rem = 1`):
+
+| Index $i$ | $1$ | $2$ | $3$ | $4$ |
+| :---: | :---: | :---: | :---: | :---: |
+| $a_i$ | $100$ | $90$ | $10$ | $10$ |
+| $b_i$ | $90$ | $100$ | $85$ | $85$ |
+| $a_i + b_i$ | $190$ | $190$ | $95$ | $95$ |
+
+Let us trace the $K = 3$ augmentation steps:
+
+- **Step 1 (`free_rem = 1`)**:
+  - Walk 1 ($\max H_{AB}$): $a_1 + b_1 = 190$.
+  - Walk 2 ($\max H_{A0} + \max H_{B0}$): $a_1 + b_2 = 100 + 100 = 200$!
+  - Walk 2 wins! We pick $a_1$ (`State[1] = 1`) and $b_2$ (`State[2] = 2`), consuming our single free token: `free_rem = 0`, `sum = 200`.
+- **Step 2 (`free_rem = 0`)**:
+  - Since `free_rem == 0`, Walk 2 is disabled.
+  - Walk 1 ($\max H_{AB}$ on $\{3, 4\}$): $a_3 + b_3 = 95$.
+  - Walk 3 ($\max H_{B1} + \max H_{A0}$): $b_1 + a_3 = 90 + 10 = 100$.
+  - Walk 4 ($\max H_{A2} + \max H_{B0}$): $a_2 + b_3 = 90 + 85 = 175$.
+  - **Walk 5 ($\max H_{A2} + \max H_{B1}$)**: $a_2 + b_1 = 90 + 90 = 180$!
+  - **With Walk 5 (Correct)**: Walk 5 wins with $+180$ (`sum = 380`), completing both index $1$ and index $2$ into aligned `(1, 1)` pairs AND **refunding the free token (`free_rem` becomes $1$)**! Then in **Step 3 (`free_rem = 1`)**, Walk 2 or Walk 4 picks $a_1, a_2, a_3$ and $b_1, b_2, b_3$ (or $a_3 + b_4 = 10 + 85 = 95$), reaching the true global optimum:
+    $$
+    I = \{1, 2, 3\},\; J = \{1, 2, 4\} \implies |I \cap J| = |\{1, 2\}| = 2 \ge L,\quad \text{Sum} = (100+90+10) + (90+100+85) = 475!
+    $$
+  - **Without Walk 5 (Broken Gadget!)**: At Step 2, the algorithm takes Walk 4 ($a_2 + b_3 = 175$, `sum = 375`, `State[2] = 3`, `State[3] = 2`, `free_rem = 0`). Then at Step 3, since `free_rem = 0`, it is forced to take Walk 3 ($b_1 + a_4 = 90 + 10 = 100$) or Walk 4 ($a_3 + b_4 = 10 + 85 = 95$)— Wait: if it takes Walk 4 at Step 2 (`sum = 375`) and Walk 3 at Step 3 (`sum = 475`), what if $a_3 = a_4 = 0$ and we only had $K = 2, L = 2$ (or $K = 2, L = 1$ with a third step that requires `free_rem = 1`, e.g., $a_3 = 80, b_3 = 0$ and $a_4 = 0, b_4 = 80$)?
+    Let $a = [100, 90, 80, 0]$ and $b = [90, 100, 0, 80]$ with $K = 3, L = 2$:
+    - Step 1 (`free_rem = 1`): Walk 2 picks $a_1 + b_2 = 200$ (`free_rem = 0`).
+    - Step 2 (`free_rem = 0`):
+      - **With Walk 5**: Picks $a_2 + b_1 = 180$ (`sum = 380`) and refunds **`free_rem = 1`**! Then Step 3 uses `free_rem = 1` via Walk 2 to pick the unaligned pair $a_3 + b_4 = 80 + 80 = 160$, for a total of **$380 + 160 = 540$** ($I=\{1,2,3\}, J=\{1,2,4\}, |I \cap J|=2$)!
+      - **Without Walk 5 (or without `free_rem++`)**: At Step 2, Walk 3 gives $b_1 + a_3 = 90 + 80 = 170$ (`State[1]=3, State[3]=1`) and Walk 4 gives $a_2 + b_4 = 90 + 80 = 170$. Even if it takes Walk 3 ($+170$), at Step 3 it cannot pick both $a_3$ and $b_4$ without completing both $1$ and $2$, getting stuck at $200 + 170 + 100 = 470 < 540$ (or if it takes Walk 5 without incrementing `free_rem++`, Step 3 is forbidden from taking Walk 2 $a_3 + b_4 = 160$ and only gets $\max(80+0, 0+80) = 80$, scoring $380 + 80 = 460 < 540$)!
+
+**Moral**: Every reverse residual arc on a capacity bottleneck ($Q \to P$) corresponds to a transition that **refunds capacity** to the bottleneck. Never guess transitions by intuition—always trace the simple $S \to T$ walks in $G_f$!
+:::
+
+---
+
+## 23.5 The 4-Step Simulated-MCMF Compilation Protocol
+
+Whenever you suspect a problem requires Simulated Cost Flow (`模拟费用流`) or Regret Greedy (`反悔贪心`), never start by guessing what to push into a priority queue. Follow this strict **4-Step Compilation Protocol**:
+
+### Step 1: Write Down the Explicit Small-$N$ MCMF Network
+Pretend $N \le 50$ and draw the exact vertices, directed edges, capacities, and costs of a standard Minimum-Cost Flow (or Maximum-Weight Flow) network $G = (V, E, u, c)$. Verify that:
+
+- $G$ has **no negative-cost (or positive-gain) cycles** initially, so the Successive Shortest Path (SSP) algorithm is valid.
+- The total flow $F$ is either unconstrained (stop when shortest-path cost $\ge 0$), small ($F = K \le 20$), reducible via WQS binary search (convex $C(K)$ on a 1D spine), or bounded by $O(N)$ unit steps.
+
+### Step 2: Classify Vertex States & Enumerate Elementary Residual Walks
+Inspect what happens to $G_f$ after $t$ units of flow have been pushed:
+
+- **1D Spine / Tree Topology**: If flow moves along a 1D line or tree, write the path cost between supply $u$ and demand $v$ using prefix potentials or LCA depth:
+  $$
+  \operatorname{cost}(u, v) = \operatorname{pot}(u) + \operatorname{pot}(v) - 2\operatorname{dep}(\operatorname{lca}(u, v)).
+  $$
+  Verify that matching $(a, b)$ at $l$ creates the two complementary residual keys $a_{\text{reg}} = 2\operatorname{dep}(l) - b$ and $b_{\text{reg}} = 2\operatorname{dep}(l) - a$.
+- **Hub / Automaton Topology**: If items interact through $O(1)$ global hubs (like $P \to Q$ in `[NOI2019] 序列`), list the possible local flow states of an item $i$ (e.g., `State 0, 1, 2, 3`) and write out **every simple directed walk from $S$ to $T$ in $G_f$**. Check whether any walk traverses a reverse hub edge $Q \to P$ (which **refunds** a bottleneck token!).
+
+### Step 3: Compile Each Residual Walk Family into a Data-Structure Invariant
+Assign one data structure to each family of residual transitions:
+
+| Network Topology | Residual Augmentation Operation | Data-Structure Compilation | Complexity |
+| :--- | :--- | :--- | :--- |
+| **1D Relay Spine** (`CF 865D`, `CF 713C`) | Cancel sale at $j$ ($-1 \to 0$) or buy fresh at $j$ ($0 \to +1$) | Single Min/Max-Heap; push $p_j$ **twice** when matched | $O(N \log N)$ |
+| **1D Non-Adjacent Selection** (`P1484`, `P3620`) | Flip alternating path $L_i - i - R_i$ | Doubly-Linked List + Heap; contract $(L_i, i, R_i) \mapsto A_{L_i} + A_{R_i} - A_i$ | $O(N \log N)$ |
+| **Prefix Matching ($i \le j$) + Cardinality $K$** (`CF 802O`, `P4694`) | Direct $(a_i, b_j - \lambda)$ or regret swap $-(b_{j_0} - \lambda) + (b_j - \lambda)$ | WQS Binary Search on $\lambda$ + 1 Heap storing `(key, delta_cnt)` | $O(N \log N \log V)$ |
+| **$k$-Disjoint Subarrays** (`CF 280D`) | Pick max subarray $[l^*, r^*]$ and reverse its internal arcs | Segment Tree tracking `(max_sub, min_sub)` + lazy sign flip $a_i \gets -a_i$ | $O((N + Q k) \log N)$ |
+| **Tree / 1D Capacitated Transport** (`Conquer the World`, `UOJ #455`) | Match across LCA $l$; push dual regret keys $2\operatorname{dep}(l) - a$ and $2\operatorname{dep}(l) - b$ | Mergeable Heaps $H_X(l), H_Y(l)$ with run-length batching `(key, count)` | $O(N \log N)$ |
+| **Constant-Hub State Automaton** (`[NOI2019] 序列`, `CF 436E`) | $O(1)$ simple $S \to T$ walks across vertex states | One Max/Min-Heap per state transition + lazy state validation | $O(N \log N)$ |
+| **Perishing / Deadline Supply** (`[NOI2017] 蔬菜`) | Time-reversed greedy packing from $T_{\max} \to 1$, then un-push cheapest units | Reverse-Time Max-Heap + Prefix Rollback Min-Heap | $O((N + P_{\max} M) \log N)$ |
+
+### Step 4: Stress-Test Against an Explicit Small-$N$ MCMF Solver
+Before submitting a multi-heap automaton or tree regret solver, always run a local stress test on random tiny inputs ($N \le 8$, $V_{\max} \le 20$) comparing your $O(N \log N)$ simulated flow output against your standard library SSP MCMF solver on the explicit graph from Step 1. If a transition path (like Walk 5 in `[NOI2019] 序列`) or a tie-breaker in WQS is missing, a 1,000-test random stress script on $N = 6$ will catch it in under 0.5 seconds!
+
+---
+
+## 23.6 Worked Examples & Full 8-Problem Difficulty Ladder (`#177`–`#184`, Part 1: `#177`–`#180`)
+
+In this section and the next, we work through all 8 canonical slots `#177`–`#184` of Chapter 23. Because **Simulated MCMF Regret Heaps** and **Slope-Trick Isotonic Regression** are LP duals of each other (Section 23.1), for slots where the curriculum and problem archive pair a Simulated-MCMF flagship with its Slope-Trick / Isotonic dual, we present **both** complete derivations and reference solutions so you can master both sides of the duality.
+
+---
+
+### `#177` (Stepping Stone 1) — `[CF 865D] Buy Low Sell High` & Its Slope-Trick Dual `[CF 713C] Sonya and Problem Wihtout a Legend`
+
+- **Canonical Slot**: `Ch 23 — Stepping Stone 1 (SS-1)` | **Wave Provenance**: `4B-P06` / `W6-01` & `W6-09`
+- **Judge URLs**:
+  - **Primary (Simulated MCMF)**: [https://codeforces.com/problemset/problem/865/D](https://codeforces.com/problemset/problem/865/D)
+  - **Dual Companion (Slope Trick $\ell_1$ Isotonic Regression)**: [https://codeforces.com/problemset/problem/713/C](https://codeforces.com/problemset/problem/713/C)
+
+#### Constraints & Problem Statements
+- **`CF 865D` (Primal Simulated Flow)**: Given stock prices $p_1, \dots, p_N$ over $N \le 3 \times 10^5$ days ($1 \le p_i \le 10^6$), each day you may buy $1$ share, sell $1$ share, or do nothing. Maximize total profit.
+- **`CF 713C` (Dual $\ell_1$ Isotonic Regression)**: Given array $a_1, \dots, a_N$ ($N \le 3 \times 10^5$, $1 \le a_i \le 10^9$), increment or decrement elements at unit cost to make the final integer array **strictly increasing** ($b_1 < b_2 < \dots < b_N$). Minimize $\sum_{i=1}^N |b_i - a_i|$.
+
+#### 4-Step Compilation & Duality Synthesis
+
+1. **Step 1 (Non-Graph Diagnostic Signal)**:
+   In `CF 865D`, naive greedy matching $(p_i, p_j)$ blocks better future sales $p_k > p_j$. In `CF 713C`, after shifting $a'_i = a_i - i$ and $b'_i = b_i - i$ to convert strict $b_1 < \dots < b_N$ into non-decreasing $b'_1 \le \dots \le b'_N$, standard DP $f_i(x) = \min_{y \le x} f_{i-1}(y) + |x - a'_i|$ takes $O(N^2)$ time. Both problems ask for $O(N \log N)$ maintenance of a 1D spine residual/slope structure where each vertex has capacity $2$!
+2. **Step 2 (Algebraic Representation)**:
+   - For `CF 865D`: Matching buy $i$ with sell $j$ earns $p_j - p_i$. Re-routing $j \to k$ earns $(p_j - p_i) + (p_k - p_j) = p_k - p_i$, leaving day $j$ with $0$ net action so a second copy of $p_j$ can still buy a fresh share.
+   - For `CF 713C`: By LP duality, $\min_{b'_1 \le \dots \le b'_N} \sum_{i=1}^N |b'_i - a'_i|$ is dual to sending flow $f_i \in [-1, +1]$ along the spine with node values $a'_i$. In Slope Trick, adding $|x - a'_i|$ shifts slopes $< a'_i$ by $-1$ and slopes $> a'_i$ by $+1$ (inserting **two** copies of breakpoint $a'_i$), and taking the prefix minimum $\min_{y \le x}$ pops the single largest breakpoint from the max-heap $H$!
+3. **Step 3 (Heap Invariant)**:
+   - `CF 865D` (Min-Heap $H$): On day $j$, push $p_j$ twice and pop $\min(H)$, adding $p_j - \min(H)$ to `ans`! (Notice: if $\min(H) == p_j$, popping $\min(H)$ and pushing $p_j$ twice leaves one $p_j$ in $H$ and adds $0$ to `ans`—identical to our `if` form in Section 23.1!).
+   - `CF 713C` (Max-Heap $H$): At index $i$, let $x = a_i - i$. Push $x$ twice into $H$, add $\max(H) - x$ to `ans`, and pop $\max(H)$!
+4. **Step 4 (Failure-Mode Guard)**:
+   - In `CF 865D`, never push $p_j$ only once when $p_j > \min(H)$, or middle relay days cannot buy their own share.
+   - In `CF 713C`, always subtract the index $a'_i = a_i - i$ first when strict inequality $b_1 < b_2 < \dots < b_N$ is required!
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints (`#177`)"}
+- **Hint 1**: In `CF 865D`, if you bought at $p_i$ and sold at $p_j$, how much extra profit do you get if you change your mind and sell at $p_k$ instead? In `CF 713C`, how do you transform $b_1 < b_2 < \dots < b_N$ on integers into $b'_1 \le b'_2 \le \dots \le b'_N$?
+- **Hint 2**: In `CF 865D`, selling at $p_j$ creates two residual possibilities at day $j$ of price $p_j$: cancelling the sale ($-1 \to 0$) and buying a new share ($0 \to +1$). In `CF 713C`, adding $|x - a'_i|$ changes the derivative of $f_i(x)$ by $+2$ at $x = a'_i$.
+- **Hint 3**: Both algorithms boil down to an unconditional 4-statement loop body per element: push $x$ twice into the heap, add $|H.\text{top}() - x|$ to `ans`, and pop $H.\text{top}()$!
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Solutions (`CF 865D` & `CF 713C`)"}
+```cpp
+// Solution 1: CF 865D — Buy Low Sell High (Simulated MCMF Min-Heap)
+// Time: O(N log N), Space: O(N)
+#include <bits/stdc++.h>
+using namespace std;
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int n;
+    if (!(cin >> n)) return 0;
+    priority_queue<long long, vector<long long>, greater<long long>> pq;
+    long long total_profit = 0;
+    for (int i = 0; i < n; ++i) {
+        long long p;
+        cin >> p;
+        // Push twice: 1 for fresh buy (0 -> +1), 1 for regret token (-1 -> 0) if matched
+        // If p is the minimum, popping it once leaves 1 copy and adds p - p = 0!
+        pq.push(p);
+        pq.push(p);
+        total_profit += p - pq.top();
+        pq.pop();
+    }
+    cout << total_profit << "\n";
+    return 0;
+}
+```
+
+```cpp
+// Solution 2: CF 713C — Sonya and Problem Wihtout a Legend (Slope Trick Max-Heap Dual)
+// Time: O(N log N), Space: O(N)
+#include <bits/stdc++.h>
+using namespace std;
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int n;
+    if (!(cin >> n)) return 0;
+    priority_queue<long long> pq; // Max-heap of left-slope breakpoints
+    long long min_cost = 0;
+    for (int i = 1; i <= n; ++i) {
+        long long a;
+        cin >> a;
+        long long x = a - i; // Transform strict b_1 < ... < b_n to b'_1 <= ... <= b'_n
+        pq.push(x);
+        pq.push(x);
+        min_cost += pq.top() - x;
+        pq.pop();
+    }
+    cout << min_cost << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### `#178` (Stepping Stone 2) — `[CF 280D] k-Maximum Subsequence Sum` & Archive Companion `[CF 13C] Sequence`
+
+- **Canonical Slot**: `Ch 23 — Stepping Stone 2 (SS-2)` | **Wave Provenance**: `4B-P07` & `W6-10`
+- **Judge URLs**:
+  - **Primary (Segment-Tree Simulated SSP)**: [https://codeforces.com/problemset/problem/280/D](https://codeforces.com/problemset/problem/280/D)
+  - **Archive Companion (Non-Decreasing Isotonic Regression)**: [https://codeforces.com/problemset/problem/13/C](https://codeforces.com/problemset/problem/13/C)
+
+#### Constraints & Problem Statements
+- **`CF 280D`**: Given $a_1, \dots, a_N$ ($N \le 10^5$, $|a_i| \le 500$) and $Q \le 10^5$ operations (`0 p v` point update $a_p \gets v$; `1 L R k` query max sum of $\le k$ disjoint subarrays in $[L, R]$ with $k \le 20$).
+- **`CF 13C`**: Given $a_1, \dots, a_N$ ($N \le 5000$), minimize $\sum_{i=1}^N |b_i - a_i|$ subject to $b_1 \le b_2 \le \dots \le b_N$ (solvable in $O(N \log N)$ time and $O(N)$ memory via `#177` without the $-i$ shift).
+
+#### 4-Step Compilation (`CF 280D`)
+
+1. **Step 1 (Non-Graph Diagnostic Signal)**:
+   $k \le 20$ per query screams **Successive Shortest Path (SSP) simulated on a Segment Tree**: each of the $k$ steps extracts the single maximum subarray $[l^*, r^*] \subseteq [L, R]$ and negates its elements to represent reverse residual arcs!
+2. **Step 2 (Intermediate Residual Representation)**:
+   Saturating $u_i \to v_i$ (weight $+a_i$) for $i \in [l^*, r^*]$ replaces those arcs in $G_f$ with $v_i \to u_i$ (weight $-a_i$).
+3. **Step 3 (Segment Tree Merging & Lazy Flip Contract)**:
+   Define a struct `Sub { int sum, l, r; }` ordered by `sum`. Each tree node stores `tot` (range sum), `mx, lmx, rmx` (best subarray, prefix, suffix for maximum), `mn, lmn, rmn` (best subarray, prefix, suffix for minimum), and `bool rev`. Flipping a node negates `tot` and swaps `(mx, lmx, rmx)` with negated `(mn, lmn, rmn)`.
+4. **Step 4 (Failure-Mode Guard)**:
+   Always push all flipped intervals $[l^*, r^*]$ onto a vector and flip them back in reverse order at the end of the query, even if the loop breaks early because `mx.sum <= 0`!
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints (`#178`)"}
+- **Hint 1**: Why does negating the elements inside the chosen maximum subarray $[l_1, r_1]$ allow the second maximum-subarray query to either pick a disjoint subarray outside $[l_1, r_1]$ OR split $[l_1, r_1]$ into two subarrays?
+- **Hint 2**: When a Segment Tree node's elements are negated ($a_i \gets -a_i$), its new maximum subarray is the negation of its old **minimum** subarray!
+- **Hint 3**: Maintain both `max_subarray` and `min_subarray` (along with prefix/suffix bests and their `[l, r]` endpoints) in every Segment Tree node. Run up to $k$ queries+flips, then undo all flips!
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Solution (`CF 280D — k-Maximum Subsequence Sum`)"}
+```cpp
+// CF 280D — k-Maximum Subsequence Sum (Segment-Tree Simulated SSP)
+// Time: O((N + Q * k) log N), Space: O(N)
+#include <bits/stdc++.h>
+using namespace std;
+
+struct Seg {
+    int sum, l, r;
+    Seg operator+(const Seg& o) const { return {sum + o.sum, l, o.r}; }
+    bool operator<(const Seg& o) const { return sum < o.sum; }
+};
+
+struct Node {
+    Seg tot, mx, lmx, rmx, mn, lmn, rmn;
+    bool rev = false;
+
+    void init(int idx, int val) {
+        tot = mx = lmx = rmx = mn = lmn = rmn = {val, idx, idx};
+        rev = false;
+    }
+
+    void apply_flip() {
+        tot.sum = -tot.sum;
+        swap(mx, mn); mx.sum = -mx.sum; mn.sum = -mn.sum;
+        swap(lmx, lmn); lmx.sum = -lmx.sum; lmn.sum = -lmn.sum;
+        swap(rmx, rmn); rmx.sum = -rmx.sum; rmn.sum = -rmn.sum;
+        rev ^= 1;
+    }
+};
+
+Node merge_nodes(const Node& A, const Node& B) {
+    Node C;
+    C.tot = A.tot + B.tot;
+    C.lmx = max(A.lmx, A.tot + B.lmx);
+    C.rmx = max(B.rmx, A.rmx + B.tot);
+    C.mx = max({A.mx, B.mx, A.rmx + B.lmx});
+    C.lmn = min(A.lmn, A.tot + B.lmn);
+    C.rmn = min(B.rmn, A.rmn + B.tot);
+    C.mn = min({A.mn, B.mn, A.rmn + B.lmn});
+    C.rev = false;
+    return C;
+}
+
+int n, q, arr[100005];
+Node tree[400005];
+
+void push_down(int u) {
+    if (tree[u].rev) {
+        tree[u << 1].apply_flip();
+        tree[u << 1 | 1].apply_flip();
+        tree[u].rev = false;
+    }
+}
+
+void build(int u, int l, int r) {
+    if (l == r) { tree[u].init(l, arr[l]); return; }
+    int mid = (l + r) >> 1;
+    build(u << 1, l, mid);
+    build(u << 1 | 1, mid + 1, r);
+    tree[u] = merge_nodes(tree[u << 1], tree[u << 1 | 1]);
+}
+
+void update_point(int u, int l, int r, int p, int val) {
+    if (l == r) { tree[u].init(l, val); return; }
+    push_down(u);
+    int mid = (l + r) >> 1;
+    if (p <= mid) update_point(u << 1, l, mid, p, val);
+    else update_point(u << 1 | 1, mid + 1, r, p, val);
+    tree[u] = merge_nodes(tree[u << 1], tree[u << 1 | 1]);
+}
+
+void update_flip(int u, int l, int r, int ql, int qr) {
+    if (ql <= l && r <= qr) { tree[u].apply_flip(); return; }
+    push_down(u);
+    int mid = (l + r) >> 1;
+    if (ql <= mid) update_flip(u << 1, l, mid, ql, qr);
+    if (qr > mid) update_flip(u << 1 | 1, mid + 1, r, ql, qr);
+    tree[u] = merge_nodes(tree[u << 1], tree[u << 1 | 1]);
+}
+
+Node query_range(int u, int l, int r, int ql, int qr) {
+    if (ql <= l && r <= qr) return tree[u];
+    push_down(u);
+    int mid = (l + r) >> 1;
+    if (qr <= mid) return query_range(u << 1, l, mid, ql, qr);
+    if (ql > mid) return query_range(u << 1 | 1, mid + 1, r, ql, qr);
+    return merge_nodes(query_range(u << 1, l, mid, ql, qr),
+                       query_range(u << 1 | 1, mid + 1, r, ql, qr));
+}
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    if (!(cin >> n)) return 0;
+    for (int i = 1; i <= n; ++i) cin >> arr[i];
+    build(1, 1, n);
+    cin >> q;
+    while (q--) {
+        int type;
+        cin >> type;
+        if (type == 0) {
+            int p, v;
+            cin >> p >> v;
+            update_point(1, 1, n, p, v);
+        } else {
+            int l, r, k;
+            cin >> l >> r >> k;
+            vector<pair<int, int>> flipped;
+            int ans = 0;
+            for (int step = 0; step < k; ++step) {
+                Node res = query_range(1, 1, n, l, r);
+                if (res.mx.sum <= 0) break;
+                ans += res.mx.sum;
+                flipped.push_back({res.mx.l, res.mx.r});
+                update_flip(1, 1, n, res.mx.l, res.mx.r);
+            }
+            for (auto [fl, fr] : flipped) update_flip(1, 1, n, fl, fr);
+            cout << ans << "\n";
+        }
+    }
+    return 0;
+}
+```
+::::
+
+---
+
+### `#179` (Intermediate 1) — `[CF 802O] April Fools' Problem (hard)` & Archive Companion `[Luogu P4331 / BalticOI 2004] Sequence`
+
+- **Canonical Slot**: `Ch 23 — Intermediate 1 (Int-1)` | **Wave Provenance**: `4B-P08` & `W6-11`
+- **Judge URLs**:
+  - **Primary (WQS + Prefix Regret Heap)**: [https://codeforces.com/problemset/problem/802/O](https://codeforces.com/problemset/problem/802/O)
+  - **Archive Companion (Isotonic Sequence Reconstruction)**: [https://www.luogu.com.cn/problem/P4331](https://www.luogu.com.cn/problem/P4331)
+
+#### Constraints & Problem Statements
+- **`CF 802O`**: Given $a_1 \dots a_N$ and $b_1 \dots b_N$ ($N \le 5 \times 10^5$, $1 \le a_i, b_j \le 10^9$), choose $K$ disjoint pairs $(i_r, j_r)$ with $i_r \le j_r$ minimizing $\sum_{r=1}^K (a_{i_r} + b_{j_r})$.
+- **`Luogu P4331 [BalticOI 2004] Sequence`**: Given $a_1 \dots a_N$ ($N \le 10^6$), find a strictly increasing integer sequence $b_1 < b_2 < \dots < b_N$ minimizing $\sum_{i=1}^N |b_i - a_i|$, and **print both the minimum cost and the optimal sequence $b_1 \dots b_N$**!
+
+#### 4-Step Synthesis
+
+1. **For `CF 802O`**: As derived in Section 23.2, WQS binary search on $\lambda \in [0, 2 \times 10^9]$ eliminates the global cardinality constraint $K$, and the 2-type min-heap (`delta_cnt = 1` for $a_i$, `delta_cnt = 0` for regret key $-(b_{j_0} - \lambda)$) simulates all augmenting paths in $O(N \log N)$ per binary search step.
+2. **For `Luogu P4331` (How to Reconstruct $b_1 \dots b_N$ from the Heap in 2 Lines!)**:
+   Traditionally, Chinese tutorials solve `P4331` with a 150-line Leftist Heap implementing the Pool-Adjacent-Violators (PAV) median-merging algorithm. You do **not** need a Leftist Heap!
+   In the standard `std::priority_queue` Slope Trick loop from `#177`, after step $i$ (where we pushed $a'_i = a_i - i$ twice and popped $\max(H)$ once), the rightmost breakpoint $v_i = \max(H)$ is the exact point where the prefix DP function $f_i(x)$ transitions from slope $0$ to flattened prefix-min!
+   Therefore:
+   - At $i = N$, $b'_N = v_N$ minimizes $f_N(x)$.
+   - Moving backward $i = N-1, N-2, \dots, 1$, since $f_{i}(x) = g_{i-1}(\min(x, v_{i-1})) + |x - a'_i|$, once $b'_{i+1}$ is fixed, the optimal predecessor subject to $b'_i \le b'_{i+1}$ is simply:
+     $$
+     b'_i = \min(b'_{i+1},\; v_i)!
+     $$
+   Finally, add back the index shift $b_i = b'_i + i$. Total code: 20 lines!
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints (`#179`)"}
+- **Hint 1**: In `CF 802O`, why does matching day $j$'s print option with a regret token `-(b[j0] - lambda)` leave the total number of matched pairs unchanged (`delta_cnt = 0`)?
+- **Hint 2**: In `P4331`, after processing $a'_i = a_i - i$ at step $i$ with the Slope Trick max-heap, what is the geometric meaning of `v[i] = pq.top()`?
+- **Hint 3**: `v[i]` is the optimal unconstrained endpoint for prefix $1 \dots i$. A single backward sweep `b[i] = min(b[i+1], v[i])` for $i = N-1 \dots 1$ reconstructs the exact optimal non-decreasing sequence!
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Solutions (`CF 802O` & `Luogu P4331`)"}
+```cpp
+// Solution 1: CF 802O — April Fools' Problem (hard)
+// Time: O(N log N log(max_val)), Space: O(N)
+#include <bits/stdc++.h>
+using namespace std;
+
+struct Item {
+    long long key;
+    int dcnt;
+    bool operator>(const Item& o) const {
+        if (key != o.key) return key > o.key;
+        return dcnt > o.dcnt; // tie-break toward smaller pair count (dcnt = 0)
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int n, k;
+    if (!(cin >> n >> k)) return 0;
+    vector<long long> a(n), b(n);
+    for (int i = 0; i < n; ++i) cin >> a[i];
+    for (int i = 0; i < n; ++i) cin >> b[i];
+
+    auto check = [&](long long lambda) -> pair<long long, int> {
+        priority_queue<Item, vector<Item>, greater<Item>> pq;
+        long long cost = 0;
+        int cnt = 0;
+        for (int i = 0; i < n; ++i) {
+            pq.push({a[i], 1});
+            long long c = b[i] - lambda;
+            if (pq.top().key + c < 0) {
+                auto top = pq.top();
+                pq.pop();
+                cost += top.key + c;
+                cnt += top.dcnt;
+                pq.push({-c, 0});
+            }
+        }
+        return {cost, cnt};
+    };
+
+    long long lo = 0, hi = 2000000005LL, best_lam = 0;
+    while (lo <= hi) {
+        long long mid = lo + (hi - lo) / 2;
+        if (check(mid).second <= k) {
+            best_lam = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    auto [pen_cost, _] = check(best_lam);
+    cout << pen_cost + 1LL * k * best_lam << "\n";
+    return 0;
+}
+```
+
+```cpp
+// Solution 2: Luogu P4331 — [BalticOI 2004] Sequence (Slope Trick + 2-Line Reconstruction)
+// Time: O(N log N), Space: O(N)
+#include <bits/stdc++.h>
+using namespace std;
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int n;
+    if (!(cin >> n)) return 0;
+    priority_queue<long long> pq;
+    vector<long long> v(n + 1), b(n + 1);
+    long long ans = 0;
+    for (int i = 1; i <= n; ++i) {
+        long long a;
+        cin >> a;
+        long long x = a - i;
+        pq.push(x);
+        pq.push(x);
+        ans += pq.top() - x;
+        pq.pop();
+        v[i] = pq.top(); // Record optimal prefix breakpoint AFTER pop!
+    }
+    b[n] = v[n];
+    for (int i = n - 1; i >= 1; --i) {
+        b[i] = min(b[i + 1], v[i]);
+    }
+    cout << ans << "\n";
+    for (int i = 1; i <= n; ++i) {
+        cout << (b[i] + i) << (i == n ? '\n' : ' ');
+    }
+    return 0;
+}
+```
+::::
+
+---
+
+### `#180` (Intermediate 2) — `[PA 2013 / Luogu P4694 / UVa 1660] Raper` & Archive Companion `[Luogu P4597 / CERC 2016] Sequence Maintenance`
+
+- **Canonical Slot**: `Ch 23 — Intermediate 2 (Int-2)` | **Wave Provenance**: `4B-P10` & `W6-12`
+- **Judge URLs**:
+  - **Primary (Collinear-Slope WQS Regret Benchmark)**: [https://www.luogu.com.cn/problem/P4694](https://www.luogu.com.cn/problem/P4694)
+  - **Archive Companion (Online Streaming Slope Trick)**: [https://www.luogu.com.cn/problem/P4597](https://www.luogu.com.cn/problem/P4597)
+
+#### Constraints & Problem Statements
+- **`Luogu P4694 [PA 2013] Raper`**: Over $N \le 5 \times 10^5$ days, day $i$ can record 1 CD in studio A (cost $a_i$) and master 1 CD in studio B (cost $b_i$), requiring $i \le j$ for every matched pair $(i, j)$. Produce **exactly $K$** CDs at minimum cost. Unlike `CF 802O`, the test suite of `PA 2013 Raper` heavily stresses **many duplicate values $a_i, b_j$** (flat segments of $C(k)$ where dozens of pairs have identical marginal cost $\Delta_k = \lambda^*$).
+- **`Luogu P4597`**: Streaming non-decreasing sequence maintenance ($N \le 5 \times 10^5$), answering the minimum $\ell_1$ cost after insertions.
+
+#### 4-Step Compilation & Collinear Slope Analysis (`P4694`)
+
+1. **Step 1 (Diagnostic Signal)**:
+   Mathematically identical to `CF 802O`, except `P4694` is famous for breaking buggy WQS implementations that fail when $C(k)$ has a long collinear plateau of slope $\lambda^*$ around $k = K$.
+2. **Step 2 (Why Naively Mixing `< 0` and `<= 0` Breaks)**:
+   Suppose at $\lambda = \lambda^*$, the minimum value of $C(k) - k \lambda^*$ is achieved for all $k \in [k_{\min}(\lambda^*),\; k_{\max}(\lambda^*)]$, where $k_{\min}(\lambda^*) < K < k_{\max}(\lambda^*)$.
+   If your inner heap comparator does **not** break ties on `key` using `dcnt`, then `check(lambda)` might return an arbitrary $k$ inside $[k_{\min}, k_{\max}]$ that isn't even monotone in $\lambda$!
+3. **Step 3 (Exact Monotone Tie-Breaking Contract)**:
+   By ordering `(key, dcnt)` lexicographically (`key` ascending, then `dcnt` ascending so `dcnt = 0` beats `dcnt = 1` on equal keys) and only matching when `pq.top().key + b[i] - lambda < 0`, `check(lambda).second` is guaranteed to equal **$k_{\min}(\lambda)$**, which is a strictly monotone step function of $\lambda$.
+   Then `best_lam` is the **largest** integer $\lambda$ such that $k_{\min}(\lambda) \le K$, so $K \in [k_{\min}(\text{best\_lam}),\; k_{\max}(\text{best\_lam})]$, and `pen_cost + K * best_lam` recovers the exact integer value $C(K)$!
+4. **Step 4 (Failure-Mode Guard)**:
+   Ensure the binary search upper bound `hi` covers $\max_i a_i + \max_j b_j \le 2 \times 10^9 + 5$.
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints (`#180`)"}
+- **Hint 1**: What happens in WQS binary search when $k$ consecutive augmentations have the exact same marginal cost $\lambda^*$?
+- **Hint 2**: If a fresh prep token `(a_i, dcnt=1)` and a regret token `(-(b_{j0} - lambda), dcnt=0)` have the exact same key in the min-heap, which one should be popped first so `cnt` equals $k_{\min}(\lambda)$?
+- **Hint 3**: Pop `dcnt = 0` first when using `< 0` (or `dcnt = 1` first when using `<= 0`), so all zero-marginal-gain swaps happen before new pairs are added!
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Solution (`Luogu P4694 — [PA 2013] Raper`)"}
+```cpp
+// Luogu P4694 — [PA 2013] Raper (Collinear-Safe WQS + Regret Min-Heap)
+// Time: O(N log N log(max_A + max_B)), Space: O(N)
+#include <bits/stdc++.h>
+using namespace std;
+
+struct Token {
+    long long key;
+    int dcnt; // 1 = new pair, 0 = regret replacement
+    bool operator>(const Token& o) const {
+        if (key != o.key) return key > o.key;
+        return dcnt < o.dcnt; // With <= 0 condition, prefer dcnt = 1 to compute k_max(lambda)
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int n, k;
+    if (!(cin >> n >> k)) return 0;
+    vector<long long> a(n), b(n);
+    for (int i = 0; i < n; ++i) cin >> a[i];
+    for (int i = 0; i < n; ++i) cin >> b[i];
+
+    auto solve_lam = [&](long long lam) -> pair<long long, int> {
+        priority_queue<Token, vector<Token>, greater<Token>> pq;
+        long long total = 0;
+        int cnt = 0;
+        for (int i = 0; i < n; ++i) {
+            pq.push({a[i], 1});
+            long long v = b[i] - lam;
+            if (pq.top().key + v <= 0) {
+                auto t = pq.top();
+                pq.pop();
+                total += t.key + v;
+                cnt += t.dcnt;
+                pq.push({-v, 0});
+            }
+        }
+        return {total, cnt};
+    };
+
+    long long lo = 0, hi = 2000000005LL, ans_lam = hi;
+    while (lo <= hi) {
+        long long mid = lo + (hi - lo) / 2;
+        if (solve_lam(mid).second >= k) {
+            ans_lam = mid;
+             hi = mid - 1;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    auto [cost, _] = solve_lam(ans_lam);
+    cout << cost + 1LL * k * ans_lam << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### `#181` (Advanced 1) — `[UOJ #455 / LOJ #3043 / WC2019] 雪灾与外卖` & Archive Companion `[CF 1251E2] Voting (Hard Version)`
+
+- **Canonical Slot**: `Ch 23 — Advanced 1 (Adv-1)` | **Wave Provenance**: `4B-P14` / `W6-07` & `W6-13`
+- **Judge URLs**:
+  - **Primary (1D Capacitated Line Transport with Batched Regret Heaps)**: [https://uoj.ac/problem/455](https://uoj.ac/problem/455)
+  - **Archive Companion (Backward Suffix Threshold Sweep)**: [https://codeforces.com/problemset/problem/1251/E2](https://codeforces.com/problemset/problem/1251/E2)
+
+#### Constraints & Problem Statements
+- **`UOJ #455 [WC2019] 雪灾与外卖`**: On a 1D number line, there are $N \le 10^5$ deliverymen at coordinates $x_1 \le \dots \le x_N$ and $M \le 10^5$ restaurants at coordinates $y_1 \le \dots \le y_M$. Restaurant $j$ has unit meal cost $w_j$ and capacity $c_j \le 10^9$ ($\sum c_j \ge N$). Assigning deliveryman $i$ to restaurant $j$ costs $|x_i - y_j| + w_j$. Match all $N$ deliverymen at minimum total cost.
+- **`CF 1251E2 Voting (Hard Version)`**: $N \le 2 \times 10^5$ voters; voter $i$ joins for free if at least $m_i$ voters have already joined, or can be bribed for cost $p_i$. Minimize total bribe cost to win all $N$ voters.
+
+#### 4-Step Compilation (`UOJ #455` & `CF 1251E2`)
+
+1. **Step 1 (Non-Graph Diagnostic Signal)**:
+   In `UOJ #455`, $N, M \le 10^5$ and restaurant capacities $c_j \le 10^9$ rule out unit-by-unit MCMF. Because a 1D line is a degenerate tree where $\operatorname{dep}(u) = \text{coord}(u)$ and every left-to-right pair $(p \le q)$ has LCA $p$ with distance $q - p = (+q) + (-p)$, we can sweep coordinates left-to-right maintaining two run-length-compressed regret heaps `Heap_X` (deliverymen) and `Heap_Y` (restaurants)!
+2. **Step 2 (Two-Heap Telescoping Equations on a 1D Line)**:
+   - **Deliveryman arrives at $x$**: Must be matched immediately (equivalently, carries $-\infty$ mandatory penalty). Pop the best available restaurant token `(v, cnt)` from `Heap_Y`. Pay $x + v$. Now, what if a later restaurant $y' \ge x$ wants to steal this deliveryman? The cost should change from $x + v$ to $(y' - x) + \dots$, wait: no! What if a later **deliveryman** $x' \ge x$ steals this restaurant $v$ while $x$ gets matched to a later restaurant $y'$?
+     Using our **Tree LCA Regret Formula** (Theorem 23.2) at current coordinate $l = x$ (where the new deliveryman has depth $a = x$ and matched with restaurant token $b = v$ from the left):
+     - The cost paid is $x + v$.
+     - The new deliveryman regret token pushed into `Heap_X` has key:
+       $$
+       a_{\text{reg}} = -(x + v) - x = -2x - v!
+       $$
+       Let's check: if a later restaurant at $y' \ge x$ (weight $w'$) steals this deliveryman by matching with $a_{\text{reg}}$, it adds $(y' + w') + (-2x - v) = (y' - x + w') - (x + v)$, which **cancels** the old restaurant match $x + v$ and replaces it with the new match $y' - x + w'$!
+   - **Restaurant arrives at $(y, w, c)$**:
+     1. First, push `(w - y, c)` into `Heap_Y` (representing up to $c$ unused capacity slots for future deliverymen $x' \ge y$).
+     2. Next, while `Heap_X` has deliveryman tokens $u$ such that $u + y + w < 0$ (and the restaurant still has remaining capacity from $c$): pop `(u, cnt)` from `Heap_X`, match $k = \min(c_{\text{rem}}, \text{cnt})$ units for cost $k \cdot (u + y + w)$, push the **restaurant regret token** `(-2y - w - u, k)` into `Heap_Y` (so a future deliveryman $x' \ge y$ can steal this restaurant slot for $(x') + (-2y - w - u) + (u + y + w) = x' - y + w$!), and accumulate total matched count $K_{\text{matched}}$!
+     3. Finally, coalesce all $K_{\text{matched}}$ deliverymen that just switched to restaurant $y$ into a **single batched deliveryman regret token** `(-y - w, K_matched)` in `Heap_X`!
+3. **Step 3 (Amortized Complexity Proof)**:
+   Why is `UOJ #455` $O((N + M) \log(N + M))$ despite $c_j \le 10^9$? Because each deliveryman $x_i$ has multiplicity $1$ (pushing $1$ node to `Heap_X`), and each restaurant $y_j$ coalesces all $K_{\text{matched}}$ deliverymen it steals into **at most $1$ new batched node** in `Heap_X`, while pushing $1$ restaurant regret node into `Heap_Y` per popped `Heap_X` node!
+4. **Step 4 (`CF 1251E2` Suffix Sweep)**:
+   In `CF 1251E2`, sorting voters by threshold $m_i$ and sweeping $k = N-1$ down to $0$ guarantees that the suffix $\{i : m_i \ge k\}$ must contain at least $\max(0, k - \text{cnt}(m < k))$ bribed voters. Pushing $p_i$ for $m_i = k$ into a min-heap and popping the cheapest until `bribed >= k - cnt_below[k]` solves the problem in $O(N \log N)$ without even needing regret tokens!
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints (`#181`)"}
+- **Hint 1 (`UOJ #455`)**: When a deliveryman at $x$ matches with a restaurant token of key $v$ to his left (paying $x + v$), what regret key should be pushed into `Heap_X` so that a future restaurant at $y' \ge x$ with meal cost $w'$ can steal him for net total cost $(y' - x) + w'$?
+- **Hint 2 (`UOJ #455`)**: Answer to Hint 1: push `-2*x - v` into `Heap_X`, because `(x + v) + (y' + w' - 2*x - v) = y' - x + w'`! And when restaurant $(y, w, c)$ steals $K$ total deliverymen from `Heap_X`, push a single batched token `(-y - w, K)` into `Heap_X`!
+- **Hint 3 (`CF 1251E2`)**: Sweep threshold $k$ backward from $N-1$ down to $0$, adding voters with $m_i = k$ to a min-heap of bribe costs $p_i$, and pop whenever `cnt_below[k] + bribed < k`.
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Solutions (`UOJ #455 雪灾与外卖` & `CF 1251E2`)"}
+```cpp
+// Solution 1: UOJ #455 — [WC2019] 雪灾与外卖 (Batched 2-Heap Simulated MCMF)
+// Time: O((N + M) log(N + M)), Space: O(N + M)
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 1e14;
+
+struct Node {
+    long long key;
+    long long cnt;
+    bool operator>(const Node& o) const { return key > o.key; }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int n, m;
+    if (!(cin >> n >> m)) return 0;
+    vector<long long> x(n);
+    for (int i = 0; i < n; ++i) cin >> x[i];
+    struct Rest { long long y, w, c; };
+    vector<Rest> r(m);
+    long long sum_c = 0;
+    for (int j = 0; j < m; ++j) {
+        cin >> r[j].y >> r[j].w >> r[j].c;
+        sum_c += r[j].c;
+    }
+    if (sum_c < n) {
+        cout << -1 << "\n";
+        return 0;
+    }
+
+    priority_queue<Node, vector<Node>, greater<Node>> pqX, pqY;
+    // Sentinel infinite-cost restaurant at -INF so every deliveryman matches immediately
+    pqY.push({INF, n});
+
+    long long ans = 0;
+    int i = 0, j = 0;
+
+    auto process_deliveryman = [&](long long pos) {
+        auto top = pqY.top();
+        pqY.pop();
+        ans += pos + top.key;
+        if (top.cnt > 1) pqY.push({top.key, top.cnt - 1});
+        // Push regret token into pqX so a later restaurant can steal this deliveryman
+        pqX.push({-2 * pos - top.key, 1});
+    };
+
+    auto process_restaurant = [&](long long pos, long long w, long long cap) {
+        long long total_stolen = 0;
+        while (!pqX.empty() && cap > 0) {
+            auto top = pqX.top();
+            if (top.key + pos + w >= 0) break;
+            pqX.pop();
+            long long take = min(cap, top.cnt);
+            ans += take * (top.key + pos + w);
+            cap -= take;
+            total_stolen += take;
+            if (top.cnt > take) pqX.push({top.key, top.cnt - take});
+            // Push restaurant regret token into pqY so a later deliveryman can reclaim top.key
+            pqY.push({-2 * pos - w - top.key, take});
+        }
+        if (total_stolen > 0) {
+            // Coalesce all stolen deliverymen into ONE batched regret token in pqX!
+            pqX.push({-pos - w, total_stolen});
+        }
+        if (cap > 0) {
+            pqY.push({w - pos, cap});
+        }
+    };
+
+    while (i < n || j < m) {
+        if (i < n && (j == m || x[i] <= r[j].y)) {
+            process_deliveryman(x[i++]);
+        } else {
+            process_restaurant(r[j].y, r[j].w, r[j].c);
+            j++;
+        }
+    }
+    cout << ans << "\n";
+    return 0;
+}
+```
+
+```cpp
+// Solution 2: CF 1251E2 — Voting (Hard Version) (Backward Threshold Sweep + Min-Heap)
+// Time: O(N log N), Space: O(N)
+#include <bits/stdc++.h>
+using namespace std;
+
+void solve() {
+    int n;
+    cin >> n;
+    vector<vector<long long>> buckets(n);
+    for (int i = 0; i < n; ++i) {
+        int m;
+        long long p;
+        cin >> m >> p;
+        buckets[m].push_back(p);
+    }
+    priority_queue<long long, vector<long long>, greater<long long>> pq;
+    long long total_cost = 0;
+    int bribed = 0;
+    int rem_below = n;
+    for (int k = n - 1; k >= 0; --k) {
+        rem_below -= (int)buckets[k].size();
+        for (long long p : buckets[k]) pq.push(p);
+        while (rem_below + bribed < k) {
+            total_cost += pq.top();
+            pq.pop();
+            bribed++;
+        }
+    }
+    cout << total_cost << "\n";
+}
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int t;
+    if (cin >> t) while (t--) solve();
+    return 0;
+}
+```
+::::
+
+---
+
+### `#182` (Advanced 2) — `[ICPC WF 2018 / Luogu P6943] Conquer the World` & Archive Companion `[CF 1534G] A New Beginning`
+
+- **Canonical Slot**: `Ch 23 — Advanced 2 (Adv-2)` | **Wave Provenance**: `4B-P15` / `W6-15` & `W6-14`
+- **Judge URLs**:
+  - **Primary (Tree Mergeable-Heap Simulated Flow)**: [https://qoj.ac/problem/2143](https://qoj.ac/problem/2143) (also [https://www.luogu.com.cn/problem/P6943](https://www.luogu.com.cn/problem/P6943))
+  - **Archive Companion (2D Diagonal Projection + Lazy-Shift Slope Trick)**: [https://codeforces.com/problemset/problem/1534/G](https://codeforces.com/problemset/problem/1534/G)
+
+#### Constraints & Problem Statements
+- **`[ICPC WF 2018] Conquer the World`**: Given an edge-weighted tree of $N \le 2.5 \times 10^5$ vertices, vertex $u$ starts with $x_u$ armies and needs at least $y_u$ armies ($\sum x_u \ge \sum y_u$, $\sum y_u \le 10^6$). Minimize total movement distance to satisfy all demands.
+- **`CF 1534G A New Beginning`**: $N \le 8 \times 10^5$ potatoes at $(x_i, y_i)$ ($x_i, y_i \ge 0$). Starting at $(0, 0)$ and moving only Right $(+1, 0)$ or Up $(0, +1)$, you can collect potato $i$ from any point $(x, y)$ on your path by paying $|x - x_i| + |y - y_i|$. Minimize total cost.
+
+#### 4-Step Compilation (`Conquer the World` & `CF 1534G`)
+
+1. **For `Conquer the World`**:
+   As proved in Theorem 23.2 (Section 23.3 Part B), at each vertex $l$ (with weighted root depth $d(l)$), we merge children's Leftist Heaps $H_X(l)$ (supply keys) and $H_Y(l)$ (demand keys, initialized to $d(v) - M_{\infty}$ with $M_{\infty} = 10^{12}$). While $\min(H_X(l)) + \min(H_Y(l)) - 2 d(l) < 0$, we match $k = \min(\text{cnt}_a, \text{cnt}_b)$ units and push **both** complementary regret keys:
+   $$
+   a_{\text{reg}} = 2 d(l) - b \in H_X(l), \qquad b_{\text{reg}} = 2 d(l) - a \in H_Y(l).
+   $$
+   At the end, add $(\sum_{v=1}^N y_v) \cdot M_{\infty}$ back to the answer!
+2. **For `CF 1534G` (Chebyshev Diagonal Projection + Two-Heap Slope Trick)**:
+   When you step Right $(+1, 0)$ or Up $(0, +1)$, the sum coordinate $s = x + y$ increases by $+1$, while the $x$-coordinate either increases by $+1$ or stays unchanged ($x_{\text{next}} \in [x, x+1]$).
+   Furthermore, if you are on diagonal $s_i = x_i + y_i$ at point $(x, s_i - x)$, the $\ell_1$ distance to $(x_i, y_i)$ is:
+   $$
+   |x - x_i| + |(s_i - x) - (s_i - x_i)| = 2|x - x_i|!
+   $$
+   (Since moving $1$ unit in $x$ along the diagonal changes both $x$ and $y$, we can work in unit cost $|x - x_i|$ directly!).
+   Sort points by $s_i = x_i + y_i$ ascending. Advancing from $s_{\text{prev}}$ to $s_{\text{cur}}$ by $\Delta s$ widens the flat minimum interval $[L_{\min}, R_{\min}]$ of the DP function on the right by $+\Delta s$ (simply `shift_R += delta_s` on the right min-heap $H_R$!), and adding $|x - x_i|$ inserts $x_i$ into the two-heap Slope Trick structure (`H_L` max-heap for slopes $< 0$, `H_R` min-heap for slopes $> 0$)!
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints (`#182`)"}
+- **Hint 1 (`Conquer the World`)**: Why do we subtract $M_{\infty} = 10^{12}$ from every initial demand token at $v$, and why can't the two regret tokens $2 d(l) - b$ and $2 d(l) - a$ ever match with each other?
+- **Hint 2 (`Conquer the World`)**: Use a simple array-backed Leftist Heap storing `(key, cnt)` so merging subtrees takes $O(\log N)$ time without pointer allocation overhead.
+- **Hint 3 (`CF 1534G`)**: Transform $(x_i, y_i) \mapsto (s_i = x_i + y_i,\; x_i)$, sort by $s_i$, maintain max-heap $H_L$ and shifted min-heap $H_R$, and update `ans += max({0LL, H_L.top() - x, x - (H_R.top() + shift_R)})`!
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Solutions (`Conquer the World` & `CF 1534G`)"}
+```cpp
+// Solution 1: [ICPC WF 2018 / Luogu P6943] Conquer the World
+// Mergeable Leftist Heaps + Dual Regret Tokens
+// Time: O((N + sum_Y) log(N + sum_Y)), Space: O(N + sum_Y)
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 1e12;
+const int MAX_NODES = 2500005;
+
+struct LeftistPool {
+    long long key[MAX_NODES], cnt[MAX_NODES];
+    int lc[MAX_NODES], rc[MAX_NODES], dist[MAX_NODES];
+    int tot = 0;
+
+    int new_node(long long k, long long c) {
+        int u = ++tot;
+        key[u] = k; cnt[u] = c;
+        lc[u] = rc[u] = dist[u] = 0;
+        return u;
+    }
+
+    int merge(int x, int y) {
+        if (!x || !y) return x | y;
+        if (key[x] > key[y]) swap(x, y);
+        rc[x] = merge(rc[x], y);
+        if (dist[lc[x]] < dist[rc[x]]) swap(lc[x], rc[x]);
+        dist[x] = dist[rc[x]] + 1;
+        return x;
+    }
+
+    void pop(int& root) { root = merge(lc[root], rc[root]); }
+} hp;
+
+int n;
+vector<pair<int, long long>> adj[250005];
+long long x_sup[250005], y_dem[250005], dep[250005];
+int rootX[250005], rootY[250005];
+long long total_cost = 0;
+
+void dfs(int u, int p) {
+    if (x_sup[u] > 0) rootX[u] = hp.merge(rootX[u], hp.new_node(dep[u], x_sup[u]));
+    if (y_dem[u] > 0) rootY[u] = hp.merge(rootY[u], hp.new_node(dep[u] - INF, y_dem[u]));
+
+    for (auto [v, w] : adj[u]) {
+        if (v == p) continue;
+        dep[v] = dep[u] + w;
+        dfs(v, u);
+        rootX[u] = hp.merge(rootX[u], rootX[v]);
+        rootY[u] = hp.merge(rootY[u], rootY[v]);
+    }
+
+    while (rootX[u] && rootY[u]) {
+        long long a = hp.key[rootX[u]];
+        long long b = hp.key[rootY[u]];
+        if (a + b - 2 * dep[u] >= 0) break;
+
+        long long ca = hp.cnt[rootX[u]];
+        long long cb = hp.cnt[rootY[u]];
+        long long k = min(ca, cb);
+
+        total_cost += k * (a + b - 2 * dep[u]);
+
+        if (ca == k) hp.pop(rootX[u]);
+        else hp.cnt[rootX[u]] -= k;
+
+        if (cb == k) hp.pop(rootY[u]);
+        else hp.cnt[rootY[u]] -= k;
+
+        // Dual-Heap Regret Rule (Theorem 23.2): push both complementary regret keys!
+        rootX[u] = hp.merge(rootX[u], hp.new_node(2 * dep[u] - b, k));
+        rootY[u] = hp.merge(rootY[u], hp.new_node(2 * dep[u] - a, k));
+    }
+}
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    if (!(cin >> n)) return 0;
+    for (int i = 1; i < n; ++i) {
+        int u, v;
+        long long w;
+        cin >> u >> v >> w;
+        adj[u].push_back({v, w});
+        adj[v].push_back({u, w});
+    }
+    long long sum_y = 0;
+    for (int i = 1; i <= n; ++i) {
+        cin >> x_sup[i] >> y_dem[i];
+        long long common = min(x_sup[i], y_dem[i]);
+        x_sup[i] -= common;
+        y_dem[i] -= common;
+        sum_y += y_dem[i];
+    }
+    dfs(1, 0);
+    cout << total_cost + sum_y * INF << "\n";
+    return 0;
+}
+```
+
+```cpp
+// Solution 2: CF 1534G — A New Beginning (45-Degree Projection + 2-Heap Slope Trick)
+// Time: O(N log N), Space: O(N)
+#include <bits/stdc++.h>
+using namespace std;
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int n;
+    if (!(cin >> n)) return 0;
+    vector<pair<long long, long long>> pts(n);
+    for (int i = 0; i < n; ++i) {
+        long long x, y;
+        cin >> x >> y;
+        pts[i] = {x + y, x};
+    }
+    sort(pts.begin(), pts.end());
+
+    priority_queue<long long> pqL; // Max-heap for left breakpoints
+    priority_queue<long long, vector<long long>, greater<long long>> pqR; // Min-heap for right breakpoints
+    pqL.push(0);
+    pqR.push(0);
+    long long shiftR = 0, prev_s = 0, ans = 0;
+
+    for (auto [s, x] : pts) {
+        shiftR += (s - prev_s);
+        prev_s = s;
+        long long L_max = pqL.top();
+        long long R_min = pqR.top() + shiftR;
+        if (x < L_max) {
+            ans += L_max - x;
+            pqL.pop();
+            pqL.push(x);
+            pqL.push(x);
+            pqR.push(L_max - shiftR);
+        } else if (x > R_min) {
+            ans += x - R_min;
+            pqR.pop();
+            pqR.push(x - shiftR);
+            pqR.push(x - shiftR);
+            pqL.push(R_min);
+        } else {
+            pqL.push(x);
+            pqR.push(x - shiftR);
+        }
+    }
+    cout << ans << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+### `#183` (Mastery 1 — Flagship) — `[NOI2019 / Luogu P5470] 序列 (Sequence)`
+
+- **Canonical Slot**: `Ch 23 — Mastery 1 (Mas-1)` | **Wave Provenance**: `4B-P22`
+- **Judge URL**: [https://www.luogu.com.cn/problem/P5470](https://www.luogu.com.cn/problem/P5470) (also LOJ `#3158` / UOJ `#479`)
+- **Constraints**: $T \le 10$ test cases, $\sum N \le 10^6$, $N \le 2 \times 10^5$, $1 \le L \le K \le N$, $1 \le a_i, b_i \le 10^9$.
+
+#### 4-Step Compilation Summary
+Having derived the 4-state vertex automaton (`State 0: (0,0)`, `State 1: (1,0)`, `State 2: (0,1)`, `State 3: (1,1)`) and the 5 elementary residual augmenting walks in Section 23.4, let us highlight two implementation details that make the code ultra-clean:
+
+1. **Initial Greedy Phase (Optional or Unified)**:
+   You can either run all $K$ steps directly using the 5-heap automaton starting from `free_rem = K - L`, OR first greedily pick the top $K - L$ elements of $A$ and top $K - L$ elements of $B$ and run $L$ steps. Running **all $K$ steps** from $0$ with `free_rem = K - L` is completely uniform and avoids any special-case initialization!
+2. **Same-Index Guard in Walk 2 (`i == j`)**:
+   If Walk 2 ($\max(H_{A0}) + \max(H_{B0})$) wins and happens to pick the **same** index $i = j$, then $i$ transitions directly `0 -> 3` and consumes **$0$ free tokens** (equivalent to Walk 1)!
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints (`#183 — [NOI2019] 序列`)"}
+- **Hint 1**: Represent the constraint $|I \cap J| \ge L$ by a central bottleneck edge $P \to Q$ of capacity `free_rem = K - L` that carries all unaligned pairs.
+- **Hint 2**: Track `state[i] in {0, 1, 2, 3}` (bitmask of whether $i \in I$ and $i \in J$) and maintain 5 max-heaps: `H_AB` (state 0, key $a_i+b_i$), `H_A0` (state 0, key $a_i$), `H_B0` (state 0, key $b_i$), `H_B1` (state 1, key $b_i$), and `H_A2` (state 2, key $a_i$).
+- **Hint 3**: At each of the $K$ steps, evaluate the 5 candidate walks (Walk 2 only if `free_rem > 0`). Remember that Walk 5 (`H_A2.top() + H_B1.top()`) turns two half-selected nodes into two aligned `(1, 1)` nodes and **increments `free_rem++`**!
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Solution (`[NOI2019 / Luogu P5470] 序列`)"}
+```cpp
+// [NOI2019 / Luogu P5470] 序列 (Sequence) — 5-Heap Residual State Automaton
+// Time: O(N log N), Space: O(N)
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long NEG_INF = -1e18;
+
+struct Entry {
+    long long val;
+    int id;
+    bool operator<(const Entry& o) const { return val < o.val; }
+};
+
+void solve_testcase() {
+    int n, k, l;
+    cin >> n >> k >> l;
+    vector<long long> a(n + 1), b(n + 1);
+    for (int i = 1; i <= n; ++i) cin >> a[i];
+    for (int i = 1; i <= n; ++i) cin >> b[i];
+
+    // State bitmask: 0 = (0,0), 1 = A-only (1,0), 2 = B-only (0,1), 3 = Both (1,1)
+    vector<int> state(n + 1, 0);
+    priority_queue<Entry> hAB, hA0, hB0, hB1, hA2;
+
+    for (int i = 1; i <= n; ++i) {
+        hAB.push({a[i] + b[i], i});
+        hA0.push({a[i], i});
+        hB0.push({b[i], i});
+    }
+
+    auto clean = [&]() {
+        while (!hAB.empty() && state[hAB.top().id] != 0) hAB.pop();
+        while (!hA0.empty() && state[hA0.top().id] != 0) hA0.pop();
+        while (!hB0.empty() && state[hB0.top().id] != 0) hB0.pop();
+        while (!hB1.empty() && state[hB1.top().id] != 1) hB1.pop();
+        while (!hA2.empty() && state[hA2.top().id] != 2) hA2.pop();
+    };
+
+    auto set_state = [&](int u, int new_st) {
+        state[u] = new_st;
+        if (new_st == 1) hB1.push({b[u], u});
+        else if (new_st == 2) hA2.push({a[u], u});
+    };
+
+    int free_rem = k - l;
+    long long total_sum = 0;
+
+    for (int step = 0; step < k; ++step) {
+        clean();
+        long long w1 = hAB.empty() ? NEG_INF : hAB.top().val;
+        long long w2 = (free_rem > 0 && !hA0.empty() && !hB0.empty())
+                       ? (hA0.top().val + hB0.top().val) : NEG_INF;
+        long long w3 = (!hB1.empty() && !hA0.empty())
+                       ? (hB1.top().val + hA0.top().val) : NEG_INF;
+        long long w4 = (!hA2.empty() && !hB0.empty())
+                       ? (hA2.top().val + hB0.top().val) : NEG_INF;
+        long long w5 = (!hA2.empty() && !hB1.empty())
+                       ? (hA2.top().val + hB1.top().val) : NEG_INF;
+
+        long long best = max({w1, w2, w3, w4, w5});
+        total_sum += best;
+
+        if (best == w1) {
+            int u = hAB.top().id;
+            set_state(u, 3);
+        } else if (best == w2) {
+            int u = hA0.top().id;
+            int v = hB0.top().id;
+            if (u == v) {
+                set_state(u, 3); // Degenerates to Walk 1 (0 free tokens used)
+            } else {
+                set_state(u, 1);
+                set_state(v, 2);
+                free_rem--;
+            }
+        } else if (best == w3) {
+            int j = hB1.top().id;
+            int i = hA0.top().id;
+            set_state(j, 3);
+            set_state(i, 1);
+        } else if (best == w4) {
+            int i = hA2.top().id;
+            int j = hB0.top().id;
+            set_state(i, 3);
+            set_state(j, 2);
+        } else {
+            // Walk 5: Cross-swap completion REFUNDS +1 free token!
+            int i = hA2.top().id;
+            int j = hB1.top().id;
+            set_state(i, 3);
+            set_state(j, 3);
+            free_rem++;
+        }
+    }
+    cout << total_sum << "\n";
+}
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int T;
+    if (cin >> T) while (T--) solve_testcase();
+    return 0;
+}
+```
+::::
+
+---
+
+### `#184` (Mastery 2 — Flagship) — `[NOI2017 / Luogu P3826] 蔬菜 (Vegetables)` & Archive Companion `[Luogu P6621 / 省选联考 2020] 魔法商店`
+
+- **Canonical Slot**: `Ch 23 — Mastery 2 (Mas-2)` | **Wave Provenance**: `4B-P23` & `W6-16`
+- **Judge URLs**:
+  - **Primary (Time-Reversed Simulated Flow + Prefix Rollback)**: [https://www.luogu.com.cn/problem/P3826](https://www.luogu.com.cn/problem/P3826)
+  - **Archive Companion (Matroid Exchange Graph + $\ell_2$ Isotonic Regression)**: [https://www.luogu.com.cn/problem/P6621](https://www.luogu.com.cn/problem/P6621)
+
+#### Constraints & Problem Statements
+- **`[NOI2017 / Luogu P3826] 蔬菜 (Vegetables)`**:
+  There are $N \le 10^5$ types of vegetables. Type $i$ has unit sale value $a_i$, first-unit bonus $s_i$ (the very first unit of type $i$ sold gives $a_i + s_i$, all subsequent units give $a_i$), initial stock $c_i$, and daily decay rate $x_i$ ($x_i$ units perish at the end of each day). You can sell at most $M \le 10$ total units of vegetables per day. Given $Q \le 10^5$ queries $p_1, \dots, p_Q$ ($p_q \le P_{\max} = 10^5$), for each query output the maximum profit obtainable over $p_q$ days.
+- **`[Luogu P6621 / 省选联考 2020 A 卷] 魔法商店`**:
+  Given $N \le 1000$ items with 64-bit XOR vectors $v_i \in [0, 2^{64})$, original prices $c_i$, and two linear matroid bases $A, B$ of size $M \le 64$, choose new integer prices $w_i$ minimizing $\sum_{i=1}^N (w_i - c_i)^2$ such that $A$ is a minimum-weight basis and $B$ is a maximum-weight basis.
+
+#### 4-Step Compilation (`[NOI2017] 蔬菜` & `[省选联考 2020] 魔法商店`)
+
+1. **Step 1 (Diagnostic Signal for `[NOI2017] 蔬菜`)**:
+   In forward time ($t = 1 \to p$), stock decays by $x_i$ each day, creating a complex deadline constraint where selling early preserves decaying stock. Worse, we must answer $Q = 10^5$ different horizons $p_q \le 10^5$!
+   How do we eliminate both the decay and the multi-query bottleneck?
+   - **Trick 1 (Reverse Time from Day $P_{\max} = 10^5$ down to $1$)**:
+     Assign each unit of vegetable $i$ its exact **expiration day** $d \in [1, P_{\max}]$. In reverse time $t = P_{\max} \to 1$, a vegetable expiring on day $d \ge t$ **arrives** on day $d$ and stays valid for all days $t \le d$ without ever decaying! Thus, sweeping backward $t = P_{\max}$ down to $1$ with a max-heap of currently available vegetables (picking up to $M$ highest-value units on each day $t$) finds the exact optimal set of vegetables for $P_{\max}$ days with **zero regret tokens needed**!
+   - **Trick 2 (Prefix Rollback from $P_{\max}$ down to $p_q$)**:
+     Why does the optimal set for $P_{\max}$ days immediately give the answer for all smaller $p < P_{\max}$?
+     In the MCMF network where each vegetable unit has an expiration deadline $d_u \in [1, P_{\max}]$ and day $t \in [1, p]$ has capacity $M$ (meaning for every $k \le p$, at most $k \cdot M$ chosen units can have deadline $\le k$), reducing the total number of days from $p$ to $p-1$ simply reduces the total sink capacity from $p \cdot M$ to $(p - 1) \cdot M$!
+     By the Matroid / MCMF Subset Property, the optimal multiset of vegetables for $p$ days is obtained from the optimal multiset for $P_{\max}$ days by **repeatedly discarding the cheapest chosen units until at most $p \cdot M$ units remain**!
+2. **Step 2 (`[省选联考 2020] 魔法商店` — Matroid Basis Exchange + $\ell_2$ Isotonic Regression)**:
+   - Express each $y \notin A$ as a unique XOR combination $v_y = \bigoplus_{x \in S_A(y)} v_x$ over basis $A$; add directed constraint edges $x \to y$ ($w_x \le w_y$).
+   - Express each $y \notin B$ as $v_y = \bigoplus_{x \in S_B(y)} v_x$ over basis $B$; add directed constraint edges $y \to x$ ($w_y \le w_x$).
+   - Solve $\min \sum_{u=1}^N (w_u - c_u)^2$ subject to $w_u \le w_v$ ($\forall (u \to v) \in E$) via **Parallel Binary Search (`整体二分`) + Minimum $s$-$t$ Cut**: at midpoint `mid`, assign node weight $(mid - c_u)^2 - (mid + 1 - c_u)^2 = 2c_u - 2 \cdot mid - 1$, add $\infty$-capacity edges $u \to v$, and partition active vertices into $S$ ($w_u > mid$) and $T$ ($w_u \le mid$)!
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints (`#184`)"}
+- **Hint 1 (`[NOI2017] 蔬菜`)**: For vegetable type $i$, the first unit has value $a_i + s_i$ and expires on day $\min(P_{\max}, \lceil c_i / x_i \rceil)$ (or $P_{\max}$ if $x_i = 0$). All other $c_i - 1$ units have value $a_i$.
+- **Hint 2 (`[NOI2017] 蔬菜`)**: Sweep $t = P_{\max}$ down to $1$. On day $t$, push all vegetable types whose latest remaining unit expires on day $t$ into a max-heap. Pop up to $M$ units on day $t$; if a popped type still has remaining units that expire on day $t$, keep it in a temporary vector and re-push it at the end of day $t$, or if its next unit expires on an earlier day $t' < t$, push it into bucket $t'$!
+- **Hint 3 (`[NOI2017] 蔬菜`)**: Collect all chosen units from the $P_{\max}$-day simulation into a min-heap (or sorted array). To move from $p$ days down to $p - 1$ days, while total chosen units $> (p - 1) \cdot M$, pop the **cheapest** chosen units and subtract their values!
+::::
+
+:::: {.callout-tip collapse="true" title="Complete C++ Solutions (`[NOI2017] 蔬菜` & `[省选联考 2020] 魔法商店`)"}
+```cpp
+// Solution 1: [NOI2017 / Luogu P3826] 蔬菜 (Vegetables)
+// Reverse-Time Greedy Packing + Minimum-Value Rollback
+// Time: O((N + P_max * M) log N + Q), Space: O(N + P_max * M)
+#include <bits/stdc++.h>
+using namespace std;
+
+const int P_MAX = 100000;
+
+struct Veg {
+    long long a, s, c, x;
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int n, m, q;
+    if (!(cin >> n >> m >> q)) return 0;
+    vector<Veg> v(n + 1);
+    vector<vector<int>> appear(P_MAX + 1);
+
+    for (int i = 1; i <= n; ++i) {
+        cin >> v[i].a >> v[i].s >> v[i].c >> v[i].x;
+        if (v[i].c == 0) continue;
+        long long last_day = (v[i].x == 0) ? P_MAX : min<long long>(P_MAX, (v[i].c + v[i].x - 1) / v[i].x);
+        appear[last_day].push_back(i);
+    }
+
+    // Max-heap of (unit_value, veg_id). If veg_id > 0, it's the bonus first unit (a_i + s_i);
+    // if veg_id < 0, it represents regular units of type (-veg_id) with value a_i.
+    priority_queue<pair<long long, int>> pq;
+    vector<long long> used_cnt(n + 1, 0);
+    vector<pair<long long, long long>> chosen; // (value, count)
+    long long total_units = 0, current_profit = 0;
+
+    for (int day = P_MAX; day >= 1; --day) {
+        for (int id : appear[day]) {
+            pq.push({v[id].a + v[id].s, id});
+        }
+        int quota = m;
+        vector<int> reuse_today;
+        while (quota > 0 && !pq.empty()) {
+            auto [val, raw_id] = pq.top();
+            pq.pop();
+            if (raw_id > 0) {
+                // First unit of type raw_id (with bonus s_i)
+                int id = raw_id;
+                quota--;
+                used_cnt[id]++;
+                total_units++;
+                current_profit += val;
+                chosen.push_back({val, 1});
+                if (v[id].c > 1) {
+                    pq.push({v[id].a, -id});
+                }
+            } else {
+                // Regular units of type id
+                int id = -raw_id;
+                long long avail = v[id].c - used_cnt[id] - (day - 1) * v[id].x;
+                long long take = min<long long>(quota, avail);
+                if (take > 0) {
+                    quota -= take;
+                    used_cnt[id] += take;
+                    total_units += take;
+                    current_profit += take * val;
+                    chosen.push_back({val, take});
+                }
+                if (used_cnt[id] < v[id].c) {
+                    reuse_today.push_back(id);
+                }
+            }
+        }
+        for (int id : reuse_today) {
+            pq.push({v[id].a, -id});
+        }
+    }
+
+    // Sort chosen batches by value ascending so we can rollback cheapest units first
+    sort(chosen.begin(), chosen.end());
+    int ptr = 0;
+    vector<long long> ans(P_MAX + 1, 0);
+    for (int p = P_MAX; p >= 1; --p) {
+        long long cap = 1LL * p * m;
+        while (total_units > cap) {
+            long long drop = min(total_units - cap, chosen[ptr].second);
+            current_profit -= drop * chosen[ptr].first;
+            total_units -= drop;
+            chosen[ptr].second -= drop;
+            if (chosen[ptr].second == 0) ptr++;
+        }
+        ans[p] = current_profit;
+    }
+
+    while (q--) {
+        int p;
+        cin >> p;
+        cout << ans[p] << "\n";
+    }
+    return 0;
+}
+```
+
+```cpp
+// Solution 2: [Luogu P6621 / 省选联考 2020 A 卷] 魔法商店
+// Matroid Exchange Graph + L2 Isotonic Regression via Parallel Binary Search & Min-Cut
+// Time: O(N M + MinCut(N, N M) log(max_C)), Space: O(N M)
+#include <bits/stdc++.h>
+using namespace std;
+
+using ull = unsigned long long;
+const long long INF = 1e18;
+
+struct Dinic {
+    struct Edge { int to, rev; long long cap; };
+    int n, s, t;
+    vector<vector<Edge>> adj;
+    vector<int> lev, ptr;
+
+    Dinic(int n, int s, int t) : n(n), s(s), t(t), adj(n), lev(n), ptr(n) {}
+
+    void add_edge(int u, int v, long long cap) {
+        adj[u].push_back({v, (int)adj[v].size(), cap});
+        adj[v].push_back({u, (int)adj[u].size() - 1, 0});
+    }
+
+    bool bfs() {
+        fill(lev.begin(), lev.end(), -1);
+        queue<int> q;
+        lev[s] = 0; q.push(s);
+        while (!q.empty()) {
+            int u = q.front(); q.pop();
+            for (auto& e : adj[u]) {
+                if (e.cap > 0 && lev[e.to] == -1) {
+                    lev[e.to] = lev[u] + 1;
+                    q.push(e.to);
+                }
+            }
+        }
+        return lev[t] != -1;
+    }
+
+    long long dfs(int u, long long pushed) {
+        if (pushed == 0 || u == t) return pushed;
+        for (int& cid = ptr[u]; cid < (int)adj[u].size(); ++cid) {
+            auto& e = adj[u][cid];
+            if (e.cap > 0 && lev[e.to] == lev[u] + 1) {
+                long long tr = dfs(e.to, min(pushed, e.cap));
+                if (tr == 0) continue;
+                e.cap -= tr;
+                adj[e.to][e.rev].cap += tr;
+                return tr;
+            }
+        }
+        return 0;
+    }
+
+    void solve_cut() {
+        while (bfs()) {
+            fill(ptr.begin(), ptr.end(), 0);
+            while (dfs(s, INF));
+        }
+    }
+};
+
+struct LinearBasis {
+    ull b[64] = {0};
+    ull mask[64] = {0};
+    int id_at[64] = {0};
+
+    void build(const vector<int>& basis_ids, const vector<ull>& val) {
+        for (int idx = 0; idx < (int)basis_ids.size(); ++idx) {
+            int u = basis_ids[idx];
+            ull x = val[u];
+            ull m = 1ULL << idx;
+            for (int bit = 63; bit >= 0; --bit) {
+                if ((x >> bit) & 1) {
+                    if (!b[bit]) {
+                        b[bit] = x;
+                        mask[bit] = m;
+                        id_at[idx] = u;
+                        break;
+                    }
+                    x ^= b[bit];
+                    m ^= mask[bit];
+                }
+            }
+        }
+    }
+
+    vector<int> get_rep(ull x) const {
+        ull m = 0;
+        for (int bit = 63; bit >= 0; --bit) {
+            if ((x >> bit) & 1) {
+                x ^= b[bit];
+                m ^= mask[bit];
+            }
+        }
+        vector<int> res;
+        for (int idx = 0; idx < 64; ++idx) {
+            if ((m >> idx) & 1) res.push_back(id_at[idx]);
+        }
+        return res;
+    }
+};
+
+int n, m;
+vector<ull> c_vec;
+vector<long long> price, opt_w;
+vector<pair<int, int>> dag_edges; // (u -> v) means w[u] <= w[v]
+
+void parallel_bs(long long L, long long R, const vector<int>& nodes) {
+    if (nodes.empty()) return;
+    if (L == R) {
+        for (int u : nodes) opt_w[u] = L;
+        return;
+    }
+    long long mid = L + (R - L) / 2;
+    int K = (int)nodes.size();
+    vector<int> loc(n + 1, -1);
+    for (int i = 0; i < K; ++i) loc[nodes[i]] = i;
+
+    int S = K, T = K + 1;
+    Dinic dinic(K + 2, S, T);
+    for (int i = 0; i < K; ++i) {
+        int u = nodes[i];
+        // Gain of increasing w_u from mid to mid + 1: (mid - c_u)^2 - (mid + 1 - c_u)^2
+        long long gain = 2 * price[u] - 2 * mid - 1;
+        if (gain > 0) dinic.add_edge(S, i, gain);
+        else dinic.add_edge(i, T, -gain);
+    }
+    for (auto [u, v] : dag_edges) {
+        if (loc[u] != -1 && loc[v] != -1) {
+            // If w_u > mid (loc[u] in S), then w_v >= w_u > mid requires loc[v] in S!
+            dinic.add_edge(loc[u], loc[v], INF);
+        }
+    }
+    dinic.solve_cut();
+    vector<int> left_set, right_set;
+    for (int i = 0; i < K; ++i) {
+        if (dinic.lev[i] != -1) right_set.push_back(nodes[i]); // w_u > mid
+        else left_set.push_back(nodes[i]);                    // w_u <= mid
+    }
+    for (int u : nodes) loc[u] = -1;
+    parallel_bs(L, mid, left_set);
+    parallel_bs(mid + 1, R, right_set);
+}
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    if (!(cin >> n >> m)) return 0;
+    c_vec.resize(n + 1);
+    price.resize(n + 1);
+    opt_w.resize(n + 1);
+    for (int i = 1; i <= n; ++i) cin >> c_vec[i];
+    for (int i = 1; i <= n; ++i) cin >> price[i];
+
+    vector<int> A(m), B(m);
+    vector<bool> inA(n + 1, false), inB(n + 1, false);
+    for (int i = 0; i < m; ++i) { cin >> A[i]; inA[A[i]] = true; }
+    for (int i = 0; i < m; ++i) { cin >> B[i]; inB[B[i]] = true; }
+
+    LinearBasis basisA, basisB;
+    basisA.build(A, c_vec);
+    basisB.build(B, c_vec);
+
+    for (int y = 1; y <= n; ++y) {
+        if (!inA[y]) {
+            for (int x : basisA.get_rep(c_vec[y])) dag_edges.push_back({x, y}); // w_x <= w_y
+        }
+        if (!inB[y]) {
+            for (int x : basisB.get_rep(c_vec[y])) dag_edges.push_back({y, x}); // w_y <= w_x
+        }
+    }
+
+    vector<int> all_nodes(n);
+    iota(all_nodes.begin(), all_nodes.end(), 1);
+    parallel_bs(0, 1000000, all_nodes);
+
+    long long ans = 0;
+    for (int i = 1; i <= n; ++i) {
+        long long diff = opt_w[i] - price[i];
+        ans += diff * diff;
+    }
+    cout << ans << "\n";
+    return 0;
+}
+```
+::::
+
+---
+
+## 23.7 Pre-Submission Checklist (`FM-23` Audit)
+
+Before submitting any Simulated Cost Flow (`模拟费用流`) or Regret Greedy (`反悔贪心`) solution, run through this 6-point verification audit:
+
+1. **Double-Push Relay Check (`CF 865D` / `CF 713C`)**:
+   If a single vertex $j$ on a 1D spine can act as a sell ($-1$), a zero-net-position relay ($0$), or a fresh buy ($+1$), did you push $p_j$ **twice** into the heap when $j$ is matched?
+2. **WQS Collinear Slope Tie-Breaking (`CF 802O` / `PA 2013 Raper`, `FM-23` / `H-24`)**:
+   In WQS binary search with a 2-type regret heap (`dcnt = 1` for new pairs, `dcnt = 0` for regret replacements), does your heap comparator break ties on equal `key` values using `dcnt`, and does that tie-breaker match `< 0` vs `<= 0` in your binary search condition?
+3. **Dual-Heap Tree Regret Check (`Conquer the World` / `UOJ #455`, `FM-23` / `H-23`)**:
+   When matching supply $a \in H_X(l)$ with demand $b \in H_Y(l)$ at LCA $l$ with $a + b - 2\operatorname{dep}(l) < 0$, did you push **both** $2\operatorname{dep}(l) - b$ into $H_X(l)$ **and** $2\operatorname{dep}(l) - a$ into $H_Y(l)$?
+4. **Multiplicity Batching Check (`UOJ #455`)**:
+   When capacities $c_j \le 10^9$ are large, did you coalesce all units stolen in one restaurant's `while` loop into a **single** `(key, total_stolen)` tuple in `pqX` so the amortized number of heap nodes stays $O(N + M)$?
+5. **Token-Refunding Cross-Swaps in Multi-Heap Automata (`[NOI2019] 序列`, `FM-23`)**:
+   Did you include the augmenting walk that completes an $A$-only node $j$ and a $B$-only node $i$ simultaneously (`Walk 5: H_A2.top() + H_B1.top()`), and did you increment `free_rem++` when it is taken?
+6. **Segment-Tree Rollback Integrity (`CF 280D`)**:
+   Did you track both `max_subarray` and `min_subarray` in each Segment Tree node so sign-flips take $O(1)$ per node, and did you undo every flip before the next query?
+
+---
+
+## 23.8 Chapter Summary & Bridge to Chapter 24
+
+In this chapter, we unified three techniques that are often taught as disconnected tricks—**Regret Greedy (`反悔贪心`)**, **Slope Trick (`Slope Trick / 保序回归`)**, and **Segment-Tree / Mergeable-Heap Augmentation**—under a single mathematical theorem: **Simulated Minimum-Cost Flow (`模拟费用流`)**.
+
+- Every regret key pushed into a priority queue is a **reverse residual arc** in $G_f$.
+- Every range sign-flip on a Segment Tree (`CF 280D`) is the **reversal of saturated spine arcs** after an SSP step.
+- Every subtree heap merge at $l = \operatorname{lca}(u, v)$ (`Conquer the World`) is the **telescoping decomposition** $\operatorname{dep}(u) + \operatorname{dep}(v) - 2\operatorname{dep}(l)$ equipped with two-sided residual regret tokens $2\operatorname{dep}(l) - b$ and $2\operatorname{dep}(l) - a$.
+- Every multi-heap state automaton (`[NOI2019] 序列`) is the **complete enumeration of simple $S \to T$ walks** across a constant-size hub network.
+
+In **Chapter 24 (Cost-Scaling, Capacity-Scaling, and High-Performance Exact MCMF Solvers)**, we close Part VI by studying what to do when the graph topology is **not** a 1D spine, tree, or constant-hub automaton, yet we still need blazing-fast exact Maximum Flow and Minimum-Cost Circulation on general graphs.
+
+---
+
+## Multilingual Bibliography & Primary References
+
+- **`[ZH]`** **姜志豪 (Jiang Zhihao, 2016)**, *《网络流的一些建模方法》 (Some Modelling Methods for Network Flows)*, IOI China National Training Team Paper (`国家集训队2016论文集`) — Seminal Chinese reference introducing systematic Simulated Cost Flow (`模拟费用流`) on lines, trees, and hub automata.
+- **`[ZH]`** **高睿泉 (Gao Ruiquan, 2018)**, *《浅谈保序回归问题》 (On Isotonic Regression Problems)*, IOI China National Training Team Paper (`国家集训队2018论文集`) — Definitive reference on $\ell_p$ isotonic regression (`#184` `[省选联考 2020] 魔法商店`) and its LP duality with Slope Trick and Minimum Cuts.
+- **`[ZH]`** **胡伯涛 (Amber / Hu Botao, 2007)**, *《最小割模型在信息学竞赛中的应用》*, IOI China National Training Team Paper (`国家集训队2007论文集`).
+- **`[ZH]`** **王钦石 (Wang Qinshi / WQS, 2012)**, *《浅析一类二分方法》*, IOI China National Training Team Paper — Origin of WQS binary search (`凸优化 / Aliens Trick`) for eliminating cardinality constraints $K$ on convex MCMF cost curves (`#179`, `#180`).
+- **`[JA]`** **`maspy` (maspypy.com)**, *Slope Trick 解説 (Comprehensive Guide to Slope Trick and Convex Piecewise-Linear DP)* — Connects Slope Trick max/min heaps (`#177`, `#178`, `#182`) to LP duality and convex conjugate addition.
+- **`[EN]`** **Ahuja, R. K., Magnanti, T. L., & Orlin, J. B. (1993)**, *Network Flows: Theory, Algorithms, and Applications*, Prentice Hall — Chapter 9 (Successive Shortest Path Algorithm and Convexity of Minimum-Cost Flow).

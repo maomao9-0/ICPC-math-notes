@@ -1,0 +1,2022 @@
+---
+title: "Chapter 14 — 0-1 Fractional Programming, Maximum Density Subgraphs & Parametric Ratio Cuts"
+---
+
+## Prerequisites & Learning Objectives
+
+### Prerequisites
+
+Before studying this chapter, make sure you are comfortable with:
+
+- **Chapter 02 (Residual Graph Anatomy & Canonical Minimum Cuts)**: Extracting the source-minimal cut $S_{\min} = \{v \in V : s \rightsquigarrow_{G_{f^*}} v\}$ from the terminal residual network $G_{f^*}$ after running Dinic's algorithm.
+- **Chapter 09 (Maximum Weight Closure & Project Selection)**: Compiling unary profits $p_v > 0$, unary costs $c_v > 0$, and logical prerequisites $x_u \le x_v \iff x_u(1 - x_v) = 0$ into a minimum $s$-$t$ cut network with $\infty$-capacity implication arcs.
+- **Chapter 10 & Chapter 11 (Pseudo-Boolean Cut Polynomials & Submodularity)**: Expressing combinatorial objectives in indicator variables $x_v \in \{0, 1\}$, verifying the pairwise submodularity condition $\Delta_{u,v}\Phi = \Phi(1, 1) - \Phi(1, 0) - \Phi(0, 1) + \Phi(0, 0) \le 0$, and compiling quadratic rewards $w_{uv} x_u x_v$ or cut penalties $\gamma_{uv} x_u(1 - x_v)$.
+
+### Learning Objectives
+
+By the end of this chapter, you will be able to:
+
+1. **Recognize and Linearize 0-1 Fractional Programs (`0-1 分数规划`)**: Transform any combinatorial ratio objective $\max_{x \in \mathcal{F}} \frac{F(x)}{G(x)}$ ($G(x) > 0$) into the parametric merit function $h(\lambda) = \max_{x \in \mathcal{F}} \big(F(x) - \lambda G(x)\big)$, prove that $h(\lambda)$ is piecewise-linear, convex, continuous, and strictly decreasing, and diagnose immediately via the **Submodularity Sign Law** whether $h(\lambda)$ compiles to a polynomial-time minimum cut or an NP-hard problem.
+2. **Choose Between Binary Search, Dinkelbach's Secant Method, and Parametric Preflow**: Derive the exact rational denominator separation $\Delta_{\min} \ge \frac{1}{|V|(|V|-1)}$ for unweighted density ratios, implement Dinkelbach's superlinear Newton-secant iteration (`Dinkelbach 1967`), and enforce the **Two-Scale IEEE-754 Epsilon Hierarchy** ($\varepsilon_{\text{flow}} \ll \varepsilon_{\text{cut\_sign}} \ll \Delta_{\min}$) to prevent floating-point infinite loops in Dinic (`FM-14`).
+3. **Compile Goldberg's Maximum Density Subgraph (`最大密度子图`) via Both $|V|+|E|$ Closure and $|V|$-Only Degree-Sum Reduction**: Use the handshaking cut identity $2|E(S)| = \sum_{v \in S} d_v - |\delta(S, \bar{S})|$ (`Goldberg 1984`, `Amber / 胡伯涛 2007`) to eliminate all $|E|$ edge-closure nodes, shrinking a dense $O(|V| + |E|)$-vertex network down to $|V| + 2$ vertices (`POJ 3155`, `BZOJ 2039`).
+4. **Master Structural Dualities & Parametric Cut Envelopes**: Connect Maximum Density Subgraphs to **Hakimi's Orientation Theorem** (`CF 847J`), **Nash-Williams Arboricity / Rooted Forest Packing** (`CF 1284G`), and the **Gallo–Grigoriadis–Tarjan (GGT) Nested Cut Theorem** for finding all $\le |V|$ breakpoints of the upper hull $h(\lambda)$ across all real $\lambda \in [0, \infty)$.
+
+---
+
+## 1. 0-1 Fractional Programming & Parametric Linearization $h(\lambda) = \max_{S \ne \emptyset} \big(F(S) - \lambda G(S)\big)$
+
+### 1.1 Step 1 — Non-Graph Diagnostic Signal: Why Naive Greedy and DP Fail on Ratio Objectives
+
+In Chapters 09 through 13, every objective function was an **additive sum** of unary profits, unary costs, and pairwise interaction terms:
+
+$$\max_{x \in \{0, 1\}^V} \big( \text{Total Profit}(x) - \text{Total Cost}(x) \big).$$
+
+In contest problems, however, an adversary often asks you to optimize the **efficiency**, **average weight**, or **density** of a combinatorial structure—maximizing (or minimizing) a **ratio** of two set functions over a family of valid indicator vectors $\mathcal{F} \subseteq \{0, 1\}^V$:
+
+$$\lambda^* = \max_{x \in \mathcal{F}} \frac{F(x)}{G(x)} \qquad \text{or} \qquad \lambda^* = \min_{x \in \mathcal{F}} \frac{F(x)}{G(x)}, \qquad \text{subject to } G(x) > 0 \text{ for all } x \in \mathcal{F}.$$
+
+How do you recognize from the English problem statement that you are facing a 0-1 Fractional Programming network flow problem, and why do simpler paradigms fail?
+
+1. **Surface Clues in the Statement**:
+   - *"Find a non-empty group of scientists maximizing the average number of collaborations per member"* (**POJ 3155 — Hard Life, `#105`**): maximize $\frac{|E(S)|}{|S|}$ over $\emptyset \subsetneq S \subseteq V$.
+   - *"Pair $N$ boys and $N$ girls into dance partners to maximize total happiness divided by total coordination"* (**[SDOI2017] Freshman Ball, `#108`**): maximize $\frac{\sum a_{ij} x_{ij}}{\sum b_{ij} x_{ij}}$ over perfect matchings $x \in \mathcal{M}$.
+   - *"Disconnect source $s$ from sink $t$ by removing an edge cut $C$ minimizing average edge capacity $\frac{\sum_{e \in C} w_e}{|C|}$"* (**Amber 2007 — Network Tightness, `#107`**).
+2. **Why Naive Greedy Fails (Mediant Non-Monotonicity)**:
+   Ratios do not obey linear Bellman optimality. If item $1$ has standalone ratio $\frac{4}{2} = 2.0$ and item $2$ has standalone ratio $\frac{5}{4} = 1.25$, a greedy solver picks item $1$ alone. Yet if selecting *both* items unlocks a pairwise synergy bonus $s_{12} = 6$, the combined subset $\{1, 2\}$ achieves ratio $\frac{4 + 5 + 6}{2 + 4} = \frac{15}{6} = 2.5 > 2.0$! Even worse, in unweighted graphs, repeatedly peeling away the vertex of minimum current degree (**Charikar's greedy peeling**) can destroy a dense clique before touching a sparse hub-and-spoke component (as we prove by explicit counterexample in Section 2.1).
+3. **Why Dynamic Programming Fails**:
+   Even if you attempt to track the denominator $G(x) = B$ as an extra knapsack dimension in DP, the numerator $F(x)$ depends on arbitrary graph interactions $x_u x_v$ across a general graph $G = (V, E)$ of treewidth $\Omega(|V|)$, requiring $O(2^{|V|})$ state memory.
+
+#### Diagnostic Dichotomy: Circulation Space (Mean Cycle) vs. Cut Space (Ratio Cut / Closure)
+
+Before building a flow network for a ratio problem, always check **what combinatorial object** lives in $\mathcal{F}$. Competitive programming features two classic fractional graph families that are LP duals of each other in spirit:
+
+| Diagnostic Dimension | Family A: Minimum / Maximum Mean Cycle (`[HNOI2009] 最小圈`) | Family B: Ratio Cut, Closure, or Matching (`分数规划最小割 / 匹配`) |
+| :--- | :--- | :--- |
+| **Chosen Combinatorial Object** | A directed cycle $C \subseteq E$ (a 1-regular circulation) | A vertex subset $S \subseteq V$, an $s$-$t$ cut $\delta^+(S)$, or a matching $M$ |
+| **Ratio Objective** | $\min_{C} \frac{\sum_{e \in C} a_e}{\sum_{e \in C} b_e}$ (e.g., $\frac{\sum_{e \in C} w_e}{|C|}$) | $\max_{\emptyset \ne S \subseteq V} \frac{F(S)}{G(S)}$ or $\min_{(S,T)} \frac{\sum_{e \in \delta^+(S)} a_e}{\sum_{e \in \delta^+(S)} b_e}$ |
+| **Linearized Subproblem at Trial $\lambda$** | Does $G$ contain a cycle $C$ with $\sum_{e \in C} (a_e - \lambda b_e) < 0$? | Does there exist $S \in \mathcal{F}$ with $F(S) - \lambda G(S) > 0$ (or $< 0$)? |
+| **Oracle Solver Engine** | **Negative-Cycle Detection** (Bellman–Ford / SPFA / Karp's $O(|V||E|)$ DP) | **Minimum $s$-$t$ Cut** (Dinic / Push-Relabel) or **Max-Weight Matching** (MCMF / KM) |
+
+---
+
+### 1.2 Step 2 — Intermediate Algebraic Representation: Dinkelbach's Parametric Merit Function
+
+Let $\mathcal{F} \subseteq \{0, 1\}^n$ be a finite non-empty set of feasible indicator vectors such that $G(x) > 0$ for every $x \in \mathcal{F}$. Suppose we wish to compute the maximum ratio:
+
+$$\lambda^* := \max_{x \in \mathcal{F}} \frac{F(x)}{G(x)}.$$
+
+How do we break the division bar between $F(x)$ and $G(x)$ so that their variables stop dividing each other? We introduce a real trial parameter $\lambda \in \mathbb{R}$—which acts as a **shadow price (tax rate) per unit of denominator $G(x)$**—and define the **parametric merit function**:
+
+$$h(\lambda) := \max_{x \in \mathcal{F}} \big( F(x) - \lambda G(x) \big) = -\min_{x \in \mathcal{F}} \big( \lambda G(x) - F(x) \big).$$
+
+Each individual candidate $x \in \mathcal{F}$ defines an affine straight line $\ell_x(\lambda) := F(x) - \lambda G(x)$ in the $(\lambda, y)$-plane with vertical intercept $F(x)$ and **strictly negative slope** $-G(x) < 0$. The function $h(\lambda) = \max_{x \in \mathcal{F}} \ell_x(\lambda)$ is the **upper envelope** of this finite collection of downward-sloping lines.
+
+::: {.callout-important title="Theorem 14.1 (Dinkelbach's Parametric Equivalence Theorem — Jagannathan 1966, Dinkelbach 1967)"}
+Let $\mathcal{F}$ be finite and non-empty with $G(x) > 0$ for all $x \in \mathcal{F}$, and let $\lambda^* = \max_{x \in \mathcal{F}} \frac{F(x)}{G(x)}$. Then the parametric merit function $h(\lambda) = \max_{x \in \mathcal{F}} (F(x) - \lambda G(x))$ satisfies:
+
+1. **Convexity, Continuity, and Piecewise Linearity**: As the pointwise maximum of finitely many affine functions $\ell_x(\lambda) = F(x) - \lambda G(x)$, $h(\lambda)$ is continuous, convex, and piecewise-linear on $\mathbb{R}$. Its breakpoints correspond to parameter values where the optimal structure $x^*(\lambda)$ jumps from a larger denominator $G(x_1)$ to a smaller denominator $G(x_2) < G(x_1)$.
+2. **Strict Monotonicity**: Because every line $\ell_x(\lambda)$ has strictly negative slope $-G(x) \le -\min_{x \in \mathcal{F}} G(x) < 0$, for any $\lambda_1 < \lambda_2$ with optimal solutions $x_1, x_2 \in \mathcal{F}$:
+   $$h(\lambda_1) = F(x_1) - \lambda_1 G(x_1) \ge F(x_2) - \lambda_1 G(x_2) > F(x_2) - \lambda_2 G(x_2) = h(\lambda_2).$$
+   Thus $h(\lambda)$ is **strictly decreasing** on $\mathbb{R}$.
+3. **Three-Way Sign Certificate (Unique Root at $\lambda^*$)**: Since $G(x) > 0$ for all $x \in \mathcal{F}$, dividing $F(x) - \lambda G(x)$ by $G(x)$ preserves signs:
+   $$\begin{aligned}
+   h(\lambda) > 0 &\iff \exists x \in \mathcal{F} \text{ such that } F(x) - \lambda G(x) > 0 \iff \max_{x \in \mathcal{F}} \frac{F(x)}{G(x)} > \lambda \iff \lambda < \lambda^*, \\
+   h(\lambda) = 0 &\iff \max_{x \in \mathcal{F}} \big(F(x) - \lambda G(x)\big) = 0 \iff \max_{x \in \mathcal{F}} \frac{F(x)}{G(x)} = \lambda \iff \lambda = \lambda^*, \\
+   h(\lambda) < 0 &\iff \forall x \in \mathcal{F},\; F(x) - \lambda G(x) < 0 \iff \max_{x \in \mathcal{F}} \frac{F(x)}{G(x)} < \lambda \iff \lambda > \lambda^*.
+   \end{aligned}$$
+:::
+
+*(For a **minimization** problem $\lambda^* = \min_{x \in \mathcal{F}} \frac{F(x)}{G(x)}$ with $G(x) > 0$, we instead define $h_{\min}(\lambda) := \min_{x \in \mathcal{F}} (F(x) - \lambda G(x))$, which is the **lower envelope** of downward-sloping lines—hence **concave** and **strictly decreasing**, with $h_{\min}(\lambda) \ge 0 \iff \lambda \le \lambda^*$ and $h_{\min}(\lambda) < 0 \iff \lambda > \lambda^*$.)*
+
+---
+
+### 1.3 Step 3 — Reverse-Engineering Scratchpad: The Submodularity Sign Law & Three Solver Engines
+
+#### When Does Evaluating $h(\lambda)$ Compile to a Minimum $s$-$t$ Cut? (The Submodularity Sign Law)
+
+Theorem 14.1 reduces the fractional problem $\max_{x \in \mathcal{F}} \frac{F(x)}{G(x)}$ to repeatedly evaluating the linear combination:
+
+$$h(\lambda) = -\min_{x \in \mathcal{F}} \Phi_\lambda(x), \qquad \text{where} \qquad \Phi_\lambda(x) := \lambda G(x) - F(x).$$
+
+From Chapter 10 (the Kolmogorov–Zabih Submodularity Theorem), minimizing a quadratic pseudo-Boolean energy $\Phi_\lambda(x)$ over $x \in \{0, 1\}^V$ is directly representable as a minimum $s$-$t$ cut with non-negative capacities if and only if every pairwise cross-difference is non-positive:
+
+$$\Delta_{u,v}\Phi_\lambda := \Phi_\lambda(1, 1) - \Phi_\lambda(1, 0) - \Phi_\lambda(0, 1) + \Phi_\lambda(0, 0) = \lambda \Delta_{u,v} G - \Delta_{u,v} F \le 0 \qquad \forall u \ne v.$$
+
+Assume $\lambda \ge 0$ (which always holds when $\lambda^* \ge 0$, or after adding a constant shift $F(x) \gets F(x) + K G(x)$). Then $\lambda \Delta_{u,v} G - \Delta_{u,v} F \le 0$ holds unconditionally for every $\lambda > 0$ whenever:
+
+- **Numerator $F(x)$ (to be maximized) is Supermodular** ($\Delta_{u,v} F \ge 0$): e.g., internal subgraph edge weights $\sum_{(u,v) \in E} w_{uv} x_u x_v$ ($\Delta_{u,v} = +w_{uv} \ge 0$), modular vertex profits $\sum_{v \in V} p_v x_v$ ($\Delta_{u,v} = 0$), and negative boundary cut penalties $-\sum_{(u,v) \in E} \gamma_{uv} x_u(1 - x_v)$ ($\Delta_{u,v} = +\gamma_{uv} \ge 0$).
+- **Denominator $G(x)$ (to be minimized) is Submodular** ($\Delta_{u,v} G \le 0$): e.g., modular vertex costs $\sum_{v \in V} q_v x_v$ ($\Delta_{u,v} = 0$) plus positive cut penalties $\sum_{(u,v) \in E} d_{uv} x_u(1 - x_v)$ ($\Delta_{u,v} = -d_{uv} \le 0$).
+
+This single algebraic sign check immediately separates tractable contest flow problems from famous NP-hard ratio cuts:
+
+| Fractional Graph Problem | Objective $\frac{F(x)}{G(x)}$ | $\Delta_{u,v} F$ | $\Delta_{u,v} G$ | $\Delta_{u,v}\Phi_\lambda$ ($\lambda > 0$) | Complexity & Oracle |
+| :--- | :--- | :---: | :---: | :---: | :--- |
+| **Maximum Density Subgraph** (`#105`) | $\max_{\emptyset \ne S \subseteq V} \frac{|E(S)|}{|S|}$ | $+1$ | $0$ | $-1 \le 0$ (**Submodular**) | **Polynomial** ($s$-$t$ Min-Cut) |
+| **Weighted Ratio Closure** (`#109`, `#112`) | $\max_{\emptyset \ne S} \frac{\sum_{E(S)} w_e + \sum_S p_v - \sum_{\delta(S)} \gamma_e}{\sum_{v \in S} q_v}$ | $+w_e + 2\gamma_e \ge 0$ | $0$ | $-(w_e + 2\gamma_e) \le 0$ (**Submodular**) | **Polynomial** ($s$-$t$ Min-Cut) |
+| **Min Ratio Edge-Disconnection** (`#107`) | $\min_{C \in \mathcal{C}_{s,t}} \frac{\sum_{e \in C} a_e}{\sum_{e \in C} b_e}$ | — | — | Sever $a_e - \lambda b_e \le 0$ greedily; cut $a_e - \lambda b_e > 0$ | **Polynomial** ($s$-$t$ Min-Cut on $E^+(\lambda)$) |
+| **Fractional Bipartite Matching** (`#108`) | $\max_{M \in \mathcal{M}_{\text{perf}}} \frac{\sum_{e \in M} a_e}{\sum_{e \in M} b_e}$ | Linear over TU matching polytope | Linear | Exact via Max-Weight Matching on $w_e(\lambda) = a_e - \lambda b_e$ | **Polynomial** (MCMF / Hungarian $O(N^3)$) |
+| **Uniform Sparsest Cut** | $\min_{\emptyset \subsetneq S \subsetneq V} \frac{|\delta(S)|}{|S| \cdot |\bar{S}|}$ | $-2$ (Min) | $-2$ (Max) | $+2\lambda - 2 > 0$ for $\lambda > 1$ (**Supermodular**) | **NP-Hard** ($O(\sqrt{\log N})$ Arora–Rao–Vazirani) |
+| **Max Cut-to-Size Ratio** | $\max_{\emptyset \ne S \subseteq V} \frac{|\delta(S)|}{|S|}$ | $-2$ | $0$ | $+2 > 0$ (**Supermodular**) | **NP-Hard** (Reduces from Max-Cut) |
+
+---
+
+#### Comparing the Three Parametric Root-Finding Engines
+
+Once we have an oracle that evaluates $h(\lambda) = \max_{x \in \mathcal{F}} (F(x) - \lambda G(x))$ (and returns the achieving structure $x^*(\lambda) \in \mathcal{F}$), we have three algorithms to locate the unique root $\lambda^*$ where $h(\lambda^*) = 0$:
+
+```{mermaid}
+flowchart LR
+  subgraph BS["Engine 1: Binary Search"]
+    B1["Midpoint: λ = (L + R) / 2"] --> B2["Run Min-Cut Oracle h(λ)"]
+    B2 -->|"h(λ) > 0"| B3["L ← λ (save x*(λ))"]
+    B2 -->|"h(λ) ≤ 0"| B4["R ← λ"]
+  end
+  subgraph DK["Engine 2: Dinkelbach's Secant Method"]
+    D1["Start with valid x⁰ ∈ F, λ₀ = F(x⁰)/G(x⁰)"] --> D2["Find x^(k+1) = argmax (F(x) - λ_k G(x))"]
+    D2 -->|"F(x^(k+1)) - λ_k G(x^(k+1)) > ε"| D3["Secant jump: λ_{k+1} = F(x^(k+1)) / G(x^(k+1))"]
+    D2 -->|"≤ ε"| D4["Terminate: x^k is optimal!"]
+  end
+```
+
+##### Engine 1: Binary Search with Exact Rational Separation $\Delta_{\min}$
+
+Maintain a bracket $[L, R]$ guaranteed to contain $\lambda^*$. At each midpoint $\lambda = (L + R)/2$, evaluate $h(\lambda)$:
+- If $h(\lambda) > 0$ (feasible: there exists $x \in \mathcal{F}$ with $\frac{F(x)}{G(x)} > \lambda$), update $L \gets \lambda$ and record $x_{\text{best}} \gets x^*(\lambda)$.
+- If $h(\lambda) \le 0$, update $R \gets \lambda$.
+
+How tight must the stopping tolerance $\varepsilon = R - L$ be so that binary search is **100% exact** (not merely an approximation)? Suppose $F(x) \in \mathbb{Z}$ and $G(x) \in \{1, 2, \dots, G_{\max}\}$ are integers. Any two **distinct** candidate ratios $\frac{F_1}{G_1} \ne \frac{F_2}{G_2}$ satisfy:
+
+$$\left| \frac{F_1}{G_1} - \frac{F_2}{G_2} \right| = \frac{|F_1 G_2 - F_2 G_1|}{G_1 G_2} \ge \frac{1}{G_{\max}(G_{\max} - 1)} > \frac{1}{2 G_{\max}^2}$$
+
+(because when $G_1 = G_2 = G$, the difference is at least $\frac{1}{G} \ge \frac{1}{G_{\max}}$, and when $G_1 \ne G_2$, $\max(G_1, G_2) \le G_{\max}$ and $\min(G_1, G_2) \le G_{\max} - 1$). Therefore, running binary search until $R - L < \frac{1}{2 G_{\max}^2}$ requires at most $\lceil \log_2(2 F_{\max} G_{\max}^2) \rceil$ oracle calls and **uniquely isolates the exact optimal rational fraction $\lambda^* = \frac{F(x^*)}{G(x^*)}$**!
+
+##### Engine 2: Dinkelbach's Discrete Newton-Secant Method (Dinkelbach 1967)
+
+Instead of bisecting $[L, R]$ blindly by $1$ bit per step, Dinkelbach's algorithm applies **Newton's root-finding method** directly to the convex upper envelope $h(\lambda)$:
+
+1. Start with any feasible non-empty candidate $x^{(0)} \in \mathcal{F}$ (for instance, a single edge and its two endpoints, or $x^{(0)} = V$), and set $\lambda_0 = \frac{F(x^{(0)})}{G(x^{(0)})}$.
+2. In iteration $k = 0, 1, 2, \dots$:
+   - Call the Min-Cut oracle at $\lambda_k$ to find $x^{(k+1)} = \arg\max_{x \in \mathcal{F}} \big(F(x) - \lambda_k G(x)\big)$.
+   - If $h(\lambda_k) = F(x^{(k+1)}) - \lambda_k G(x^{(k+1)}) \le 0$ (within numerical tolerance), **stop** and return $\lambda_k$ and $x^{(k)}$.
+   - Otherwise, follow the supporting line $\ell_{x^{(k+1)}}(\lambda) = F(x^{(k+1)}) - \lambda G(x^{(k+1)})$ straight to its horizontal intercept:
+     $$\lambda_{k+1} \gets \frac{F(x^{(k+1)})}{G(x^{(k+1)})} = \lambda_k + \frac{h(\lambda_k)}{G(x^{(k+1)})} > \lambda_k.$$
+
+::: {.callout-tip title="Why Dinkelbach's Method Strictly Decreases the Denominator $G(x^{(k)})$ and Runs in 5–12 Steps"}
+Because $x^{(k)}$ achieves $F(x^{(k)}) - \lambda_k G(x^{(k)}) = 0$ at $\lambda_k = \frac{F(x^{(k)})}{G(x^{(k)})}$, while $x^{(k+1)}$ achieves $h(\lambda_k) = F(x^{(k+1)}) - \lambda_k G(x^{(k+1)}) > 0$, we have both:
+
+$$h(\lambda_k) = F(x^{(k+1)}) - \lambda_k G(x^{(k+1)}) > 0 \qquad \text{and} \qquad h(\lambda_{k+1}) \ge F(x^{(k+1)}) - \lambda_{k+1} G(x^{(k+1)}) = 0.$$
+
+By convexity of $h(\lambda)$ (slopes $-G(x^*(\lambda))$ are monotonically increasing with $\lambda$, so $G(x^*(\lambda))$ is **monotonically decreasing**!), every non-terminal Dinkelbach step satisfies:
+
+$$\lambda_0 < \lambda_1 < \dots < \lambda^* \qquad \text{and} \qquad G(x^{(1)}) > G(x^{(2)}) > \dots \ge 1.$$
+
+When $G(x) = |S| \in \{1, \dots, N\}$, Dinkelbach's algorithm can take **at most $N$ iterations in the worst case**, and because it is a Newton-secant method on a piecewise-linear convex curve, it converges **superlinearly**—requiring only **$5$ to $12$ Dinic calls** in practice vs. $45$ to $60$ calls for binary search! Even better, when $F(x), G(x) \in \mathbb{Z}$, Dinkelbach's oracle at $\lambda_k = \frac{P_k}{Q_k}$ can be run in **100% exact 64-bit integer arithmetic** by scaling all capacities by $Q_k$: maximize $Q_k F(x) - P_k G(x) \in \mathbb{Z}$!
+:::
+
+##### Engine 3: Gallo–Grigoriadis–Tarjan (GGT) Parametric Preflow (1989)
+
+When source capacities are non-decreasing and sink capacities are non-increasing in $\lambda$ (or vice versa), the minimal optimal source sets $S^*(\lambda)$ are **nested**: $S^*(\lambda_1) \supseteq S^*(\lambda_2)$ for $\lambda_1 < \lambda_2$. As we prove in Section 4, this allows finding **all $\le |V|$ breakpoints** of the entire curve $h(\lambda)$ in $O(|V|)$ max-flow calls via Parametric Divide-and-Conquer Contraction (`#111`), or in the asymptotic time of a **single** Push-Relabel execution!
+
+---
+
+### 1.4 Step 4 — Broken-Gadget Counterexamples (`FM-14`) & The Two-Scale IEEE-754 Epsilon Hierarchy
+
+Fractional min-cut problems are notorious in competitive programming for silent WA and TLE failures caused by three subtle traps, which we group under **Failure Mode `FM-14` (`H-15`)**:
+
+::: {.callout-warning title="Broken-Gadget Counterexample `FM-14a` — The Trivial Empty Subgraph Trap ($S = \emptyset$)"}
+Suppose we want to maximize $\frac{F(S)}{G(S)}$ over **non-empty** subsets $\emptyset \subsetneq S \subseteq V$, where $F(\emptyset) = 0$ and $G(\emptyset) = 0$. When we linearize the objective into $h(\lambda) = \max_{S \subseteq V} (F(S) - \lambda G(S))$ over **all** subsets $S \subseteq V$ (which is what an unconstrained $s$-$t$ minimum cut naturally optimizes), the empty set $S = \emptyset$ always evaluates to:
+
+$$F(\emptyset) - \lambda G(\emptyset) = 0 - \lambda \cdot 0 = 0 \qquad \text{for EVERY } \lambda \in \mathbb{R}!$$
+
+What goes wrong if you ignore $S = \emptyset$?
+
+1. **Masking at $\lambda = \lambda^*$ during Subgraph Reconstruction**: At the exact optimal ratio $\lambda = \lambda^*$, the true optimal non-empty subgraph $S^*$ achieves $F(S^*) - \lambda^* G(S^*) = 0$, which **ties** with $S = \emptyset$! Because the source-minimal cut $S_{\min}$ returns the inclusion-minimal subset of $V$ achieving the minimum cut, running Dinic at $\lambda \ge \lambda^*$ returns **$S_{\min} = \emptyset$**!
+   - **Defensive Fix**: Always reconstruct the vertex set $S^*$ at the **last feasible lower bound $\lambda = L < \lambda^*$** (where $F(S^*) - L \cdot G(S^*) > 0$ strictly beats $S = \emptyset$ by at least $\frac{1}{|V|}$), or handle the zero-edge case $|E| = 0$ (where $\lambda^* = 0$) explicitly by outputting any single vertex $\{1\}$.
+2. **Negative Optimal Ratio ($\lambda^* < 0$) or Shifted Denominator ($|S| - 1$)**:
+   - If every non-empty subset has $F(S) < 0$ (e.g., all vertex profits are negative and must be offset), then for $\lambda < 0$, $\max_{\emptyset \ne S} (F(S) - \lambda G(S))$ can still be dominated by $F(\emptyset) - \lambda G(\emptyset) = 0$.
+   - In **Nash-Williams Arboricity (`#110`)**, the denominator is $G(S) = |S| - 1$ for $|S| \ge 2$. Plugging $S = \emptyset$ into $|E(S)| - \lambda(|S| - 1)$ gives $0 - \lambda(-1) = +\lambda > 0$, completely masking whether any valid $|S| \ge 2$ violates the forest bound! To eliminate $S = \emptyset$, you **must pin a forced root vertex $r \in S$** via $s \xrightarrow{\infty} r$ (Section 3.3 and Problem `#110`).
+:::
+
+::: {.callout-warning title="Broken-Gadget Counterexample `FM-14b` — Coarse Binary Search $\varepsilon$ & Floating-Point Dinic Infinite Loops"}
+1. **Why $\varepsilon = 10^{-3}$ Fails at $N = 100$**:
+   Consider two disjoint components in a graph on $N = 100$ vertices: Component $A$ has $49$ edges on $99$ vertices (or density $\frac{48}{99}$), and Component $B$ has $50$ edges on $100$ vertices (or compare $\frac{49}{99} \approx 0.494949$ vs. $\frac{49.5}{100}$ in half-weighted graphs, or $\frac{97}{99} = 0.979798$ vs. $\frac{96}{98} = 0.979592$ whose difference is $\frac{97 \times 98 - 96 \times 99}{99 \times 98} = \frac{2}{9702} \approx 2.06 \times 10^{-4}$; for general distinct fractions $\frac{a}{99}$ and $\frac{b}{100}$ such as $\frac{49}{99}$ and $\frac{50}{101}$, or $\frac{98}{99}$ and $\frac{99}{100}$, $\frac{99}{100} - \frac{98}{99} = \frac{1}{9900} \approx 1.01 \times 10^{-4}$!). Stopping binary search at $\varepsilon = 10^{-3}$ stops **10 times too early** and extracts the wrong subgraph!
+2. **The Two-Scale IEEE-754 Epsilon Hierarchy**:
+   When running Dinic on `double` capacities, pushing flow along a bottleneck path executes `e.cap -= pushed`. In IEEE-754 64-bit `double` arithmetic ($53$-bit mantissa, machine epsilon $\approx 2.22 \times 10^{-16}$), subtracting two nearly equal numbers leaves a phantom residual capacity of $\approx 10^{-15}$.
+   - If your Dinic BFS/DFS tests `if (e.cap > 0)`, it treats $10^{-15}$ as an unsaturated edge and **loops infinitely**!
+   - Conversely, if your Dinic BFS/DFS uses the same tolerance `EPS = 1e-5` as your outer binary search, Dinic ignores legitimate augmenting paths of capacity $10^{-6}$ near $\lambda^*$ and returns a corrupted minimum cut!
+   - **Mandatory Contract (`H-15`)**: Always separate the three scales by at least 2–3 orders of magnitude:
+     $$\underbrace{\varepsilon_{\text{flow}} = 10^{-11}}_{\text{Dinic BFS/DFS: } \texttt{e.cap > EPS\_FLOW}} \;\ll\; \underbrace{\varepsilon_{\text{cut\_sign}} = 10^{-8}}_{\text{Sign check: } \texttt{h(lambda) > EPS\_CUT}} \;\ll\; \underbrace{\Delta_{\min} = \frac{1}{|V|(|V|-1)}}_{\text{Rational gap } (\ge 10^{-4} \text{ for } |V| \le 100)}.$$
+:::
+
+---
+
+## 2. Goldberg's Maximum Density Subgraph (`最大密度子图`) — Edge-Vertex Closure vs. $|V|$-Only Degree-Sum Reduction
+
+### 2.1 Problem Formulation & Why Charikar's Greedy Peeling Only Gives a 2-Approximation
+
+Given an undirected graph $G = (V, E)$ with $N = |V|$ vertices and $M = |E|$ edges, the **Maximum Density Subgraph (MDS)** problem (`最大密度子图`, Goldberg 1984; popularized in Chinese olympiad literature by Amber / 胡伯涛 in his 2007 national team paper *《最小割模型在信息学竞赛中的应用》*) asks for a **non-empty** subset of vertices $S \subseteq V$ maximizing the induced edge-to-vertex ratio:
+
+$$\lambda^* = \max_{\emptyset \subsetneq S \subseteq V} D(S), \qquad \text{where} \qquad D(S) := \frac{|E(S)|}{|S|} \quad \text{and} \quad E(S) := \big\{ \{u, v\} \in E : u \in S \text{ and } v \in S \big\}.$$
+
+#### Concrete Counterexample to Greedy Minimum-Degree Peeling (Charikar 2000)
+
+Before constructing a flow network, every strong contestant asks: *"Why can't I just repeatedly delete a vertex of minimum current degree in $G$, recording the highest density subgraph seen along the way?"*
+
+While Charikar (2000) proved that this $O(N + M)$ greedy peeling algorithm is a **$2$-approximation** ($D_{\text{peel}} \ge \frac{1}{2} \lambda^*$), it **fails to find the exact optimum** even on simple graphs! Here is a concrete hand-checkable counterexample:
+
+- Construct $G$ as two components (or connect them by a single bridge):
+  1. **Component $A$ (Dense Clique $K_4$)**: $4$ vertices, all $\binom{4}{2} = 6$ edges. Every vertex in $A$ has degree **$3$**, and its density is $D(A) = \frac{6}{4} = \mathbf{1.50}$.
+  2. **Component $B$ (Bipartite Core $K_{4, 4}$)**: $8$ vertices, $16$ edges, EXCEPT we delete $3$ edges of a matching so $6$ vertices have degree $3$ and $2$ vertices have degree $4$? Not quite: in $K_{4,4}$, every vertex has degree **$4 > 3$**, and its density is $D(B) = \frac{16}{8} = 2.0 > 1.5$. How do we give Component $B$ a *higher* minimum degree than $A$ at the start of peeling, while having a *lower* density than $A$?
+  - Let us check if a single unweighted graph $B$ can have $\delta_{\min}(B) > 2 D(A)$: no, because the average degree of $B$ is $2 D(B) \ge \delta_{\min}(B)$, so if $\delta_{\min}(B) \ge \delta_{\min}(A) = |A| - 1$ for a clique $A = K_k$, then $2 D(B) \ge k - 1 = 2 D(K_k)$! That is why on a disjoint clique vs. another graph, the clique's degree is $2 D(K_k) = k - 1$.
+  - **Now attach leaves / hubs to $A$ or look at how peeling breaks**: Take Component $A$ as $K_5$ ($5$ vertices, $10$ edges, degree $4$) plus **one extra vertex $u_0$** connected to $3$ vertices of $K_5$: now $A' = K_5 \cup \{u_0\}$ has $6$ vertices and $10 + 3 = 13$ edges, so **its density is $D(A') = \frac{13}{6} \approx \mathbf{2.1667}$**, while $u_0$ has degree $3$! Meanwhile, let Component $B$ be $K_{4,4}$ ($8$ vertices, $16$ edges), where every vertex has degree **$4 > 3$**, and the maximum density of any subgraph of $B$ is $D(B) = \frac{16}{8} = \mathbf{2.00} < 2.1667$!
+  - If we tie-break or replace $u_0$ in a weighted/multi-layered peeling (or if we connect $K_d$ vertices to an external layer so that $B$'s core protects low-degree vertices until $A$'s vertices drop below $B$'s degree), in **vertex-weighted or edge-weighted MDS**, the failure is immediate and catastrophic: let Component $A$ be a single edge $e = \{1, 2\}$ of weight $10$ on two vertices of cost $1$ (weighted degree $10$, density $\frac{10}{2} = \mathbf{5.0}$), and Component $B$ be a star $K_{1, 3}$ with center $c$ (cost $5$) and $3$ leaves $\ell_1, \ell_2, \ell_3$ (cost $1$ each), where each star edge has weight $6$. In $B$, every leaf has degree/cost ratio $\frac{6}{1} = 6$, and the center has weighted degree $18$ (or ratio $\frac{18}{5} = 3.6$). If peeling deletes minimum raw weighted degree, $B$'s leaves ($6 < 10$) are peeled first; if peeling deletes minimum degree-to-cost ratio, $B$'s center ($\frac{18}{5} = 3.6 < 10$) is deleted first, which immediately孤立s all three leaves in $B$. Conversely, if $B$'s center has cost $2.5$ (ratio $\frac{18}{2.5} = 7.2$) and each leaf has cost $0.8$ (ratio $\frac{6}{0.8} = 7.5$), and $A$ has edge weight $7$ on two vertices of cost $1$ (ratio $7.0$, density $\frac{7}{2} = \mathbf{3.5}$), then every vertex in $B$ has greedy ratio $\ge 7.2 > 7.0$, so **greedy peeling destroys $A$ completely before touching $B$**, even though $B$'s total density is only $\frac{18}{2.5 + 3(0.8)} = \frac{18}{4.9} \approx \mathbf{3.67}$ (or with $4$ leaves of cost $0.85$ and edge weight $6.1$ and center cost $3.0$: leaf ratio $\frac{6.1}{0.85} = 7.17 > 7.0$, center ratio $\frac{24.4}{3.0} = 8.13 > 7.0$, while $B$'s density is $\frac{24.4}{3.0 + 3.4} = \frac{24.4}{6.4} = \mathbf{3.8125}$ vs. if $A$ is $K_3$ with edge weights $3.6$ and vertex costs $1$, where each vertex in $A$ has weighted degree $2 \times 3.6 = 7.2$ and $A$'s density is $\frac{3 \times 3.6}{3} = \mathbf{3.60}$, and with $K_4$ of edge weight $2.35$: degree $3 \times 2.35 = 7.05 < 7.17$, while $A$'s density is $\frac{6 \times 2.35}{4} = \mathbf{3.525}$—and for $K_{10}$ with edge weight $0.79$: degree $9 \times 0.79 = 7.11 < 7.17$, while $A$'s density is $\frac{45 \times 0.79}{10} = \mathbf{3.555}$, and for $K_{20}$ with edge weight $0.375$: degree $19 \times 0.375 = 7.125 < 7.17$, while $A$'s density is $\frac{190 \times 0.375}{20} = \mathbf{3.5625}$...Wait: in $K_k$, density is $\frac{1}{2}$ of weighted degree! Why? Because $\frac{\binom{k}{2} w}{k} = \frac{1}{2}(k-1)w = \frac{1}{2}\deg_w(v)$! And in a star $B$, each edge touches the center (cost $c_0$) and a leaf (cost $c_1$), so if $\frac{w}{c_1} > d_A$ and $\frac{L w}{c_0} > d_A$, then $c_1 < \frac{w}{d_A}$ and $c_0 < \frac{L w}{d_A}$, so $B$'s density is $\frac{L w}{c_0 + L c_1} > \frac{L w}{\frac{L w}{d_A} + \frac{L w}{d_A}} = \frac{1}{2} d_A = D(A)$! That's actually a neat proof of Charikar's 2-approximation factor $\frac{1}{2}$!).
+  - How do we beat $\frac{1}{2} d_A$ so $D(A) > D(B)$ while every vertex in $B$ has higher instantaneous degree than some vertex in $A$? In **unweighted graphs**, as we found above, take $A' = K_5 \cup \{u_0\}$ where $u_0$ has $3$ edges into $K_5$ ($6$ vertices, $13$ edges, $D(A') = \frac{13}{6} \approx \mathbf{2.167}$, minimum degree $\deg(u_0) = 3$), and $B = K_{4,4}$ ($8$ vertices, $16$ edges, $D(B) = \mathbf{2.00}$, every vertex has degree $4$)! Now if $u_0$ is instead two vertices $u_1, u_2$ adjacent to each other and to $K_k$, or if we peel minimum degree on $A$ where every vertex of $A$ is part of a structure whose minimum degree is $< 4$ while $D(A) > 2$: wait—if $A'$ has minimum degree $3$ at $u_0$, deleting $u_0$ leaves $K_5$ whose density is $\frac{10}{5} = 2.00 < \frac{13}{6}$! **Wait**: before $u_0$ is deleted, $A' \sqcup B$ has $14$ vertices and $13 + 16 = 29$ edges, so $D(A' \sqcup B) = \frac{29}{14} \approx \mathbf{2.0714} < 2.1667$! When greedy peeling starts on $G = A' \sqcup B$:
+    - Step 1: The unique vertex of minimum degree $3$ is $u_0 \in A'$. Before deleting $u_0$, the current graph is $A' \sqcup B$ with density $\frac{29}{14} \approx \mathbf{2.0714}$.
+    - Step 2: Greedy peeling deletes $u_0$! Now the remaining graph is $K_5 \sqcup K_{4,4}$, where every vertex in both components has degree $4$, and every remaining subgraph has density **at most $\frac{10}{5} = \frac{16}{8} = \mathbf{2.00}$**!
+    - **Result**: Greedy peeling NEVER sees $A'$ alone (because $B$ is still present when $u_0$ is deleted, diluting $\frac{13}{6} \approx 2.1667$ down to $\frac{29}{14} \approx 2.0714$, and as soon as $u_0$ is deleted, $A'$ is destroyed down to $K_5$ of density $2.00$)! Thus greedy peeling outputs $\frac{29}{14} \approx 2.0714$ instead of the true optimum $D(A') = \frac{13}{6} \approx 2.1667$!
+
+This 14-vertex unweighted counterexample ($A' = K_5 \cup \{u_0\}$ disjoint from $B = K_{4,4}$) explains with 100% clarity why greedy peeling fails: **an optimal subgraph $A'$ can contain a slightly lower-degree vertex $u_0$ (degree $3 > 2.1667$) that still raises $A'$'s average density, yet greedy peeling deletes $u_0$ before stripping away a denser-looking distractor component $B$ ($K_{4,4}$, degree $4$, density $2.0$)!**
+
+---
+
+### 2.2 Construction A: The $|V| + |E|$ Bipartite Project-Selection Closure (Picard–Queyranne 1982)
+
+At a fixed trial parameter $\lambda \ge 0$, we want to evaluate:
+
+$$h(\lambda) = \max_{S \subseteq V} \big( |E(S)| - \lambda |S| \big).$$
+
+#### Step 2 (Algebraic Representation)
+
+Introduce a binary vertex indicator $x_v \in \{0, 1\}$ ($x_v = 1 \iff v \in S$) for each $v \in V$ and a binary edge indicator $y_e \in \{0, 1\}$ ($y_e = 1 \iff e \in E(S)$) for each edge $e = \{u, v\} \in E$. By definition of induced subgraph $E(S)$, we can claim the $+1$ reward for edge $e = \{u, v\}$ only if **both** endpoints $u$ and $v$ are selected in $S$:
+
+$$y_e = 1 \implies (x_u = 1 \text{ and } x_v = 1) \quad \Longleftrightarrow \quad y_e(1 - x_u) = 0 \text{ and } y_e(1 - x_v) = 0.$$
+
+This is a textbook **Maximum Weight Closure (Project Selection)** problem from Chapter 09! Subtracting from the maximum possible edge reward $|E| = M$, maximizing $|E(S)| - \lambda |S|$ is equivalent to minimizing the closure cut polynomial:
+
+$$\Phi_{\lambda}^{\text{closure}}(x, y) = \sum_{e \in E} 1 \cdot (1 - y_e) + \sum_{v \in V} \lambda x_v + \sum_{e = \{u, v\} \in E} \infty \cdot \big( y_e(1 - x_u) + y_e(1 - x_v) \big).$$
+
+#### Step 3 (Mechanical Graph Compilation — Construction A)
+
+Place $y_e = 1, x_v = 1$ on the source side $S_{\text{cut}}$ and $y_e = 0, x_v = 0$ on the sink side $T_{\text{cut}}$:
+
+1. **Source to Edge Nodes ($s \to e$)**: For every edge $e \in E$, add a directed arc $s \xrightarrow{1} e$ (severed when $y_e = 0$, forfeiting $+1$ edge count).
+2. **Edge Nodes to Endpoint Vertex Nodes ($e \to u, e \to v$)**: For every $e = \{u, v\} \in E$, add two directed arcs $e \xrightarrow{\infty} u$ and $e \xrightarrow{\infty} v$ (enforcing $y_e \le x_u$ and $y_e \le x_v$).
+3. **Vertex Nodes to Sink ($v \to t$)**: For every vertex $v \in V$, add a directed arc $v \xrightarrow{\lambda} t$ (severed when $x_v = 1$, paying $\lambda$ for including $v \in S$).
+
+Then:
+
+$$h(\lambda) = |E| - \operatorname{MinCut}_{\text{closure}}(\lambda), \qquad \text{so} \qquad \lambda < \lambda^* \iff \operatorname{MinCut}_{\text{closure}}(\lambda) < |E|.$$
+
+- **Network Size**: $|V_{\text{flow}}| = |V| + |E| + 2$ vertices and $|E_{\text{flow}}| = |V| + 3|E|$ directed arcs.
+- **When to Use Construction A**:
+  1. When $|E|$ is sparse ($|V|, |E| \le 5000$) and capacities are small integers (e.g., **CF 847J — Students Initiation, `#106`**, where $\lambda = K \in \mathbb{Z}$ makes Construction A a unit-network bipartite flow running in $O((|V|+|E|)\sqrt{|V|+|E|})$!).
+  2. When "edges" are **$k$-uniform hyperedges ($k \ge 3$)** or general shop-plant subsets $P_j \subseteq V$ (**HDU 5855, `#112`**), where Construction B's pairwise degree identity does not apply.
+
+---
+
+### 2.3 Construction B: Goldberg's (1984) & Amber's (2007) $|V|$-Only Degree-Sum Reduction
+
+What if the graph $G = (V, E)$ is **dense**—for example, $N = 1000$ vertices and $M = \binom{1000}{2} \approx 5 \times 10^5$ edges (as in **[2009国家集训队] 人员雇佣 `BZOJ 2039`, `#109`**)? Creating $M = 5 \times 10^5$ edge nodes in Construction A builds a $501,000$-vertex flow network that will TLE inside a 50-step binary search.
+
+Can we eliminate **all $M$ edge nodes** so the flow network has **only $|V| + 2$ vertices**?
+
+#### Step 2 (Algebraic Representation — The Handshaking Cut-Degree Identity)
+
+Consider any vertex subset $S \subseteq V$ and its complement $\bar{S} = V \setminus S$. If we sum the full degree $d_v := \deg_G(v)$ of every vertex $v \in S$, how many times is each edge of $G$ counted?
+
+- Every **internal edge** $e = \{u, v\} \in E(S)$ has **both** endpoints in $S$, so it contributes **$+2$** to $\sum_{v \in S} d_v$.
+- Every **boundary (cut) edge** $e = \{u, v\} \in \delta(S, \bar{S})$ has **exactly one** endpoint in $S$ and one endpoint in $\bar{S}$, so it contributes **$+1$** to $\sum_{v \in S} d_v$.
+- Every edge in $E(\bar{S})$ contributes **$0$**.
+
+This gives the fundamental **Cut-Degree Double-Counting Identity**:
+
+$$\sum_{v \in S} d_v = 2|E(S)| + |\delta(S, \bar{S})| \quad \Longleftrightarrow \quad |E(S)| = \frac{1}{2} \sum_{v \in S} d_v - \frac{1}{2} |\delta(S, \bar{S})|.$$
+
+Substitute this identity directly into $h(\lambda) = \max_{S \subseteq V} (|E(S)| - \lambda |S|)$:
+
+$$\begin{aligned}
+|E(S)| - \lambda |S| &= \frac{1}{2} \sum_{v \in S} d_v - \frac{1}{2} |\delta(S, \bar{S})| - \lambda \sum_{v \in S} 1 \\
+&= -\frac{1}{2} \left( \sum_{v \in S} (2\lambda - d_v) + |\delta(S, \bar{S})| \right).
+\end{aligned}$$
+
+Pause and admire what just happened algebraically:
+- In Construction A, $|E(S)| = \sum_{\{u,v\} \in E} x_u x_v$ was a sum of **quadratic product terms**, which forced us to introduce an auxiliary node $y_e$ for every edge $e \in E$.
+- By writing $2 x_u x_v = x_u + x_v - |x_u - x_v|$, we converted all $M$ quadratic rewards into **modular unary vertex weights $-d_v x_v$** plus **standard undirected graph cut edges $|x_u - x_v|$** directly between $u$ and $v$!
+
+#### Step 3 (Mechanical Graph Compilation — Amber's Uniform $+U$ Shift vs. Dynamic Sign-Splitting)
+
+We want to find $\min_{S \subseteq V} \Psi_\lambda(S)$, where:
+
+$$\Psi_\lambda(S) := \sum_{v \in S} (2\lambda - d_v) + |\delta(S, \bar{S})| = \sum_{v \in V} (2\lambda - d_v) x_v + \sum_{\{u, v\} \in E} \big( x_u(1 - x_v) + x_v(1 - x_u) \big).$$
+
+Notice a crucial detail: when $2\lambda < d_v$, the unary coefficient $2\lambda - d_v$ is **negative**! If we naively wired $v \xrightarrow{2\lambda - d_v} t$, the capacity would be negative (**Failure Mode `FM-14`**). There are two clean ways to compile $\Psi_\lambda(S)$ into non-negative capacities:
+
+##### Method B1: Goldberg / Amber Uniform Pedestal Shift $+U$ (`H-15`, Mandatory for Parametric Preflow)
+
+Pick a constant pedestal $U \ge \max_{v \in V} d_v$ (in practice, $U = |E| = M$ or $U = \max_v d_v$). Add and subtract $U$ on every vertex term by using the identity $x_v - 1 = -(1 - x_v)$, or equivalently add the constant $U \cdot |V| = \sum_{v \in V} U(x_v + (1 - x_v))$ to $\Psi_\lambda(S)$:
+
+$$U \cdot |V| + \Psi_\lambda(S) = \sum_{v \in V} U(1 - x_v) + \sum_{v \in V} \underbrace{(U + 2\lambda - d_v)}_{\ge 0} x_v + \sum_{\{u, v\} \in E} \big( x_u(1 - x_v) + x_v(1 - x_u) \big).$$
+
+Every coefficient is now **unconditionally non-negative** for all $\lambda \ge 0$! This compiles immediately into the $|V| + 2$-vertex Goldberg–Amber network $G_{\text{Goldberg}}(\lambda)$:
+
+```{mermaid}
+flowchart LR
+  S(("Source s")) -->|"cap: U (cut if v ∉ S)"| U_node["Vertex u ∈ V"]
+  S -->|"cap: U (cut if v ∉ S)"| V_node["Vertex v ∈ V"]
+  U_node <-->|"undirected cap: 1 (both arcs u→v, v→u)"| V_node
+  U_node -->|"cap: U + 2λ - d_u ≥ 0 (cut if u ∈ S)"| T(("Sink t"))
+  V_node -->|"cap: U + 2λ - d_v ≥ 0 (cut if v ∈ S)"| T
+```
+
+- **Source Arcs ($s \to v$)**: For each $v \in V$, add a directed arc $s \xrightarrow{U} v$ (severed if $v \notin S$, i.e., $x_v = 0$).
+- **Sink Arcs ($v \to t$)**: For each $v \in V$, add a directed arc $v \xrightarrow{U + 2\lambda - d_v} t$ (severed if $v \in S$, i.e., $x_v = 1$).
+- **Internal Graph Arcs ($u \leftrightarrow v$)**: For each undirected edge $\{u, v\} \in E$, add a **bidirectional (undirected) edge** of capacity $1$ between $u$ and $v$ (i.e., $u \xrightarrow{1} v$ and $v \xrightarrow{1} u$, severed if $|\{u, v\} \cap S| = 1$).
+
+For any vertex subset $S \subseteq V$, the capacity of the $s$-$t$ cut $(S \cup \{s\}, \bar{S} \cup \{t\})$ in $G_{\text{Goldberg}}(\lambda)$ is:
+
+$$\operatorname{Cap}_\lambda(S) = U \cdot |V| + 2\big(\lambda |S| - |E(S)|\big).$$
+
+Therefore:
+
+$$h(\lambda) = \max_{S \subseteq V} \big(|E(S)| - \lambda |S|\big) = \frac{U \cdot |V| - \operatorname{MinCut}_\lambda(s, t)}{2},$$
+
+and a non-empty subgraph with density strictly greater than $\lambda$ exists if and only if $\operatorname{MinCut}_\lambda(s, t) < U \cdot |V|$!
+
+##### Method B2: Dynamic Sign-Splitting (Zero-Shift Optimization for Binary Search / Dinkelbach)
+
+If you are rebuilding the network from scratch at each binary search or Dinkelbach step, you can avoid adding the shift $U$ entirely by splitting vertices according to the sign of $\beta_v(\lambda) := d_v - 2\lambda$:
+
+- If $\beta_v(\lambda) > 0$ (i.e., $d_v > 2\lambda$): rewrite $-\beta_v(\lambda) x_v = -\beta_v(\lambda) + \beta_v(\lambda)(1 - x_v)$, which wires $s \xrightarrow{d_v - 2\lambda} v$.
+- If $\beta_v(\lambda) \le 0$ (i.e., $2\lambda \ge d_v$): keep $(2\lambda - d_v) x_v \ge 0$, which wires $v \xrightarrow{2\lambda - d_v} t$.
+- Undirected edges $\{u, v\} \in E$ still get bidirectional capacity $1$.
+- Then $2 h(\lambda) = \sum_{v : d_v > 2\lambda} (d_v - 2\lambda) - \operatorname{MinCut}_\lambda(s, t)$.
+
+*Why keep both Method B1 and Method B2 in your toolkit?* Method B2 has smaller capacities for standard binary search, whereas **Method B1 ($+U$ shift) keeps $c(s \to v) = U$ independent of $\lambda$ and makes $c(v \to t) = U + 2\lambda - d_v$ monotonically increasing in $\lambda$**, which is the essential structural requirement for the **Gallo–Grigoriadis–Tarjan Parametric Preflow** algorithm in Section 4!
+
+---
+
+### 2.4 Step 4 — Hand-Checkable Toy Trace ($N = 4$ Paw Graph) & Three Broken-Gadget Counterexamples
+
+#### Concrete Toy Trace on the $N = 4$ Paw Graph
+
+Let $G = (V, E)$ be the 4-vertex "Paw Graph" with $V = \{1, 2, 3, 4\}$ and $M = 4$ edges: a triangle $\{1, 2\}, \{2, 3\}, \{1, 3\}$ plus a pendant leaf edge $\{3, 4\}$.
+- Degrees: $d_1 = 2, d_2 = 2, d_3 = 3, d_4 = 1$.
+- Candidate densities:
+  - Triangle $S = \{1, 2, 3\}$: $|E(S)| = 3, |S| = 3 \implies D(\{1, 2, 3\}) = \frac{3}{3} = 1.0$.
+  - Whole graph $S = \{1, 2, 3, 4\}$: $|E(S)| = 4, |S| = 4 \implies D(\{1, 2, 3, 4\}) = \frac{4}{4} = 1.0$.
+  - Single edge $S = \{1, 2\}$: $D(\{1, 2\}) = \frac{1}{2} = 0.5$.
+
+Let us trace Method B1 ($U = 4$, so $U \cdot |V| = 16$) at two trial parameters:
+
+1. **Trial $\lambda = 0.8 < \lambda^* = 1.0$**:
+   - Source arcs: $c(s \to v) = 4.0$ for all $v \in \{1, 2, 3, 4\}$.
+   - Sink arcs $c(v \to t) = 4 + 1.6 - d_v = 5.6 - d_v$:
+     $$c(1 \to t) = 3.6, \quad c(2 \to t) = 3.6, \quad c(3 \to t) = 2.6, \quad c(4 \to t) = 4.6.$$
+   - Check cut $S = \{1, 2, 3\}$ ($\bar{S} = \{4\}$):
+     $$\operatorname{Cap}_{0.8}(\{1, 2, 3\}) = \underbrace{(3.6 + 3.6 + 2.6)}_{v \to t \text{ for } v \in S} + \underbrace{4.0}_{s \to 4 \text{ for } 4 \in \bar{S}} + \underbrace{1.0}_{\text{edge } 3 \to 4} = 9.8 + 4.0 + 1.0 = \mathbf{14.8} < 16.0.$$
+   - Indeed, $h(0.8) = \frac{16.0 - 14.8}{2} = +0.6 = 3 - 0.8 \times 3 > 0$! And for $S = \{1, 2, 3, 4\}$, $\operatorname{Cap}_{0.8}(V) = 3.6 + 3.6 + 2.6 + 4.6 = \mathbf{14.4} < 14.8$, giving $h(0.8) = \frac{16.0 - 14.4}{2} = +0.8 = 4 - 0.8 \times 4 > 0$.
+2. **Trial $\lambda = 1.1 > \lambda^* = 1.0$**:
+   - Sink arcs $c(v \to t) = 4 + 2.2 - d_v = 6.2 - d_v$: $c(1 \to t) = 4.2, c(2 \to t) = 4.2, c(3 \to t) = 3.2, c(4 \to t) = 5.2$.
+   - Now $\operatorname{Cap}_{1.1}(\{1, 2, 3\}) = (4.2 + 4.2 + 3.2) + 4.0 + 1.0 = 16.6 > 16.0$, and $\operatorname{Cap}_{1.1}(V) = 16.8 > 16.0$. The minimum cut is $S = \emptyset$ with $\operatorname{Cap}_{1.1}(\emptyset) = 16.0 \implies h(1.1) = 0 \implies \lambda^* < 1.1$.
+
+#### Three Classic Broken-Gadget Counterexamples in Maximum Density Subgraph
+
+1. **Using Directed Graph Edges Instead of Bidirectional Capacity-$1$ Edges on Directed Input Graphs**:
+   Suppose the input graph $G = (V, E)$ is **directed**, and the problem defines $E(S) = \{(u \to v) \in E : u \in S \text{ and } v \in S\}$ as the set of directed arcs with *both* endpoints inside $S$. A frequent blunder is adding only a *directed* arc $u \xrightarrow{1} v$ in Goldberg's $|V|$-only model.
+   - **Why It Breaks**: Whether an arc is oriented $u \to v$ or $v \to u$, the indicator that *both* endpoints lie in $S$ is $x_u x_v$, which is **100% symmetric in $u$ and $v$**! In the degree identity $\sum_{v \in S} (d_v^{\text{in}} + d_v^{\text{out}}) = 2|E(S)| + |\delta^+(S)| + |\delta^-(S)|$, **both** outgoing arcs $\delta^+(S)$ and incoming arcs $\delta^-(S)$ cross the boundary once. Therefore, even on a directed graph, Goldberg's $|V|$-only reduction MUST use total degree $d_v = d_v^{\text{in}} + d_v^{\text{out}}$ and **undirected (bidirectional) capacity-$1$ arcs $u \leftrightarrow v$**!
+2. **Omitting Factor-of-$2$ Scaling on $\lambda$ or Edge Weights**:
+   In $\sum_{v \in S} d_v = 2|E(S)| + |\delta(S, \bar{S})|$, every internal edge is counted **twice** in the degree sum. If you wire $v \to t$ with capacity $U + \lambda - d_v$ instead of $U + 2\lambda - d_v$ (while keeping $u \leftrightarrow v$ at capacity $1$), you are optimizing $2|E(S)| - \lambda |S|$ instead of $|E(S)| - \lambda |S|$, overestimating $\lambda^*$ by a factor of $2$!
+3. **Applying Goldberg's $|V|$-Only Identity to $k$-Uniform Hypergraphs ($k \ge 3$)**:
+   Suppose each hyperedge $e = \{u, v, w\} \in \mathcal{E}$ has size $3$ and counts toward $E(S)$ iff $\{u, v, w\} \subseteq S$. In the hypergraph degree sum $\sum_{v \in S} d_v = 3|E(S)| + 2|\delta_{2,1}(S)| + 1|\delta_{1,2}(S)|$, a hyperedge with $2$ vertices in $S$ and $1$ in $\bar{S}$ contributes $+2$, whereas a hyperedge with $1$ vertex in $S$ and $2$ in $\bar{S}$ contributes $+1$. Because an undirected graph cut on $\{u, v, w\}$ cuts $2$ edges in *both* the $2$-vs-$1$ and $1$-vs-$2$ splits, **no pairwise graph gadget on $V$ alone can distinguish $|\delta_{2,1}(S)|$ from $|\delta_{1,2}(S)|$**! For hyperedges of size $k \ge 3$, you **must** use Construction A ($|V| + |\mathcal{E}|$ Bipartite Closure).
+
+---
+
+## 3. Generalized Density Ratios — Edge-Weighted, Vertex-Weighted, Minimum Ratio Cuts & Structural Dualities
+
+### 3.1 Amber's Master Weighted Density Model (`最大密度子图推广模型`, 胡伯涛 2007)
+
+In advanced contest tasks, the numerator and denominator of a subgraph density ratio rarely consist of unweighted edge and vertex counts alone. Following Amber's (胡伯涛 2007) unified classification, suppose we are given an undirected graph $G = (V, E)$ equipped with four sets of weights:
+
+1. **Internal Edge Rewards $w_e \ge 0$ ($e \in E$)**: Claimed if **both** endpoints of $e = \{u, v\}$ belong to $S$ ($e \in E(S)$).
+2. **Vertex Standalone Profits $p_v \in \mathbb{R}$ ($v \in V$)**: Claimed (or paid, if $p_v < 0$) whenever $v \in S$.
+3. **Boundary Cut Penalties $\gamma_e \ge 0$ ($e \in E$)**: Deducted whenever **exactly one** endpoint of $e = \{u, v\}$ belongs to $S$ ($e \in \delta(S, \bar{S})$).
+4. **Vertex Denominator Weights $q_v > 0$ ($v \in V$)**: Each vertex $v \in S$ contributes $q_v > 0$ to the denominator (e.g., setup time, headcount, or power consumption).
+
+We seek a non-empty subset $\emptyset \subsetneq S \subseteq V$ maximizing the generalized density ratio:
+
+$$\lambda^* = \max_{\emptyset \subsetneq S \subseteq V} \frac{\sum_{e \in E(S)} w_e + \sum_{v \in S} p_v - \sum_{e \in \delta(S, \bar{S})} \gamma_e}{\sum_{v \in S} q_v}.$$
+
+#### Step 2 (Algebraic Reduction to a $|V|$-Only Cut Polynomial)
+
+At trial parameter $\lambda \in \mathbb{R}$, the parametric merit function is:
+
+$$h(\lambda) = \max_{S \subseteq V} \left( \sum_{e \in E(S)} w_e + \sum_{v \in S} (p_v - \lambda q_v) - \sum_{e \in \delta(S, \bar{S})} \gamma_e \right).$$
+
+Define the **weighted degree** of each vertex $v \in V$ with respect to internal edge rewards $w_e$:
+
+$$D_w(v) := \sum_{e \in E : e \ni v} w_e.$$
+
+Just as in the unweighted case, summing $D_w(v)$ over all $v \in S$ counts every internal edge $e \in E(S)$ twice ($2 w_e$) and every boundary edge $e \in \delta(S, \bar{S})$ once ($w_e$):
+
+$$\sum_{v \in S} D_w(v) = 2 \sum_{e \in E(S)} w_e + \sum_{e \in \delta(S, \bar{S})} w_e \quad \Longleftrightarrow \quad \sum_{e \in E(S)} w_e = \frac{1}{2} \sum_{v \in S} D_w(v) - \frac{1}{2} \sum_{e \in \delta(S, \bar{S})} w_e.$$
+
+Substitute this into $h(\lambda)$ and multiply by $-2$ to convert maximization into minimization:
+
+$$-2 h(\lambda) = \min_{S \subseteq V} \left( \sum_{v \in S} \big( 2\lambda q_v - 2p_v - D_w(v) \big) + \sum_{e = \{u, v\} \in \delta(S, \bar{S})} (w_e + 2\gamma_e) \right).$$
+
+#### Step 3 (Mechanical Graph Compilation — Generalized $|V|$-Only Network)
+
+Pick a uniform shift $U \ge \max_{v \in V} (2p_v + D_w(v) - 2\lambda_{\min} q_v)$ so that every sink capacity is non-negative:
+
+- **Source Arcs ($s \to v$)**: Capacity $c(s \to v) = U$ for every $v \in V$.
+- **Sink Arcs ($v \to t$)**: Capacity $c(v \to t) = U + 2\lambda q_v - 2p_v - D_w(v) \ge 0$ for every $v \in V$.
+- **Internal Undirected Edges ($u \leftrightarrow v$)**: Both directed arcs $u \to v$ and $v \to u$ receive capacity $c(u \leftrightarrow v) = w_e + 2\gamma_e \ge 0$ for every $e = \{u, v\} \in E$.
+
+Then for any subset $S \subseteq V$, the cut capacity is $\operatorname{Cap}_\lambda(S) = U \cdot |V| - 2\big(F(S) - \lambda G(S)\big)$, so:
+
+$$h(\lambda) > 0 \quad \Longleftrightarrow \quad \operatorname{MinCut}_\lambda(s, t) < U \cdot |V|.$$
+
+::: {.callout-note title="Non-Fractional Corollary: Dense Synergy & Penalty Collapse (`[2009国家集训队] 人员雇佣 BZOJ 2039`, `#109`)"}
+What if a problem has **no fraction at all** ($\lambda$ is fixed, say $\lambda = 1$), and asks you to choose a subset of employees $S \subseteq \{1, \dots, N\}$ ($N \le 1000$) to maximize:
+
+$$\sum_{i \in S} (-A_i) + \sum_{\{i, j\} \subseteq S} 2 E_{ij} - \sum_{|\{i, j\} \cap S| = 1} E_{ij}?$$
+
+Here $w_{\{i,j\}} = 2 E_{ij}$ and $\gamma_{\{i,j\}} = E_{ij}$. Even though this is a non-fractional closure problem from Chapter 09, a dense $1000 \times 1000$ matrix has $\binom{1000}{2} \approx 5 \times 10^5$ pairs! Instead of creating $5 \times 10^5$ auxiliary closure vertices, we apply the exact identity above (or directly verify on all 4 truth assignments $(x_i, x_j) \in \{0, 1\}^2$):
+
+$$2 E_{ij} x_i x_j - E_{ij} |x_i - x_j| = E_{ij}(x_i + x_j) - 2 E_{ij} |x_i - x_j|.$$
+
+This collapses the entire $N \times N$ synergy matrix into a **$1002$-vertex graph** where $s \to i$ has capacity $\sum_{j \ne i} E_{ij}$, $i \to t$ has capacity $A_i$, and $i \leftrightarrow j$ has bidirectional capacity $2 E_{ij}$!
+:::
+
+---
+
+### 3.2 Minimum Ratio $s$-$t$ Edge Disconnection (`网络严密性`, `#107`) & Negative-Edge Severing
+
+Suppose we are given a network $G = (V, E)$ with source $s$, sink $t$, and two weights $(a_e, b_e)$ on every edge $e \in E$ ($a_e \ge 0, b_e > 0$). We want to find an edge cut-set $C \subseteq E$ whose removal disconnects $s$ from $t$ (no $s \rightsquigarrow t$ path remains in $G \setminus C$), minimizing the ratio:
+
+$$\lambda^* = \min_{C \in \mathcal{C}_{s,t}} \frac{\sum_{e \in C} a_e}{\sum_{e \in C} b_e}.$$
+
+*(In Amber's 2007 problem `网络严密性`, $a_e = w_e$ is the edge capacity and $b_e = 1$ for all $e$, so $\frac{\sum_{e \in C} w_e}{|C|}$ is the **minimum average edge capacity** of an $s$-$t$ disconnecting edge set!)*
+
+#### Step 2 & Step 3: Why Negative Modified Weights $w_e(\lambda) \le 0$ Are Severed Greedily
+
+At a trial parameter $\lambda \ge 0$, each edge $e \in E$ acquires the modified cut weight:
+
+$$w_e(\lambda) := a_e - \lambda b_e.$$
+
+We want to evaluate $h_{\min}(\lambda) = \min_{C \in \mathcal{C}_{s,t}} \sum_{e \in C} w_e(\lambda)$ and check whether $h_{\min}(\lambda) < 0$ (meaning $\lambda > \lambda^*$) or $h_{\min}(\lambda) \ge 0$ (meaning $\lambda \le \lambda^*$).
+
+What do we do when some edges have **negative or zero** modified weight $w_e(\lambda) \le 0$?
+- Recall that a disconnecting edge set $C \in \mathcal{C}_{s,t}$ is **any subset of edges $C \subseteq E$ whose removal destroys all $s \rightsquigarrow t$ paths**.
+- Adding an extra edge $e$ to $C$ can **never** create a new $s \rightsquigarrow t$ path—it only makes $G \setminus C$ *more* disconnected!
+- Therefore, if an edge $e \in E$ has $w_e(\lambda) = a_e - \lambda b_e \le 0$, including $e \in C$ **both** helps disconnect $s$ from $t$ **and** decreases (or leaves unchanged) the sum $\sum_{e \in C} w_e(\lambda)$!
+
+This gives the exact mechanical compilation rule for Minimum Ratio Edge Disconnection:
+
+1. Partition the edges at trial $\lambda$ into two sets:
+   $$E^-(\lambda) := \big\{ e \in E : a_e - \lambda b_e \le 0 \big\} \qquad \text{and} \qquad E^+(\lambda) := \big\{ e \in E : a_e - \lambda b_e > 0 \big\}.$$
+2. **Unconditionally sever all edges in $E^-(\lambda)$** and accumulate their negative contribution:
+   $$\operatorname{neg\_sum}(\lambda) := \sum_{e \in E^-(\lambda)} (a_e - \lambda b_e) \le 0.$$
+3. On the remaining subgraph $G^+(\lambda) = (V, E^+(\lambda))$ where every edge has **strictly positive capacity** $c_e(\lambda) = a_e - \lambda b_e > 0$, run Dinic's algorithm to compute $\operatorname{MinCut}\big(G^+(\lambda)\big)$.
+4. The exact value of the parametric merit function is:
+   $$h_{\min}(\lambda) = \operatorname{neg\_sum}(\lambda) + \operatorname{MinCut}\big(G^+(\lambda)\big).$$
+   If $h_{\min}(\lambda) < 0$, then $\lambda > \lambda^*$ (set $R \gets \lambda$); if $h_{\min}(\lambda) \ge 0$, then $\lambda \le \lambda^*$ (set $L \gets \lambda$).
+
+::: {.callout-warning title="Broken-Gadget Trap: Clamping $w_e(\lambda)$ to $\max(0, a_e - \lambda b_e)$ vs. Strict Node-Partition Ratio Cuts"}
+1. **Why Clamping to $0$ Fails**: If you replace $w_e(\lambda) < 0$ with $0$ instead of adding $w_e(\lambda)$ to $\operatorname{neg\_sum}(\lambda)$, then $\operatorname{MinCut}(G^+(\lambda)) \ge 0$ for every $\lambda$, so $h_{\min}(\lambda)$ can **never become negative** until $E^+(\lambda)$ alone fails to connect $s$ and $t$! That computes the maximum bottleneck edge ratio along paths, not the minimum ratio cut.
+2. **Edge-Set Disconnection $C \subseteq E$ vs. Strict Vertex Partition $\delta^+(S)$**: Notice a subtle distinction when $w_e(\lambda) < 0$: if an edge $e = \{u, v\} \in E^-(\lambda)$ has **both** endpoints inside $S$ ($u \in S, v \in S$) in the final cut of $G^+(\lambda)$, then $e$ is in the removed edge set $C$, even though $e \notin \delta(S, \bar{S})$. In network disconnection problems (`网络严密性`, `#107`), removing any superset $C \supseteq \delta(S, \bar{S})$ is valid (and in fact, if $b_e = 1$ for all $e$, at $\lambda = \lambda^*$ every edge has $w_e(\lambda^*) = w_e - \lambda^*$, and can any edge have $w_e < \lambda^*$? Only if $e$ belongs to the optimal cut $C^*$, because if a minimal cut $C_0$ had average $> \lambda^*$ while some $e \notin C_0$ had $w_e < \lambda^*$, adding $e$ to $C_0$ reduces the average!). However, if a problem demands a **strict vertex partition $\delta(S, \bar{S})$** with arbitrary heterogeneous $b_e$ where negative edges cannot be severed inside $S$, then negative cut weights $w_e(\lambda) < 0$ are supermodular ($\Delta_{u,v} > 0$) and NP-hard (Max-Cut)!
+:::
+
+---
+
+### 3.3 Structural Dualities: Hakimi's Orientation Theorem & Nash-Williams Arboricity
+
+Why does Goldberg's Maximum Density Subgraph appear in problems that never mention "density" or "ratios" at all? Because by LP / Max-Flow Min-Cut Duality, **the maximum density of an induced subgraph is the exact obstruction to orienting edges with bounded in/out-degree and to packing edges into forests!**
+
+#### 1. Hakimi's Orientation Theorem (1965) (`Codeforces 847J — Students Initiation`, `#106`)
+
+Suppose we are given an undirected graph $G = (V, E)$ and must orient every edge $e = \{u, v\} \in E$ as either $u \to v$ or $v \to u$ so that each vertex $v \in V$ has out-degree $d^+(v) \le k_v$ (where $k_v \in \mathbb{Z}_{\ge 0}$ is a given quota, or $k_v = K$ for all $v$ to minimize the maximum out-degree $\max_{v \in V} d^+(v)$).
+
+When does a valid orientation exist?
+- **Primal Flow Model (Construction A)**: Each undirected edge $e = \{u, v\} \in E$ must choose **one** of its two endpoints to "charge" $+1$ unit of out-degree. Wire $s \xrightarrow{1} e$, $e \xrightarrow{1} u$, $e \xrightarrow{1} v$, and $v \xrightarrow{k_v} t$. A valid orientation exists iff $\operatorname{MaxFlow}(s, t) = |E|$.
+- **Dual Minimum Cut Certificate**: In this bipartite network, suppose a minimum cut puts a subset of vertex nodes $S \subseteq V$ on the **source side** ($x_v = 1$) and $\bar{S} = V \setminus S$ on the **sink side** ($x_v = 0$).
+  - For every vertex $v \in S$, we must sever $v \xrightarrow{k_v} t$ at cost $k_v$.
+  - For every edge $e = \{u, v\} \in E$, if **both** $u \in S$ and $v \in S$ (i.e., $e \in E(S)$), then $e$ can stay on the source side without cutting $e \to u$ or $e \to v$; otherwise (if $e \notin E(S)$), we must sever $s \xrightarrow{1} e$ at cost $1$.
+  - Thus the cut capacity associated with $S \subseteq V$ is $(|E| - |E(S)|) + \sum_{v \in S} k_v$.
+  - Requiring $\operatorname{MinCut}(s, t) = |E|$ (which is achieved by $S = \emptyset$) is equivalent to requiring $(|E| - |E(S)|) + \sum_{v \in S} k_v \ge |E|$ for all $S \subseteq V$!
+
+::: {.callout-important title="Theorem 14.2 (Hakimi's Orientation Theorem, 1965)"}
+An undirected graph $G = (V, E)$ admits an orientation with out-degrees $d^+(v) \le k_v$ for all $v \in V$ if and only if every subset $S \subseteq V$ satisfies:
+
+$$|E(S)| \le \sum_{v \in S} k_v.$$
+
+In particular, setting $k_v = K$ for all $v \in V$, the minimum possible maximum out-degree over all orientations of $G$ equals the ceiling of the Maximum Subgraph Density:
+
+$$\min_{\text{orientations}} \max_{v \in V} d^+(v) = \left\lceil \max_{\emptyset \subsetneq S \subseteq V} \frac{|E(S)|}{|S|} \right\rceil.$$
+:::
+
+#### 2. Nash-Williams Forest Packing & Arboricity Theorem (1964) (`#110`)
+
+The **arboricity** $\Upsilon(G)$ of an undirected graph $G = (V, E)$ is the minimum number of edge-disjoint **forests** needed to cover all edges $E$. Since any forest on a non-empty vertex subset $S \subseteq V$ with $|S| \ge 2$ can contain **at most $|S| - 1$ edges**, covering $E(S)$ with $k$ forests clearly requires $|E(S)| \le k(|S| - 1)$ for every $S \subseteq V$ with $|S| \ge 2$. Nash-Williams (1964) proved that this necessary density condition is also **sufficient**:
+
+$$\Upsilon(G) = \max_{\substack{S \subseteq V \\ |S| \ge 2}} \left\lceil \frac{|E(S)|}{|S| - 1} \right\rceil \le k \quad \Longleftrightarrow \quad \max_{\substack{S \subseteq V \\ |S| \ge 2}} \big( |E(S)| - k(|S| - 1) \big) \le 0.$$
+
+How do we test whether $\max_{|S| \ge 2} \big(|E(S)| - k|S| + k\big) \le 0$ using a minimum cut?
+- **The Empty-Set Obstruction (`FM-14a`)**: Notice the $+k$ term! If we simply maximize $|E(S)| - k|S|$ over **all** subsets $S \subseteq V$, the empty set $S = \emptyset$ achieves $|E(\emptyset)| - k|\emptyset| = 0$, whereas we need to check whether any **non-empty** $S \ne \emptyset$ has $|E(S)| - k|S| > -k$ (i.e., $\min_{\emptyset \ne S \subseteq V} (k|S| - |E(S)|) < k$).
+- **Root-Pinning Compilation (`H-15`)**: Because any non-empty subset $S \ne \emptyset$ must contain at least one vertex $r \in V$, we can test non-emptiness by iterating over a **pinned root vertex $r \in V$**:
+  - Force $r \in S$ ($x_r = 1$) by wiring $s \xrightarrow{\infty} r$, and charge $r$ **zero** sink penalty ($c(r \to t) = U - d_r$ in Goldberg's model, or $c(r \to t) = 0$ in Construction A), while every other vertex $v \ne r$ pays $k$ ($c(v \to t) = U + 2k - d_v$ in Goldberg's model, or $c(v \to t) = k$ in Construction A).
+  - Then for a fixed root $r \in V$, the network directly computes $\max_{S \subseteq V : r \in S} \big(|E(S)| - k(|S| - 1)\big)$!
+  - Taking the maximum over all $r \in V$ (at most $|V|$ max-flow calls, or incrementally via root switching) decides whether $\Upsilon(G) \le k$ in polynomial time!
+
+---
+
+## 4. Gallo–Grigoriadis–Tarjan Parametric Preflow & The Breakpoint Envelope
+
+### 4.1 Monotone Parametric Networks & The Nested Cut Theorem
+
+Up to now, we have evaluated $h(\lambda) = \max_{S \subseteq V} (|E(S)| - \lambda |S|)$ at a single value of $\lambda$ to find the root $\lambda^*$ where $h(\lambda^*) = 0$.
+
+Now consider a much deeper question (**All-Lambda Parametric Density Envelope, `#111`**):
+
+> Suppose we are given a graph $G = (V, E)$ with $|V| \le 500$ and $Q = 2 \times 10^5$ queries. Each query provides an arbitrary real tax rate $\lambda_q \in [0, \infty)$ and asks for the maximum net value:
+> $$h(\lambda_q) = \max_{S \subseteq V} \big( |E(S)| - \lambda_q |S| \big).$$
+
+Running Dinic $Q = 2 \times 10^5$ times is impossible. However, look at the geometry of $h(\lambda)$:
+- Every subset $S \subseteq V$ with $|S| = k \in \{0, 1, \dots, N\}$ defines a line $\ell_S(\lambda) = |E(S)| - k \lambda$ of integer slope $-k \in \{-N, \dots, 0\}$.
+- Among all subsets $S \subseteq V$ of a fixed size $|S| = k$, only one with the **largest** edge count $|E(S)|$ can ever appear on the upper envelope $h(\lambda)$. Since there are only $N + 1$ possible integer slopes $k \in \{0, 1, \dots, N\}$, the upper envelope $h(\lambda)$ is a piecewise-linear convex curve with **at most $N$ breakpoints**!
+
+Even better, Gallo, Grigoriadis, and Tarjan (1989) proved that in Goldberg's $+U$ shifted network $G_{\text{Goldberg}}(\lambda)$ (where $c_\lambda(s \to v) = U$ is non-increasing in $\lambda$ and $c_\lambda(v \to t) = U + 2\lambda - d_v$ is **strictly increasing** in $\lambda$), the source-minimal optimal cuts $S_{\min}(\lambda)$ do not merely shrink in cardinality—they are **inclusion-wise nested**!
+
+::: {.callout-important title="Theorem 14.3 (Parametric Cut Nesting Theorem — Eisner & Severance 1976; Gallo, Grigoriadis & Tarjan 1989)"}
+In Goldberg's network $G_{\text{Goldberg}}(\lambda)$ (or any parametric network where $c_\lambda(s \to v)$ is non-increasing in $\lambda$, $c_\lambda(v \to t)$ is strictly increasing in $\lambda$, and internal capacities $c(u \to v)$ are constant), let $S(\lambda_1)$ be ANY minimum $s$-$t$ cut at parameter $\lambda_1$ and $S(\lambda_2)$ be ANY minimum $s$-$t$ cut at parameter $\lambda_2$, where $\lambda_1 < \lambda_2$. Then:
+
+1. **Cross-Parameter Submodularity**: Both the union $S(\lambda_1) \cup S(\lambda_2)$ is a minimum cut at $\lambda_1$, and the intersection $S(\lambda_1) \cap S(\lambda_2)$ is a minimum cut at $\lambda_2$.
+2. **Strict Inclusion Nesting of Canonical Cuts**: For the source-minimal canonical cuts $S_{\min}(\lambda)$, if $\lambda_1 < \lambda_2$, then:
+   $$V \supseteq S_{\min}(0) \supseteq S_{\min}(\lambda_1) \supseteq S_{\min}(\lambda_2) \supseteq \dots \supseteq S_{\min}(\lambda^*) = \emptyset.$$
+
+*Proof*: Let $A = S(\lambda_1)$ and $B = S(\lambda_2)$ with $\lambda_1 < \lambda_2$. By submodularity of the cut capacity function $\operatorname{Cap}_{\lambda_1}$ at fixed $\lambda_1$ and optimality of $A$ at $\lambda_1$:
+
+$$0 \le \operatorname{Cap}_{\lambda_1}(A \cup B) - \operatorname{Cap}_{\lambda_1}(A) \le \operatorname{Cap}_{\lambda_1}(B) - \operatorname{Cap}_{\lambda_1}(A \cap B).$$
+
+Now notice that the only edges whose capacities change between $\lambda_1$ and $\lambda_2$ are the sink edges $v \to t$, whose capacities increase by $2(\lambda_2 - \lambda_1) > 0$ for each $v$. For any two sets $B \supseteq A \cap B$, the difference $\operatorname{Cap}_\lambda(B) - \operatorname{Cap}_\lambda(A \cap B)$ gains $+2(\lambda_2 - \lambda_1)|B \setminus A|$ when $\lambda$ increases from $\lambda_1$ to $\lambda_2$:
+
+$$\operatorname{Cap}_{\lambda_2}(B) - \operatorname{Cap}_{\lambda_2}(A \cap B) = \big(\operatorname{Cap}_{\lambda_1}(B) - \operatorname{Cap}_{\lambda_1}(A \cap B)\big) + 2(\lambda_2 - \lambda_1)|B \setminus A|.$$
+
+Since $B$ is optimal at $\lambda_2$, the left-hand side is $\le 0$. Combining this with $\operatorname{Cap}_{\lambda_1}(B) - \operatorname{Cap}_{\lambda_1}(A \cap B) \ge 0$ and $\lambda_2 - \lambda_1 > 0$ forces:
+
+$$2(\lambda_2 - \lambda_1)|B \setminus A| \le 0 \quad \Longrightarrow \quad |B \setminus A| = 0 \quad \Longrightarrow \quad B \subseteq A! \qquad \blacksquare$$
+:::
+
+Because $V \supseteq S_1 \supsetneq S_2 \supsetneq \dots \supsetneq S_k = \emptyset$ is a strictly nested chain of subsets of $V$, there are **at most $|V|$ distinct optimal subgraphs** across the entire real half-line $\lambda \in [0, \infty)$! This chain of nested subgraphs is known in combinatorial optimization as the **Principal Partition (or Density Decomposition)** of $G$.
+
+---
+
+### 4.2 Parametric Hull Divide-and-Conquer with Vertex Contraction (`solve_hull`)
+
+How do we find all $\le |V|$ optimal subsets on the upper envelope $h(\lambda)$ in competitive programming? While the full Gallo–Grigoriadis–Tarjan (GGT) algorithm maintains a single Push-Relabel preflow across increasing $\lambda$, in contests with Dinic's algorithm there is a remarkably clean, exact **Divide-and-Conquer Contraction Algorithm** (`Eisner–Severance / GGT Contraction`) that runs in $O(|V|)$ Dinic calls on **contracted subgraphs whose sizes sum to $O(|V| + |E|)$ per recursion depth**:
+
+1. **Boundary Initialization**:
+   - At $\lambda_L = 0$, the optimal subset is $S_L = V$ (with line $\ell_{S_L}(\lambda) = |E| - |V|\lambda$).
+   - At $\lambda_R = |E| + 1$, the optimal subset is $S_R = \emptyset$ (with line $\ell_{S_R}(\lambda) = 0 - 0\lambda$).
+2. **Recursive Step `solve_hull(S_L, S_R)`** (where $S_R \subsetneq S_L$ and $|S_L| > |S_R|$):
+   - **Step 2a (Line Intersection)**: Compute the unique parameter $\lambda_{\text{mid}}$ where the two known envelope lines $\ell_{S_L}(\lambda) = |E(S_L)| - |S_L|\lambda$ and $\ell_{S_R}(\lambda) = |E(S_R)| - |S_R|\lambda$ intersect:
+     $$\lambda_{\text{mid}} = \frac{|E(S_L)| - |E(S_R)|}{|S_L| - |S_R|}.$$
+   - **Step 2b (Vertex Contraction using Nesting $S_R \subseteq S^*(\lambda_{\text{mid}}) \subseteq S_L$)**:
+     By Theorem 14.3, the optimal subset $S_{\text{mid}} := S_{\min}(\lambda_{\text{mid}})$ is **guaranteed** to satisfy $S_R \subseteq S_{\text{mid}} \subseteq S_L$! Therefore:
+     - Every vertex $u \in S_R$ is already locked into the source side $s$ (contract $S_R$ into $s$).
+     - Every vertex $w \in V \setminus S_L$ is already locked into the sink side $t$ (contract $V \setminus S_L$ into $t$).
+     - We only need to create flow vertices for the **active shell** $A = S_L \setminus S_R$!
+   - **Step 2c (Exact Integer Scaling at $\lambda_{\text{mid}} = P / Q$)**:
+     Let $P = |E(S_L)| - |E(S_R)|$ and $Q = |S_L| - |S_R|$. To avoid floating-point errors completely, scale Goldberg's capacities by $Q$: every active vertex $v \in A$ gets $s \to v$ of capacity $Q \cdot U$, $v \to t$ of capacity $Q(U - d_v) + 2P$, and internal edges get capacity $Q$.
+   - **Step 2d (Hull Vertex Test & Recursion)**:
+     Extract $S_{\text{mid}} = S_R \cup \{v \in A : s \rightsquigarrow_{G_f} v\}$. Check via **exact 64-bit integer cross-multiplication** whether $S_{\text{mid}}$ lies strictly above the intersection of $\ell_{S_L}$ and $\ell_{S_R}$ at $\lambda_{\text{mid}} = P/Q$:
+     $$Q \cdot |E(S_{\text{mid}})| - P \cdot |S_{\text{mid}}| > Q \cdot |E(S_L)| - P \cdot |S_L|.$$
+     - If **true**, $S_{\text{mid}}$ is a new hull vertex with $S_R \subsetneq S_{\text{mid}} \subsetneq S_L$! Add $\ell_{S_{\text{mid}}}$ to the hull and recurse on `solve_hull(S_L, S_mid)` and `solve_hull(S_mid, S_R)`.
+     - If **false**, $\lambda_{\text{mid}}$ is an exact breakpoint where $\ell_{S_L}$ hands off directly to $\ell_{S_R}$, and no other optimal subset exists between $\lambda_L$ and $\lambda_R$!
+
+::: {.callout-tip title="Why Vertex Contraction Makes `solve_hull` Run in $O(\log |V|)$ Full Max-Flow Equivalents"}
+At any single level of the recursion tree of `solve_hull`, the active vertex shells $A_i = S_{L,i} \setminus S_{R,i}$ are **pairwise disjoint subsets of $V$** ($\sum_i |A_i| \le |V|$)! When we contract $S_{R,i} \to s$ and $V \setminus S_{L,i} \to t$:
+- Any edge with both endpoints inside $S_{R,i}$ or both inside $V \setminus S_{L,i}$ disappears completely.
+- Any edge from $v \in A_i$ to $S_{R,i}$ merges into the single source arc $s \to v$.
+- Any edge from $v \in A_i$ to $V \setminus S_{L,i}$ merges into the single sink arc $v \to t$.
+Consequently, the sum of vertices across an entire depth level of the recursion tree is $\le |V|$, and the sum of active edges across a balanced recursion depth is $O(|E| \log |V|)$!
+:::
+
+---
+
+## 5. The 4-Step Fractional Cut Compilation Protocol
+
+Whenever a problem asks you to optimize a ratio, density, or parametric threshold over a graph or combinatorial family, execute this 4-step mechanical protocol before writing a single line of code:
+
+1. **Step 1 — Non-Graph Diagnostic & Ratio-vs-Bottleneck Triage**:
+   - **Sum-of-Numerator over Sum-of-Denominator (`Fractional Cut / Matching`)**: Does the objective have the form $\frac{\sum_{i} a_i}{\sum_{i} b_i}$ (like $\frac{|E(S)|}{|S|}$ in `POJ 3155` or $\frac{\sum a_{ij} x_{ij}}{\sum b_{ij} x_{ij}}$ in `[SDOI2017] 新生舞会`)? Proceed to Dinkelbach / Binary Search + Min-Cut / Matching.
+   - **Minimum / Maximum over Elements (`Bottleneck Peeling — NOT Flow!`)**: Does the objective instead maximize $\min_{v \in S} \frac{d_S(v)}{d_G(v)}$ (as in **[Codeforces 553D — Nudist Beach](https://codeforces.com/problemset/problem/553/D)**, where the strength of a subset $S$ is the *worst* individual vertex's fraction of neighbors inside $S$)?
+     - **Crucial Diagnostic Contrast**: For a **bottleneck minimum** $\min_{v \in S} \frac{d_S(v)}{d_G(v)} \ge \lambda$, any vertex $v$ with $\frac{d_S(v)}{d_G(v)} < \lambda$ can **never** belong to ANY valid subset $S$! Therefore, bottleneck vertex-ratio problems are solved in **$O((|V| + |E|) \log |V|)$ by a priority-queue greedy peeling algorithm** (repeatedly deleting the vertex with minimum current $\frac{d_S(v)}{d_G(v)}$), whereas **sum-ratio** Maximum Density Subgraph $\frac{\sum_{v \in S} d_S(v)}{2|S|} = \frac{|E(S)|}{|S|}$ allows high-degree vertices to subsidize lower-degree vertices and **requires $s$-$t$ Minimum Cut**!
+   - **Circulation vs. Cut Space**: Is the feasible structure a directed cycle (`[HNOI2009] 最小圈` $\to$ Bellman–Ford / SPFA negative cycle) or a vertex subset / disconnecting cut / matching ($\to$ Dinic / MCMF)?
+
+2. **Step 2 — Parametric Linearization & Submodularity Verification**:
+   - Write $h(\lambda) = \max_{x \in \mathcal{F}} (F(x) - \lambda G(x))$ (or $\min$ for minimization).
+   - Verify the **Submodularity Sign Law**: in the energy to be minimized $\Phi_\lambda(x) = \lambda G(x) - F(x)$, check that every pairwise cross-difference satisfies $\Delta_{u,v}\Phi_\lambda \le 0$ for $\lambda > 0$.
+   - If $F(S)$ contains dense pairwise edge rewards $\sum_{\{u,v\} \in E(S)} w_e$, apply Goldberg's degree identity $2 \sum_{e \in E(S)} w_e = \sum_{v \in S} D_w(v) - \sum_{e \in \delta(S, \bar{S})} w_e$ to eliminate all $|E|$ edge-closure nodes.
+
+3. **Step 3 — Normal-Form Graph Compilation & Pedestal Shifting**:
+   - **For Subgraph Density (`#105`, `#109`)**: Choose pedestal $U = \max_{v \in V} (2p_v + D_w(v) - 2\lambda_{\min} q_v)$. Wire $s \xrightarrow{U} v$, $v \xrightarrow{U + 2\lambda q_v - 2p_v - D_w(v)} t$, and bidirectional $u \xleftrightarrow{w_e + 2\gamma_e} v$.
+   - **For Disconnecting Ratio Cuts (`#107`)**: Sever all edges with $w_e(\lambda) = a_e - \lambda b_e \le 0$ upfront into $\operatorname{neg\_sum}(\lambda)$ and run Dinic on $E^+(\lambda)$.
+   - **For Rooted / Non-Empty Constraints (`#110`)**: If $F(\emptyset) - \lambda G(\emptyset) > 0$ (e.g., $G(S) = |S| - 1$ in Nash-Williams arboricity), pin a root $r \in S$ via $s \xrightarrow{\infty} r$.
+
+4. **Step 4 — Two-Scale Precision Contract & Safe Reconstruction (`FM-14`)**:
+   - Compute the minimum rational denominator separation $\Delta_{\min} = \frac{1}{G_{\max}(G_{\max}-1)}$ (or use Dinkelbach's exact integer scaling $Q_k F(x) - P_k G(x)$).
+   - Enforce $\varepsilon_{\text{flow}} = 10^{-11} \ll \varepsilon_{\text{cut\_sign}} = 10^{-8} \ll \Delta_{\min}$.
+   - Reconstruct $S^*$ from the residual reachability set $S_{\min}(L)$ at the **last feasible lower bound $\lambda = L < \lambda^*$**, never at $\lambda = R \ge \lambda^*$ where $S_{\min}(R) = \emptyset$.
+
+---
+
+## 6. Worked Examples & Full 8-Problem Difficulty Ladder (`#105`–`#112`)
+
+We now apply the 4-Step Fractional Cut Compilation Protocol across Chapter 14's 8-problem ladder (`#105`–`#112`), progressing from canonical Maximum Density Subgraph and Hakimi's Orientation Duality to Fractional Bipartite Matching, Minimum Ratio Cuts, Dense Synergy Degree-Reduction, Nash-Williams Arboricity, and the All-Lambda GGT Parametric Envelope.
+
+| Tier | Problem ID | Problem Title & Primary Judge | Core Fractional / Parametric Paradigm |
+| :---: | :---: | :--- | :--- |
+| **`SS-1`** | **`#105`** | **[POJ 3155 / UVA 1389] Hard Life** (`[EN]`/`[ZH]`) | Canonical Unweighted MDS ($\max \frac{|E(S)|}{|S|}$), $\frac{1}{N(N-1)}$ gap & $S_{\min}(L)$ extraction |
+| **`SS-2`** | **`#106`** | **[Codeforces 847J] Students Initiation** (`[EN]`) | Hakimi's Orientation Duality ($\min \max_v d^+(v) = \lceil \lambda^* \rceil$) & incremental flow |
+| **`Int-1`** | **`#107`** | **[Luogu P3199 / Amber 2007] 网络严密性 & Minimum Ratio Cuts** (`[ZH]`/`[EN]`) | Minimum Ratio Cut ($w_e(\lambda) \le 0$ severing) vs. Mean Cycle (`P3199`) & Bottleneck (`CF 553D`) |
+| **`Int-2`** | **`#108`** | **[Luogu P3705 / SDOI2017] 新生舞会 (Freshman Ball)** (`[ZH]`) | 0-1 Fractional Bipartite Perfect Matching via Parametric MCMF / Hungarian |
+| **`Adv-1`** | **`#109`** | **[BZOJ 2039 / 2009国家集训队] 人员雇佣 (Employing Personnel)** (`[ZH]`) | Dense $N \times N$ Synergy & Cut-Penalty Node Elimination ($2x_i x_j - |x_i - x_j|$) |
+| **`Adv-2`** | **`#110`** | **[Codeforces 1284G / Classic] Nash-Williams Arboricity & Forest Packing** (`[EN]`/`[ZH]`) | Root-Pinned Density Cut ($\max_{|S|\ge 2} \frac{|E(S)|}{|S|-1} \le k$) vs. Matroid Intersection |
+| **`Mas-1`** | **`#111`** | **[GGT Parametric Benchmark] All-Lambda Maximum Density Hull** (`[EN]`) | Gallo–Grigoriadis–Tarjan Nested Cut D&C Contraction (`solve_hull`) for $Q = 2 \cdot 10^5$ queries |
+| **`Mas-2`** | **`#112`** | **[HDU 5855] Less Time, More Profit** (`[EN]`/`[ZH]`) | Parametric Bottleneck Threshold $T$ + Maximum Weight Project Closure (`Ch 09` + `Ch 14`) |
+
+---
+
+### 6.1 Problem `#105` (`SS-1`) — Hard Life (UVA 1389 / POJ 3155)
+
+* **Judge & ID**: [UVA 1389 / POJ 3155 — Hard Life](http://poj.org/problem?id=3155) (`[EN]`/`[ZH]`, NEERC 2006 / Amber 胡伯涛 2007 Flagship Problem)
+* **Constraints**: Undirected graph with $N \le 100$ vertices and $M \le 1000$ edges. Output the size $|S^*|$ and the sorted indices of a **non-empty** subset of vertices $S^* \subseteq \{1, \dots, N\}$ maximizing the density $\frac{|E(S)|}{|S|}$.
+* **Plain-English Summary**: In a company of $N$ employees with $M$ pairwise conflicts, a dismissal committee wants to select a non-empty group of employees $S$ that maximizes the average number of conflicts per member in $S$, i.e., $\frac{|E(S)|}{|S|}$, and print the members of $S$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Non-Graph Diagnostic Signal"}
+
+We are maximizing a sum-of-edges over sum-of-vertices ratio $\frac{|E(S)|}{|S|}$ over $\emptyset \ne S \subseteq V$. Unlike `CF 553D` (which maximizes the *minimum* degree ratio of any vertex in $S$), here high-degree vertices inside a clique can subsidize slightly lower-degree neighbors, so greedy peeling fails (Section 2.1). With $N \le 100, M \le 1000$, we can binary search $\lambda \in [0, M]$ and test whether $\max_{S \ne \emptyset} (|E(S)| - \lambda |S|) > 0$ via Goldberg's $|V|$-only minimum cut.
+
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Degree-Identity Capacities & Exact Stopping Gap"}
+
+1. Using $2|E(S)| = \sum_{v \in S} d_v - |\delta(S, \bar{S})|$ and pedestal $U = M$, wire $s \xrightarrow{U} v$, $v \xrightarrow{U + 2\lambda - d_v} t$, and bidirectional $u \xleftrightarrow{1} v$ for each $\{u, v\} \in E$.
+2. What is the minimum possible gap between two distinct densities $\frac{e_1}{n_1} \ne \frac{e_2}{n_2}$ for $1 \le n_1, n_2 \le N$? By Theorem 14.1, $\Delta_{\min} \ge \frac{1}{N(N-1)}$. For $N = 100$, $\frac{1}{9900} \approx 1.01 \times 10^{-4}$, so stopping binary search when $R - L < \frac{1}{N(N-1)}$ (or `1e-5`) is 100% exact!
+
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Reconstructing the Non-Empty Subgraph $S^*$ (`FM-14a`)"}
+
+At $\lambda \ge \lambda^*$, the empty set $S = \emptyset$ achieves cut capacity $U \cdot N$, which ties with or beats $S^*$, so the source-reachable residual set $S_{\min}$ will be empty! Therefore:
+- Handle $M = 0$ upfront by printing `1` and vertex `1`.
+- When $M > 0$, after binary search converges to $[L, R]$ with $L < \lambda^*$, run Dinic one final time at $\lambda = L$ and collect all vertices $v \in \{1, \dots, N\}$ reachable from $s$ in the residual graph $G_f(L)$ via edges with residual capacity `cap > 1e-9`.
+
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solution — #105 (POJ 3155 / UVA 1389)"}
+
+#### Step 1: Non-Graph Diagnostic Signal
+This is the canonical unweighted **Maximum Density Subgraph (`最大密度子图`)** problem. Because $N \le 100$ and $M \le 1000$, Goldberg's $|V|$-only reduction creates a tiny network with $|V_{\text{flow}}| = N + 2 \le 102$ vertices and $2N + 2M \le 2200$ directed arcs.
+
+#### Step 2: Intermediate Algebraic Representation
+For $\lambda \ge 0$, define $h(\lambda) = \max_{S \subseteq V} (|E(S)| - \lambda |S|)$. Substituting $2|E(S)| = \sum_{v \in S} d_v - |\delta(S, \bar{S})|$ and adding the pedestal constant $U \cdot N$ with $U = M$:
+
+$$U \cdot N - 2 h(\lambda) = \min_{S \subseteq V} \left( \sum_{v \notin S} U + \sum_{v \in S} (U + 2\lambda - d_v) + |\delta(S, \bar{S})| \right) = \operatorname{MinCut}_\lambda(s, t).$$
+
+Thus $h(\lambda) > 0 \iff U \cdot N - \operatorname{MinCut}_\lambda(s, t) > 0$.
+
+#### Step 3: Mechanical Graph Compilation & Two-Scale Epsilon Contract
+- **Vertices**: $s = 0$, $v \in \{1, \dots, N\}$, $t = N + 1$.
+- **Arcs at trial $\lambda$**:
+  - $s \to v$ with capacity $U = M$.
+  - $v \to t$ with capacity $U + 2\lambda - d_v \ge 0$.
+  - For each input edge $\{u, v\} \in E$, add $u \to v$ with capacity $1$ and $v \to u$ with capacity $1$.
+- **Precision Hierarchy**:
+  - Inside Dinic's BFS and DFS: `EPS_FLOW = 1e-11`.
+  - In the binary search sign test: `U * N - max_flow > 1e-8` (`EPS_CUT`).
+  - Binary search termination: $R - L < \frac{1}{N(N - 1)}$ (or `1e-5` for $N \le 100$).
+
+#### Step 4: Broken-Gadget Guard & Reference Implementation
+- **Guard 1 ($M = 0$ Edge Case)**: If $M = 0$, every non-empty subgraph has density $0$, which ties with $S = \emptyset$. Check `if (M == 0)` at the start and immediately output `1\n1\n`.
+- **Guard 2 (Reconstruction at $\lambda = L$)**: Re-run `build_and_solve(L)` at the strictly feasible lower bound $L < \lambda^*$ and perform a residual DFS from $s$ across arcs with `e.cap > 1e-9` to extract $S^*$.
+
+```cpp
+// POJ 3155 / UVA 1389 — Hard Life (#105)
+// Paradigm: Goldberg's |V|-Only Maximum Density Subgraph + 1/(N(N-1)) Precision Bound
+#include <algorithm>
+#include <cmath>
+#include <iostream>
+#include <queue>
+#include <vector>
+
+using namespace std;
+
+constexpr double INF = 1e18;
+constexpr double EPS_FLOW = 1e-11;
+constexpr double EPS_CUT = 1e-8;
+
+struct Edge {
+    int to, rev;
+    double cap;
+};
+
+struct DinicDouble {
+    int n, s, t;
+    vector<vector<Edge>> g;
+    vector<int> level, ptr;
+
+    DinicDouble(int n, int s, int t) : n(n), s(s), t(t), g(n), level(n), ptr(n) {}
+
+    void add_directed(int u, int v, double cap) {
+        g[u].push_back({v, static_cast<int>(g[v].size()), cap});
+        g[v].push_back({u, static_cast<int>(g[u].size()) - 1, 0.0});
+    }
+
+    void add_undirected(int u, int v, double cap) {
+        g[u].push_back({v, static_cast<int>(g[v].size()), cap});
+        g[v].push_back({u, static_cast<int>(g[u].size()) - 1, cap});
+    }
+
+    bool bfs() {
+        fill(level.begin(), level.end(), -1);
+        queue<int> q;
+        level[s] = 0;
+        q.push(s);
+        while (!q.empty()) {
+            int u = q.front();
+            q.pop();
+            for (const auto& e : g[u]) {
+                if (e.cap > EPS_FLOW && level[e.to] == -1) {
+                    level[e.to] = level[u] + 1;
+                    q.push(e.to);
+                }
+            }
+        }
+        return level[t] != -1;
+    }
+
+    double dfs(int u, double pushed) {
+        if (pushed <= EPS_FLOW || u == t) return pushed;
+        for (int& cid = ptr[u]; cid < static_cast<int>(g[u].size()); ++cid) {
+            auto& e = g[u][cid];
+            if (level[u] + 1 != level[e.to] || e.cap <= EPS_FLOW) continue;
+            double tr = dfs(e.to, min(pushed, e.cap));
+            if (tr <= EPS_FLOW) continue;
+            e.cap -= tr;
+            g[e.to][e.rev].cap += tr;
+            return tr;
+        }
+        return 0.0;
+    }
+
+    double max_flow() {
+        double flow = 0.0;
+        while (bfs()) {
+            fill(ptr.begin(), ptr.end(), 0);
+            while (double pushed = dfs(s, INF)) {
+                flow += pushed;
+            }
+        }
+        return flow;
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int N, M;
+    bool first_case = true;
+    while (cin >> N >> M) {
+        if (!first_case) cout << "\n";
+        first_case = false;
+
+        vector<pair<int, int>> edges(M);
+        vector<int> deg(N + 1, 0);
+        for (int i = 0; i < M; ++i) {
+            cin >> edges[i].first >> edges[i].second;
+            deg[edges[i].first]++;
+            deg[edges[i].second]++;
+        }
+
+        if (M == 0) {
+            cout << 1 << "\n" << 1 << "\n";
+            continue;
+        }
+
+        int S = 0, T = N + 1;
+        double U = static_cast<double>(M);
+
+        auto build_network = [&](double lambda) {
+            DinicDouble dinic(N + 2, S, T);
+            for (int v = 1; v <= N; ++v) {
+                dinic.add_directed(S, v, U);
+                dinic.add_directed(v, T, U + 2.0 * lambda - deg[v]);
+            }
+            for (const auto& e : edges) {
+                dinic.add_undirected(e.first, e.second, 1.0);
+            }
+            return dinic;
+        };
+
+        double L = 0.0, R = static_cast<double>(M);
+        double min_gap = 1.0 / (N * max(1, N - 1)) / 2.0;
+
+        while (R - L > min_gap) {
+            double mid = 0.5 * (L + R);
+            auto dinic = build_network(mid);
+            double h_val = (U * N - dinic.max_flow()) / 2.0;
+            if (h_val > EPS_CUT) {
+                L = mid;
+            } else {
+                R = mid;
+            }
+        }
+
+        // Reconstruct S* at the strictly feasible lower bound L < lambda*
+        auto final_dinic = build_network(L);
+        final_dinic.max_flow();
+
+        vector<int> vis(N + 2, 0), ans;
+        queue<int> q;
+        q.push(S);
+        vis[S] = 1;
+        while (!q.empty()) {
+            int u = q.front();
+            q.pop();
+            if (1 <= u && u <= N) ans.push_back(u);
+            for (const auto& e : final_dinic.g[u]) {
+                if (e.cap > 1e-9 && !vis[e.to]) {
+                    vis[e.to] = 1;
+                    q.push(e.to);
+                }
+            }
+        }
+
+        sort(ans.begin(), ans.end());
+        cout << ans.size() << "\n";
+        for (int v : ans) cout << v << "\n";
+    }
+    return 0;
+}
+```
+
+- **Complexity**: At most $\lceil \log_2(2 N^2 M) \rceil \approx 25$ binary search steps, each running Dinic on $N + 2 \le 102$ vertices and $2M + 2N \le 2200$ edges ($\approx 5\text{ ms}$ total).
+
+::::
+
+---
+
+### 6.2 Problem `#106` (`SS-2`) — Students Initiation (Codeforces 847J)
+
+* **Judge & ID**: [Codeforces 847J — Students Initiation](https://codeforces.com/problemset/problem/847/J) (`[EN]`, 2017–2018 ACM-ICPC NEERC Southern Subregional Contest J)
+* **Constraints**: Undirected graph with $N \le 5000$ vertices and $M \le 5000$ edges. Orient every edge $e = \{u, v\}$ as $u \to v$ or $v \to u$ to minimize the maximum out-degree $\max_{v \in V} d^+(v)$, and output both the minimum possible value $K^*$ and the oriented edges.
+* **Plain-English Summary**: Each of $M$ pairs of students $\{u, v\}$ must exchange one present (either $u$ gives to $v$, or $v$ gives to $u$). Minimize the maximum number of presents any single student has to buy, and print who gives to whom.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Non-Graph Diagnostic Signal (Hakimi's Duality)"}
+
+By **Hakimi's Orientation Theorem (Theorem 14.2)**, the minimum possible maximum out-degree $K^*$ equals $\lceil \max_{\emptyset \ne S \subseteq V} \frac{|E(S)|}{|S|} \rceil$. Even better, because $K \in \{0, 1, \dots, M\}$ is an **integer** and we also need to output the explicit orientation of every edge, Construction A ($|V| + |E|$ Bipartite Flow) directly gives both the feasibility check and the edge orientations!
+
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Construction A Bipartite Network"}
+
+For a candidate integer cap $K$:
+- Create an edge node $e_i$ for each undirected edge $e_i = \{u_i, v_i\} \in E$ ($i = 1, \dots, M$).
+- Wire $s \xrightarrow{1} e_i$, $e_i \xrightarrow{1} u_i$, $e_i \xrightarrow{1} v_i$, and $v \xrightarrow{K} t$ for all $v \in \{1, \dots, N\}$.
+- An orientation with $\max_v d^+(v) \le K$ exists iff $\operatorname{MaxFlow}(s, t) = M$. If $e_i \to u_i$ carries $1$ unit of flow, orient $e_i$ as $u_i \to v_i$; otherwise orient it as $v_i \to u_i$.
+
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Incremental Residual Capacity Trick ($O(1)$ Flow Runs Instead of Binary Search)"}
+
+Notice that when $K$ increases from $K - 1$ to $K$, the **only** change in the entire network is that each sink arc $v \to t$ gains $+1$ unit of capacity! Instead of rebuilding the graph $\log_2 M$ times in binary search, start at $K = 0$ on a single persistent residual network and loop $K = 1, 2, \dots$: in each step, increment `e.cap += 1` on the $N$ sink arcs $v \to t$ and continue augmenting from the existing residual state until `total_flow == M`!
+
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solution — #106 (Codeforces 847J)"}
+
+#### Step 1: Non-Graph Diagnostic Signal
+We must assign each edge $e_i = \{u_i, v_i\}$ to one of its two endpoints so as to minimize the maximum load $\max_v d^+(v)$. By Hakimi's Theorem, this is the integer ceiling of the Maximum Subgraph Density $\lceil \max_S \frac{|E(S)|}{|S|} \rceil$.
+
+#### Step 2: Intermediate Algebraic Model
+Let $x_{i, u_i}, x_{i, v_i} \in \{0, 1\}$ indicate which endpoint of $e_i = \{u_i, v_i\}$ initiates the gift:
+
+$$\forall i \in \{1, \dots, M\}: \quad x_{i, u_i} + x_{i, v_i} = 1, \qquad \forall v \in \{1, \dots, N\}: \quad \sum_{i : e_i \ni v} x_{i, v} \le K.$$
+
+#### Step 3: Mechanical Graph Compilation & Incremental $K$ Augmentation
+- **Nodes**: $s = 0$, edge nodes $1 \dots M$, student nodes $M + 1 \dots M + N$, sink $t = M + N + 1$.
+- **Arcs**:
+  - $s \xrightarrow{1} i$ for $i \in \{1, \dots, M\}$.
+  - $i \xrightarrow{1} (M + u_i)$ and $i \xrightarrow{1} (M + v_i)$ for $i \in \{1, \dots, M\}$.
+  - $(M + v) \xrightarrow{0} t$ initially for $v \in \{1, \dots, N\}$, storing the adjacency index `sink_edge_idx[v]`.
+- **Incremental Sweep**: While `total_flow < M`, increment $K \gets K + 1$, add $+1$ to `g[M + v][sink_edge_idx[v]].cap` for all $v \in \{1, \dots, N\}$, and run `dinic.max_flow()` on the live residual graph!
+
+#### Step 4: Complexity & Reference Implementation
+Because total flow across the entire run is bounded by $M \le 5000$ and the network is a unit-capacity bipartite graph on the source side, the incremental sweep finishes in $< 15\text{ ms}$!
+
+```cpp
+// Codeforces 847J — Students Initiation (#106)
+// Paradigm: Hakimi's Orientation Duality (Dual of MDS) + Incremental Residual Augmentation
+#include <algorithm>
+#include <iostream>
+#include <queue>
+#include <vector>
+
+using namespace std;
+
+// Assumes standard Dinic from Chapter 02 with:
+//   int add_edge(int u, int v, int cap) returning edge index in g[u], and int max_flow()
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int N, M;
+    if (!(cin >> N >> M)) return 0;
+
+    int S = 0, T = M + N + 1;
+    Dinic dinic(T + 1, S, T);
+
+    vector<pair<int, int>> edges(M + 1);
+    vector<int> edge_to_u_idx(M + 1);
+
+    for (int i = 1; i <= M; ++i) {
+        int u, v;
+        cin >> u >> v;
+        edges[i] = {u, v};
+        dinic.add_edge(S, i, 1);
+        edge_to_u_idx[i] = dinic.add_edge(i, M + u, 1);
+        dinic.add_edge(i, M + v, 1);
+    }
+
+    vector<int> sink_edge_idx(N + 1);
+    for (int v = 1; v <= N; ++v) {
+        sink_edge_idx[v] = dinic.add_edge(M + v, T, 0);
+    }
+
+    int total_flow = 0, K = 0;
+    while (total_flow < M) {
+        ++K;
+        for (int v = 1; v <= N; ++v) {
+            dinic.g[M + v][sink_edge_idx[v]].cap += 1;
+        }
+        total_flow += dinic.max_flow();
+    }
+
+    cout << K << "\n";
+    for (int i = 1; i <= M; ++i) {
+        auto [u, v] = edges[i];
+        // If i -> M + u is saturated (cap == 0), u gives to v; else v gives to u
+        if (dinic.g[i][edge_to_u_idx[i]].cap == 0) {
+            cout << u << " " << v << "\n";
+        } else {
+            cout << v << " " << u << "\n";
+        }
+    }
+    return 0;
+}
+```
+
+::::
+
+---
+
+### 6.3 Problem `#107` (`Int-1`) — Minimum Ratio Cut (`网络严密性`), Mean Cycle (`Luogu P3199`), and Bottleneck Peeling (`Codeforces 553D`)
+
+* **Judge & ID**:
+  - **Part A (Minimum Ratio $s$-$t$ Edge Disconnection — `网络严密性`)**: Amber (胡伯涛 2007), *《最小割模型在信息学竞赛中的应用》* Section 3.1 (`[ZH]`, $N \le 100, M \le 1000$, minimize $\frac{\sum_{e \in C} w_e}{|C|}$ over $s$-$t$ disconnecting edge sets $C$).
+  - **Part B (Circulation Dual — `[HNOI2009] 最小圈`)**: [Luogu P3199 — Minimum Cycle](https://www.luogu.com.cn/problem/P3199) (`[ZH]`, $N \le 3000, M \le 10^4$, minimize $\frac{\sum_{e \in C} w_e}{|C|}$ over directed cycles $C$).
+  - **Part C (Bottleneck Degree-Ratio Contrast — `Nudist Beach`)**: [Codeforces 553D — Nudist Beach](https://codeforces.com/problemset/problem/553/D) (`[EN]`, $N, M \le 10^5$, maximize $\min_{v \in S} \frac{d_S(v)}{d_G(v)}$ over $S \subseteq V \setminus F$).
+* **Plain-English Summary**: This three-part comparative study trains you to distinguish the three look-alike "ratio" formulations in competitive programming:
+  1. Minimizing the average weight $\frac{\sum_{e \in C} w_e}{|C|}$ of an **$s$-$t$ cut $C$** (`网络严密性` $\to$ Parametric Min-Cut with negative-edge severing),
+  2. Minimizing the average weight $\frac{\sum_{e \in C} w_e}{|C|}$ of a **directed cycle $C$** (`Luogu P3199` $\to$ Parametric DFS-SPFA negative cycle), and
+  3. Maximizing the **worst-vertex bottleneck degree ratio** $\min_{v \in S} \frac{d_S(v)}{d_G(v)}$ (`CF 553D` $\to$ $O((N+M)\log N)$ Priority-Queue Peeling).
+
+:::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Triage Across the Three Formulations"}
+
+1. In **Part A (`网络严密性`)**, $C$ is an $s$-$t$ disconnecting edge set and the objective is a sum-ratio $\frac{\sum_{e \in C} w_e}{|C|}$. At trial $\lambda$, edge $e$ has weight $w_e(\lambda) = w_e - \lambda$.
+2. In **Part B (`Luogu P3199`)**, $C$ is a directed cycle and the objective is $\frac{\sum_{e \in C} w_e}{|C|}$. At trial $\lambda$, edge $e$ has weight $w_e - \lambda$, and $\lambda > \lambda^* \iff$ the graph has a negative-weight directed cycle!
+3. In **Part C (`CF 553D`)**, the objective is a **bottleneck minimum** $\min_{v \in S} \frac{d_S(v)}{d_G(v)}$, NOT a sum-ratio $\frac{\sum_{v \in S} d_S(v)}{\sum_{v \in S} d_G(v)}$. Because the weakest vertex in $S$ determines the score of $S$, there is no "subsidizing" a weak vertex: peeling the current weakest vertex in a min-heap is **100% exact**!
+
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Negative-Edge Severing in Part A (`网络严密性`)"}
+
+In Part A, when $w_e - \lambda \le 0$, why can't we pass $w_e - \lambda$ to Dinic? Because Dinic requires non-negative capacities! Instead, since $C$ is an edge subset disconnecting $s$ from $t$, any edge with $w_e - \lambda \le 0$ should be **severed immediately**: add $w_e - \lambda$ to `neg_sum`, omit $e$ from the Dinic network, and check if `neg_sum + dinic.max_flow() < 0`.
+
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solutions — #107 (Ratio Cut, Mean Cycle & CF 553D Peeling)"}
+
+#### 1. Part A: Minimum Ratio $s$-$t$ Cut (`网络严密性`, Amber 2007)
+
+To minimize $\frac{\sum_{e \in C} a_e}{\sum_{e \in C} b_e}$ over all edge subsets $C \subseteq E$ disconnecting $s$ from $t$:
+- At trial $\lambda$, define $w_e(\lambda) = a_e - \lambda b_e$.
+- Accumulate $\operatorname{neg\_sum}(\lambda) = \sum_{e : w_e(\lambda) \le 0} w_e(\lambda)$ and add only edges with $w_e(\lambda) > 0$ into Dinic.
+- Then $h_{\min}(\lambda) = \operatorname{neg\_sum}(\lambda) + \operatorname{MaxFlow}(G^+(\lambda)) < 0 \iff \lambda > \lambda^*$.
+
+```cpp
+// Part A: Amber 2007 — Minimum Ratio s-t Edge Disconnection (网络严密性, #107A)
+double solve_min_ratio_cut(int N, int S, int T, const vector<tuple<int, int, double, double>>& edges) {
+    double L = 0.0, R = 1e9;
+    for (int iter = 0; iter < 60; ++iter) {
+        double mid = 0.5 * (L + R);
+        DinicDouble dinic(N + 1, S, T);
+        double neg_sum = 0.0;
+        for (const auto& [u, v, a, b] : edges) {
+            double w = a - mid * b;
+            if (w <= 0.0) {
+                neg_sum += w; // Sever negative/zero edges unconditionally
+            } else {
+                dinic.add_undirected(u, v, w); // Or add_directed for directed cuts
+            }
+        }
+        if (neg_sum + dinic.max_flow() < -1e-9) {
+            R = mid;
+        } else {
+            L = mid;
+        }
+    }
+    return L;
+}
+```
+
+#### 2. Part B: Minimum Mean Cycle (`[HNOI2009] 最小圈`, Luogu P3199)
+
+When the structure $C$ is a **directed cycle** instead of a cut, shifting every edge weight to $w_e(\lambda) = w_e - \lambda$ reduces $h_{\min}(\lambda) < 0$ to detecting a **negative cycle** via DFS-SPFA in $O(|V||E|)$ worst-case time:
+
+```cpp
+// Part B: Luogu P3199 [HNOI2009] 最小圈 — Minimum Mean Cycle (#107B)
+#include <iomanip>
+#include <iostream>
+#include <vector>
+
+using namespace std;
+
+struct Arc {
+    int to;
+    double w;
+};
+
+int N, M;
+vector<vector<Arc>> adj;
+vector<double> dist_spfa;
+vector<int> on_stack;
+
+bool dfs_neg_cycle(int u, double lambda) {
+    on_stack[u] = 1;
+    for (const auto& e : adj[u]) {
+        double w_shifted = e.w - lambda;
+        if (dist_spfa[u] + w_shifted < dist_spfa[e.to] - 1e-11) {
+            dist_spfa[e.to] = dist_spfa[u] + w_shifted;
+            if (on_stack[e.to] || dfs_neg_cycle(e.to, lambda)) return true;
+        }
+    }
+    on_stack[u] = 0;
+    return false;
+}
+
+bool has_negative_cycle(double lambda) {
+    dist_spfa.assign(N + 1, 0.0);
+    on_stack.assign(N + 1, 0);
+    for (int i = 1; i <= N; ++i) {
+        if (dfs_neg_cycle(i, lambda)) return true;
+    }
+    return false;
+}
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    if (!(cin >> N >> M)) return 0;
+    adj.resize(N + 1);
+    for (int i = 0; i < M; ++i) {
+        int u, v;
+        double w;
+        cin >> u >> v >> w;
+        adj[u].push_back({v, w});
+    }
+    double L = -1e7, R = 1e7;
+    for (int iter = 0; iter < 65; ++iter) {
+        double mid = 0.5 * (L + R);
+        if (has_negative_cycle(mid)) R = mid;
+        else L = mid;
+    }
+    cout << fixed << setprecision(8) << L << "\n";
+    return 0;
+}
+```
+
+#### 3. Part C: Bottleneck Degree-Ratio Contrast (`Codeforces 553D — Nudist Beach`)
+
+In `CF 553D`, we are given $N \le 10^5$ cities, a forbidden set $F$ of fortresses, and $M \le 10^5$ roads. We want $S \subseteq V \setminus F$ maximizing $\min_{v \in S} \frac{d_S(v)}{d_G(v)}$.
+- **Why Greedy Peeling is Exact Here (Unlike `#105`)**: Suppose the optimal subset $S^*$ has bottleneck value $\lambda^* = \min_{v \in S^*} \frac{d_{S^*}(v)}{d_G(v)}$. When we start with $S_0 = V \setminus F$ and repeatedly pop the vertex $u$ with the smallest current ratio $\frac{d_S(u)}{d_G(u)}$ from a min-heap, consider the **very first moment** a vertex $u^* \in S^*$ is popped! At that moment, $S^* \subseteq S_{\text{cur}}$, so for every $v \in S^*$, $d_{S_{\text{cur}}}(v) \ge d_{S^*}(v)$. Therefore:
+  $$\min_{v \in S_{\text{cur}}} \frac{d_{S_{\text{cur}}}(v)}{d_G(v)} = \frac{d_{S_{\text{cur}}}(u^*)}{d_G(u^*)} \ge \frac{d_{S^*}(u^*)}{d_G(u^*)} \ge \lambda^*!$$
+  Thus the current active set $S_{\text{cur}}$ at the moment the first vertex of $S^*$ is popped is **guaranteed** to achieve bottleneck ratio $\ge \lambda^*$!
+
+```cpp
+// Part C: Codeforces 553D — Nudist Beach (#107C)
+// Paradigm: Exact Priority-Queue Peeling for Bottleneck min_{v in S} d_S(v)/d_G(v)
+#include <iostream>
+#include <queue>
+#include <vector>
+
+using namespace std;
+
+struct Fraction {
+    long long num, den;
+    int u;
+    bool operator>(const Fraction& o) const {
+        return num * o.den > o.num * den;
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int N, M, K;
+    if (!(cin >> N >> M >> K)) return 0;
+
+    vector<int> removed(N + 1, 0);
+    for (int i = 0; i < K; ++i) {
+        int f;
+        cin >> f;
+        removed[f] = 1;
+    }
+
+    vector<vector<int>> adj(N + 1);
+    vector<int> deg_tot(N + 1, 0), deg_in(N + 1, 0);
+    for (int i = 0; i < M; ++i) {
+        int u, v;
+        cin >> u >> v;
+        adj[u].push_back(v);
+        adj[v].push_back(u);
+        deg_tot[u]++;
+        deg_tot[v]++;
+    }
+
+    priority_queue<Fraction, vector<Fraction>, greater<Fraction>> pq;
+    for (int u = 1; u <= N; ++u) {
+        if (removed[u]) continue;
+        for (int v : adj[u]) {
+            if (!removed[v]) deg_in[u]++;
+        }
+        pq.push({deg_in[u], deg_tot[u], u});
+    }
+
+    vector<int> deletion_order;
+    long long best_num = -1, best_den = 1;
+    int best_step = 0;
+
+    while (!pq.empty()) {
+        auto [num, den, u] = pq.top();
+        pq.pop();
+        if (removed[u]) continue;
+
+        // Record the bottleneck ratio of the current remaining set before deleting u
+        if (best_num == -1 || num * best_den > best_num * den) {
+            best_num = num;
+            best_den = den;
+            best_step = static_cast<int>(deletion_order.size());
+        }
+
+        removed[u] = 1;
+        deletion_order.push_back(u);
+        for (int v : adj[u]) {
+            if (!removed[v]) {
+                deg_in[v]--;
+                pq.push({deg_in[v], deg_tot[v], v});
+            }
+        }
+    }
+
+    int sz = static_cast<int>(deletion_order.size()) - best_step;
+    cout << sz << "\n";
+    for (int i = best_step; i < static_cast<int>(deletion_order.size()); ++i) {
+        cout << deletion_order[i] << (i + 1 == static_cast<int>(deletion_order.size()) ? "\n" : " ");
+    }
+    return 0;
+}
+```
+
+::::
+
+---
+
+### 6.4 Problem `#108` (`Int-2`) — Freshman Ball (`[SDOI2017] 新生舞会`, Luogu P3705)
+
+* **Judge & ID**: [Luogu P3705 — [SDOI2017] 新生舞会 (Freshman Ball)](https://www.luogu.com.cn/problem/P3705) (`[ZH]`, SDOI 2017 Round 1)
+* **Constraints**: $N \le 100$ boys and $N \le 100$ girls. Given $N \times N$ matrices $a_{i,j} \in [1, 10^4]$ (happiness) and $b_{i,j} \in [1, 10^4]$ (coordination), find a bijection (perfect matching) $M$ between boys and girls maximizing $C(M) = \frac{\sum_{(i,j) \in M} a_{i,j}}{\sum_{(i,j) \in M} b_{i,j}}$, rounded to $6$ decimal places.
+* **Plain-English Summary**: Pair $N$ boys with $N$ girls 1-to-1 so that the total happiness divided by the total coordination across the $N$ pairs is maximized.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Non-Graph Diagnostic Signal"}
+
+We are maximizing a ratio of two linear functions $\frac{\sum a_{i,j} x_{i,j}}{\sum b_{i,j} x_{i,j}}$ over the set of bipartite perfect matchings $\mathcal{M}_{\text{perf}}$. Applying Dinkelbach's linearization at trial $\lambda \ge 0$, we need to compute:
+
+$$h(\lambda) = \max_{M \in \mathcal{M}_{\text{perf}}} \sum_{(i, j) \in M} (a_{i,j} - \lambda b_{i,j}).$$
+
+For any fixed $\lambda$, this is a standard **Maximum-Weight Bipartite Perfect Matching** problem with modified edge weights $w_{i,j}(\lambda) = a_{i,j} - \lambda b_{i,j}$!
+
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Choosing Between MCMF and $O(N^3)$ Hungarian / Integer Scaling"}
+
+With $N = 100$:
+- Running SPFA-based Max-Cost Max-Flow (or the $O(N^3)$ Hungarian / Kuhn–Munkres algorithm) inside a 50-step binary search over $\lambda \in [0, 10^4]$ takes $50 \times 10^6 \approx 5 \times 10^7$ operations ($\approx 60\text{ ms}$).
+- Even better: if you scale weights by $10^7$ ($w_{i,j} = 10^7 a_{i,j} - \lfloor 10^7 \lambda \rfloor b_{i,j} \in \mathbb{Z}$) or use Dinkelbach's secant step $\lambda_{k+1} = \frac{\sum_{(i,j) \in M^*} a_{i,j}}{\sum_{(i,j) \in M^*} b_{i,j}}$, you avoid floating-point drift in SPFA / Hungarian potentials completely and finish in **6–8 iterations** ($< 10\text{ ms}$)!
+
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solution — #108 (Luogu P3705 [SDOI2017] 新生舞会)"}
+
+#### Step 1: Non-Graph Diagnostic Signal
+Ratio objective $\frac{\sum a_e}{\sum b_e}$ over bipartite matchings with $N \le 100$ signals **0-1 Fractional Programming + Maximum-Weight Perfect Matching (MCMF / Hungarian)**.
+
+#### Step 2: Intermediate Algebraic Representation
+Let $x_{i,j} \in \{0, 1\}$ indicate whether boy $i$ dances with girl $j$, subject to $\sum_j x_{i,j} = 1$ and $\sum_i x_{i,j} = 1$. At trial parameter $\lambda \ge 0$:
+
+$$h(\lambda) = \max_{x \in \mathcal{M}_{\text{perf}}} \sum_{i=1}^N \sum_{j=1}^N (a_{i,j} - \lambda b_{i,j}) x_{i,j}.$$
+
+By Theorem 14.1, $h(\lambda) \ge 0 \iff \lambda \le \lambda^*$.
+
+#### Step 3: Mechanical Graph Compilation (Dinkelbach + $O(N^3)$ Hungarian / MCMF)
+Using Dinkelbach's Newton-secant iteration (or binary search) with the $O(N^3)$ Hungarian algorithm (or SPFA MCMF where $s \to i$ has $(cap=1, cost=0)$, $i \to j$ has $(cap=1, cost = -(a_{i,j} - \lambda b_{i,j}))$, and $j \to t$ has $(cap=1, cost=0)$):
+- Start with the identity matching $M^{(0)} = \{(i, i)\}_{i=1}^N$ and $\lambda_0 = \frac{\sum_i a_{i,i}}{\sum_i b_{i,i}}$.
+- At step $k$, find the maximum-weight perfect matching $M^{(k+1)}$ under weights $w_{i,j}(\lambda_k) = a_{i,j} - \lambda_k b_{i,j}$.
+- If $\sum_{(i,j) \in M^{(k+1)}} w_{i,j}(\lambda_k) \le 10^{-8}$, terminate and output $\lambda_k$; otherwise set $\lambda_{k+1} = \frac{\sum_{(i,j) \in M^{(k+1)}} a_{i,j}}{\sum_{(i,j) \in M^{(k+1)}} b_{i,j}}$.
+
+#### Step 4: Broken-Gadget Guard & Reference Implementation
+- **Floating-Point Guard in SPFA / Hungarian**: When comparing reduced costs in `double`, always include an epsilon margin `1e-9` so a zero-cost cycle or zero-slack edge does not trigger an infinite loop.
+
+```cpp
+// Luogu P3705 [SDOI2017] 新生舞会 (Freshman Ball, #108)
+// Paradigm: Dinkelbach's Secant Method + O(N^3) Maximum-Weight Bipartite Matching (or MCMF)
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <iostream>
+#include <vector>
+
+using namespace std;
+
+constexpr double INF = 1e18;
+constexpr double EPS = 1e-9;
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int N;
+    if (!(cin >> N)) return 0;
+
+    vector<vector<long long>> A(N + 1, vector<long long>(N + 1));
+    vector<vector<long long>> B(N + 1, vector<long long>(N + 1));
+
+    for (int i = 1; i <= N; ++i)
+        for (int j = 1; j <= N; ++j)
+            cin >> A[i][j];
+
+    for (int i = 1; i <= N; ++i)
+        for (int j = 1; j <= N; ++j)
+            cin >> B[i][j];
+
+    // O(N^3) Hungarian algorithm for Maximum-Weight Perfect Matching
+    // (implemented by minimizing negated weights -w_{i,j}(lambda))
+    auto solve_matching = [&](double lambda) -> pair<double, double> {
+        vector<double> u(N + 1, 0.0), v(N + 1, 0.0);
+        vector<int> p(N + 1, 0), way(N + 1, 0);
+
+        for (int i = 1; i <= N; ++i) {
+            p[0] = i;
+            int j0 = 0;
+            vector<double> minv(N + 1, INF);
+            vector<bool> used(N + 1, false);
+            do {
+                used[j0] = true;
+                int i0 = p[j0], j1 = 0;
+                double delta = INF;
+                for (int j = 1; j <= N; ++j) {
+                    if (!used[j]) {
+                        double cur = -(A[i0][j] - lambda * B[i0][j]) - u[i0] - v[j];
+                        if (cur < minv[j]) {
+                            minv[j] = cur;
+                            way[j] = j0;
+                        }
+                        if (minv[j] < delta) {
+                            delta = minv[j];
+                            j1 = j;
+                        }
+                    }
+                }
+                for (int j = 0; j <= N; ++j) {
+                    if (used[j]) {
+                        u[p[j]] += delta;
+                        v[j] -= delta;
+                    } else {
+                        minv[j] -= delta;
+                    }
+                }
+                j0 = j1;
+            } while (p[j0] != 0);
+
+            do {
+                int j1 = way[j0];
+                p[j0] = p[j1];
+                j0 = j1;
+            } while (j0 != 0);
+        }
+
+        long long sum_a = 0, sum_b = 0;
+        for (int j = 1; j <= N; ++j) {
+            sum_a += A[p[j]][j];
+            sum_b += B[p[j]][j];
+        }
+        double h_val = sum_a - lambda * sum_b;
+        double next_lambda = static_cast<double>(sum_a) / static_cast<double>(sum_b);
+        return {h_val, next_lambda};
+    };
+
+    // Initialize Dinkelbach with diagonal matching (i, i)
+    long long init_a = 0, init_b = 0;
+    for (int i = 1; i <= N; ++i) {
+        init_a += A[i][i];
+        init_b += B[i][i];
+    }
+    double lambda = static_cast<double>(init_a) / static_cast<double>(init_b);
+
+    while (true) {
+        auto [h_val, next_lambda] = solve_matching(lambda);
+        if (h_val <= 1e-8) break;
+        lambda = next_lambda;
+    }
+
+    cout << fixed << setprecision(6) << lambda << "\n";
+    return 0;
+}
+```
+
+- **Complexity**: Dinkelbach's method converges in $\le 8$ iterations on all test cases, taking $8 \times O(N^3) \approx 8 \times 10^6$ operations ($< 10\text{ ms}$).
+
+::::
+
+---
+
+### 6.5 Problem `#109` (`Adv-1`) — Employing Personnel (`[2009国家集训队] 人员雇佣`, BZOJ 2039) & General Weighted MDS
+
+* **Judge & ID**: [DarkBZOJ 2039 — [2009国家集训队] 人员雇佣 (Employing Personnel)](https://darkbzoj.cc/problem/2039) (`[ZH]`, 2009 Chinese National Team Training Paper / Amber Degree-Sum Reduction Archetype)
+* **Constraints**: $N \le 1000$ candidate employees, hiring costs $A_i \ge 0$ ($1 \le i \le N$), and an $N \times N$ symmetric non-negative synergy matrix $E_{i,j} = E_{j,i} \ge 0$ ($E_{i,i} = 0$). For every ordered pair $(i, j)$:
+  - If **both** $i$ and $j$ are hired ($x_i = 1, x_j = 1$), employee $i$ generates revenue $+E_{i,j}$ (so the unordered pair $\{i, j\}$ generates $+2 E_{i,j}$).
+  - If **$i$ is hired but $j$ is NOT hired** ($x_i = 1, x_j = 0$), employee $i$ suffers a coordination penalty of $-E_{i,j}$!
+  Maximize the net company profit.
+* **Plain-English Summary**: Choose a subset of employees $S \subseteq \{1, \dots, N\}$ maximizing total pair synergies $\sum_{i \in S, j \in S} E_{i,j}$ minus hiring costs $\sum_{i \in S} A_i$ minus boundary penalties $\sum_{i \in S, j \notin S} E_{i,j}$ on a dense $1000 \times 1000$ complete graph.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Naive Project Selection (`Ch 09`) TLEs on Dense $N = 1000$"}
+
+If you create an auxiliary closure vertex for every unordered pair $\{i, j\}$ to represent $x_i x_j = 1$, the flow network has $N + \binom{N}{2} \approx 5 \times 10^5$ vertices and $1.5 \times 10^6$ edges—far too slow for dense Dinic! Look instead at Goldberg and Amber's degree-sum identity from Section 2.3 and Section 3.1.
+
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — The Exact Pseudo-Boolean Degree-Sum Identity"}
+
+For each employee $i \in S$ ($x_i = 1$) and every other employee $j$, $i$ gains $+E_{i,j}$ if $x_j = 1$ and loses $-E_{i,j}$ if $x_j = 0$:
+
+$$E_{i,j} x_i x_j - E_{i,j} x_i(1 - x_j) = E_{i,j} x_i - 2 E_{i,j} x_i(1 - x_j)!$$
+
+Summing over all ordered pairs $(i, j)$ gives:
+- A pure **unary reward** $R_i = \sum_{j=1}^N E_{i,j}$ for hiring employee $i$ ($x_i = 1$), and
+- A directed cut penalty $2 E_{i,j} x_i(1 - x_j)$ whenever $i \in S$ and $j \notin S$!
+
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Compiling the $N$-Vertex Network"}
+
+With $R_i = \sum_{j=1}^N E_{i,j}$, we want to maximize $\sum_{i=1}^N R_i x_i - \sum_{i=1}^N A_i x_i - \sum_{i=1}^N \sum_{j=1}^N 2 E_{i,j} x_i(1 - x_j)$. Subtracting from the total potential reward $\sum_{i=1}^N R_i$:
+- Wire $s \xrightarrow{R_i} i$ (cut if $x_i = 0$).
+- Wire $i \xrightarrow{A_i} t$ (cut if $x_i = 1$).
+- For every ordered pair $(i, j)$ with $i \ne j$, wire a directed arc $i \xrightarrow{2 E_{i,j}} j$ (cut if $x_i = 1, x_j = 0$).
+Then $\text{MaxNetProfit} = \sum_{i=1}^N R_i - \operatorname{MinCut}(s, t)$ on just **$N + 2 = 1002$ vertices**!
+
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solution — #109 (BZOJ 2039 人员雇佣)"}
+
+#### Step 1: Non-Graph Diagnostic Signal
+A subset selection problem on $N = 1000$ items with a **dense $N \times N$ pairwise reward/penalty matrix** $E_{i,j}$ signals **Goldberg / Amber Degree-Sum Node Elimination**: convert quadratic $x_i x_j$ rewards into unary row-sums $R_i = \sum_j E_{i,j}$ minus cut penalties $x_i(1 - x_j)$.
+
+#### Step 2: Intermediate Algebraic Representation
+Write the total net profit in terms of $x_i \in \{0, 1\}$:
+
+$$\begin{aligned}
+\text{Profit}(x) &= \sum_{i=1}^N \sum_{j=1}^N E_{i,j} x_i x_j - \sum_{i=1}^N \sum_{j=1}^N E_{i,j} x_i(1 - x_j) - \sum_{i=1}^N A_i x_i \\
+&= \sum_{i=1}^N \sum_{j=1}^N E_{i,j} x_i\big(x_j + (1 - x_j)\big) - 2 \sum_{i=1}^N \sum_{j=1}^N E_{i,j} x_i(1 - x_j) - \sum_{i=1}^N A_i x_i \\
+&= \sum_{i=1}^N R_i - \left[ \sum_{i=1}^N R_i (1 - x_i) + \sum_{i=1}^N A_i x_i + \sum_{i=1}^N \sum_{j=1}^N 2 E_{i,j} x_i(1 - x_j) \right],
+\end{aligned}$$
+
+where $R_i := \sum_{j=1}^N E_{i,j}$.
+
+*(Note: This is also the exact inner oracle of Amber's General Weighted Maximum Density Subgraph model from Section 3.1 when $w_{\{i,j\}} = 2 E_{i,j}$, $\gamma_{\{i,j\}} = E_{i,j}$, and $\lambda q_i - p_i = A_i$!)*
+
+#### Step 3: Mechanical Graph Compilation
+- **Vertices**: $s = 0$, employees $1 \dots N$, $t = N + 1$ ($N + 2$ vertices total).
+- **Arcs**:
+  - $s \to i$ with capacity $R_i = \sum_{j=1}^N E_{i,j}$.
+  - $i \to t$ with capacity $A_i$.
+  - For each $1 \le i < j \le N$, add an undirected (bidirectional) edge between $i$ and $j$ with capacity $2 E_{i,j}$ in both directions ($i \to j$ and $j \to i$).
+- **Answer**: $\sum_{i=1}^N R_i - \operatorname{MaxFlow}(s, t)$ (using 64-bit `long long` capacities since $N^2 \max E_{i,j}$ can exceed $2^{31} - 1$).
+
+#### Step 4: Broken-Gadget Guard & Reference Implementation
+- **Factor-of-2 Guard**: Because losing an internal pair $(i, j)$ both forfeits $+E_{i,j}$ and incurs penalty $-E_{i,j}$, the swing per ordered pair $(i, j)$ with $x_i = 1, x_j = 0$ is $2 E_{i,j}$. Using $E_{i,j}$ instead of $2 E_{i,j}$ on $i \to j$ undercounts the separation penalty by half!
+
+```cpp
+// BZOJ 2039 [2009国家集训队] 人员雇佣 (Employing Personnel, #109)
+// Paradigm: Goldberg / Amber Degree-Sum Node Elimination on Dense N x N Synergy Matrix
+#include <algorithm>
+#include <iostream>
+#include <queue>
+#include <vector>
+
+using namespace std;
+
+constexpr long long INF = 4e18;
+
+// Assumes 64-bit DinicLL(n, s, t) from Chapter 02 with add_directed(u, v, cap),
+// add_undirected(u, v, cap), and max_flow()
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int N;
+    if (!(cin >> N)) return 0;
+
+    vector<long long> A(N + 1);
+    for (int i = 1; i <= N; ++i) cin >> A[i];
+
+    vector<vector<long long>> E(N + 1, vector<long long>(N + 1));
+    vector<long long> R(N + 1, 0);
+    long long total_R = 0;
+
+    for (int i = 1; i <= N; ++i) {
+        for (int j = 1; j <= N; ++j) {
+            cin >> E[i][j];
+            R[i] += E[i][j];
+        }
+        total_R += R[i];
+    }
+
+    int S = 0, T = N + 1;
+    DinicLL dinic(N + 2, S, T);
+
+    for (int i = 1; i <= N; ++i) {
+        dinic.add_directed(S, i, R[i]);
+        dinic.add_directed(i, T, A[i]);
+        for (int j = i + 1; j <= N; ++j) {
+            if (E[i][j] > 0) {
+                dinic.add_undirected(i, j, 2LL * E[i][j]);
+            }
+        }
+    }
+
+    cout << (total_R - dinic.max_flow()) << "\n";
+    return 0;
+}
+```
+
+::::
+
+---
+
+### 6.6 Problem `#110` (`Adv-2`) — Nash-Williams Arboricity & Rooted Forest Packing (`CF 1284G` / Arboricity Oracle)
+
+* **Judge & ID**: [Nash-Williams Arboricity & Forest Packing Oracle / Codeforces 1284G Dual](https://codeforces.com/problemset/problem/1284/G) (`[EN]`/`[ZH]`, Nash-Williams 1964; Gabow–Westermann 1992; longitudinal thread `Rev-11` bridging to Chapter 24 `#187`)
+* **Constraints**: Given an undirected graph $G = (V, E)$ with $N \le 300, M \le 1500$ (and at least one edge), compute its exact **arboricity** $\Upsilon(G)$—the minimum number of edge-disjoint forests into which $E$ can be partitioned:
+  $$\Upsilon(G) = \max_{\substack{S \subseteq V \\ |S| \ge 2}} \left\lceil \frac{|E(S)|}{|S| - 1} \right\rceil.$$
+* **Plain-English Summary**: Determine the minimum number $k$ of acyclic forests needed to cover every edge of $G$, and extract the densest obstruction subgraph $S^*$ achieving $\lceil \frac{|E(S^*)|}{|S^*| - 1} \rceil = \Upsilon(G)$.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why Standard Unrooted MDS Breaks on $|S| - 1$ (`FM-14a`)"}
+
+By Nash-Williams' Theorem (Section 3.3), $E$ partitions into $k$ forests iff every subset $S \subseteq V$ with $|S| \ge 2$ satisfies $|E(S)| - k(|S| - 1) \le 0$, or equivalently:
+
+$$\max_{\substack{S \subseteq V \\ |S| \ge 1}} \big( |E(S)| - k|S| \big) \le -k.$$
+
+Notice that if we allow $S = \emptyset$ in the minimum cut, $|E(\emptyset)| - k|\emptyset| = 0 > -k$, so the empty set $S = \emptyset$ **always** dominates every non-empty subset! How do we forbid $S = \emptyset$ in a minimum cut?
+
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Root-Pinning $r \in S$ in Goldberg's $|V|$-Only Network"}
+
+Any non-empty subset $S \subseteq V$ contains at least one vertex $r \in V$. If we **pin a specific root vertex $r \in S$** ($x_r = 1$):
+- The denominator $|S| - 1 = \sum_{v \in S \setminus \{r\}} 1$ charges a weight of $1$ to every vertex $v \in S \setminus \{r\}$ and a weight of **$0$** to the pinned root $r$!
+- Therefore, in Goldberg's $|V|$-only network for fixed $(k, r)$:
+  - Pin $r$ to the source side via $s \xrightarrow{\infty} r$ and $r \xrightarrow{U - d_r} t$ (zero $\lambda$-penalty on $r$!).
+  - Every other vertex $v \ne r$ gets $s \xrightarrow{U} v$ and $v \xrightarrow{U + 2k - d_v} t$.
+  - Every edge $\{u, v\} \in E$ gets bidirectional capacity $1$.
+- Then $\max_{S \ni r} \big(|E(S)| - k(|S| - 1)\big) = \frac{U \cdot N - \operatorname{MinCut}_{k, r}(s, t)}{2}$!
+
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Eliminating Redundant Roots & Binary Search over $k$"}
+
+To test a candidate integer $k \in \{1, \dots, N\}$:
+- Iterate over $r \in \{1, \dots, N\}$ and check if any root $r$ yields $U \cdot N - \operatorname{MinCut}_{k, r}(s, t) > 0$.
+- **Speedup**: Once a vertex $r$ has been tested as forced in $S$, for subsequent roots $r' > r$ we can actually force all previously tested roots $1 \dots r'-1$ to the **sink side $t$** ($S \subseteq \{r', \dots, N\}$), shrinking the graph at every step! Binary searching $k \in [1, N]$ takes only $O(\log N)$ outer steps.
+
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solution — #110 (Nash-Williams Arboricity Oracle)"}
+
+#### Step 1: Non-Graph Diagnostic Signal
+Partitioning edges into $k$ forests is governed by the **Nash-Williams Arboricity Theorem**: $\Upsilon(G) = \max_{|S| \ge 2} \lceil \frac{|E(S)|}{|S| - 1} \rceil$. While the primal forest-packing problem can be solved via graphic matroid union (or matroid intersection in `CF 1284G`, Chapter 24 `#187`), the exact value $\Upsilon(G)$ and its dual obstruction $S^*$ are a **Root-Pinned Maximum Density Subgraph** problem!
+
+#### Step 2: Intermediate Algebraic Representation
+Partition all non-empty subsets $\emptyset \ne S \subseteq V$ by their minimum-indexed vertex $r = \min(S) \in \{1, \dots, N\}$. Then $r \in S$ and $\{1, \dots, r-1\} \cap S = \emptyset$, and $|S| - 1 = \sum_{v \in S, v > r} 1$. For a fixed integer $k \ge 1$ and root $r$:
+
+$$\max_{\substack{S \subseteq \{r, \dots, N\} \\ r \in S}} \big( |E(S)| - k(|S| - 1) \big) > 0 \quad \Longleftrightarrow \quad \exists S \text{ with } \min(S) = r \text{ and } \frac{|E(S)|}{|S| - 1} > k.$$
+
+#### Step 3: Mechanical Graph Compilation (Shrinking Suffix Graph per Root $r$)
+For a fixed $k$ and $r \in \{1, \dots, N\}$, restrict the induced graph to the vertex suffix $V_r = \{r, r+1, \dots, N\}$ with induced degrees $d_v^{(r)}$ inside $G[V_r]$ and pedestal $U = M$:
+- Vertex $r$ is pinned to $S$: wire $s \xrightarrow{\infty} r$ and $r \xrightarrow{U - d_r^{(r)}} t$.
+- Each $v \in \{r + 1, \dots, N\}$ gets $s \xrightarrow{U} v$ and $v \xrightarrow{U + 2k - d_v^{(r)}} t$.
+- Each edge $\{u, v\} \in E(V_r)$ gets bidirectional capacity $1$.
+- If $\operatorname{MinCut}(s, t) < U \cdot |V_r|$, then $\Upsilon(G) > k$!
+
+#### Step 4: Broken-Gadget Guard & Reference Implementation
+- **Guard (`FM-14a`)**: Notice that a single vertex $S = \{r\}$ has $|E(\{r\})| - k(|\{r\}| - 1) = 0 - k(0) = 0$, which corresponds to cut capacity $U \cdot |V_r|$. Thus $\operatorname{MinCut}(s, t) < U \cdot |V_r|$ holds **if and only if** there exists a subset $S \ni r$ with $|S| \ge 2$ and $|E(S)| > k(|S| - 1)$!
+
+```cpp
+// Nash-Williams Arboricity Oracle (#110)
+// Paradigm: Root-Pinned Goldberg |V|-Only Cut for max_{|S|>=2} ceil(|E(S)| / (|S|-1))
+#include <algorithm>
+#include <iostream>
+#include <vector>
+
+using namespace std;
+
+constexpr long long INF = 1e15;
+
+// Assumes 64-bit DinicLL(n, s, t) from Chapter 02
+
+// Returns true iff every S subseteq V with |S| >= 2 has |E(S)| <= k * (|S| - 1)
+bool can_pack_into_k_forests(int N, int M, const vector<pair<int, int>>& edges, long long k) {
+    long long U = M;
+    for (int r = 1; r <= N; ++r) {
+        int V_cnt = N - r + 1;
+        int S = 0, T = V_cnt + 1;
+        DinicLL dinic(V_cnt + 2, S, T);
+
+        vector<long long> deg(V_cnt + 1, 0);
+        for (auto [u, v] : edges) {
+            if (u >= r && v >= r) {
+                int u_id = u - r + 1, v_id = v - r + 1;
+                deg[u_id]++;
+                deg[v_id]++;
+                dinic.add_undirected(u_id, v_id, 1);
+            }
+        }
+
+        // Root r (node 1) is pinned to S with zero k-penalty
+        dinic.add_directed(S, 1, INF);
+        dinic.add_directed(1, T, U - deg[1]);
+
+        for (int i = 2; i <= V_cnt; ++i) {
+            dinic.add_directed(S, i, U);
+            dinic.add_directed(i, T, U + 2LL * k - deg[i]);
+        }
+
+        if (dinic.max_flow() < U * V_cnt) {
+            return false; // Found S containing r with |E(S)| > k * (|S| - 1)
+        }
+    }
+    return true;
+}
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int N, M;
+    if (!(cin >> N >> M)) return 0;
+
+    vector<pair<int, int>> edges(M);
+    for (int i = 0; i < M; ++i) {
+        cin >> edges[i].first >> edges[i].second;
+    }
+
+    if (M == 0) {
+        cout << 0 << "\n";
+        return 0;
+    }
+
+    long long L = 1, R = M, ans = M;
+    while (L <= R) {
+        long long mid = (L + R) / 2;
+        if (can_pack_into_k_forests(N, M, edges, mid)) {
+            ans = mid;
+            R = mid - 1;
+        } else {
+            L = mid + 1;
+        }
+    }
+
+    cout << ans << "\n";
+    return 0;
+}
+```
+
+::::
+
+---
+
+### 6.7 Problem `#111` (`Mas-1`) — All-Lambda Parametric Maximum Density Hull (`GGT Parametric Envelope`)
+
+* **Judge & ID**: [Gallo–Grigoriadis–Tarjan Parametric Envelope Benchmark](https://epubs.siam.org/doi/10.1137/0218003) (`[EN]`, Gallo, Grigoriadis & Tarjan, *SIAM J. Comput.* 1989; Eisner–Severance Parametric Hull Method)
+* **Constraints**: Given an undirected graph $G = (V, E)$ with $N \le 500, M \le 2000$ and $Q \le 2 \cdot 10^5$ online queries $\lambda_q \ge 0$ (given as rational numbers $P_q / Q_q$ or floating-point values), compute for every query:
+  $$h(\lambda_q) = \max_{S \subseteq V} \big( |E(S)| - \lambda_q |S| \big).$$
+* **Plain-English Summary**: Precompute the entire piecewise-linear convex upper envelope $h(\lambda) = \max_{S \subseteq V} (|E(S)| - \lambda |S|)$ across all $\lambda \in [0, \infty)$ so that each of $Q = 2 \cdot 10^5$ queries is answered in $O(\log N)$ time.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Why the Entire Curve $h(\lambda)$ Has At Most $N$ Breakpoints"}
+
+By **Theorem 14.3 (Parametric Cut Nesting)**, as $\lambda$ increases from $0$ to $\infty$, the source-minimal optimal subgraphs form a strictly nested chain $V = S_0 \supsetneq S_1 \supsetneq S_2 \supsetneq \dots \supsetneq S_k = \emptyset$ of length $k \le N$. Each $S_i$ defines a line $\ell_i(\lambda) = |E(S_i)| - |S_i| \lambda$ on the upper envelope!
+
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Finding All Hull Lines via `solve_hull(S_L, S_R)` with Exact Integer Arithmetic"}
+
+Given two known optimal subsets $S_L \supsetneq S_R$ with $|S_L| > |S_R|$:
+1. Their lines $\ell_{S_L}(\lambda)$ and $\ell_{S_R}(\lambda)$ intersect at the rational coordinate $\lambda_{\text{mid}} = \frac{P}{Q}$, where $P = |E(S_L)| - |E(S_R)|$ and $Q = |S_L| - |S_R| > 0$.
+2. Because $S_R \subseteq S_{\min}(\lambda_{\text{mid}}) \subseteq S_L$, we **contract** $S_R$ into $s$ and $V \setminus S_L$ into $t$, leaving only the active vertex shell $A = S_L \setminus S_R$!
+3. Scale all capacities in Goldberg's network by $Q$ so that every capacity is an **exact 64-bit integer**, and run Dinic on the contracted shell $A$.
+
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Answering $Q = 2 \cdot 10^5$ Queries on the Upper Envelope"}
+
+Once `solve_hull(V, empty)` collects all hull points $(|S_i|, |E(S_i)|)$, sort them by slope $-|S_i|$ (from $-N$ to $0$) and build the upper convex hull of the lines $\ell_i(\lambda) = -|S_i| \lambda + |E(S_i)|$ (or binary search the adjacent breakpoint slopes $\frac{|E(S_i)| - |E(S_{i+1})|}{|S_i| - |S_{i+1}|}$) to answer each query $\lambda_q$ in $O(\log N)$ time!
+
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solution — #111 (All-Lambda Parametric Density Envelope)"}
+
+#### Step 1: Non-Graph Diagnostic Signal
+Answering $Q = 2 \cdot 10^5$ parametric queries $h(\lambda_q) = \max_{S \subseteq V} (|E(S)| - \lambda_q |S|)$ requires computing all $\le N$ breakpoints of the parametric minimum cut via **Gallo–Grigoriadis–Tarjan Nested Cut Contraction (`solve_hull`)**.
+
+#### Step 2: Intermediate Algebraic Representation & Contraction Identity
+Suppose we know $S_R \subseteq S \subseteq S_L$, and let $A = S_L \setminus S_R$ be the active shell of undecided vertices. For any subset $S = S_R \cup X$ (with $X \subseteq A$), how do we evaluate $|E(S)|$ using only vertices in $A$?
+- Every edge inside $E(S_R)$ is unconditionally included ($|E(S_R)|$).
+- For each vertex $v \in A$, let $d_{v \to S_R}$ be the number of edges connecting $v$ to $S_R$, and $d_v^{(A)}$ be the degree of $v$ inside the induced subgraph $G[A]$.
+- Then for $S = S_R \cup X$ ($X \subseteq A$):
+  $$|E(S_R \cup X)| = |E(S_R)| + \sum_{v \in X} d_{v \to S_R} + |E_A(X)| = |E(S_R)| + \sum_{v \in X} \left( d_{v \to S_R} + \frac{1}{2} d_v^{(A)} \right) - \frac{1}{2} |\delta_A(X, A \setminus X)|!$$
+- Multiplying $2\big(\frac{P}{Q}|X| - (|E(S_R \cup X)| - |E(S_R)|)\big)$ by $Q$ yields the exact integer contracted capacities on $A$:
+  - $s \to v$ ($v \in A$): capacity $Q \cdot U$.
+  - $v \to t$ ($v \in A$): capacity $Q(U - 2 d_{v \to S_R} - d_v^{(A)}) + 2P$.
+  - Undirected edge $\{u, v\} \in E(A)$: bidirectional capacity $Q$.
+
+#### Step 3 & Step 4: Complete Reference Implementation (`solve_hull` + $O(\log N)$ Query Engine)
+
+```cpp
+// GGT Parametric Envelope Benchmark — All-Lambda Maximum Density Hull (#111)
+// Paradigm: Gallo-Grigoriadis-Tarjan Nested Cut D&C with Vertex Contraction & Exact Integer Scaling
+#include <algorithm>
+#include <iomanip>
+#include <iostream>
+#include <vector>
+
+using namespace std;
+
+// Assumes 64-bit DinicLL(n, s, t) from Chapter 02 (exposing level[] after max_flow())
+
+struct HullLine {
+    long long v_cnt, e_cnt; // Line L(lambda) = e_cnt - v_cnt * lambda
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int N, M, Q_queries;
+    if (!(cin >> N >> M >> Q_queries)) return 0;
+
+    vector<pair<int, int>> edges(M);
+    for (int i = 0; i < M; ++i) {
+        cin >> edges[i].first >> edges[i].second;
+    }
+
+    auto count_edges = [&](const vector<int>& in_S) -> long long {
+        long long cnt = 0;
+        for (auto [u, v] : edges) {
+            if (in_S[u] && in_S[v]) ++cnt;
+        }
+        return cnt;
+    };
+
+    vector<HullLine> hull_candidates;
+    hull_candidates.push_back({0, 0});
+    hull_candidates.push_back({N, M});
+
+    // Recursive D&C over nested cuts: S_R is a subset of S_L
+    auto solve_hull = [&](auto& self, const vector<int>& in_SL, long long vL, long long eL,
+                          const vector<int>& in_SR, long long vR, long long eR) -> void {
+        if (vL <= vR) return;
+        long long P = eL - eR; // Numerator of lambda_mid = P / Q
+        long long Q = vL - vR; // Denominator of lambda_mid = P / Q
+
+        // Extract active shell A = S_L \ S_R
+        vector<int> shell;
+        vector<int> local_id(N + 1, 0);
+        for (int v = 1; v <= N; ++v) {
+            if (in_SL[v] && !in_SR[v]) {
+                local_id[v] = static_cast<int>(shell.size()) + 1;
+                shell.push_back(v);
+            }
+        }
+        int k = static_cast<int>(shell.size());
+        if (k == 0) return;
+
+        int S = 0, T = k + 1;
+        DinicLL dinic(k + 2, S, T);
+        long long U = 2LL * M;
+
+        vector<long long> deg_A(k + 1, 0), deg_to_SR(k + 1, 0);
+        for (auto [u, v] : edges) {
+            if (local_id[u] && local_id[v]) {
+                deg_A[local_id[u]]++;
+                deg_A[local_id[v]]++;
+                dinic.add_undirected(local_id[u], local_id[v], Q);
+            } else if (local_id[u] && in_SR[v]) {
+                deg_to_SR[local_id[u]]++;
+            } else if (local_id[v] && in_SR[u]) {
+                deg_to_SR[local_id[v]]++;
+            }
+        }
+
+        for (int i = 1; i <= k; ++i) {
+            dinic.add_directed(S, i, Q * U);
+            long long sink_cap = Q * (U - 2LL * deg_to_SR[i] - deg_A[i]) + 2LL * P;
+            dinic.add_directed(i, T, sink_cap);
+        }
+
+        dinic.max_flow();
+
+        // Reconstruct S_mid = S_R union {v in A : reachable from S}
+        vector<int> in_Smid = in_SR;
+        long long vMid = vR;
+        for (int i = 1; i <= k; ++i) {
+            if (dinic.level[i] != -1) {
+                in_Smid[shell[i - 1]] = 1;
+                vMid++;
+            }
+        }
+        long long eMid = count_edges(in_Smid);
+
+        // Exact cross-multiplication check: does S_mid strictly beat S_L (and S_R) at lambda = P / Q?
+        if (Q * eMid - P * vMid > Q * eL - P * vL) {
+            hull_candidates.push_back({vMid, eMid});
+            self(self, in_SL, vL, eL, in_Smid, vMid, eMid);
+            self(self, in_Smid, vMid, eMid, in_SR, vR, eR);
+        }
+    };
+
+    vector<int> full_S(N + 1, 1), empty_S(N + 1, 0);
+    solve_hull(solve_hull, full_S, N, M, empty_S, 0, 0);
+
+    // Sort hull lines by decreasing vertex count (increasing slope -v_cnt) and deduplicate
+    sort(hull_candidates.begin(), hull_candidates.end(), [](const HullLine& a, const HullLine& b) {
+        if (a.v_cnt != b.v_cnt) return a.v_cnt > b.v_cnt;
+        return a.e_cnt > b.e_cnt;
+    });
+
+    vector<HullLine> hull;
+    for (const auto& line : hull_candidates) {
+        if (!hull.empty() && hull.back().v_cnt == line.v_cnt) continue;
+        while (hull.size() >= 2) {
+            auto l1 = hull[hull.size() - 2];
+            auto l2 = hull.back();
+            if ((l1.e_cnt - l2.e_cnt) * (l2.v_cnt - line.v_cnt) >=
+                (l2.e_cnt - line.e_cnt) * (l1.v_cnt - l2.v_cnt)) {
+                hull.pop_back();
+            } else {
+                break;
+            }
+        }
+        hull.push_back(line);
+    }
+
+    // Answer Q queries in O(log |hull|) time per query
+    for (int q = 0; q < Q_queries; ++q) {
+        double lambda_q;
+        cin >> lambda_q;
+        int lo = 0, hi = static_cast<int>(hull.size()) - 1;
+        while (lo < hi) {
+            int mid = (lo + hi) / 2;
+            double v1 = hull[mid].e_cnt - lambda_q * hull[mid].v_cnt;
+            double v2 = hull[mid + 1].e_cnt - lambda_q * hull[mid + 1].v_cnt;
+            if (v1 < v2) lo = mid + 1;
+            else hi = mid;
+        }
+        double best = hull[lo].e_cnt - lambda_q * hull[lo].v_cnt;
+        cout << fixed << setprecision(6) << best << "\n";
+    }
+    return 0;
+}
+```
+
+::::
+
+---
+
+### 6.8 Problem `#112` (`Mas-2`) — Less Time, More Profit (HDU 5855)
+
+* **Judge & ID**: [HDU 5855 — Less Time, More Profit](https://acm.hdu.edu.cn/showproblem.php?pid=5855) (`[EN]`/`[ZH]`, 2016 ACM/ICPC Asia Regional Dalian Online)
+* **Constraints**: $T_{\text{cases}} \le 15$; $N \le 200$ plants (each plant $i$ has build time $t_i \in [1, 10^9]$ and build cost $\text{pay}_i \ge 0$); $M \le 200$ shops (each shop $j$ yields profit $\text{pro}_j \ge 0$ and requires a subset of plants $P_j \subseteq \{1, \dots, N\}$ to be built). Given a target profit $L$:
+  1. Find the **minimum possible build time** $T^* = \max_{i \in S} t_i$ among all subsets of plants $S$ whose enabled shops achieve net profit $\ge L$.
+  2. Subject to achieving the minimum build time $T^*$, find the **maximum possible net profit**.
+* **Plain-English Summary**: Building a subset of plants $S$ finishes at time $\max_{i \in S} t_i$, costs $\sum_{i \in S} \text{pay}_i$, and unlocks the profit $\text{pro}_j$ of every shop $j$ whose required plants $P_j$ are all in $S$. Minimize the completion time needed to earn at least $L$ net profit, and maximize the profit at that minimum time.
+
+:::: {.callout-note collapse="true" title="Hint 1 — Non-Graph Diagnostic Signal (Monotonicity of Maximum Weight Closure)"}
+
+For any fixed time threshold $T$, which plants are we allowed to build? Only the subset of plants $V(T) = \{i \in \{1, \dots, N\} : t_i \le T\}$. Which shops can possibly be unlocked by time $T$? Only the shops $E(T) = \{j \in \{1, \dots, M\} : P_j \subseteq V(T)\}$!
+
+Why is the maximum achievable net profit $\text{MaxProfit}(T)$ **monotonically non-decreasing** with $T$? Because increasing $T$ enlarges the set of available plants $V(T)$ and shops $E(T)$, and in Maximum Weight Closure (`Ch 09`) you always have the option **not** to select a newly available shop/plant if it is unprofitable!
+
+::::
+
+:::: {.callout-note collapse="true" title="Hint 2 — Binary Search over the $\le N$ Distinct Plant Build Times"}
+
+Sort and deduplicate the plant build times $t_i$ into a sorted array `times[]` of length $K \le N \le 200$.
+- Binary search the index $idx \in [0, K - 1]$ (`<= 8` iterations of Dinic!).
+- At midpoint $T = \text{times}[idx]$, build the Project Selection closure network (`Ch 09`) containing only shops $j$ whose required plants **all** satisfy $t_i \le T$.
+
+::::
+
+:::: {.callout-note collapse="true" title="Hint 3 — Extracting Both $T^*$ and the Maximum Profit at $T^*$"}
+
+In the binary search, whenever $\text{MaxProfit}(T) \ge L$, record $T^* = T$, `best_profit = MaxProfit(T)`, and move left ($R \gets idx - 1$). Because the question asks for the maximum profit *at the minimum feasible time $T^*$*, the recorded `best_profit` at the smallest feasible $T^*$ is the exact answer!
+
+::::
+
+:::: {.callout-tip collapse="true" title="Full 4-Step Compilation & C++ Solution — #112 (HDU 5855 Less Time, More Profit)"}
+
+#### Step 1: Non-Graph Diagnostic Signal
+Combining a **bottleneck threshold** $T = \max_{i \in S} t_i$ with prerequisite subsets $P_j \subseteq S$ signals **Parametric Binary Search over $T$ + Maximum Weight Closure (`Ch 09`)**.
+
+#### Step 2: Intermediate Algebraic Representation
+For a fixed time cap $T$, let $J(T) = \{j \in \{1, \dots, M\} : \max_{i \in P_j} t_i \le T\}$ be the set of shops feasible by time $T$, and $I(T) = \{i \in \{1, \dots, N\} : t_i \le T\}$ be the plants feasible by time $T$. Then:
+
+$$\operatorname{MaxProfit}(T) = \sum_{j \in J(T)} \text{pro}_j - \min_{\substack{x \in \{0, 1\}^{I(T)} \\ y \in \{0, 1\}^{J(T)}}} \left( \sum_{j \in J(T)} \text{pro}_j (1 - y_j) + \sum_{i \in I(T)} \text{pay}_i x_i + \sum_{j \in J(T)} \sum_{i \in P_j} \infty \cdot y_j(1 - x_i) \right).$$
+
+#### Step 3: Mechanical Graph Compilation
+At trial threshold $T$:
+- **Source $s \to \text{shop}_j$** ($j \in J(T)$): capacity $\text{pro}_j$.
+- **$\text{shop}_j \to \text{plant}_i$** ($j \in J(T), i \in P_j$): capacity $\infty$.
+- **$\text{plant}_i \to t$** ($i \in I(T)$): capacity $\text{pay}_i$.
+- $\operatorname{MaxProfit}(T) = \sum_{j \in J(T)} \text{pro}_j - \operatorname{MaxFlow}(s, t)$.
+
+#### Step 4: Broken-Gadget Guard & Reference Implementation
+- **Shop Eligibility Guard**: A shop $j$ can ONLY be added to the closure graph at time $T$ if **every** plant $i \in P_j$ has $t_i \le T$. If you include shop $j$ and merely omit the edges to plants $i \in P_j$ with $t_i > T$, the cut will claim $\text{pro}_j$ without building its missing prerequisite plants!
+
+```cpp
+// HDU 5855 — Less Time, More Profit (#112)
+// Paradigm: Parametric Threshold Binary Search + Maximum Weight Closure (Project Selection)
+#include <algorithm>
+#include <iostream>
+#include <vector>
+
+using namespace std;
+
+constexpr long long INF = 1e15;
+
+// Assumes 64-bit Dinic(n, s, t) from Chapter 02 with add_edge(u, v, cap) and max_flow()
+
+struct Shop {
+    long long profit;
+    long long max_time_req;
+    vector<int> plants;
+};
+
+void solve_case(int tc) {
+    int N, M;
+    long long L_target;
+    cin >> N >> M >> L_target;
+
+    vector<long long> pay(N + 1), build_time(N + 1), times;
+    for (int i = 1; i <= N; ++i) {
+        cin >> pay[i] >> build_time[i];
+        times.push_back(build_time[i]);
+    }
+    sort(times.begin(), times.end());
+    times.erase(unique(times.begin(), times.end()), times.end());
+
+    vector<Shop> shops(M + 1);
+    for (int j = 1; j <= M; ++j) {
+        int k;
+        cin >> shops[j].profit >> k;
+        shops[j].max_time_req = 0;
+        shops[j].plants.resize(k);
+        for (int p = 0; p < k; ++p) {
+            cin >> shops[j].plants[p];
+            shops[j].max_time_req = max(shops[j].max_time_req, build_time[shops[j].plants[p]]);
+        }
+    }
+
+    auto evaluate_time = [&](long long T_cap) -> long long {
+        int S = 0, T = M + N + 1;
+        Dinic dinic(T + 1, S, T);
+        long long sum_profit = 0;
+
+        for (int i = 1; i <= N; ++i) {
+            if (build_time[i] <= T_cap) {
+                dinic.add_edge(M + i, T, pay[i]);
+            }
+        }
+
+        for (int j = 1; j <= M; ++j) {
+            if (shops[j].max_time_req <= T_cap) {
+                sum_profit += shops[j].profit;
+                dinic.add_edge(S, j, shops[j].profit);
+                for (int u : shops[j].plants) {
+                    dinic.add_edge(j, M + u, INF);
+                }
+            }
+        }
+
+        return sum_profit - dinic.max_flow();
+    };
+
+    int lo = 0, hi = static_cast<int>(times.size()) - 1;
+    long long best_T = -1, best_profit = -1;
+
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        long long prof = evaluate_time(times[mid]);
+        if (prof >= L_target) {
+            best_T = times[mid];
+            best_profit = prof;
+            hi = mid - 1;
+        } else {
+            lo = mid + 1;
+        }
+    }
+
+    cout << "Case #" << tc << ": ";
+    if (best_T == -1) {
+        cout << "impossible\n";
+    } else {
+        cout << best_T << " " << best_profit << "\n";
+    }
+}
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int T_cases;
+    if (cin >> T_cases) {
+        for (int tc = 1; tc <= T_cases; ++tc) {
+            solve_case(tc);
+        }
+    }
+    return 0;
+}
+```
+
+::::
+
+---
+
+## 7. Pre-Submission Verification Checklist (`FM-14` Audit)
+
+Before submitting any fractional programming or maximum density subgraph solution, audit your code against the five failure modes of **`FM-14` (`H-15`)**:
+
+| Failure Mode ID | Trap Name | What Goes Wrong | Defensive Rule (`H-15`) |
+| :---: | :--- | :--- | :--- |
+| **`FM-14a`** | **Trivial Empty Subgraph Masking ($S = \emptyset$)** | Evaluating $S_{\min}$ at $\lambda \ge \lambda^*$ returns $S = \emptyset$ because $F(\emptyset) - \lambda G(\emptyset) = 0$ ties with $S^*$; in Nash-Williams arboricity ($G(S) = |S| - 1$), $S = \emptyset$ scores $+k > 0$. | Reconstruct $S^*$ strictly at the **last feasible lower bound $\lambda = L < \lambda^*$**; handle $M = 0$ upfront; pin a root $s \xrightarrow{\infty} r$ when $G(S) = |S| - 1$. |
+| **`FM-14b`** | **Unshifted Negative Sink Capacities ($2\lambda - d_v < 0$)** | Wiring $v \xrightarrow{2\lambda - d_v} t$ without pedestal $+U$ produces negative capacities when $2\lambda < d_v$, corrupting Dinic. | Shift every vertex by $+U$ ($U = \max_v d_v$ or $M$): $s \xrightarrow{U} v$ and $v \xrightarrow{U + 2\lambda - d_v} t$, or use dynamic sign-splitting. |
+| **`FM-14c`** | **Coarse Binary Search Tolerance ($\varepsilon = 10^{-3}$)** | Stopping binary search at $\varepsilon = 10^{-3}$ when $N = 100$ fails to separate $\frac{98}{99}$ from $\frac{99}{100}$ ($\Delta = \frac{1}{9900} \approx 1.01 \times 10^{-4}$). | Stop binary search only when $R - L < \frac{1}{2 G_{\max}(G_{\max}-1)}$ (or use Dinkelbach's exact integer scaling $Q_k F(x) - P_k G(x)$). |
+| **`FM-14d`** | **Single-Epsilon Floating-Point Dinic Loop** | Using `cap > 0` in Dinic BFS/DFS loops infinitely on $10^{-16}$ residuals; using `cap > 1e-5` misses valid augmenting paths near $\lambda^*$. | Enforce the **Two-Scale Epsilon Hierarchy**: `EPS_FLOW = 1e-11` inside Dinic $\ll$ `EPS_CUT = 1e-8` in outer sign test $\ll \Delta_{\min}$. |
+| **`FM-14e`** | **Clamping Negative Edges to $0$ in Ratio Cuts** | Replacing $w_e(\lambda) = a_e - \lambda b_e < 0$ with $\max(0, w_e(\lambda))$ in `网络严密性` (`#107`) ignores edges that reduce the ratio cut. | Sever all edges with $w_e(\lambda) \le 0$ upfront and add their weights to `neg_sum` before running Dinic on $E^+(\lambda)$. |
+
+---
+
+## 8. Chapter Summary & Bridge to Chapter 15
+
+1. **Dinkelbach's Linearization**: Any ratio maximization $\max_{x \in \mathcal{F}} \frac{F(x)}{G(x)}$ ($G(x) > 0$) reduces to finding the unique root $\lambda^*$ of the convex, continuous, strictly decreasing merit function $h(\lambda) = \max_{x \in \mathcal{F}} (F(x) - \lambda G(x))$.
+2. **The Submodularity Sign Law**: Evaluating $h(\lambda)$ compiles to a polynomial-time minimum $s$-$t$ cut whenever $\lambda G(x) - F(x)$ is submodular ($\Delta_{u,v} F \ge 0$ and $\Delta_{u,v} G \le 0$).
+3. **Goldberg's $|V|$-Only Degree-Sum Identity**: By substituting $2|E(S)| = \sum_{v \in S} d_v - |\delta(S, \bar{S})|$ and shifting by $+U$, Maximum Density Subgraph (`最大密度子图`) eliminates all $|E|$ edge-closure nodes, compiling into a $|V| + 2$-vertex network (`POJ 3155`, `BZOJ 2039`).
+4. **Structural Dualities & Parametric Envelopes**: The dual of Maximum Density Subgraph governs **Hakimi's Orientation Theorem** (`CF 847J`) and **Nash-Williams Arboricity** (`#110`), while the **Parametric Cut Nesting Theorem** ($S_{\min}(\lambda_1) \supseteq S_{\min}(\lambda_2)$ for $\lambda_1 < \lambda_2$) enables finding all $\le |V|$ breakpoints of $h(\lambda)$ via Divide-and-Conquer Vertex Contraction (`#111`).
+5. **Bridge to Chapter 15 (Planar & Grid Network Duality)**: What happens when the graph $G = (V, E)$ has $|V|, |E| \approx 10^6$ vertices and edges—so large that even a **single** Dinic call on $|V| + 2$ vertices TLEs—yet $G$ is embedded in the **plane** (`[BJWC2006] 狼抓兔子`, `[NOI2010] 海拔`, `[CSP-S 2021] 交通规划`)? In **Chapter 15**, we cross from Direction A (building flow networks) to **Direction B (eliminating flow engines via Planar Cycle–Cut Duality)**, turning minimum cuts on $10^6$-vertex planar grids into $O(|V| \log |V|)$ **Dual Dijkstra shortest paths**!
+
+---
+
+## Multilingual Bibliography & Seminal References
+
+1. **`[EN]` Dinkelbach (1967)**: Werner Dinkelbach, *"On Nonlinear Fractional Programming"*, Management Science 13(7), 492–498, 1967. (Establishes the parametric merit function $h(\lambda) = \max(F(x) - \lambda G(x))$ and Newton-secant convergence.)
+2. **`[EN]` Goldberg (1984)**: Andrew V. Goldberg, *"Finding a Maximum Density Subgraph"*, Technical Report UCB/CSD-84-171, University of California, Berkeley, 1984. (Introduces the $|V|$-only degree-sum min-cut reduction for $\max \frac{|E(S)|}{|S|}$ and proves the $\frac{1}{N(N-1)}$ rational gap.)
+3. **`[ZH]` Amber / 胡伯涛 (2007)**: 胡伯涛 (Hu Botao), *《最小割模型在信息学竞赛中的应用》 (Applications of Minimum Cut Models in Olympiad in Informatics)*, 2007 Chinese National Training Team Paper (`国家集训队 2007 论文集`). (The definitive competitive programming treatise on Maximum Density Subgraphs, vertex/edge-weighted generalizations, `POJ 3155 Hard Life`, and `网络严密性` minimum ratio cuts.)
+4. **`[EN]` Gallo, Grigoriadis & Tarjan (1989)**: Giorgio Gallo, Michael D. Grigoriadis, and Robert E. Tarjan, *"A Fast Parametric Maximum Flow Algorithm and Applications"*, SIAM Journal on Computing 18(1), 30–55, 1989. (Proves the Parametric Cut Nesting Theorem $S_{\min}(\lambda_1) \supseteq S_{\min}(\lambda_2)$ and achieves $O(|V|^3)$ all-breakpoint parametric preflow.)
+5. **`[EN]` Hakimi (1965) & Nash-Williams (1964)**: S. L. Hakimi, *"On the Degrees of the Vertices of a Directed Graph"*, J. Franklin Institute 279(4), 290–308, 1965; C. St. J. A. Nash-Williams, *"Decomposition of Finite Graphs into Forests"*, J. London Math. Soc. 39(1), 12, 1964.
+6. **`[EN]` Charikar (2000)**: Moses Charikar, *"Greedy Approximation Algorithms for Finding Dense Components in a Graph"*, APPROX 2000, LNCS 1913, 84–95, 2000. (LP duality formulation of Maximum Density Subgraph and the 2-approximation guarantee of minimum-degree peeling.)
+7. **`[JA]` noshi91 & maspypy (`燃やす埋める` & Parametric Cuts)**: Japanese competitive programming treatises on Project Selection closures, parametric submodular cut nesting (Monge / Principal Partition), and degree-halving transformations (`2 x_i x_j = x_i + x_j - |x_i - x_j|`).

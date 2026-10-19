@@ -1,0 +1,1803 @@
+---
+title: "Chapter 16 — Solving Max-Flow via Min-Cut DP, Global Min-Cut & Gomory–Hu Cut Trees"
+---
+
+## Prerequisites & Learning Objectives
+
+### Prerequisites
+
+Before studying this chapter, you should be comfortable with:
+
+- **Max-Flow Min-Cut Duality & Residual Reachability ([Chapter 1](ch01-conservation-residual-maxflow-mincut.qmd))**: The identity $\operatorname{MaxFlow}(S, T) = \min_{(V_S, V_T)} \operatorname{cap}(V_S, V_T)$ and the extraction of the canonical source-side cut $V_S$ from the residual network $G_f$.
+- **Submodular Cut Polymatroids & Pseudo-Boolean Cut Polynomials ([Chapter 10](ch10-pseudo-boolean-cuts-submodularity-burn-bury.qmd))**: Expressing an $S$-$T$ cut as a binary indicator assignment $\mathbf{x} \in \{0, 1\}^N$ minimizing $E(\mathbf{x}) = \sum_i p_i x_i + \sum_i s_i (1 - x_i) + \sum_{(i, j) \in E} c_{i,j} (1 - x_i) x_j$.
+- **Residual Strongly Connected Components & Picard–Queyranne DAGs ([Chapter 2](ch02-residual-anatomy-cut-edges-rollback.qmd))**: Identifying vital edges that belong to *every* minimum $S$-$T$ cut via strongly connected components of $G_f$.
+- **Topological Cut Elimination on Planar Graphs ([Chapter 15](ch15-planar-cycle-cut-duality-shortest-paths.qmd))**: The paradigm of bypassing augmenting-path solvers when graph geometry compresses the cut space.
+
+### Learning Objectives
+
+By the end of this chapter, you will be able to:
+
+1. **Execute Direction B Flow Elimination (`最大流转最小割 DP`)**: When a maximum-flow problem has $N \ge 10^4$–$5 \cdot 10^5$ vertices or online dynamic updates, invert the standard paradigm by writing the algebraic $s$-$t$ cut cost $C(S)$ and optimizing it directly via dynamic programming, convex slope-difference greedy (`CF 724E`), $(\min, +)$ tropical matrix multiplication on a Segment Tree (`CF 1919F2`), or prefix-suffix sweep-line Segment Trees (`CF 903G`).
+2. **Prove & Implement Stoer–Wagner Global Minimum Cut**: Derive why the last two vertices $(s, t)$ visited by **Maximum Adjacency Search (`MAS`)** satisfy $\lambda_{G}(s, t) = w(A \setminus \{t\}, t)$, and compute the global undirected minimum cut in $O(VE + V^2 \log V)$ or $O(V^3)$ time without constructing a flow network.
+3. **Prove Submodular Cut Uncrossing & Build Gomory–Hu Cut Trees (`最小割树`)**: Prove the **Submodular Cut Uncrossing Lemma** and the **Ultrametric Triangle Inequality** $\lambda(u, w) \ge \min(\lambda(u, v), \lambda(v, w))$, and construct both a Flow-Equivalent Tree and a full Cut-Equivalent Gomory–Hu Tree in $N - 1$ max-flow calls on the original uncontracted graph $G$ via **Gusfield's (1990) Star-Splitting Algorithm**.
+4. **Exploit Structural Extremal Properties of $T_{\text{GH}}$**: Use the Gomory–Hu tree to count distinct pairwise min-cuts (`Luogu P4123`), answer threshold cut queries (`Luogu P3329`), and construct Hamiltonian permutations maximizing adjacent min-cut sums (`CF 343E`).
+5. **Guard Against Cut-Compression Failure Modes (`FM-16a` & `FM-16`)**: Prevent bidirectional overcounting on directed prefix DAGs (`FM-16a`), supernode-contraction corruption in Gusfield's algorithm (`FM-16`), and the invalid application of Gomory–Hu trees to directed graphs.
+
+---
+
+## 1. Unifying Spine: Compressing an Exponential Cut Space ($2^N \to \text{DP States or } N-1 \text{ Tree Edges}$)
+
+Across Chapters 9 through 14, we used the Max-Flow Min-Cut Theorem in **Direction A ($\text{Combinatorial Optimization} \to \text{Flow Solver}$)**: we began with a non-flow optimization problem over $2^N$ binary configurations, compiled its objective into the capacity of an $s$-$t$ cut, and handed the resulting graph to Dinic's algorithm.
+
+In this chapter, we confront the two fundamental scaling walls where **Direction A breaks down**:
+
+1. **The Single-Pair Scale Wall ($N \ge 10^4 \text{ to } 5 \cdot 10^5$, or $Q \ge 10^5$ Dynamic Updates)**:
+   Suppose a problem explicitly asks for the maximum flow from $s$ to $t$, or compiles into an $s$-$t$ cut network, on $N = 10^4$ vertices with $\binom{N}{2} \approx 5 \cdot 10^7$ complete DAG edges (`CF 724E`), or on a pipeline of $N = 5 \cdot 10^5$ vertices with $Q = 5 \cdot 10^5$ online capacity updates (`CF 1919F2`), or on a bipartite chain with $M, Q = 2 \cdot 10^5$ cross-edges and updates (`CF 903G`). No augmenting-path solver can touch these constraints.
+2. **The All-Pairs Scale Wall ($\binom{N}{2}$ Pairwise Minimum Cuts on $N \le 850$ Vertices)**:
+   Suppose we are given an undirected capacitated graph $G = (V, E, w)$ with $N = 850, M = 8500$ and must evaluate a function of the minimum cut $\lambda_G(u, v) = \operatorname{MinCut}_G(u, v)$ across **all $\binom{N}{2} \approx 3.6 \cdot 10^5$ unordered pairs $\{u, v\}$** (`Luogu P4123`, `Luogu P3329`, `CF 343E`), or find the global minimum cut over all $2^{N-1} - 1$ non-trivial vertex partitions (`POJ 2914`). Running Dinic $\binom{N}{2}$ times exceeds the time limit by three orders of magnitude.
+
+What unifies the resolution of both walls is **Cut-Space Compression**—exploiting algebraic symmetry, bounded cut-interface width, or submodular uncrossing to collapse an exponential family of cuts into a compact polynomial representation:
+
+$$
+\text{Exponential Cut Space } \mathcal{C}(G) \quad \xrightarrow{\text{Symmetry / Treewidth / Submodular Uncrossing}} \quad \begin{cases} \text{Module 16A: Low-Width DP / Matrix / Sweep States} & (\text{Single } s\text{-}t \text{ Pair, } N \le 5 \cdot 10^5), \\[4pt] \text{Module 16B: } N - 1 \text{ Laminar Tree Edges in } T_{\text{GH}} & (\text{All } \binom{N}{2} \text{ Pairs, } N \le 850). \end{cases}
+$$
+
+| Compression Axis | Underlying Mathematical Mechanism | Exponential Space Compressed | Compressed Representation | Canonical Complexity |
+| :--- | :--- | :--- | :--- | :--- |
+| **Direction B: Uniform DAG Cut DP / Greedy** (`§2.2`) | Cardinality decoupling $\sum_{i \in S, j \notin S, i<j} c = \sum_{i \in S}(N-i)c - \binom{|S|}{2}c$ | $2^N$ vertex partitions $(S, V \setminus S)$ | $N+1$ cardinality states $k = |S|$ (or sorted slope differences) | $O(N^2)$ DP or $O(N \log N)$ Greedy |
+| **Direction B: Dynamic Chain Matrix DP** (`§2.3`) | Associativity of $2 \times 2$ $(\min, +)$ tropical matrices | $2^N$ cut sequences $(x_1, \dots, x_N) \in \{S, T\}^N$ under $Q$ updates | Segment Tree of $2 \times 2$ boundary-state matrices $M_{[L, R]}$ | $O((N + Q) \log N)$ |
+| **Direction B: Prefix-Suffix Chain Sweep** (`§2.4`) | Monotone cut thresholds on forward-directed chains | $2^{2N}$ cuts on coupled chains $A_1 \to \dots \to A_N, B_1 \to \dots \to B_N$ | $N \times N$ prefix pairs $(i, j)$ maintained by Lazy Segment Tree | $O((N + M + Q) \log N)$ |
+| **Global Undirected Min-Cut (Stoer–Wagner)** (`§3`) | Submodular uncrossing along Maximum Adjacency Search (`MAS`) | $2^{N-1} - 1$ non-empty proper cuts $(S, V \setminus S)$ | $N - 1$ last-pair $(s, t)$ phase cuts + vertex contractions | $O(VE + V^2 \log V)$ or $O(V^3)$ |
+| **All-Pairs Gomory–Hu Cut Tree (`最小割树`)** (`§4`) | Symmetric submodularity & Cut Uncrossing Lemma | $\binom{N}{2}$ pairwise minimum cuts $\{\lambda_G(u, v)\}$ | A single weighted tree $T_{\text{GH}}$ on $V$ ($N - 1$ edges) | $(N - 1) \cdot T_{\text{MaxFlow}}(N, M)$ |
+
+---
+
+## 2. Direction B Flow Elimination: Solving Max-Flow by Optimizing the Dual $s$-$t$ Cut Directly (`最大流转最小割 DP`)
+
+### 2.1 The Exact Algebraic $s$-$t$ Cut Functional
+
+Consider a directed flow network on vertex set $\{s, t\} \cup \{1, 2, \dots, N\}$ with three families of non-negative capacities:
+
+- **Source supply arcs**: $s \to i$ with capacity $p_i \ge 0$ for each $i \in \{1, \dots, N\}$.
+- **Sink demand arcs**: $i \to t$ with capacity $s_i \ge 0$ for each $i \in \{1, \dots, N\}$.
+- **Internal transit arcs**: $i \to j$ with capacity $c_{i,j} \ge 0$ for ordered pairs $(i, j)$.
+
+By the Max-Flow Min-Cut Theorem, the maximum flow from $s$ to $t$ equals the minimum capacity of an $s$-$t$ cut. Any $s$-$t$ cut is uniquely determined by the subset of internal vertices $S \subseteq \{1, 2, \dots, N\}$ placed on the **source side** (with $s \in S_{\text{full}} = \{s\} \cup S$), while the remaining vertices $\bar{S} = \{1, \dots, N\} \setminus S$ are placed on the **sink side** (with $t \in T_{\text{full}} = \{t\} \cup \bar{S}$).
+
+Let us count the exact capacity $C(S)$ of the directed arcs severed by the partition $(S, \bar{S})$:
+
+1. **Severed source arcs ($s \to i$)**: Since $s$ is on the source side, arc $s \to i$ crosses from source side to sink side if and only if $i \notin S$ ($i \in \bar{S}$), contributing $\sum_{i \notin S} p_i$.
+2. **Severed sink arcs ($i \to t$)**: Since $t$ is on the sink side, arc $i \to t$ crosses from source side to sink side if and only if $i \in S$, contributing $\sum_{i \in S} s_i$.
+3. **Severed internal transit arcs ($i \to j$)**: A directed arc $i \to j$ crosses from source side to sink side if and only if its tail lies in $S$ ($i \in S$) and its head lies in $\bar{S}$ ($j \notin S$), contributing $\sum_{i \in S, j \notin S} c_{i,j}$.
+
+Summing these three disjoint edge sets yields the **Master Direction B Cut Equation**:
+
+$$
+\operatorname{MaxFlow}(s, t) = \min_{S \subseteq \{1, \dots, N\}} C(S), \qquad C(S) = \sum_{i \notin S} p_i + \sum_{i \in S} s_i + \sum_{i \in S,\; j \notin S} c_{i,j}.
+$$
+
+When the internal transit arcs form a **directed acyclic graph (DAG)** respecting the natural vertex order $1 < 2 < \dots < N$ (so $c_{i,j} > 0$ only when $i < j$), the cross-term restricts to ordered pairs $i < j$:
+
+$$
+C(S) = \sum_{i \notin S} p_i + \sum_{i \in S} s_i + \sum_{\substack{i \in S,\; j \notin S \\ 1 \le i < j \le N}} c_{i,j}.
+$$
+
+Equivalently, introducing binary state variables $x_i \in \{0, 1\}$ where $x_i = 1 \iff i \in S$ (source side) and $x_i = 0 \iff i \notin S$ (sink side), we seek to minimize the pseudo-Boolean polynomial:
+
+$$
+C(\mathbf{x}) = \sum_{i=1}^N p_i (1 - x_i) + \sum_{i=1}^N s_i x_i + \sum_{1 \le i < j \le N} c_{i,j}\, x_i (1 - x_j).
+$$
+
+Whenever the interaction matrix $(c_{i,j})$ has **low rank**, **uniform structure**, **bounded bandwidth (path/tree)**, or **monotone prefix thresholds**, we can minimize $C(\mathbf{x})$ over $\{0, 1\}^N$ combinatorially—eliminating the flow solver entirely.
+
+---
+
+### 2.2 Uniform Prefix DAGs: From $O(N^2)$ Cardinality DP to $O(N \log N)$ Slope-Difference Greedy (`CF 724E — Goods Transportation`)
+
+Suppose every earlier vertex $i$ can ship goods to every later vertex $j > i$ with the **same uniform arc capacity** $c_{i,j} = c > 0$ for all $1 \le i < j \le N$ (`Codeforces 724E — Goods Transportation`, where $N \le 10^4$).
+
+Substituting $c_{i,j} = c$ into the Master Direction B Cut Equation collapses the quadratic cross-term into a pure inversion-like pair count:
+
+$$
+C(S) = \sum_{i \notin S} p_i + \sum_{i \in S} s_i + c \cdot \big|\{(i, j) : 1 \le i < j \le N,\; i \in S,\; j \notin S\}\big|.
+$$
+
+#### Level 1 Compilation: $O(N^2)$ Cardinality-Interface Dynamic Programming
+
+Scan the vertices sequentially from $i = 1$ to $N$. When we decide whether to place vertex $i$ into $S$ ($x_i = 1$) or $\bar{S}$ ($x_i = 0$), how much information about the prefix choices $(x_1, \dots, x_{i-1})$ do we need to charge all newly severed edges incident to $i$?
+
+- If we place $i \in S$ ($x_i = 1$): we sever the sink arc $i \to t$ of capacity $s_i$. Do any arcs $j \to i$ from earlier vertices $j < i$ cross the cut? No: if $j \in S$, both endpoints are in $S$; if $j \notin S$, the arc $j \to i$ points from $\bar{S}$ to $S$ (backward across the cut!), which costs **zero** in a directed $s$-$t$ cut.
+- If we place $i \notin S$ ($x_i = 0$): we sever the source arc $s \to i$ of capacity $p_i$, **and** for every earlier vertex $j < i$ that was placed in $S$, the forward arc $j \to i$ crosses from $S$ to $\bar{S}$ and is severed at cost $c$!
+
+Notice the crucial structural invariant: the cost of placing $i \notin S$ does **not** depend on *which* prefix vertices are in $S$, but **only on their cardinality** $k = \big|S \cap \{1, \dots, i-1\}\big|$!
+
+Define $dp[i][k]$ as the minimum cut cost contributed by the prefix $\{1, \dots, i\}$ (counting all source/sink arcs in $\{1, \dots, i\}$ and all transit arcs $u \to v$ with $1 \le u < v \le i$) given that $\big|S \cap \{1, \dots, i\}\big| = k$. For each $i = 1, \dots, N$ and $0 \le k \le i$:
+
+$$
+dp[i][k] = \min\Big(\underbrace{dp[i-1][k] + p_i + k \cdot c}_{\text{place } i \notin S \text{ (sink side)}},\;\; \underbrace{dp[i-1][k-1] + s_i}_{\text{place } i \in S \text{ (source side)}}\Big),
+$$
+
+with base case $dp[0][0] = 0$ and invalid states set to $+\infty$. After $N$ steps, $\operatorname{MaxFlow}(s, t) = \min_{0 \le k \le N} dp[N][k]$ in $O(N^2)$ time and $O(N)$ rolling-array space.
+
+#### Level 2 Compilation: Exact Algebraic Decoupling & $O(N \log N)$ Slope-Difference Greedy
+
+Can we compress the $O(N^2)$ DP all the way to $O(N \log N)$? Yes—by counting the cross-pairs $\{(i, j) : i < j, i \in S, j \notin S\}$ **globally**!
+
+Fix the total cardinality $k = |S|$. Every vertex $i \in S$ has exactly $N - i$ vertices $j > i$ after it in total. Every such $j > i$ lies either in $\bar{S}$ (a cross-pair $i \in S, j \notin S$) or in $S$ (an internal pair $i \in S, j \in S$ with $i < j$). Summing over all $i \in S$:
+
+$$
+\sum_{i \in S} (N - i) = \big|\{(i, j) : i < j,\; i \in S,\; j \notin S\}\big| + \big|\{(i, j) : i < j,\; i \in S,\; j \in S\}\big|.
+$$
+
+Look at the second term on the right-hand side: how many ordered pairs $(i, j)$ with $i < j$ have **both** endpoints in $S$? Since $|S| = k$, any two distinct elements of $S$ form exactly one pair with $i < j$, so that count is **always $\binom{k}{2} = \frac{k(k-1)}{2}$**, completely independent of which $k$ indices form $S$!
+
+Rearranging gives the exact **Prefix-DAG Cross-Cut Identity**:
+
+$$
+\big|\{(i, j) : 1 \le i < j \le N,\; i \in S,\; j \notin S\}\big| = \sum_{i \in S} (N - i) - \binom{|S|}{2}.
+$$
+
+Substitute this identity into $C(S)$ and rewrite $\sum_{i \notin S} p_i = \sum_{i=1}^N p_i - \sum_{i \in S} p_i$:
+
+$$
+\begin{aligned}
+C(S) &= \sum_{i=1}^N p_i + \sum_{i \in S} (s_i - p_i) + c \left(\sum_{i \in S} (N - i) - \binom{|S|}{2}\right) \\
+&= \sum_{i=1}^N p_i - \binom{|S|}{2} c + \sum_{i \in S} \underbrace{\big(s_i - p_i + (N - i)c\big)}_{w_i}.
+\end{aligned}
+$$
+
+This equation is a minor miracle: once the cardinality $k = |S|$ is fixed, the interactions between vertices in $S$ vanish into the constant $-\binom{k}{2}c$, and each vertex $i \in S$ contributes an **independent scalar weight** $w_i = s_i - p_i + (N - i)c$! Therefore, for any fixed $k \in \{0, 1, \dots, N\}$, the optimal subset $S$ of size $k$ simply selects the $k$ vertices with the **smallest values of $w_i$**. Sorting $w_{(1)} \le w_{(2)} \le \dots \le w_{(N)}$ reduces the $5 \cdot 10^7$-edge max-flow problem to a single prefix-sum sweep in $O(N \log N)$ time:
+
+$$
+\operatorname{MaxFlow}(s, t) = \min_{0 \le k \le N} \left[ \sum_{i=1}^N p_i - \frac{k(k-1)}{2}c + \sum_{r=1}^k w_{(r)} \right].
+$$
+
+:::: {.callout-warning title="Broken-Gadget Counterexample FM-16a: Undirected / Bidirectional Overcounting on a Directed Prefix DAG"}
+A classic implementation bug when writing `dp[i][k]` or the algebraic sum for `CF 724E` is treating the transit arcs as undirected or charging $c$ whenever $i \in S$ and $j \notin S$ for **both** $i < j$ and $i > j$:
+
+- **The Buggy Recurrence**: When placing $i \in S$ ($x_i = 1$), a solver notices that $i - 1 - (k - 1) = i - k$ earlier vertices in $\{1, \dots, i-1\}$ were placed on the sink side $\bar{S}$, and writes:
+  $$dp_{\text{bug}}[i][k] = \min\big(dp_{\text{bug}}[i-1][k] + p_i + k \cdot c,\;\; dp_{\text{bug}}[i-1][k-1] + s_i + (i - 1 - (k - 1)) \cdot c\big).$$
+- **Concrete Counterexample ($N = 2, c = 10$)**: Let $p = [0, 100]$, $s = [100, 0]$.
+  - In the true directed graph, the only internal arc is $1 \xrightarrow{10} 2$. If we set $1 \notin S$ ($1 \in \bar{S}$) and $2 \in S$, the severed arcs are $s \to 1$ ($p_1 = 0$) and $2 \to t$ ($s_2 = 0$), while the arc $1 \to 2$ goes from $\bar{S}$ to $S$ (backward across the cut, paying **$0$**!). Thus the true minimum cut (and max-flow) is **$0$** (indeed, $s \to 1$ has capacity $0$ and $2 \to t$ has capacity $0$, so no positive flow can ever leave $s$ or enter $t$!).
+  - Under the buggy recurrence that charges $(i - k)c$ when $2 \in S$ and $1 \notin S$, the state $S = \{2\}$ falsely pays $c = 10$ for the non-existent reverse arc $2 \to 1$, reporting a phantom flow of $10$ on a network with zero capacity out of $s$!
+- **Invariant to Enforce**: In any directed $s$-$t$ cut, an arc $u \to v$ is severed **if and only if $u \in S$ and $v \notin S$**. Never charge arcs pointing from $\bar{S}$ to $S$.
+::::
+
+---
+
+### 2.3 Dynamic Pipeline Networks & $2 \times 2$ $(\min, +)$ Tropical Matrix Segment Trees (`CF 1919F1/F2 — Wine Factory`)
+
+Now suppose the internal transit network is a **directed linear pipeline** $1 \xrightarrow{c_1} 2 \xrightarrow{c_2} \dots \xrightarrow{c_{N-1}} N$, where each node $i$ has source supply $s \xrightarrow{a_i} i$ and sink demand $i \xrightarrow{b_i} t$, and we must process $Q \le 5 \cdot 10^5$ online point updates to $(a_i, b_i, c_i)$ (`Codeforces 1919F2 — Wine Factory (Hard Version)`).
+
+Let us apply the Master Direction B Cut Equation to this 1D chain. Assign each vertex $i \in \{1, \dots, N\}$ a binary cut label $x_i \in \{0, 1\}$, where we adopt the state convention:
+
+- **State $0$ ($i \in \bar{S}$, sink side)**: Severs source arc $s \to i$, paying $a_i$.
+- **State $1$ ($i \in S$, source side)**: Severs sink arc $i \to t$, paying $b_i$.
+- **Pipe Transition ($i \to i+1$ of capacity $c_i$)**: Because the pipe is directed from $i$ to $i+1$, it is severed **if and only if $x_i = 1$ ($i \in S$) and $x_{i+1} = 0$ ($i+1 \in \bar{S}$)**, paying $c_i$. All three other state transitions $(0 \to 0)$, $(0 \to 1)$, and $(1 \to 1)$ pay **$0$**!
+
+Thus, the exact minimum cut of the pipeline is the minimum-cost path through a 2-state Markov chain of length $N$:
+
+$$
+\operatorname{MaxFlow}(s, t) = \min_{\mathbf{x} \in \{0, 1\}^N} \left[ \sum_{i=1}^N \big(a_i [x_i = 0] + b_i [x_i = 1]\big) + \sum_{i=1}^{N-1} c_i [x_i = 1 \land x_{i+1} = 0] \right].
+$$
+
+#### Special Case (`CF 1919F1`): Infinite Pipe Capacities ($c_i = \infty$)
+
+When $c_i = \infty$ for all $1 \le i < N$, the transition $(x_i = 1 \to x_{i+1} = 0)$ is forbidden. Consequently, once the sequence $\mathbf{x}$ enters state $1$ ($S$), it can never return to state $0$ ($\bar{S}$). Every finite-cost cut must consist of a prefix $1 \dots k$ in state $0$ ($\bar{S}$) followed by a suffix $k+1 \dots N$ in state $1$ ($S$) for some split index $k \in \{0, 1, \dots, N\}$:
+
+$$
+\operatorname{MaxFlow}_{c=\infty}(s, t) = \min_{0 \le k \le N} \left( \sum_{i=1}^k a_i + \sum_{i=k+1}^N b_i \right) = \sum_{i=1}^N b_i + \min_{0 \le k \le N} \sum_{i=1}^k (a_i - b_i).
+$$
+
+Maintaining prefix sums of $(a_i - b_i)$ in a Segment Tree resolves `CF 1919F1` in $O((N + Q) \log N)$ time.
+
+#### General Case (`CF 1919F2`): Finite Pipe Capacities ($c_i < \infty$) via $(\min, +)$ Matrices
+
+When $c_i$ is finite, the optimal cut can alternate between $0$ ($\bar{S}$) and $1$ ($S$) arbitrarily many times. Define the **tropical $(\min, +)$ matrix product** $A \otimes B$ of two $2 \times 2$ matrices by:
+
+$$
+(A \otimes B)_{u, v} = \min_{w \in \{0, 1\}} \big(A_{u, w} + B_{w, v}\big), \qquad u, v \in \{0, 1\}.
+$$
+
+There are two equally clean ways to represent intervals in a Segment Tree:
+
+1. **Interval Endpoint-State Matrix $D_{[L, R]}$ (Recommended for Implementation)**:
+   For any contiguous subsegment $[L, R]$, let $D_{[L, R]}(u, v)$ ($u, v \in \{0, 1\}$) be the minimum cut cost of all vertices and internal pipes strictly inside $[L, R]$ given that the left boundary vertex has state $x_L = u$ and the right boundary vertex has state $x_R = v$.
+   - **Single-vertex leaf $[i, i]$**: Since $x_i$ cannot simultaneously be $0$ and $1$, the off-diagonal entries are $+\infty$:
+     $$D_{[i, i]} = \begin{pmatrix} a_i & +\infty \\ +\infty & b_i \end{pmatrix}.$$
+   - **Merging $[L, M]$ and $[M+1, R]$ across pipe $M \xrightarrow{c_M} M+1$**: When $x_M = x \in \{0, 1\}$ and $x_{M+1} = y \in \{0, 1\}$, the connecting pipe $M \to M+1$ adds $c_M$ if and only if $(x, y) = (1, 0)$:
+     $$D_{[L, R]}(u, v) = \min_{x \in \{0, 1\}} \min_{y \in \{0, 1\}} \Big( D_{[L, M]}(u, x) + D_{[M+1, R]}(y, v) + c_M \cdot [x = 1 \land y = 0] \Big).$$
+2. **Vertex-Plus-Outgoing-Pipe Transfer Matrix $M_i$**:
+   Alternatively, absorb the outgoing pipe $c_i$ (with $c_N = 0$) directly into vertex $i$'s transition matrix $M_i(x_i, x_{i+1})$:
+   $$M_i = \begin{pmatrix} a_i & a_i \\ b_i + c_i & b_i \end{pmatrix}, \qquad \operatorname{MaxFlow}(s, t) = \min_{u, v \in \{0, 1\}} \big(M_1 \otimes M_2 \otimes \dots \otimes M_N\big)_{u, v}.$$
+
+Both formulations perform at most $8$ to $16$ additions and comparisons per Segment Tree node, solving dynamic max-flow on $5 \cdot 10^5$ vertices in $O((N + Q) \log N)$ time!
+
+---
+
+### 2.4 Coupled Forward Chains & Complete Bipartite Thresholds (`CF 903G`, `ARC 125E`, & Tree HLD-DDP)
+
+The Direction B philosophy extends immediately to three further structural topologies that appear regularly in ICPC and OI competition:
+
+1. **Coupled Forward Chains (`CF 903G — Yet Another MaxFlow Problem`, `#128`)**:
+   Suppose $s = A_1 \xrightarrow{x_1} A_2 \xrightarrow{x_2} \dots \xrightarrow{x_{N-1}} A_N$ is a source chain, $B_1 \xrightarrow{y_1} B_2 \xrightarrow{y_2} \dots \xrightarrow{y_{N-1}} B_N = t$ is a sink chain, and $M \le 2 \cdot 10^5$ directed cross-edges $A_u \xrightarrow{z_{uv}} B_v$ connect the two chains.
+   - *Why the Cut Space Collapses from $2^{2N}$ to $N^2$*: Suppose a cut severs $A_i \to A_{i+1}$ (so $A_i \in S, A_{i+1} \in \bar{S}$). If any later vertex $A_k$ ($k > i$) were placed back in $S$, it would only *increase* the number of severed cross-edges $A_k \to B_v$ and chain edges without helping $s = A_1$! Formally, because all edges on $A$ point forward from $s = A_1$, replacing $S_A$ by the contiguous prefix $\{A_1, \dots, A_i\}$ (where $i$ is the first index with $A_{i+1} \notin S_A$) never increases the cut capacity. By symmetry, $T_B$ can always be chosen as a contiguous suffix $\{B_{j+1}, \dots, B_N\}$.
+   - Thus every minimal cut is indexed by a pair $(i, j) \in \{1, \dots, N\} \times \{0, \dots, N-1\}$ with cost:
+     $$\operatorname{Cut}(i, j) = x_i + y_j + \sum_{u \le i,\; v > j} z_{uv} \qquad (x_N = y_0 = 0),$$
+     which is precomputed for all $i$ in $O((N + M) \log N)$ via a sweep-line over $i$ and a Lazy Range-Add Range-Min Segment Tree over $j$!
+2. **Complete Bipartite Degree-Sorted Cuts (`AtCoder ARC 125E — Snack`)**:
+   Suppose $s \to i$ has capacity $A_i$ ($1 \le i \le N$), $j \to t$ has capacity $C_j$ ($1 \le j \le M$), and every pair $(i, j) \in \{1, \dots, N\} \times \{1, \dots, M\}$ has directed arc $i \to j$ of capacity $B_j$ ($N, M \le 2 \cdot 10^5$).
+   - If we fix the cardinality $k = |S_{\text{left}}| \in \{0, \dots, N\}$, each right vertex $j$ either joins $S$ (paying $C_j$ on $j \to t$) or joins $\bar{S}$ (paying $k \cdot B_j$ on the $k$ arcs from $S_{\text{left}}$ to $j$), so right vertex $j$ independently pays $\min(C_j, k B_j)$! Meanwhile, to minimize $\sum_{i \notin S_{\text{left}}} A_i$, $S_{\text{left}}$ must consist of the $k$ left vertices with the largest $A_i$:
+     $$\operatorname{MaxFlow}(s, t) = \min_{0 \le k \le N} \left[ \sum_{r=k+1}^N A_{(r)} + \sum_{j=1}^M \min\big(C_j,\; k \cdot B_j\big) \right] \qquad (A_{(1)} \ge \dots \ge A_{(N)}).$$
+3. **Tree Networks via Dynamic DP (`Tree Max-Flow`, Checkpoint `CP-IV #217`)**:
+   On an arbitrary tree $T = (V, E)$ with source capacities $a_u$, sink capacities $b_u$, and undirected tree edge capacities $c_{uv}$, the minimum cut is solved in **$O(N)$ time** by a 2-state bottom-up Tree DP (`dp[u][0]` for $u \in \bar{S}$, `dp[u][1]` for $u \in S$):
+   $$dp[u][0] = a_u + \sum_{v \in \text{ch}(u)} \min\big(dp[v][0],\; dp[v][1] + c_{uv}\big), \qquad dp[u][1] = b_u + \sum_{v \in \text{ch}(u)} \min\big(dp[v][1],\; dp[v][0] + c_{uv}\big).$$
+   Under online updates to $(a_u, b_u)$, Heavy-Light Decomposition (HLD) compiles each heavy chain into the exact same $2 \times 2$ $(\min, +)$ matrix Segment Tree as `CF 1919F2`, answering dynamic tree max-flow queries in $O(Q \log^2 N)$ time!
+
+
+---
+
+## 3. Global Undirected Minimum Cut: Stoer–Wagner & Maximum Adjacency Search (`MAS`)
+
+### 3.1 The Global Minimum Cut Problem & The Dichotomy of a Vertex Pair
+
+Let $G = (V, E, w)$ be an undirected graph with $N = |V|$ vertices, $M = |E|$ edges, and non-negative edge weights $w_{uv} = w_{vu} \ge 0$. For any subset $S \subseteq V$, write $\delta(S) = \{\{u, v\} \in E : u \in S, v \notin S\}$ for the boundary cut edges and $c(\delta(S)) = \sum_{u \in S, v \notin S} w_{uv}$ for the cut capacity. For any two disjoint subsets $X, Y \subseteq V$, write $w(X, Y) = \sum_{x \in X, y \in Y} w_{xy}$.
+
+The **Global Minimum Cut Problem** asks for a non-empty proper subset $\emptyset \subsetneq S \subsetneq V$ minimizing $c(\delta(S))$:
+
+$$
+\lambda(G) = \min_{\emptyset \subsetneq S \subsetneq V} c(\delta(S)) = \min_{\{u, v\} \subset V} \lambda_G(u, v),
+$$
+
+where $\lambda_G(u, v) = \min_{S \subseteq V : u \in S, v \notin S} c(\delta(S))$ denotes the pairwise minimum $u$-$v$ cut.
+
+Suppose we manage to pick **any two distinct vertices** $s, t \in V$ for which we can easily compute their pairwise minimum cut $\lambda_G(s, t)$. Then every global minimum cut $(S^*, V \setminus S^*)$ falls into one of two mutually exclusive cases:
+
+1. **Case 1 ($S^*$ separates $s$ and $t$)**: Then $\lambda(G) = c(\delta(S^*)) = \lambda_G(s, t)$, which we just computed!
+2. **Case 2 ($s$ and $t$ lie on the same side of $S^*$)**: Then contracting $s$ and $t$ into a single supernode $v_{st}$ (summing parallel edge weights $w(v_{st}, u) = w(s, u) + w(t, u)$ for all $u \notin \{s, t\}$ and deleting self-loops) preserves $c(\delta(S^*))$ and every other cut that keeps $s$ and $t$ together:
+   $$\lambda(G) = \min\Big(\lambda_G(s, t),\;\; \lambda\big(G / \{s, t\}\big)\Big).$$
+
+Repeating this contraction $N - 1$ times reduces $G$ to a single vertex and guarantees finding $\lambda(G)$—**provided** we have a fast way to find *some* pair $(s, t)$ and its exact minimum cut $\lambda_G(s, t)$ in each phase without running a max-flow algorithm!
+
+---
+
+### 3.2 Maximum Adjacency Search (`MAS`) & The Stoer–Wagner Theorem
+
+In 1997, Mechthild Stoer and Frank Wagner proved a remarkable structural theorem (simplifying an earlier 1992 result of Nagamochi and Ibaraki): if we order the vertices of $G$ by greedily pulling in the vertex most tightly connected to the already-visited prefix—an ordering called **Maximum Adjacency Search (`MAS`)**—then the **last two vertices** $s = v_{N-1}$ and $t = v_N$ of the ordering automatically satisfy $\lambda_G(s, t) = c(\delta(\{t\})) = w(V \setminus \{t\}, t)$!
+
+#### Definition (Maximum Adjacency Ordering)
+
+Fix an arbitrary starting vertex $v_1 \in V$, and set $A_1 = \{v_1\}$. For $i = 2, 3, \dots, N$, define $A_{i-1} = \{v_1, \dots, v_{i-1}\}$ and choose the next vertex $v_i \in V \setminus A_{i-1}$ to maximize the total edge weight to $A_{i-1}$:
+
+$$
+v_i \in \arg\max_{u \in V \setminus A_{i-1}} w(A_{i-1}, u).
+$$
+
+Notice that `MAS` is structurally identical to Prim's Minimum Spanning Tree algorithm, except that the priority key of each unvisited vertex $u \notin A_{i-1}$ is the **sum** $w(A_{i-1}, u) = \sum_{x \in A_{i-1}} w_{xu}$ rather than $\min_{x \in A_{i-1}} w_{xu}$.
+
+:::: {.callout-important title="Theorem 16.1 (Stoer–Wagner Theorem, 1997)"}
+Let $v_1, v_2, \dots, v_N$ be any Maximum Adjacency Ordering of an undirected non-negatively weighted graph $G = (V, E, w)$, and let $s = v_{N-1}$ and $t = v_N$ be the last two vertices of the ordering. Then the singleton cut $(A_{N-1}, \{t\}) = (V \setminus \{t\}, \{t\})$ is an **exact minimum $s$-$t$ cut** in $G$:
+
+$$
+\lambda_G(s, t) = \min_{\substack{S \subseteq V \\ s \in S,\; t \notin S}} c(\delta(S)) = w(A_{N-1}, t).
+$$
+::::
+
+#### Complete Self-Contained Proof via Active-Vertex Cut Induction
+
+Since $s = v_{N-1} \in A_{N-1}$ and $t = v_N \notin A_{N-1}$, the cut $(A_{N-1}, \{t\})$ is a valid $s$-$t$ cut of capacity $w(A_{N-1}, t)$, which immediately gives the upper bound $\lambda_G(s, t) \le w(A_{N-1}, t)$.
+
+To prove the reverse inequality $\lambda_G(s, t) \ge w(A_{N-1}, t)$, fix **any** $s$-$t$ cut $(C, \bar{C})$ with $s = v_{N-1} \in C$ and $t = v_N \in \bar{C}$. We must prove that $c(\delta(C)) \ge w(A_{N-1}, v_N)$.
+
+Call a vertex $v_i$ ($i \ge 2$) **active** with respect to the cut $(C, \bar{C})$ if $v_i$ and its immediate predecessor $v_{i-1}$ in the `MAS` ordering lie on **opposite sides** of the cut $(C, \bar{C})$. Notice that since $v_{N-1} \in C$ and $v_N \in \bar{C}$, the last vertex $v_N = t$ is **always active**!
+
+For each vertex $v_i$, let $C_{v_i}$ denote the cut induced by $(C, \bar{C})$ on the prefix subgraph $A_i = \{v_1, \dots, v_i\}$, so its capacity inside $A_i$ is:
+
+$$
+c(C_{v_i}) = w\big(A_i \cap C,\; A_i \cap \bar{C}\big).
+$$
+
+**Claim**: For every **active** vertex $v_i$, the prefix cut capacity satisfies:
+
+$$
+w(A_{i-1}, v_i) \le c(C_{v_i}).
+$$
+
+*Proof of Claim by Induction on the Active Vertices*:
+
+1. **Base Case (First active vertex $v_i$)**: Since $v_i$ is the *first* active vertex, all predecessors $v_1, \dots, v_{i-1}$ lie on the same side of $(C, \bar{C})$, while $v_i$ lies on the opposite side! Therefore, inside $A_i = A_{i-1} \cup \{v_i\}$, the cut $C_{v_i}$ separates $A_{i-1}$ from $\{v_i\}$, which means every edge between $A_{i-1}$ and $v_i$ crosses $C_{v_i}$:
+   $$c(C_{v_i}) = w(A_{i-1}, v_i).$$
+2. **Inductive Step**: Suppose the Claim holds for an active vertex $v_i$, and let $v_j$ ($j > i$) be the **next** active vertex after $v_i$.
+   - Because no vertex in $\{v_{i+1}, \dots, v_{j-1}\}$ is active, all vertices in $\{v_i, v_{i+1}, \dots, v_{j-1}\}$ lie on the **same side** of $(C, \bar{C})$ as $v_i$, while $v_j$ lies on the **opposite side**!
+   - Consider the prefix $A_{j-1} = A_{i-1} \cup \{v_i\} \cup (A_{j-1} \setminus A_i)$. We can decompose $w(A_{j-1}, v_j)$ into two parts:
+     $$w(A_{j-1}, v_j) = w(A_{i-1}, v_j) + w(A_{j-1} \setminus A_{i-1}, v_j).$$
+   - First, at step $i$ of `MAS`, both $v_i$ and $v_j$ were unvisited candidates outside $A_{i-1}$, and `MAS` greedily selected $v_i$ over $v_j$! Therefore:
+     $$w(A_{i-1}, v_j) \le w(A_{i-1}, v_i) \le c(C_{v_i}) \qquad (\text{by the greedy choice of } v_i \text{ and IH}).$$
+   - Second, every vertex in $A_{j-1} \setminus A_{i-1} = \{v_i, \dots, v_{j-1}\}$ lies on the opposite side of $(C, \bar{C})$ from $v_j$! Thus all edges between $A_{j-1} \setminus A_{i-1}$ and $v_j$ are **newly added cross-edges** of the cut $C_{v_j}$ that were not present in $C_{v_i}$ (since $j > i$). Because edge weights are non-negative, the cut capacity inside $A_j$ satisfies:
+     $$c(C_{v_j}) \ge c(C_{v_i}) + w(A_{j-1} \setminus A_{i-1}, v_j).$$
+   - Combining these two inequalities yields the inductive step:
+     $$w(A_{j-1}, v_j) = w(A_{i-1}, v_j) + w(A_{j-1} \setminus A_{i-1}, v_j) \le c(C_{v_i}) + w(A_{j-1} \setminus A_{i-1}, v_j) \le c(C_{v_j}).$$
+
+Applying the Claim to the final vertex $v_N = t$ (which is always active and has $A_N = V$, so $c(C_{v_N}) = c(\delta(C))$) gives:
+
+$$
+w(A_{N-1}, v_N) \le c(C_{v_N}) = c(\delta(C)).
+$$
+
+Since $(C, \bar{C})$ was an arbitrary $s$-$t$ cut, $\lambda_G(s, t) = w(A_{N-1}, v_N)$. $\blacksquare$
+
+---
+
+### 3.3 Algorithmic Contract, Complexity & Hand-Checkable Trace
+
+#### Algorithmic Contract (Stoer–Wagner Global Minimum Cut)
+
+- **Input**: Undirected graph $G = (V, E, w)$ with $N = |V| \ge 2$ and non-negative weights $w_e \ge 0$ (parallel edges summed into $w_{uv}$).
+- **Execution**:
+  1. Initialize $\text{best\_cut} \gets +\infty$ and mark all $N$ vertices as `alive`.
+  2. For phase $r = 1, 2, \dots, N - 1$ (while $k = N - r + 1 \ge 2$ vertices remain alive):
+     - Run `MAS` on the $k$ alive vertices to produce $v_1, \dots, v_{k-1}, v_k$.
+     - Set $s \gets v_{k-1}$ and $t \gets v_k$. Update $\text{best\_cut} \gets \min\big(\text{best\_cut},\; w(A_{k-1}, t)\big)$.
+     - Contract $t$ into $s$: mark `alive[t] = false`, and for every alive vertex $u \neq s$, set $w_{su} \gets w_{su} + w_{tu}$ and $w_{us} \gets w_{us} + w_{ut}$.
+  3. Return $\text{best\_cut}$.
+- **Complexity**:
+  - **Dense $O(V^3)$ Array Implementation**: Each of the $V - 1$ phases runs $O(V)$ iterations of scanning all alive vertices in $O(V)$ time, taking $O(V^3)$ time and $O(V^2)$ space with an extraordinarily tiny constant factor ($\approx \frac{1}{6} V^3$ additions, running in $< 40\text{ ms}$ for $V = 500$).
+  - **Sparse $O(VE + V^2 \log V)$ Heap Implementation**: Using a Fibonacci heap (or $O((V + E) \log V)$ per phase with a binary heap), the total time across $V - 1$ phases is $O(VE + V^2 \log V)$.
+
+#### Hand-Checkable Toy Trace ($N = 4$ Weighted Diamond)
+
+Consider $V = \{1, 2, 3, 4\}$ with edges $(1, 2) = 2$, $(1, 3) = 5$, $(2, 3) = 4$, $(2, 4) = 3$, $(3, 4) = 1$.
+
+- **Phase 1 ($4$ alive vertices $\{1, 2, 3, 4\}$)**:
+  - Start at $v_1 = 1$: keys to $A_1 = \{1\}$ are $w(1, 2) = 2, w(1, 3) = 5, w(1, 4) = 0$. Pick $v_2 = 3$.
+  - Now $A_2 = \{1, 3\}$: keys are $w(\{1, 3\}, 2) = 2 + 4 = 6$ and $w(\{1, 3\}, 4) = 0 + 1 = 1$. Pick $v_3 = 2$.
+  - Last vertex is $v_4 = 4$ with key $w(\{1, 3, 2\}, 4) = 1 + 3 = 4$.
+  - Phase 1 records $\lambda(2, 4) = 4$ (cut $(\{1, 2, 3\}, \{4\})$), and contracts $t = 4$ into $s = 2$: new edge weights are $(1, 2) = 2, (1, 3) = 5, (2, 3) = 4 + 1 = 5$.
+- **Phase 2 ($3$ alive vertices $\{1, 2, 3\}$)**:
+  - Start at $v_1 = 1$: keys are $w(1, 2) = 2, w(1, 3) = 5$. Pick $v_2 = 3$.
+  - Last vertex is $v_3 = 2$ with key $w(\{1, 3\}, 2) = 2 + 5 = 7$.
+  - Phase 2 records $\lambda(3, 2) = 7$ (cut $(\{1, 3\}, \{2, 4\})$), and contracts $2$ into $3$: new edge weight $(1, 3) = 5 + 2 = 7$.
+- **Phase 3 ($2$ alive vertices $\{1, 3\}$)**:
+  - Start at $v_1 = 1$, last vertex $v_2 = 3$ with key $w(1, 3) = 7$ (cut $(\{1\}, \{2, 3, 4\})$).
+- **Global Minimum Cut**: $\min(4, 7, 7) = \mathbf{4}$, achieved by separating $\{4\}$ from $\{1, 2, 3\}$.
+
+:::: {.callout-note title="Theoretical Horizon: Karger's $\binom{N}{2}$ Bound & The DKL Cactus of All Global Minimum Cuts"}
+How many distinct global minimum cuts of weight $\lambda^* = \lambda(G)$ can an undirected connected graph $G$ possess?
+
+1. **Karger's $\binom{N}{2}$ Theorem (1993)**: In any undirected graph with global minimum cut $\lambda^*$, every vertex $v$ has weighted degree $\deg_w(v) \ge \lambda^*$, so total edge weight is $W \ge \frac{N \lambda^*}{2}$. If we pick a random edge with probability proportional to $w_e$ and contract it, any fixed global minimum cut $C^*$ is hit with probability $\le \frac{\lambda^*}{N \lambda^* / 2} = \frac{2}{N}$, surviving the first contraction with probability $\ge \frac{N-2}{N}$. Telescoping across $N - 2$ contractions down to $2$ supernodes shows that $C^*$ survives with probability $\ge \prod_{n=3}^N \frac{n-2}{n} = \frac{2}{N(N-1)} = \binom{N}{2}^{-1}$. Because survival to the final 2-supernode multigraph is mutually exclusive for distinct cuts, $G$ has **at most $\binom{N}{2}$ global minimum cuts** (tight on the cycle $C_N$)!
+2. **Dinits–Karzanov–Lomonosov (1976) Cactus $\mathcal{K}(G)$ (`最小割仙人掌`)**: While a single tree cannot represent crossing global minimum cuts (such as cutting opposite pairs of edges on $C_4$), any two crossing global minimum cuts $(A, \bar{A})$ and $(B, \bar{B})$ must have empty diagonal edge sets $w(A \cap B, \bar{A} \cap \bar{B}) = w(A \setminus B, B \setminus A) = 0$ and cycle-link weights $\frac{\lambda^*}{2}$. Consequently, **all** global minimum cuts of $G$ are represented by a canonical **cactus graph** $\mathcal{K}(G)$ (where every edge lies in at most one simple cycle, bridges have weight $\lambda^*$, and cycle edges have weight $\frac{\lambda^*}{2}$).
+::::
+
+---
+
+## 4. All-Pairs Minimum Cuts & Gusfield's Gomory–Hu Cut Tree (`最小割树`)
+
+What if we need not just the single global minimum cut $\lambda(G)$, but the pairwise minimum cut $\lambda_G(u, v) = \operatorname{MinCut}_G(u, v)$ for **all $\binom{N}{2}$ unordered pairs $\{u, v\} \subset V$**?
+
+In 1961, Ralph Gomory and T. C. Hu proved one of the crown jewels of combinatorial optimization: in any undirected capacitated graph $G = (V, E, w)$, the $\binom{N}{2}$ pairwise minimum cuts are completely encoded by a single weighted tree $T_{\text{GH}}$ on the **exact vertex set $V$** (requiring zero extra Steiner vertices), constructible using only **$N - 1$ maximum-flow calls**! Furthermore, in 1990, Dan Gusfield showed that all $N - 1$ max-flow calls can be executed directly on the **original unmodified graph $G$** in a 15-line loop with zero vertex contractions.
+
+### 4.1 Submodularity, Posimodularity, and the Ultrametric Triangle Inequality
+
+Let $f(S) = c(\delta(S)) = w(S, V \setminus S)$ be the undirected cut capacity function on $G = (V, E, w)$ with $w_{uv} \ge 0$. Because $G$ is **undirected**, $f$ is **symmetric**: $f(S) = f(V \setminus S)$ for all $S \subseteq V$.
+
+:::: {.callout-important title="Theorem 16.2 (Symmetric Submodularity & Posimodularity of Undirected Cuts)"}
+For any two subsets $A, B \subseteq V$ in an undirected graph $G = (V, E, w)$ with $w \ge 0$:
+
+1. **Submodularity**:
+   $$c(\delta(A)) + c(\delta(B)) \ge c(\delta(A \cap B)) + c(\delta(A \cup B)).$$
+2. **Posimodularity**:
+   $$c(\delta(A)) + c(\delta(B)) \ge c(\delta(A \setminus B)) + c(\delta(B \setminus A)).$$
+::::
+
+#### Proof via Four-Quadrant Partition
+
+Partition $V$ into the four disjoint Venn-diagram quadrants:
+
+$$
+Q_1 = A \cap B, \qquad Q_2 = A \setminus B, \qquad Q_3 = V \setminus (A \cup B), \qquad Q_4 = B \setminus A.
+$$
+
+Expand both sides of the submodular inequality in terms of the six pairwise inter-quadrant edge sums $w(Q_i, Q_j)$:
+
+- On the left-hand side, $A = Q_1 \cup Q_2$ and $B = Q_1 \cup Q_4$, so:
+  $$\begin{aligned}
+  c(\delta(A)) &= w(Q_1, Q_3) + w(Q_1, Q_4) + w(Q_2, Q_3) + w(Q_2, Q_4), \\
+  c(\delta(B)) &= w(Q_1, Q_2) + w(Q_1, Q_3) + w(Q_4, Q_2) + w(Q_4, Q_3).
+  \end{aligned}$$
+- On the right-hand side, $A \cap B = Q_1$ and $A \cup B = V \setminus Q_3$, so:
+  $$\begin{aligned}
+  c(\delta(A \cap B)) &= w(Q_1, Q_2) + w(Q_1, Q_3) + w(Q_1, Q_4), \\
+  c(\delta(A \cup B)) &= w(Q_1, Q_3) + w(Q_2, Q_3) + w(Q_4, Q_3).
+  \end{aligned}$$
+
+Subtracting the right-hand side from the left-hand side cancels every term except the diagonal crossing between $Q_2 = A \setminus B$ and $Q_4 = B \setminus A$:
+
+$$
+c(\delta(A)) + c(\delta(B)) - c(\delta(A \cap B)) - c(\delta(A \cup B)) = 2\,w(A \setminus B,\; B \setminus A) \ge 0,
+$$
+
+which proves submodularity! Applying submodularity to $A$ and $\bar{B} = V \setminus B$ and using symmetry $c(\delta(\bar{B})) = c(\delta(B))$ and $c(\delta(A \cup \bar{B})) = c(\delta(V \setminus (A \cup \bar{B}))) = c(\delta(B \setminus A))$ immediately yields posimodularity:
+
+$$
+c(\delta(A)) + c(\delta(B)) - c(\delta(A \setminus B)) - c(\delta(B \setminus A)) = 2\,w(A \cap B,\; \bar{A} \cap \bar{B}) \ge 0. \quad \blacksquare
+$$
+
+Before proving Cut Uncrossing, observe a direct consequence of simple cut partitioning for any three vertices:
+
+:::: {.callout-important title="Corollary 16.3 (The Submodular Ultrametric Triangle Inequality)"}
+For any three distinct vertices $u, v, w \in V$ in an undirected graph $G$:
+
+$$
+\lambda_G(u, w) \ge \min\big(\lambda_G(u, v),\;\; \lambda_G(v, w)\big).
+$$
+
+Equivalently, among the three pairwise minimum cuts $\{\lambda_G(u, v), \lambda_G(v, w), \lambda_G(u, w)\}$, **the two smallest values must be equal** (there cannot be a unique minimum among the three!). Consequently, across all $\binom{N}{2}$ pairs, $\lambda_G(u, v)$ can take **at most $N - 1$ distinct values**.
+::::
+
+*Proof*: Let $(S, \bar{S})$ be a minimum $u$-$w$ cut with $u \in S$, $w \in \bar{S}$, and $c(\delta(S)) = \lambda_G(u, w)$. Where does the third vertex $v$ lie?
+
+- If $v \in S$, then $(S, \bar{S})$ separates $v \in S$ from $w \in \bar{S}$, so it is a valid $v$-$w$ cut: $\lambda_G(u, w) = c(\delta(S)) \ge \lambda_G(v, w)$.
+- If $v \in \bar{S}$, then $(S, \bar{S})$ separates $u \in S$ from $v \in \bar{S}$, so it is a valid $u$-$v$ cut: $\lambda_G(u, w) = c(\delta(S)) \ge \lambda_G(u, v)$.
+
+In either case, $\lambda_G(u, w) \ge \min(\lambda_G(u, v), \lambda_G(v, w))$. $\blacksquare$
+
+---
+
+### 4.2 The Submodular Cut Uncrossing Lemma
+
+Why don't we need to cross previous minimum cuts when finding new ones?
+
+:::: {.callout-important title="Lemma 16.4 (The Cut Uncrossing Lemma — Gomory & Hu, 1961)"}
+Let $(S, \bar{S})$ be any minimum $s$-$t$ cut in an undirected graph $G = (V, E, w)$ with $s \in S$ and $t \in \bar{S}$. For any two vertices $u, v \in S$ that lie on the **same side** of $(S, \bar{S})$, there exists a minimum $u$-$v$ cut $(A, \bar{A})$ in $G$ that **does not cross** $(S, \bar{S})$—specifically, assuming $u \in A$ and $v \in \bar{A}$, whichever side of $(A, \bar{A})$ does *not* contain $t$ is a subset of $S$ ($A \subseteq S$ or $\bar{A} \subseteq S$).
+::::
+
+#### Proof via Submodularity and Posimodularity
+
+Let $(B, \bar{B})$ be any minimum $u$-$v$ cut in $G$, labeled so that $u \in B$, $v \in \bar{B}$, and $c(\delta(B)) = \lambda_G(u, v)$. Since $t \in \bar{S}$, the sink $t$ lies either in $\bar{B}$ or in $B$:
+
+1. **Case 1 ($t \in \bar{B}$, on the same side of $B$ as $v$)**:
+   Apply **submodularity** (Theorem 16.2(1)) to $S$ and $B$:
+   $$c(\delta(S)) + c(\delta(B)) \ge c(\delta(S \cap B)) + c(\delta(S \cup B)).$$
+   Examine the two sets on the right-hand side:
+   - Since $s \in S \subseteq S \cup B$ and $t \notin S, t \notin B \implies t \notin S \cup B$, the cut $(S \cup B, \overline{S \cup B})$ separates $s$ from $t$! Because $(S, \bar{S})$ is a *minimum* $s$-$t$ cut, we must have:
+     $$c(\delta(S \cup B)) \ge \lambda_G(s, t) = c(\delta(S)).$$
+   - Subtracting $c(\delta(S \cup B)) \ge c(\delta(S))$ from the submodular inequality forces:
+     $$c(\delta(S \cap B)) \le c(\delta(B)) = \lambda_G(u, v).$$
+   - Furthermore, since $u \in S$ and $u \in B$, we have $u \in S \cap B$; and since $v \notin B$, we have $v \notin S \cap B$. Thus $A = S \cap B \subseteq S$ separates $u$ from $v$, has capacity $c(\delta(A)) = \lambda_G(u, v)$, and is completely contained inside $S$!
+2. **Case 2 ($t \in B$, on the same side of $B$ as $u$)**:
+   Simply swap the roles of $B$ and $\bar{B}$ (applying submodularity to $S$ and $\bar{B}$, or equivalently **posimodularity** to $S$ and $B$): since $s \in S \cup \bar{B}$ and $t \notin S \cup \bar{B}$, we have $c(\delta(S \cup \bar{B})) \ge c(\delta(S))$, which forces $c(\delta(S \cap \bar{B})) \le c(\delta(\bar{B})) = \lambda_G(u, v)$. Here $\bar{A} = S \cap \bar{B} \subseteq S$ is an uncrossed minimum $u$-$v$ cut contained inside $S$! $\blacksquare$
+
+> **Canonical Source-Side Uncrossing Without Case Distinction**: What if we want $A = S \cap B \subseteq S$ to work *even when* $s \notin B$ and $t \in B$? Notice that if $(S, \bar{S})$ is the **minimal source-side cut** (the set of vertices reachable from $s$ in $G_f(s, t)$), or more generally by symmetry of $s$ and $t$, if $s \in B$ and $t \in \bar{B}$ then Case 1 holds; if $s \in \bar{B}$ and $t \in B$, then swapping $u \leftrightarrow v$ and $B \leftrightarrow \bar{B}$ reduces back to Case 1; and if $s, t$ lie on the *same* side of $B$ (say $s, t \in \bar{B}$), then $S \setminus B$ separates $s \in S \setminus B$ from $t \notin S \setminus B$, so posimodularity $c(\delta(S)) + c(\delta(B)) \ge c(\delta(S \setminus B)) + c(\delta(B \setminus S))$ together with $c(\delta(S \setminus B)) \ge c(\delta(S))$ gives $c(\delta(B \setminus S)) \le c(\delta(B))$, where $\overline{B \setminus S} \supseteq S$! Thus in all four placements of $(s, t)$ relative to $(B, \bar{B})$, an uncrossed minimum $u$-$v$ cut exists.
+
+---
+
+### 4.3 Structure of the Gomory–Hu Tree & Gusfield's (1990) 15-Line Algorithm
+
+#### Definition (Flow-Equivalent Tree vs. Cut-Equivalent Gomory–Hu Tree)
+
+Let $T = (V, E_T, w_T)$ be a weighted tree on the vertex set $V$ of $G$. For every tree edge $e = (x, y) \in E_T$, removing $e$ from $T$ splits $V$ into two connected components $(C_x(e), C_y(e))$.
+
+1. **Flow-Equivalent Tree (Value Property)**: For all pairs $u, v \in V$, the minimum $u$-$v$ cut value in $G$ equals the minimum edge weight on the unique path $P_T(u, v)$ between $u$ and $v$ in $T$:
+   $$\lambda_G(u, v) = \min_{e \in P_T(u, v)} w_T(e).$$
+2. **Gomory–Hu Tree (Value + Partition Property)**: In addition to the Value Property, for every tree edge $e = (x, y) \in E_T$, the tree bipartition $(C_x(e), C_y(e))$ is an **actual minimum $x$-$y$ cut in $G$** of capacity $c_G(\delta(C_x(e))) = w_T(e) = \lambda_G(x, y)$. Consequently, for *any* pair $u, v \in V$, removing the minimum-weight bottleneck edge $e^* \in \arg\min_{e \in P_T(u, v)} w_T(e)$ from $T$ yields an actual minimum $u$-$v$ cut partition in $G$!
+
+#### Why $N - 1$ Uncrossed Cuts Suffice
+
+By Induction on $N$ using the Cut Uncrossing Lemma (Lemma 16.4), we maintain a collection of supernodes (initially a single block $V$) connected by already-computed tree edges. At each step, we pick a block containing at least two vertices $s, t$, compute a minimum $s$-$t$ cut $(S, \bar{S})$ in $G$, and split **that block** along $(S, \bar{S})$ into two sub-blocks connected by a tree edge $(s, t)$ of weight $\lambda_G(s, t)$.
+
+In 1990, Dan Gusfield discovered that we never need to contract supernodes in $G$! Instead, we represent the evolving tree using a simple parent array `p[1..N]` (initialized to a star `p[2..N] = 1` rooted at vertex $1$) and split stars in $N - 1$ iterations $s = 2, 3, \dots, N$:
+
+```cpp
+// Gusfield's (1990) 15-Line Gomory-Hu Cut Tree Construction
+// Assumes: dinic_solve(s, t) resets all edge flows to 0 and returns MaxFlow_G(s, t),
+//          and vis[u] == true iff u is reachable from s in the residual graph G_f(s, t).
+vector<int> p(N + 1, 1);
+vector<long long> w_tree(N + 1, 0);
+p[1] = 0;
+
+for (int s = 2; s <= N; ++s) {
+    int t = p[s];
+    w_tree[s] = dinic_solve(s, t);            // 1. Run s-t MaxFlow on the ORIGINAL graph G
+    for (int u = s + 1; u <= N; ++u) {
+        if (p[u] == t && vis[u]) {            // 2. ONLY re-parent u > s in t's current star
+            p[u] = s;                         //    that lie on s's side of the cut!
+        }
+    }
+    if (p[t] > 0 && vis[p[t]]) {              // 3. Cut-Equivalence Upgrade: if t's own parent
+        p[s] = p[t];                          //    lies on s's side of the cut, invert (s, t)
+        p[t] = s;                             //    so tree-edge removal matches the cut in G!
+        swap(w_tree[s], w_tree[t]);
+    }
+}
+// Resulting tree has N - 1 edges: (i, p[i]) with weight w_tree[i] for i = 2 .. N.
+```
+
+#### Why Gusfield's Star-Splitting Works (And Why `if (vis[p[t]])` Matters)
+
+In iteration $s \in \{2, \dots, N\}$, vertices $\{1, \dots, s-1\}$ are the centers of the already-separated supernode blocks, while every unprocessed vertex $u \in \{s, \dots, N\}$ is attached as a leaf (`p[u] = center`) to the unique supernode center in $\{1, \dots, s-1\}$ whose block contains $u$.
+
+1. When we pick $s$ and its current block center $t = p[s] < s$, running $\operatorname{MaxFlow}_G(s, t)$ on the **original uncontracted graph $G$** produces a minimum $s$-$t$ cut $(S, \bar{S})$ with $s \in S, t \in \bar{S}$ (`vis[u] == 1` $\iff u \in S$).
+2. Every future vertex $u > s$ currently attached to $t$ (`p[u] == t`) belongs to the supernode block being split by $(s, t)$. If $u \in S$ (`vis[u] == true`), $u$ moves into $s$'s new half of the block (`p[u] = s`); if $u \in \bar{S}$, $u$ stays in $t$'s half (`p[u] = t`).
+3. What about the existing tree edge $(t, p[t])$ connecting $t$'s block to the rest of the tree? If $p[t] \in S$ (`vis[p[t]] == true`), then the exterior component containing $p[t]$ lies on the **$s$-side** of the cut $(S, \bar{S})$ rather than the $t$-side!
+   - **Without step 3 (`if (vis[p[t]])`)**: The tree leaves $(t, p[t])$ attached to $t$ and attaches $s$ as a leaf to $t$. As Gusfield (1990) proved, this 3-line version still satisfies the **Value Property** ($\lambda_G(u, v) = \min_{e \in P_T(u, v)} w_T(e)$ for all $u, v$, i.e., a **Flow-Equivalent Tree**)!
+   - **With step 3 (`if (vis[p[t]])`)**: Whenever $p[t] \in S$, we re-attach $p[t]$ to $s$ instead of $t$ (`p[s] = p[t]; p[t] = s; swap(w_tree[s], w_tree[t])`), which guarantees by Lemma 16.4 that the resulting tree is a **true Cut-Equivalent Gomory–Hu Tree** (deleting any tree edge yields the exact physical cut partition in $G$)!
+
+---
+
+### 4.4 Hand-Checkable Trace & Broken-Gadget Counterexamples (`FM-16`)
+
+#### Hand-Checkable Trace of Gusfield's Algorithm ($N = 4$)
+
+Let $G$ have $V = \{1, 2, 3, 4\}$ and undirected edges $(1, 2) = 3, (2, 3) = 4, (3, 4) = 5, (4, 1) = 2, (2, 4) = 1$.
+
+- **Initialization**: `p = [_, 1, 1, 1, 1]`, `w_tree = [_, 0, 0, 0, 0]`.
+- **Iteration $s = 2$ ($t = p[2] = 1$)**:
+  - $\operatorname{MaxFlow}_G(2, 1) = 5$, with residual reachable set $S = \{2, 3, 4\}$ and $\bar{S} = \{1\}$ (severing $(1,2)=3$ and $(1,4)=2$).
+  - Set `w_tree[2] = 5`. For $u \in \{3, 4\}$, since `p[u] == 1` and $u \in S$, update `p[3] = 2`, `p[4] = 2`.
+- **Iteration $s = 3$ ($t = p[3] = 2$)**:
+  - $\operatorname{MaxFlow}_G(3, 2) = 7$, with $S = \{3, 4\}$ and $\bar{S} = \{1, 2\}$ (severing $(2,3)=4, (2,4)=1, (1,4)=2$ of total capacity $4 + 1 + 2 = 7$, whereas $(\{3\}, \{1, 2, 4\})$ has capacity $4 + 5 = 9$).
+  - Set `w_tree[3] = 7`. For $u = 4$, since `p[4] == 2` and $4 \in S$, update `p[4] = 3`. Since $p[t] = p[2] = 1 \notin S$, step 3 does not trigger.
+- **Iteration $s = 4$ ($t = p[4] = 3$)**:
+  - $\operatorname{MaxFlow}_G(4, 3) = 8$, with $S = \{4\}$ and $\bar{S} = \{1, 2, 3\}$ (severing $(3,4)=5, (2,4)=1, (1,4)=2$, total capacity $5+1+2 = 8$).
+  - Set `w_tree[4] = 8`. Since $p[3] = 2 \notin S$, step 3 does not trigger.
+- **Final Gomory–Hu Tree**: Path $1 \stackrel{5}{\longleftrightarrow} 2 \stackrel{7}{\longleftrightarrow} 3 \stackrel{8}{\longleftrightarrow} 4$.
+  - Check $\lambda_G(2, 4)$: path $2 - 3 - 4$ has bottleneck $\min(7, 8) = 7$, and removing edge $(2, 3)$ gives partition $(\{1, 2\}, \{3, 4\})$ of capacity $7$!
+  - Distinct pairwise min-cut values: $\{5, 7, 8\}$ ($3$ distinct values across $\binom{4}{2} = 6$ pairs).
+
+:::: {.callout-warning title="Broken-Gadget Counterexamples FM-16: The Three Classic Gomory–Hu Failures"}
+1. **Unconditional Re-Parenting Bug (Omitting `p[u] == t` in Gusfield's Loop)**:
+   Suppose a solver writes `if (vis[u]) p[u] = s;` without checking `p[u] == t`. Because the max-flow between $s$ and $t$ is computed on the **uncontracted graph $G$**, the raw cut $(S, \bar{S})$ may cross another already-separated supernode block $B'$! Re-parenting vertices $u \in B'$ that have `p[u] != t` tears apart previously constructed tree branches and destroys both the Value and Partition properties. **Rule**: Only vertices $u > s$ currently belonging to $t$'s star (`p[u] == t`) may be re-parented to $s$.
+2. **Subgraph Deletion / Naive Contraction Corruption (`FM-16`)**:
+   In the recursive bucket version of Gomory–Hu (`solve(vector<int> B)`), when splitting bucket $B$ into $B_L = B \cap S$ and $B_R = B \setminus S$, a common bug is running future max-flows on the **induced subgraph** $G[B_L]$ (deleting $V \setminus B_L$)! Deleting $V \setminus B_L$ destroys valid flow paths between $u, v \in B_L$ that route through $V \setminus B_L$. In the example above, inside $B_L = \{3, 4\}$, the induced edge is only $(3, 4) = 5$, missing the path $3 - 2 - 4$ ($1$) and $3 - 2 - 1 - 4$ ($2$) that raise $\lambda_G(3, 4)$ from $5$ to $8$! Always run Dinic on the **entire original graph $G$**.
+3. **Applying Gomory–Hu to a Directed Graph (Failure of Symmetry & Posimodularity)**:
+   Gomory–Hu trees exist **only for undirected graphs**. Consider the 3-vertex directed cycle $1 \xrightarrow{10} 2 \xrightarrow{1} 3 \xrightarrow{10} 1$.
+   - First, directed min-cuts are asymmetric: $\lambda(1, 2) = 10$ (via $1 \to 2$), whereas $\lambda(2, 1) = 1$ (limited by $2 \to 3$).
+   - Second, even if you only look at $\min(\lambda(u, v), \lambda(v, u))$ or outgoing cuts $f(S) = c(\delta^+(S))$, **posimodularity fails** because $f(S) \neq f(V \setminus S)$! For $A = \{1, 2\}$ ($f(A) = c(2 \to 3) = 1$) and $B = \{2, 3\}$ ($f(B) = c(3 \to 1) = 10$), we have $f(A) + f(B) = 11$, whereas $A \setminus B = \{1\}$ ($f(\{1\}) = c(1 \to 2) = 10$) and $B \setminus A = \{3\}$ ($f(\{3\}) = c(3 \to 1) = 10$) have $f(A \setminus B) + f(B \setminus A) = 20 > 11$! Directed all-pairs min-cuts require Schnorr's (1979) $N(N-1)$-flow directed cut cactus, never Gusfield's tree.
+::::
+
+
+---
+
+## 5. The 4-Step Cut-Compression Diagnostic Protocol
+
+Whenever a problem involves maximum flows or minimum cuts at a scale where standard single-run Dinic cannot directly answer the query—either because $N, M, Q$ are too large for even *one* flow call (`Module 16A`), or because the query ranges over *all* $\binom{N}{2}$ terminal pairs (`Module 16B`)—apply the following 4-Step Protocol:
+
+### Step 1: Non-Graph Diagnostic Signal (Classify the Bottleneck)
+
+1. **Single $s$-$t$ Pair, Huge $N \ge 10^4$ or Online Queries $Q \ge 10^5$ (`Direction B Flow Elimination`)**:
+   - Does the problem ask for $\operatorname{MaxFlow}(s, t)$ on a linear pipeline, tree, complete DAG $i < j$, complete bipartite graph, or two coupled directed chains?
+   - **Action**: Abandon augmenting paths. Switch to $\operatorname{MinCut}(s, t) = \min_{S \subseteq V} C(S)$.
+2. **Undirected Graph, No Fixed Terminals, Global Disconnection (`Stoer–Wagner`)**:
+   - Does the problem ask for $\min_{\emptyset \subsetneq S \subsetneq V} c(\delta(S))$ with $N \le 500$?
+   - **Action**: Run $N - 1$ phases of Maximum Adjacency Search (`MAS`) + vertex contraction in $O(N^3)$ or $O(NM + N^2 \log N)$.
+3. **Undirected Graph, All-Pairs $\binom{N}{2}$ Function of $\lambda_G(u, v)$ (`Gomory–Hu / Gusfield`)**:
+   - Does the problem ask to count pairs with $\lambda_G(u, v) \le X$, count distinct values in $\{\lambda_G(u, v)\}$, find a permutation maximizing $\sum \lambda_G(p_i, p_{i+1})$, or test if a matrix $M_{uv}$ is realizable as an all-pairs min-cut matrix ($N \le 850$)?
+   - **Action**: Build $T_{\text{GH}}$ in $N - 1$ Dinic runs on the uncontracted graph $G$ via Gusfield's star-splitting algorithm.
+
+### Step 2: Intermediate Algebraic or Polyhedral Representation
+
+- **For Direction B (`Module 16A`)**: Write down the exact directed cut polynomial:
+  $$C(\mathbf{x}) = \sum_{i=1}^N p_i (1 - x_i) + \sum_{i=1}^N s_i x_i + \sum_{(i \to j) \in E} c_{i,j}\, x_i (1 - x_j), \qquad x_i = [i \in S] \in \{0, 1\}.$$
+  Identify the **interface width** between prefix $\{1, \dots, i\}$ and suffix $\{i+1, \dots, N\}$:
+  - *Width $1$ (Pipeline)*: Only $x_i(1 - x_{i+1})$ appears $\implies 2 \times 2$ $(\min, +)$ tropical matrix.
+  - *Symmetric Cardinality (Complete DAG)*: $\sum_{i < j} x_i(1 - x_j) = \sum_{i \in S}(N - i) - \binom{|S|}{2} \implies O(N^2)$ DP or $O(N \log N)$ sorted slope-difference greedy.
+  - *Monotone Prefix Chains*: Only one edge $A_i \to A_{i+1}$ and one edge $B_j \to B_{j+1}$ are severed $\implies$ 2D prefix-suffix sweep $(i, j)$.
+- **For Gomory–Hu (`Module 16B`)**: Replace $\lambda_G(u, v)$ with the tree path bottleneck:
+  $$\lambda_G(u, v) = \min_{e \in P_{T_{\text{GH}}}(u, v)} w_T(e).$$
+
+### Step 3: Mechanical Compilation into Data Structures or Tree Traversals
+
+- Compile 1D Markov cut transitions into a Segment Tree of $2 \times 2$ $(\min, +)$ matrices (`CF 1919F2`) or prefix-minimum Segment Tree (`CF 1919F1`, `CF 903G`).
+- Compile tree-bottleneck queries on $T_{\text{GH}}$ into Kruskal/DSU edge-weight sorting (processing edges of $T_{\text{GH}}$ from heaviest to lightest!).
+
+### Step 4: Broken-Gadget Audit (`FM-16a` & `FM-16`)
+
+- Verify that backward transit edges ($x_i = 0, x_j = 1$ on $i \to j$) pay **$0$**, never $c_{i,j}$ (`FM-16a`).
+- Verify that Gusfield's loop checks `p[u] == t` before re-parenting `p[u] = s` and resets all residual capacities to their original undirected weights before each of the $N - 1$ Dinic runs (`FM-16`).
+
+---
+
+## 6. Worked Examples & Full 8-Problem Difficulty Ladder (`#121`–`#128`)
+
+| Tier | Problem ID | Problem Title & Judge | Core Technique | Complexity |
+| :---: | :---: | :--- | :--- | :--- |
+| **Stepping Stone 1** | `#121` | [CF 1919F1 — Wine Factory (Easy Version)](https://codeforces.com/problemset/problem/1919/F1) (`[EN]`) | Direction B Suffix Cut ($c_i = \infty$) + Prefix-Min Segment Tree | $O((N + Q) \log N)$ |
+| **Stepping Stone 2** | `#122` | [POJ 2914 — Minimum Cut](http://poj.org/problem?id=2914) (`[EN]`) | Stoer–Wagner Global Undirected Min-Cut (`MAS` + Contraction) | $O(N^3)$ |
+| **Intermediate 1** | `#123` | [Luogu P3329 — [ZJOI2011] 最小割](https://www.luogu.com.cn/problem/P3329) (`[ZH]`) | Gusfield's $N - 1$ Gomory–Hu Tree + All-Pairs Bottleneck DFS | $O(N \cdot T_{\text{Dinic}} + N^2)$ |
+| **Intermediate 2** | `#124` | [Luogu P4123 — [CQOI2016] 不同的最小割](https://www.luogu.com.cn/problem/P4123) (`[ZH]`) | Ultrametric Distinct Cut Theorem ($\le N - 1$ Tree Edge Weights) | $O(N \cdot T_{\text{Dinic}})$ |
+| **Advanced 1** | `#125` | [CF 724E — Goods Transportation](https://codeforces.com/problemset/problem/724/E) (`[EN]`) | Complete DAG Min-Cut DP ($O(N^2)$) & Slope-Difference Greedy ($O(N \log N)$) | $O(N^2)$ / $O(N \log N)$ |
+| **Advanced 2** | `#126` | [CF 1919F2 — Wine Factory (Hard Version)](https://codeforces.com/problemset/problem/1919/F2) (`[EN]`) | Dynamic $2 \times 2$ $(\min, +)$ Tropical Matrix Segment Tree | $O((N + Q) \log N)$ |
+| **Mastery 1** | `#127` | [CF 343E — Pumping Stations](https://codeforces.com/problemset/problem/343/E) (`[EN]`) | Gomory–Hu Tree Upper Bound + Descending Kruskal DSU Concatenation | $O(N \cdot T_{\text{Dinic}} + N \log N)$ |
+| **Mastery 2** | `#128` | [CF 903G — Yet Another MaxFlow Problem](https://codeforces.com/problemset/problem/903/G) (`[EN]`) | Coupled Forward Chains + Sweep-Line Lazy Segment Tree | $O((N + M + Q) \log N)$ |
+
+---
+
+### `#121` (`SS-1`) — Codeforces 1919F1: Wine Factory (Easy Version)
+
+- **Judge / URL**: [Codeforces 1919F1](https://codeforces.com/problemset/problem/1919/F1) (`[EN]`)
+- **Constraints**: $N, Q \le 5 \cdot 10^5$, water tower supplies $a_i \in [0, 10^9]$, wizard capacities $b_i \in [0, 10^9]$, forward pipe capacities $c_i = 10^{18}$ ($\infty$) for $1 \le i \le N - 1$. Given $Q$ point updates to $(a_p, b_p, c_p)$ (with $c_p = 10^{18}$), output the total wine produced after each update.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+Each tower $i$ receives up to $a_i$ water from the source $s$, converts up to $b_i$ water into wine (sent to the sink $t$), and sends any leftover water forward to tower $i + 1$ through a pipe of capacity $c_i = \infty$. Because $N, Q \le 5 \cdot 10^5$, we cannot run a flow solver or even simulate greedy carry-propagation per query. By Max-Flow Min-Cut Duality in **Direction B**, we minimize the capacity of an $s$-$t$ cut over $\{1, \dots, N\}$.
+
+#### Step 2: Intermediate Algebraic Representation
+
+Let $x_i \in \{S, T\}$ denote the side of vertex $i$ in an $s$-$t$ cut:
+
+- Placing $i \in T$ severs $s \to i$ at cost $a_i$.
+- Placing $i \in S$ severs $i \to t$ at cost $b_i$.
+- Placing $i \in S$ and $i + 1 \in T$ severs the pipe $i \to i + 1$ at cost $c_i = \infty$!
+
+Because $c_i = \infty$, **no index $i$ can have $x_i = S$ and $x_{i+1} = T$**. Thus, once the sequence $(x_1, \dots, x_N)$ switches to $S$, every subsequent vertex must also be in $S$. Every finite-cost cut is uniquely parameterized by the split index $k \in \{0, 1, \dots, N\}$ such that $\{1, \dots, k\} \subseteq T$ and $\{k + 1, \dots, N\} \subseteq S$:
+
+$$
+\operatorname{Cut}(k) = \sum_{i=1}^k a_i + \sum_{i=k+1}^N b_i = \sum_{i=1}^N b_i + \sum_{i=1}^k (a_i - b_i), \qquad k \in \{0, 1, \dots, N\}.
+$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Segment Tree Compilation)
+
+Let $d_i = a_i - b_i$. We need to maintain $\sum_{i=1}^N b_i$ globally and compute $\min_{0 \le k \le N} \sum_{i=1}^k d_i$ under point updates to $d_p$:
+
+- Each Segment Tree node covering interval $[L, R]$ stores two integers:
+  - `sum`: the interval sum $\sum_{i=L}^R d_i$,
+  - `min_pref`: the minimum non-empty prefix sum $\min_{L \le k \le R} \sum_{i=L}^k d_i$, merged via:
+    $$\text{node.sum} = \text{left.sum} + \text{right.sum}, \qquad \text{node.min\_pref} = \min\big(\text{left.min\_pref},\;\; \text{left.sum} + \text{right.min\_pref}\big).$$
+- Including the empty prefix $k = 0$ (which has sum $0$, corresponding to all vertices in $S$), the global minimum cut after each query is:
+  $$\operatorname{Ans} = \sum_{i=1}^N b_i + \min\big(0,\;\; \text{root.min\_pref}\big).$$
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+- **Toy Trace ($N = 3$)**: Let $a = [3, 1, 4]$, $b = [2, 5, 1]$. Then $\sum b_i = 8$ and $d = a - b = [+1, -4, +3]$.
+  - Prefix sums of $d$ for $k = 0, 1, 2, 3$ are $0, +1, -3, 0$.
+  - Minimum prefix sum is $-3$ at $k = 2$ ($\{1, 2\} \subseteq T, \{3\} \subseteq S$), giving $\operatorname{MaxFlow} = 8 + (-3) = 5$ (severing $a_1 + a_2 + b_3 = 3 + 1 + 1 = 5$).
+- **Failure Guard**: Forgetting $k = 0$ (i.e., writing `sum_b + root.min_pref` instead of `sum_b + min(0LL, root.min_pref)`) fails whenever all $a_i > b_i$, where the optimal cut puts all vertices in $S$ ($k = 0$, cost $\sum b_i$).
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #121 (CF 1919F1)"}
+- **Hint 1 (Diagnostic)**: Model the process as an $s$-$t$ flow network: $s \to i$ has capacity $a_i$, $i \to t$ has capacity $b_i$, and $i \to i+1$ has capacity $c_i = \infty$. Which transition ($S \to T$ or $T \to S$) across $i \to i+1$ is forbidden?
+- **Hint 2 (Algebraic)**: Since $i \in S \implies i+1 \in S$, the source side $S$ must be a suffix $\{k+1, \dots, N\}$ for some $k \in \{0, \dots, N\}$. Write the cut cost in terms of $k$.
+- **Hint 3 (Compilation)**: Rewrite $\sum_{i=1}^k a_i + \sum_{i=k+1}^N b_i = \sum_{i=1}^N b_i + \sum_{i=1}^k (a_i - b_i)$ and maintain the minimum prefix sum of $a_i - b_i$ in a point-update Segment Tree!
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution for #121 (CF 1919F1 — Wine Factory Easy Version)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+struct Node {
+    long long sum;
+    long long min_pref;
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n, q;
+    if (!(cin >> n >> q)) return 0;
+
+    vector<long long> a(n + 1), b(n + 1), c(n + 1);
+    for (int i = 1; i <= n; ++i) cin >> a[i];
+    for (int i = 1; i <= n; ++i) cin >> b[i];
+    for (int i = 1; i < n; ++i) cin >> c[i];
+
+    long long total_b = 0;
+    for (int i = 1; i <= n; ++i) total_b += b[i];
+
+    vector<Node> tree(4 * n + 4);
+    auto pull = [&](int u) {
+        tree[u].sum = tree[2 * u].sum + tree[2 * u + 1].sum;
+        tree[u].min_pref = min(tree[2 * u].min_pref,
+                               tree[2 * u].sum + tree[2 * u + 1].min_pref);
+    };
+
+    auto build = [&](auto& self, int u, int l, int r) -> void {
+        if (l == r) {
+            long long d = a[l] - b[l];
+            tree[u] = {d, d};
+            return;
+        }
+        int mid = (l + r) / 2;
+        self(self, 2 * u, l, mid);
+        self(self, 2 * u + 1, mid + 1, r);
+        pull(u);
+    };
+
+    auto update = [&](auto& self, int u, int l, int r, int p) -> void {
+        if (l == r) {
+            long long d = a[l] - b[l];
+            tree[u] = {d, d};
+            return;
+        }
+        int mid = (l + r) / 2;
+        if (p <= mid) self(self, 2 * u, l, mid, p);
+        else self(self, 2 * u + 1, mid + 1, r, p);
+        pull(u);
+    };
+
+    build(build, 1, 1, n);
+
+    while (q--) {
+        int p;
+        long long x, y, z;
+        cin >> p >> x >> y >> z;
+        total_b -= b[p];
+        a[p] = x;
+        b[p] = y;
+        total_b += b[p];
+        update(update, 1, 1, n, p);
+        cout << total_b + min(0LL, tree[1].min_pref) << '\n';
+    }
+    return 0;
+}
+```
+::::
+
+---
+
+### `#122` (`SS-2`) — POJ 2914: Minimum Cut
+
+- **Judge / URL**: [POJ 2914](http://poj.org/problem?id=2914) (`[EN]`)
+- **Constraints**: Multiple testcases. Undirected weighted multigraph with $N \le 500$ vertices ($0$-indexed) and $M$ edges. Find the minimum total edge weight needed to disconnect the graph into at least two non-empty components.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+No source $s$ or sink $t$ is specified; we want the **Global Minimum Cut** $\lambda(G) = \min_{\emptyset \subsetneq S \subsetneq V} c(\delta(S))$ of an undirected graph with $N \le 500$. Running $N - 1$ Dinic calls on POJ's strict time limit TLEs, whereas **Stoer–Wagner's Algorithm** (`Section 3`) runs in $O(N^3)$ using flat array scans and vertex contractions.
+
+#### Step 2: Intermediate Algebraic Representation
+
+In phase $r \in \{1, \dots, N - 1\}$, let $v_1, \dots, v_{k-1}, v_k$ be a Maximum Adjacency Search (`MAS`) ordering of the $k = N - r + 1$ remaining supernodes, where $v_i = \arg\max_{u \notin A_{i-1}} w(A_{i-1}, u)$. By the Stoer–Wagner Theorem (Theorem 16.1), the last two vertices $s = v_{k-1}$ and $t = v_k$ satisfy:
+
+$$
+\lambda_{G_r}(s, t) = w(A_{k-1}, t), \qquad \lambda(G) = \min_{1 \le r \le N - 1} \lambda_{G_r}(s_r, t_r).
+$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Compilation)
+
+- Maintain a $0$-indexed $N \times N$ adjacency matrix `g[u][v]`. Because the input is a multigraph, **accumulate** parallel edges (`g[u][v] += w; g[v][u] += w;`).
+- Maintain `alive[0..N-1] = true`. In each of the $N - 1$ phases:
+  - Initialize `in_A[0..N-1] = false` and `wag[0..N-1] = 0`.
+  - Repeat $k = N - r + 1$ times: pick the alive vertex $u$ with `!in_A[u]` maximizing `wag[u]`, mark `in_A[u] = true`, record `prev = last; last = u`, and for all alive $v$ with `!in_A[v]`, add `wag[v] += g[u][v]`.
+  - After the $k$-th step, update `best = min(best, wag[last])`, then contract `last` into `prev`: mark `alive[last] = false` and add `g[prev][v] += g[last][v]`, `g[v][prev] += g[v][last]` for all alive $v \neq \text{prev}$.
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+- **Failure Guard**: In POJ 2914, multiple edges between the same pair $(u, v)$ appear in the input. Overwriting `g[u][v] = w` instead of adding `g[u][v] += w` silently drops parallel edges and produces WA.
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #122 (POJ 2914)"}
+- **Hint 1 (Diagnostic)**: To find the global minimum cut, you only need a fast way to find the minimum cut between *any one* pair of vertices $(s, t)$, record it, and merge $s$ and $t$ into a single supernode.
+- **Hint 2 (Algebraic)**: Run Maximum Adjacency Search (`MAS`), repeatedly adding the vertex $u \notin A$ that maximizes $\sum_{x \in A} w(x, u)$. What does Theorem 16.1 guarantee about the last two vertices $s, t$ added to $A$?
+- **Hint 3 (Compilation)**: Record `wag[t]` as the phase cut, contract $t$ into $s$ by summing row/column $t$ into row/column $s$, and remember to use `+=` when reading the input multigraph!
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution for #122 (POJ 2914 — Minimum Cut)"}
+```cpp
+#include <iostream>
+#include <vector>
+#include <algorithm>
+using namespace std;
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n, m;
+    while (cin >> n >> m) {
+        vector<vector<int>> g(n, vector<int>(n, 0));
+        for (int i = 0; i < m; ++i) {
+            int u, v, w;
+            cin >> u >> v >> w;
+            if (u != v) {
+                g[u][v] += w;
+                g[v][u] += w;
+            }
+        }
+
+        vector<bool> alive(n, true);
+        int best_cut = 1e9;
+
+        for (int phase = 0; phase < n - 1; ++phase) {
+            vector<bool> in_A(n, false);
+            vector<int> wag(n, 0);
+            int prev = -1, last = -1;
+
+            int remaining = n - phase;
+            for (int step = 0; step < remaining; ++step) {
+                int sel = -1;
+                for (int i = 0; i < n; ++i) {
+                    if (alive[i] && !in_A[i]) {
+                        if (sel == -1 || wag[i] > wag[sel]) {
+                            sel = i;
+                        }
+                    }
+                }
+                in_A[sel] = true;
+                prev = last;
+                last = sel;
+                for (int i = 0; i < n; ++i) {
+                    if (alive[i] && !in_A[i]) {
+                        wag[i] += g[sel][i];
+                    }
+                }
+            }
+
+            best_cut = min(best_cut, wag[last]);
+            alive[last] = false;
+            for (int i = 0; i < n; ++i) {
+                if (alive[i] && i != prev) {
+                    g[prev][i] += g[last][i];
+                    g[i][prev] += g[i][last];
+                }
+            }
+        }
+
+        cout << best_cut << '\n';
+    }
+    return 0;
+}
+```
+::::
+
+---
+
+### `#123` (`Int-1`) — Luogu P3329: `[ZJOI2011] 最小割` (All-Pairs Min-Cut Queries)
+
+- **Judge / URL**: [Luogu P3329](https://www.luogu.com.cn/problem/P3329) / BZOJ 2229 (`[ZH]`)
+- **Constraints**: $T \le 10$ testcases. Undirected weighted graph with $N \le 150, M \le 3000$. Given $Q \le 30$ queries $x$, output the number of unordered vertex pairs $\{u, v\}$ ($1 \le u < v \le N$) satisfying $\operatorname{MinCut}_G(u, v) \le x$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+We must evaluate $\lambda_G(u, v)$ for all $\binom{150}{2} = 11,175$ unordered pairs per testcase. Because the graph is **undirected**, we build **Gusfield's Gomory–Hu Cut Tree** $T_{\text{GH}}$ (`Section 4.3`) in $N - 1 = 149$ Dinic calls on the original graph $G$!
+
+#### Step 2: Intermediate Algebraic Representation
+
+By the Value Property of the Gomory–Hu tree $T_{\text{GH}} = (V, E_T, w_T)$:
+
+$$
+\lambda_G(u, v) = \min_{e \in P_{T_{\text{GH}}}(u, v)} w_T(e) \qquad \forall 1 \le u < v \le N.
+$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Compilation)
+
+- **Step 3a (Gusfield's Loop)**: Initialize `p[2..N] = 1`. For $s = 2 \dots N$, reset edge capacities in $G$ to their initial undirected values, run $\operatorname{Dinic}(s, t = p[s])$, record tree edge $(s, t)$ with weight $w_T(s) = \operatorname{MaxFlow}(s, t)$, and for each $u \in \{s + 1, \dots, N\}$ with `p[u] == t` and `vis[u] == true`, set `p[u] = s`.
+- **Step 3b (All-Pairs Bottlenecks)**: Build the adjacency list of $T_{\text{GH}}$ from `(s, p[s], w_tree[s])`. Run a simple tree DFS from each root $u \in \{1, \dots, N\}$ in $O(N^2)$ total time to collect all $\binom{N}{2}$ values $\lambda_G(u, v)$ into a flat array `cuts`, sort `cuts`, and answer each query $x$ in $O(\log N)$ via `std::upper_bound`.
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+- **Failure Guard**: In an undirected Dinic graph, each edge $\{u, v\}$ of capacity $c$ is stored as two directed half-edges `u -> v` (cap $c$) and `v -> u` (cap $c$). When resetting the flow network before each of the $N - 1$ Dinic runs, reset **both** half-edges back to capacity $c$ (not $c$ and $0$!).
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #123 (Luogu P3329)"}
+- **Hint 1 (Diagnostic)**: Don't run $\binom{N}{2}$ max-flows! How many max-flow runs suffice to capture all pairwise minimum cuts of an undirected graph?
+- **Hint 2 (Algebraic)**: Build the Gomory–Hu tree $T_{\text{GH}}$ using Gusfield's star-splitting loop ($N - 1$ Dinic calls on the original graph $G$).
+- **Hint 3 (Compilation)**: Run a DFS from every vertex $u = 1 \dots N$ on $T_{\text{GH}}$ to compute all $\binom{N}{2}$ path minimums in $O(N^2)$ time, sort them, and binary search each query $x$!
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution for #123 (Luogu P3329 — [ZJOI2011] 最小割)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 1e18;
+
+struct Dinic {
+    struct Edge {
+        int to, rev;
+        long long cap, init_cap;
+    };
+    int n;
+    vector<vector<Edge>> adj;
+    vector<int> level, ptr;
+
+    Dinic(int n) : n(n), adj(n + 1), level(n + 1), ptr(n + 1) {}
+
+    void add_undirected_edge(int u, int v, long long c) {
+        adj[u].push_back({v, (int)adj[v].size(), c, c});
+        adj[v].push_back({u, (int)adj[u].size() - 1, c, c});
+    }
+
+    void reset() {
+        for (int i = 1; i <= n; ++i)
+            for (auto& e : adj[i]) e.cap = e.init_cap;
+    }
+
+    bool bfs(int s, int t) {
+        fill(level.begin(), level.end(), -1);
+        level[s] = 0;
+        queue<int> q;
+        q.push(s);
+        while (!q.empty()) {
+            int u = q.front();
+            q.pop();
+            for (auto& e : adj[u]) {
+                if (e.cap > 0 && level[e.to] == -1) {
+                    level[e.to] = level[u] + 1;
+                    q.push(e.to);
+                }
+            }
+        }
+        return level[t] != -1;
+    }
+
+    long long dfs(int u, int t, long long pushed) {
+        if (pushed == 0 || u == t) return pushed;
+        for (int& cid = ptr[u]; cid < (int)adj[u].size(); ++cid) {
+            auto& e = adj[u][cid];
+            if (level[u] + 1 != level[e.to] || e.cap == 0) continue;
+            long long tr = dfs(e.to, t, min(pushed, e.cap));
+            if (tr == 0) continue;
+            e.cap -= tr;
+            adj[e.to][e.rev].cap += tr;
+            return tr;
+        }
+        return 0;
+    }
+
+    long long max_flow(int s, int t) {
+        reset();
+        long long flow = 0;
+        while (bfs(s, t)) {
+            fill(ptr.begin(), ptr.end(), 0);
+            while (long long pushed = dfs(s, t, INF)) flow += pushed;
+        }
+        return flow;
+    }
+};
+
+void solve_tc(bool first_tc) {
+    int n, m;
+    if (!(cin >> n >> m)) return;
+    if (!first_tc) cout << '\n';
+
+    Dinic dinic(n);
+    for (int i = 0; i < m; ++i) {
+        int u, v;
+        long long c;
+        cin >> u >> v >> c;
+        dinic.add_undirected_edge(u, v, c);
+    }
+
+    vector<int> p(n + 1, 1);
+    vector<long long> w_tree(n + 1, 0);
+    p[1] = 0;
+
+    for (int s = 2; s <= n; ++s) {
+        int t = p[s];
+        w_tree[s] = dinic.max_flow(s, t);
+        for (int u = s + 1; u <= n; ++u) {
+            if (p[u] == t && dinic.level[u] != -1) {
+                p[u] = s;
+            }
+        }
+    }
+
+    vector<vector<pair<int, long long>>> tree(n + 1);
+    for (int i = 2; i <= n; ++i) {
+        tree[i].push_back({p[i], w_tree[i]});
+        tree[p[i]].push_back({i, w_tree[i]});
+    }
+
+    vector<long long> all_cuts;
+    all_cuts.reserve(n * (n - 1) / 2);
+    for (int root = 1; root <= n; ++root) {
+        auto dfs = [&](auto& self, int u, int fa, long long cur_min) -> void {
+            if (u > root) all_cuts.push_back(cur_min);
+            for (auto& [v, w] : tree[u]) {
+                if (v != fa) self(self, v, u, min(cur_min, w));
+            }
+        };
+        dfs(dfs, root, 0, INF);
+    }
+    sort(all_cuts.begin(), all_cuts.end());
+
+    int q;
+    cin >> q;
+    while (q--) {
+        long long x;
+        cin >> x;
+        auto it = upper_bound(all_cuts.begin(), all_cuts.end(), x);
+        cout << (it - all_cuts.begin()) << '\n';
+    }
+}
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+    int T;
+    if (cin >> T) {
+        for (int t = 0; t < T; ++t) solve_tc(t == 0);
+    }
+    return 0;
+}
+```
+::::
+
+---
+
+### `#124` (`Int-2`) — Luogu P4123: `[CQOI2016] 不同的最小割` (Distinct Pairwise Minimum Cuts)
+
+- **Judge / URL**: [Luogu P4123](https://www.luogu.com.cn/problem/P4123) / BZOJ 4519 (`[ZH]`)
+- **Constraints**: Undirected weighted graph with $N \le 850$ vertices and $M \le 8500$ edges. Output the number of **distinct values** appearing in the multiset $\{\operatorname{MinCut}_G(u, v) : 1 \le u < v \le N\}$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+At $N = 850$, there are $\binom{850}{2} = 360,825$ vertex pairs. However, by Corollary 16.3 (the Ultrametric Triangle Inequality) and the Gomory–Hu Tree Bottleneck Property, $\lambda_G(u, v)$ can take **at most $N - 1$ distinct values**, which are precisely the edge weights of $T_{\text{GH}}$!
+
+#### Step 2: Intermediate Algebraic Representation
+
+Let $T_{\text{GH}} = (V, E_T, w_T)$ be the Gomory–Hu tree of $G$. We claim the exact set equality:
+
+$$
+\big\{\lambda_G(u, v) : 1 \le u < v \le N\big\} = \big\{w_T(e) : e \in E_T\big\}.
+$$
+
+*Proof*:
+
+- ($\subseteq$): Every pair $\{u, v\}$ has $\lambda_G(u, v) = \min_{e \in P_T(u, v)} w_T(e)$, which equals the weight $w_T(e^*)$ of the bottleneck edge $e^* \in E_T$ on its tree path.
+- ($\supseteq$): Every tree edge $e = (s, t) \in E_T$ is the sole edge on the length-$1$ tree path between its own endpoints $s$ and $t$, so $w_T(e) = \lambda_G(s, t)$ is achieved by the pair $\{s, t\}$. $\blacksquare$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Compilation)
+
+We do not even need to construct the adjacency list of $T_{\text{GH}}$ or run any tree traversals! Simply execute Gusfield's $N - 1$ star-splitting loop, insert the $N - 1$ returned max-flow values `w_tree[s]` into a `std::set<long long>`, and print `distinct_cuts.size()`.
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+- **Toy Trace**: In the $N = 4$ trace from Section 4.4, the $\binom{4}{2} = 6$ pairwise cuts are $\lambda(1,2)=\lambda(1,3)=\lambda(1,4)=5$, $\lambda(2,3)=\lambda(2,4)=7$, $\lambda(3,4)=8$, whose set of distinct values $\{5, 7, 8\}$ is identical to the $3$ tree edge weights $\{w_T(2), w_T(3), w_T(4)\} = \{5, 7, 8\}$.
+- **Failure Guard**: Ensure `p[u] == t` is checked when re-parenting `p[u] = s` during Gusfield's loop (`FM-16`).
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #124 (Luogu P4123)"}
+- **Hint 1 (Diagnostic)**: By the Ultrametric Triangle Inequality $\lambda(u, w) \ge \min(\lambda(u, v), \lambda(v, w))$, how many distinct values can $\lambda(u, v)$ take across all $\binom{N}{2}$ pairs?
+- **Hint 2 (Algebraic)**: Prove that the set of all $\binom{N}{2}$ path-minimum values in a tree $T_{\text{GH}}$ is equal to the set of the $N - 1$ edge weights of $T_{\text{GH}}$.
+- **Hint 3 (Compilation)**: Run Gusfield's algorithm ($N - 1$ Dinic calls on $G$), insert each of the $N - 1$ max-flow answers into a `std::set<long long>`, and output `set.size()`!
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution for #124 (Luogu P4123 — [CQOI2016] 不同的最小割)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 1e18;
+
+struct Dinic {
+    struct Edge {
+        int to, rev;
+        long long cap, init_cap;
+    };
+    int n;
+    vector<vector<Edge>> adj;
+    vector<int> level, ptr;
+
+    Dinic(int n) : n(n), adj(n + 1), level(n + 1), ptr(n + 1) {}
+
+    void add_undirected_edge(int u, int v, long long c) {
+        adj[u].push_back({v, (int)adj[v].size(), c, c});
+        adj[v].push_back({u, (int)adj[u].size() - 1, c, c});
+    }
+
+    void reset() {
+        for (int i = 1; i <= n; ++i)
+            for (auto& e : adj[i]) e.cap = e.init_cap;
+    }
+
+    bool bfs(int s, int t) {
+        fill(level.begin(), level.end(), -1);
+        level[s] = 0;
+        queue<int> q;
+        q.push(s);
+        while (!q.empty()) {
+            int u = q.front();
+            q.pop();
+            for (auto& e : adj[u]) {
+                if (e.cap > 0 && level[e.to] == -1) {
+                    level[e.to] = level[u] + 1;
+                    q.push(e.to);
+                }
+            }
+        }
+        return level[t] != -1;
+    }
+
+    long long dfs(int u, int t, long long pushed) {
+        if (pushed == 0 || u == t) return pushed;
+        for (int& cid = ptr[u]; cid < (int)adj[u].size(); ++cid) {
+            auto& e = adj[u][cid];
+            if (level[u] + 1 != level[e.to] || e.cap == 0) continue;
+            long long tr = dfs(e.to, t, min(pushed, e.cap));
+            if (tr == 0) continue;
+            e.cap -= tr;
+            adj[e.to][e.rev].cap += tr;
+            return tr;
+        }
+        return 0;
+    }
+
+    long long max_flow(int s, int t) {
+        reset();
+        long long flow = 0;
+        while (bfs(s, t)) {
+            fill(ptr.begin(), ptr.end(), 0);
+            while (long long pushed = dfs(s, t, INF)) flow += pushed;
+        }
+        return flow;
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n, m;
+    if (!(cin >> n >> m)) return 0;
+
+    Dinic dinic(n);
+    for (int i = 0; i < m; ++i) {
+        int u, v;
+        long long c;
+        cin >> u >> v >> c;
+        dinic.add_undirected_edge(u, v, c);
+    }
+
+    vector<int> p(n + 1, 1);
+    set<long long> distinct_cuts;
+
+    for (int s = 2; s <= n; ++s) {
+        int t = p[s];
+        long long cut_val = dinic.max_flow(s, t);
+        distinct_cuts.insert(cut_val);
+        for (int u = s + 1; u <= n; ++u) {
+            if (p[u] == t && dinic.level[u] != -1) {
+                p[u] = s;
+            }
+        }
+    }
+
+    cout << distinct_cuts.size() << '\n';
+    return 0;
+}
+```
+::::
+
+
+---
+
+### `#125` (`Adv-1`) — Codeforces 724E: Goods Transportation
+
+- **Judge / URL**: [Codeforces 724E](https://codeforces.com/problemset/problem/724/E) (`[EN]`)
+- **Constraints**: $N \le 10^4$ cities, uniform transit capacity $c \in [0, 10^9]$, supplies $p_i \in [0, 10^9]$, demands $s_i \in [0, 10^9]$. Every city $i$ can send up to $c$ units of goods directly to every city $j > i$ ($1 \le i < j \le N$). Compute the maximum total goods delivered from $s$ to $t$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+This is the flagship **Direction B Flow Elimination** problem (`Section 2.2`). The network has $N = 10^4$ vertices and $\binom{N}{2} \approx 5 \cdot 10^7$ directed arcs $i \to j$ ($i < j$) of uniform capacity $c$. Building the graph is impossible; we switch to minimizing the dual $s$-$t$ cut cost $C(S)$ over all $S \subseteq \{1, \dots, N\}$.
+
+#### Step 2: Intermediate Algebraic Representation
+
+For any source-side subset $S \subseteq \{1, \dots, N\}$ of cardinality $k = |S|$, our derivation in Section 2.2 gives two equivalent representations:
+
+1. **Sequential Prefix-Count DP ($O(N^2)$)**:
+   Charging each severed transit arc $u \to i$ ($u < i, u \in S, i \notin S$) to its right endpoint $i \notin S$:
+   $$dp[i][k] = \min\big(dp[i-1][k] + p_i + k \cdot c,\;\; dp[i-1][k-1] + s_i\big).$$
+2. **Global Cardinality Decoupling ($O(N \log N)$ Slope-Difference Greedy)**:
+   Using $\big|\{(i, j) : i < j, i \in S, j \notin S\}\big| = \sum_{i \in S} (N - i) - \binom{k}{2}$, we obtain:
+   $$C(S) = \sum_{i=1}^N p_i - \frac{k(k-1)}{2}c + \sum_{i \in S} \underbrace{\big(s_i - p_i + (N - i)c\big)}_{w_i}.$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Compilation)
+
+- **For the $O(N \log N)$ Greedy**: Compute $w_i = s_i - p_i + (N - i)c$ for $i = 1, \dots, N$, sort $w_1 \le w_2 \le \dots \le w_N$ ascending, and sweep $k = 0 \dots N$ keeping the running prefix sum $\sum_{r=1}^k w_{(r)}$.
+- **For the $O(N^2)$ Rolling-Array DP**: Maintain a 1D array `dp[0..N]` initialized to `dp[0] = 0, dp[1..N] = INF`. In step $i$, update $k$ **backwards** from $i$ down to $1$:
+  $$\text{dp}[k] = \min\big(\text{dp}[k] + p_i + k \cdot c,\;\; \text{dp}[k - 1] + s_i\big), \qquad \text{dp}[0] \gets \text{dp}[0] + p_i.$$
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+- **Toy Trace ($N = 3, c = 2$, $p = [5, 1, 6]$, $s = [2, 8, 3]$)**:
+  - All-$T$ baseline: $\sum p_i = 12$.
+  - Weights $w_i = s_i - p_i + (3 - i)\cdot 2$: $w_1 = 2 - 5 + 4 = +1$, $w_2 = 8 - 1 + 2 = +9$, $w_3 = 3 - 6 + 0 = -3$.
+  - Sorted $w$: $[-3, +1, +9]$.
+  - $k = 0: 12$; $k = 1: 12 - 0 + (-3) = 9$; $k = 2: 12 - 2 + (-3 + 1) = \mathbf{8}$; $k = 3: 12 - 6 + (-3 + 1 + 9) = 13$. Minimum cut is **$8$**.
+- **Failure Guard (`FM-16a`)**: Never charge $c$ when $i \in S$ and $j \notin S$ for $j < i$! Only forward arcs $u \to v$ ($u < v$) exist in the DAG.
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #125 (CF 724E)"}
+- **Hint 1 (Diagnostic)**: Convert Max-Flow into Min-Cut: each city $i$ chooses to be on the source side $S$ or the sink side $\bar{S}$.
+- **Hint 2 (Algebraic)**: When city $i$ is placed in $\bar{S}$, how many transit arcs $u \to i$ ($u < i$) are severed? Exactly $k$, the number of cities before $i$ that were placed in $S$!
+- **Hint 3 (Compilation)**: Either run the 1D rolling DP `dp[k] = min(dp[k] + p[i] + k * c, dp[k-1] + s[i])` in $O(N^2)$, or use $\sum_{i \in S, j \notin S, i < j} 1 = \sum_{i \in S}(N - i) - \binom{|S|}{2}$ to sort by $w_i = s_i - p_i + (N - i)c$ in $O(N \log N)$!
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution for #125 (CF 724E — Both $O(N \log N)$ Greedy & $O(N^2)$ DP)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n;
+    long long c;
+    if (!(cin >> n >> c)) return 0;
+
+    vector<long long> p(n + 1), s(n + 1);
+    for (int i = 1; i <= n; ++i) cin >> p[i];
+    for (int i = 1; i <= n; ++i) cin >> s[i];
+
+    // Method 1: O(N log N) Algebraic Decoupling & Slope-Difference Greedy
+    long long base_cut = 0;
+    vector<long long> w(n);
+    for (int i = 1; i <= n; ++i) {
+        base_cut += p[i];
+        w[i - 1] = s[i] - p[i] + (long long)(n - i) * c;
+    }
+    sort(w.begin(), w.end());
+
+    long long ans = base_cut;
+    long long pref_w = 0;
+    for (int k = 1; k <= n; ++k) {
+        pref_w += w[k - 1];
+        long long pairs_in_S = (long long)k * (k - 1) / 2;
+        ans = min(ans, base_cut - pairs_in_S * c + pref_w);
+    }
+
+    cout << ans << '\n';
+    return 0;
+}
+
+/*
+// Reference Method 2: O(N^2) Rolling-Array Cardinality DP (80 KB memory)
+long long solve_dp(int n, long long c, const vector<long long>& p, const vector<long long>& s) {
+    const long long INF = 4e18;
+    vector<long long> dp(n + 1, INF);
+    dp[0] = 0;
+    for (int i = 1; i <= n; ++i) {
+        for (int k = i; k >= 1; --k) {
+            dp[k] = min(dp[k] + p[i] + (long long)k * c, dp[k - 1] + s[i]);
+        }
+        dp[0] += p[i];
+    }
+    return *min_element(dp.begin(), dp.end());
+}
+*/
+```
+::::
+
+---
+
+### `#126` (`Adv-2`) — Codeforces 1919F2: Wine Factory (Hard Version)
+
+- **Judge / URL**: [Codeforces 1919F2](https://codeforces.com/problemset/problem/1919/F2) (`[EN]`)
+- **Constraints**: $N, Q \le 5 \cdot 10^5$, $a_i, b_i \in [0, 10^9]$, and **finite forward pipe capacities** $c_i \in [0, 10^{18}]$ for $1 \le i \le N - 1$. Given $Q$ online point updates to $(a_p, b_p, c_p)$, output the maximum wine produced after each update.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+Unlike `#121` (`CF 1919F1`), the pipe capacities $c_i$ are now **finite**, so a minimum $s$-$t$ cut can sever any subset of forward pipes $i \to i + 1$. Because the graph is a 1D chain of treewidth $1$, the cut polynomial decomposes into a product of $2 \times 2$ $(\min, +)$ tropical matrices (`Section 2.3`).
+
+#### Step 2: Intermediate Algebraic Representation
+
+Let state $0$ denote $x_i \in \bar{S}$ (sink side $T$, paying $a_i$) and state $1$ denote $x_i \in S$ (source side $S$, paying $b_i$). Across pipe $i \xrightarrow{c_i} i + 1$, the directed cut penalty is $c_i \cdot [x_i = 1 \land x_{i+1} = 0]$.
+
+For every Segment Tree interval $[L, R]$, define the $2 \times 2$ matrix $D_{[L, R]}(u, v)$ ($u, v \in \{0, 1\}$) as the minimum cut cost inside $[L, R]$ given boundary states $x_L = u$ and $x_R = v$:
+
+$$
+D_{[i, i]} = \begin{pmatrix} a_i & +\infty \\ +\infty & b_i \end{pmatrix}, \qquad D_{[L, R]}(u, v) = \min_{x, y \in \{0, 1\}} \Big( D_{[L, M]}(u, x) + D_{[M+1, R]}(y, v) + c_M \cdot [x = 1 \land y = 0] \Big).
+$$
+
+#### Step 3: Reverse-Engineering Scratchpad (Mechanical Compilation)
+
+- Store a $2 \times 2$ array `long long d[2][2]` in each Segment Tree node.
+- Notice that in the merge across midpoint $M$, the pipe capacity $c_M$ only participates at the single node whose midpoint is $M$! When query updates $(a_p, b_p, c_p)$, updating leaf $p$ automatically traverses every ancestor whose midpoint could be $p$ (since $p \in [L, M]$ for that ancestor).
+- After each update, output $\min_{u, v \in \{0, 1\}} D_{[1, N]}(u, v)$.
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+- **Toy Trace ($N = 2$)**: Let $a = [10, 1]$, $b = [1, 10]$, and pipe $c_1 = 3$.
+  - Leaf $1$: $\begin{pmatrix} 10 & \infty \\ \infty & 1 \end{pmatrix}$; Leaf $2$: $\begin{pmatrix} 1 & \infty \\ \infty & 10 \end{pmatrix}$.
+  - Merged root $D_{[1, 2]}$:
+    - $(0, 0)$ ($T, T$): $a_1 + a_2 = 10 + 1 = 11$.
+    - $(0, 1)$ ($T, S$): $a_1 + b_2 + 0 = 10 + 10 = 20$.
+    - $(1, 0)$ ($S, T$): $b_1 + a_2 + c_1 = 1 + 1 + 3 = \mathbf{5}$ (severing $1 \to t$, $s \to 2$, and pipe $1 \to 2$!).
+    - $(1, 1)$ ($S, S$): $b_1 + b_2 = 1 + 10 = 11$.
+  - Minimum cut is $5$.
+- **Failure Guard (`FM-16a`)**: Adding $+c_M$ when $(x, y) = (0, 1)$ ($T \to S$) treats the pipe as undirected and gives $10 + 10 + 3 = 23$ on $(0, 1)$, corrupting transitions whenever $T \to S$ is optimal. Only $(x, y) = (1, 0)$ ($S \to T$) pays $c_M$!
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #126 (CF 1919F2)"}
+- **Hint 1 (Diagnostic)**: When $c_i < \infty$, the cut assignment $(x_1, \dots, x_N) \in \{T, S\}^N$ can switch from $S$ to $T$ at any pipe $i \to i+1$ by paying $c_i$.
+- **Hint 2 (Algebraic)**: For each segment $[L, R]$, maintain the 4 values `dp[u][v]` ($u, v \in \{0, 1\}$): the minimum cut cost on $[L, R]$ when $x_L = u$ and $x_R = v$.
+- **Hint 3 (Compilation)**: When merging `[L, M]` (ending in state $x$) and `[M+1, R]` (starting in state $y$), add `c[M]` **only** when $x = 1$ ($S$) and $y = 0$ ($T$)!
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution for #126 (CF 1919F2 — Wine Factory Hard Version)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 4e18;
+
+struct Mat {
+    long long d[2][2];
+    Mat() {
+        d[0][0] = d[0][1] = d[1][0] = d[1][1] = INF;
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n, q;
+    if (!(cin >> n >> q)) return 0;
+
+    vector<long long> a(n + 1), b(n + 1), c(n + 1, 0);
+    for (int i = 1; i <= n; ++i) cin >> a[i];
+    for (int i = 1; i <= n; ++i) cin >> b[i];
+    for (int i = 1; i < n; ++i) cin >> c[i];
+
+    vector<Mat> tree(4 * n + 4);
+
+    auto merge_nodes = [&](const Mat& L, const Mat& R, long long pipe_c) {
+        Mat res;
+        for (int u = 0; u < 2; ++u) {
+            for (int x = 0; x < 2; ++x) {
+                if (L.d[u][x] >= INF) continue;
+                for (int y = 0; y < 2; ++y) {
+                    long long cross = (x == 1 && y == 0) ? pipe_c : 0;
+                    for (int v = 0; v < 2; ++v) {
+                        if (R.d[y][v] >= INF) continue;
+                        res.d[u][v] = min(res.d[u][v], L.d[u][x] + R.d[y][v] + cross);
+                    }
+                }
+            }
+        }
+        return res;
+    };
+
+    auto build = [&](auto& self, int u, int l, int r) -> void {
+        if (l == r) {
+            tree[u] = Mat();
+            tree[u].d[0][0] = a[l]; // l in T (sink side)
+            tree[u].d[1][1] = b[l]; // l in S (source side)
+            return;
+        }
+        int mid = (l + r) / 2;
+        self(self, 2 * u, l, mid);
+        self(self, 2 * u + 1, mid + 1, r);
+        tree[u] = merge_nodes(tree[2 * u], tree[2 * u + 1], c[mid]);
+    };
+
+    auto update = [&](auto& self, int u, int l, int r, int p) -> void {
+        if (l == r) {
+            tree[u] = Mat();
+            tree[u].d[0][0] = a[l];
+            tree[u].d[1][1] = b[l];
+            return;
+        }
+        int mid = (l + r) / 2;
+        if (p <= mid) self(self, 2 * u, l, mid, p);
+        else self(self, 2 * u + 1, mid + 1, r, p);
+        tree[u] = merge_nodes(tree[2 * u], tree[2 * u + 1], c[mid]);
+    };
+
+    build(build, 1, 1, n);
+
+    while (q--) {
+        int p;
+        long long x, y, z;
+        cin >> p >> x >> y >> z;
+        a[p] = x;
+        b[p] = y;
+        if (p < n) c[p] = z;
+        update(update, 1, 1, n, p);
+
+        long long ans = INF;
+        for (int u = 0; u < 2; ++u)
+            for (int v = 0; v < 2; ++v)
+                ans = min(ans, tree[1].d[u][v]);
+        cout << ans << '\n';
+    }
+    return 0;
+}
+```
+::::
+
+---
+
+### `#127` (`Mas-1`) — Codeforces 343E: Pumping Stations
+
+- **Judge / URL**: [Codeforces 343E](https://codeforces.com/problemset/problem/343/E) (`[EN]`)
+- **Constraints**: Undirected weighted graph with $N \le 200$ vertices and $M \le 1000$ edges. Find a permutation $\pi = (\pi_1, \pi_2, \dots, \pi_N)$ of $\{1, \dots, N\}$ maximizing $\sum_{i=1}^{N-1} \operatorname{MinCut}_G(\pi_i, \pi_{i+1})$, and output both the maximum sum and the optimal permutation $\pi$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+We want a maximum-weight Hamiltonian path in the complete graph of pairwise minimum cuts $\lambda_G(u, v)$. While Maximum Travelling Salesman is NP-hard on general metrics, $\lambda_G(u, v)$ is an **ultrametric tree-bottleneck function** on the Gomory–Hu tree $T_{\text{GH}}$!
+
+#### Step 2: Intermediate Algebraic Representation & Exact Upper Bound Proof
+
+Let $T_{\text{GH}} = (V, E_T, w_T)$ be the Gomory–Hu tree of $G$. We prove that for **any** permutation $\pi$, its objective is bounded above by the total weight of $T_{\text{GH}}$, and that this upper bound is **always achievable**:
+
+$$
+\max_{\pi \in S_N} \sum_{i=1}^{N-1} \lambda_G(\pi_i, \pi_{i+1}) = \sum_{e \in E_T} w_T(e).
+$$
+
+*Proof of Upper Bound & Constructive Equality*:
+
+1. **Upper Bound ($\le$)**: Consider the **minimum-weight edge** $e_{\min} \in \arg\min_{e \in E_T} w_T(e)$ of $T_{\text{GH}}$. Removing $e_{\min}$ splits $T_{\text{GH}}$ into two subtrees $T_1$ and $T_2$. Any permutation $\pi_1, \dots, \pi_N$ must step between $V(T_1)$ and $V(T_2)$ at least once, and that step uses $e_{\min}$ on its tree path, paying $\le w_T(e_{\min})$. More generally, mapping each adjacent step $(\pi_i, \pi_{i+1})$ to a bottleneck edge on $P_T(\pi_i, \pi_{i+1})$ via induction on $|V|$ shows $\sum_{i=1}^{N-1} \lambda_G(\pi_i, \pi_{i+1}) \le \sum_{e \in E_T} w_T(e)$.
+2. **Constructive Equality ($=$)**: Suppose we order **all vertices of $T_1$ first**, followed by **all vertices of $T_2$**. Because $e_{\min}$ is the *globally lightest* edge in the entire tree $T_{\text{GH}}$, for *any* last vertex $x \in V(T_1)$ and *any* first vertex $y \in V(T_2)$, the path $P_T(x, y)$ crosses $e_{\min}$ and every other edge on $P_T(x, y)$ has weight $\ge w_T(e_{\min})$! Therefore, the boundary transition $(x, y)$ between $T_1$ and $T_2$ achieves bottleneck **exactly $w_T(e_{\min})$**! Applying the exact same rule recursively to $T_1$ and $T_2$ achieves $\sum_{e \in E_T} w_T(e)$! $\blacksquare$
+
+#### Step 3: Reverse-Engineering Scratchpad (Kruskal DSU Concatenation)
+
+Splitting $T_{\text{GH}}$ top-down at the minimum-weight edge $e_{\min}$ is bottom-up equivalent to **Kruskal's DSU in descending order of edge weights**!
+
+- Build $T_{\text{GH}}$ in $N - 1$ Dinic calls using Gusfield's algorithm.
+- Sort the $N - 1$ edges of $T_{\text{GH}}$ in **descending** order of $w_T(e)$.
+- Maintain a DSU where each component $c$ stores an ordered list `order[c]` of its vertices (initially `order[u] = {u}`).
+- For each tree edge $e = (u, v)$ from heaviest to lightest: append `order[find(v)]` to the end of `order[find(u)]` and unite the two components! At the end, the single list `order[find(1)]` is the exact optimal permutation $\pi$!
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+- **Failure Guard**: Splitting at an arbitrary edge (or sorting edges ascending instead of **descending** in DSU) fails because when two components are concatenated across a heavy edge $e$, a *lighter* edge already inside one of the components would become the bottleneck on $P_T(x, y)$ instead of $e$!
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #127 (CF 343E)"}
+- **Hint 1 (Diagnostic)**: Build the Gomory–Hu tree $T_{\text{GH}}$. Why can no permutation ever exceed the sum of the $N - 1$ edge weights of $T_{\text{GH}}$?
+- **Hint 2 (Algebraic)**: Let $e_{\min}$ be the *lightest* edge in $T_{\text{GH}}$, splitting $T_{\text{GH}}$ into $T_1$ and $T_2$. If you visit all of $T_1$ and then all of $T_2$, what is the bottleneck between the last node of $T_1$ and the first node of $T_2$? Always $w_T(e_{\min})$!
+- **Hint 3 (Compilation)**: Sort the $N - 1$ edges of $T_{\text{GH}}$ in **descending** order of weight and merge component vertex lists using a Disjoint Set Union (DSU)!
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution for #127 (CF 343E — Pumping Stations)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+const int INF = 1e9;
+
+struct Dinic {
+    struct Edge {
+        int to, rev, cap, init_cap;
+    };
+    int n;
+    vector<vector<Edge>> adj;
+    vector<int> level, ptr;
+
+    Dinic(int n) : n(n), adj(n + 1), level(n + 1), ptr(n + 1) {}
+
+    void add_undirected_edge(int u, int v, int c) {
+        adj[u].push_back({v, (int)adj[v].size(), c, c});
+        adj[v].push_back({u, (int)adj[u].size() - 1, c, c});
+    }
+
+    void reset() {
+        for (int i = 1; i <= n; ++i)
+            for (auto& e : adj[i]) e.cap = e.init_cap;
+    }
+
+    bool bfs(int s, int t) {
+        fill(level.begin(), level.end(), -1);
+        level[s] = 0;
+        queue<int> q;
+        q.push(s);
+        while (!q.empty()) {
+            int u = q.front();
+            q.pop();
+            for (auto& e : adj[u]) {
+                if (e.cap > 0 && level[e.to] == -1) {
+                    level[e.to] = level[u] + 1;
+                    q.push(e.to);
+                }
+            }
+        }
+        return level[t] != -1;
+    }
+
+    int dfs(int u, int t, int pushed) {
+        if (pushed == 0 || u == t) return pushed;
+        for (int& cid = ptr[u]; cid < (int)adj[u].size(); ++cid) {
+            auto& e = adj[u][cid];
+            if (level[u] + 1 != level[e.to] || e.cap == 0) continue;
+            int tr = dfs(e.to, t, min(pushed, e.cap));
+            if (tr == 0) continue;
+            e.cap -= tr;
+            adj[e.to][e.rev].cap += tr;
+            return tr;
+        }
+        return 0;
+    }
+
+    int max_flow(int s, int t) {
+        reset();
+        int flow = 0;
+        while (bfs(s, t)) {
+            fill(ptr.begin(), ptr.end(), 0);
+            while (int pushed = dfs(s, t, INF)) flow += pushed;
+        }
+        return flow;
+    }
+};
+
+struct TreeEdge {
+    int u, v, w;
+    bool operator<(const TreeEdge& other) const {
+        return w > other.w; // Sort descending!
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n, m;
+    if (!(cin >> n >> m)) return 0;
+
+    Dinic dinic(n);
+    for (int i = 0; i < m; ++i) {
+        int u, v, w;
+        cin >> u >> v >> w;
+        dinic.add_undirected_edge(u, v, w);
+    }
+
+    vector<int> p(n + 1, 1);
+    vector<TreeEdge> tree_edges;
+    long long total_weight = 0;
+
+    for (int s = 2; s <= n; ++s) {
+        int t = p[s];
+        int w = dinic.max_flow(s, t);
+        total_weight += w;
+        tree_edges.push_back({s, t, w});
+        for (int u = s + 1; u <= n; ++u) {
+            if (p[u] == t && dinic.level[u] != -1) {
+                p[u] = s;
+            }
+        }
+    }
+
+    sort(tree_edges.begin(), tree_edges.end());
+
+    vector<int> dsu(n + 1);
+    vector<vector<int>> comp_order(n + 1);
+    for (int i = 1; i <= n; ++i) {
+        dsu[i] = i;
+        comp_order[i] = {i};
+    }
+
+    auto find_set = [&](auto& self, int x) -> int {
+        return dsu[x] == x ? x : dsu[x] = self(self, dsu[x]);
+    };
+
+    for (const auto& e : tree_edges) {
+        int ru = find_set(find_set, e.u);
+        int rv = find_set(find_set, e.v);
+        if (ru != rv) {
+            comp_order[ru].insert(comp_order[ru].end(),
+                                  comp_order[rv].begin(), comp_order[rv].end());
+            comp_order[rv].clear();
+            dsu[rv] = ru;
+        }
+    }
+
+    int root = find_set(find_set, 1);
+    cout << total_weight << '\n';
+    for (int i = 0; i < n; ++i) {
+        cout << comp_order[root][i] << (i + 1 == n ? '\n' : ' ');
+    }
+    return 0;
+}
+```
+::::
+
+---
+
+### `#128` (`Mas-2`) — Codeforces 903G: Yet Another MaxFlow Problem
+
+- **Judge / URL**: [Codeforces 903G](https://codeforces.com/problemset/problem/903/G) (`[EN]`)
+- **Constraints**: $N, M, Q \le 2 \cdot 10^5$. Directed left chain $A_1 \xrightarrow{x_1} A_2 \xrightarrow{x_2} \dots \xrightarrow{x_{N-1}} A_N$, directed right chain $B_1 \xrightarrow{y_1} B_2 \xrightarrow{y_2} \dots \xrightarrow{y_{N-1}} B_N$, and $M$ directed cross-edges $A_u \xrightarrow{z_e} B_v$. Output $\operatorname{MaxFlow}(A_1, B_N)$ initially and after each of $Q$ point updates changing a single left-chain capacity $x_i$.
+
+#### Step 1: Non-Graph Diagnostic Signal
+
+We have two coupled forward chains of length $N = 2 \cdot 10^5$ with $Q = 2 \cdot 10^5$ updates to $x_i$. Crucially, notice two facts (`Section 2.4`):
+
+1. Because all edges on $A_1 \to \dots \to A_N$ and $B_1 \to \dots \to B_N$ point forward from $s = A_1$ toward $t = B_N$, any minimal $A_1$-$B_N$ cut puts a **contiguous prefix** $\{A_1, \dots, A_i\}$ ($1 \le i \le N$, paying $x_i$ with $x_N = 0$) and a **contiguous prefix** $\{B_1, \dots, B_j\}$ ($0 \le j \le N - 1$, paying $y_j$ with $y_0 = 0$) on the source side $S$!
+2. The $Q$ online queries **only modify $x_i$**—they never modify $y_j$ or the cross-edges $z_e$!
+
+#### Step 2: Intermediate Algebraic Representation
+
+For a chosen left cut index $i \in \{1, \dots, N\}$ ($A_1 \dots A_i \in S$) and right cut index $j \in \{0, \dots, N - 1\}$ ($B_1 \dots B_j \in S$, $B_{j+1} \dots B_N \in T$), a cross-edge $A_u \to B_v$ of capacity $z_{uv}$ crosses from $S$ to $T$ if and only if $u \le i$ and $v > j$ (i.e., $j \in [0, v - 1]$):
+
+$$
+\operatorname{Cut}(i, j) = x_i + \underbrace{\left( y_j + \sum_{u \le i,\; v > j} z_{uv} \right)}_{f_i(j)}, \qquad \operatorname{MaxFlow}(A_1, B_N) = \min_{1 \le i \le N} \big(x_i + C_i\big),
+$$
+
+where $C_i = \min_{0 \le j \le N - 1} f_i(j)$ is completely independent of $x$ and can be **precomputed once** for all $i = 1, \dots, N$!
+
+#### Step 3: Reverse-Engineering Scratchpad (Sweep-Line Lazy Segment Tree)
+
+- **Phase 1 (Precomputing $C_1, \dots, C_N$ in $O((N + M) \log N)$)**:
+  - Build a Lazy Range-Add Range-Min Segment Tree over $j \in [0, N - 1]$, initialized at leaf $j$ with $y_j$ ($y_0 = 0$).
+  - Sweep $i$ from $1$ to $N$: for each cross-edge $A_i \to B_v$ of weight $z$, add $+z$ to the prefix range $j \in [0, v - 1]$ in the Segment Tree!
+  - After processing all cross-edges out of $A_i$, query the global minimum of the Segment Tree and store it as $C_i = \text{seg.root\_min}()$.
+- **Phase 2 (Answering $Q$ Updates to $x_i$ in $O(Q \log N)$)**:
+  - Maintain the $N$ values $x_i + C_i$ in a `std::multiset<long long>` (or a second point-update Segment Tree), updating $x_i + C_i$ in $O(\log N)$ per query!
+
+#### Step 4: Toy Trace & Failure-Mode Guard
+
+- **Failure Guard**: Do not forget $j = 0$ ($y_0 = 0$, placing **all** $B_1, \dots, B_N$ on the sink side $T$) and $i = N$ ($x_N = 0$, placing **all** $A_1, \dots, A_N$ on the source side $S$)! If $j = 0$ is omitted from the Segment Tree domain $[0, N - 1]$, any cut that leaves $B_1 \in T$ (which is required whenever $A_i \to B_1$ is severed!) will be missed.
+
+:::: {.callout-note collapse="true" title="3-Tier Progressive Hints for #128 (CF 903G)"}
+- **Hint 1 (Diagnostic)**: Why does an optimal cut never sever more than one edge $A_i \to A_{i+1}$ on the $A$-chain and one edge $B_j \to B_{j+1}$ on the $B$-chain?
+- **Hint 2 (Algebraic)**: For a fixed $A$-prefix $A_1 \dots A_i \in S$ and $B$-prefix $B_1 \dots B_j \in S$, each cross-edge $A_u \to B_v$ is cut iff $u \le i$ and $j \le v - 1$. Notice that the queries never change $y_j$ or the cross-edges!
+- **Hint 3 (Compilation)**: Sweep $i = 1 \dots N$ and use a Lazy Range-Add Range-Min Segment Tree over $j \in [0, N - 1]$ to precompute $C_i = \min_j (y_j + \sum_{u \le i, v > j} z_{uv})$. Then maintain $\min_i (x_i + C_i)$ under point updates to $x_i$!
+::::
+
+:::: {.callout-note collapse="true" title="Complete C++ Solution for #128 (CF 903G — Yet Another MaxFlow Problem)"}
+```cpp
+#include <bits/stdc++.h>
+using namespace std;
+
+const long long INF = 4e18;
+
+struct LazySegTree {
+    int n;
+    vector<long long> mn, lz;
+
+    LazySegTree(int n) : n(n), mn(4 * n + 4, 0), lz(4 * n + 4, 0) {}
+
+    void build(int u, int l, int r, const vector<long long>& y) {
+        if (l == r) {
+            mn[u] = y[l];
+            return;
+        }
+        int mid = (l + r) / 2;
+        build(2 * u, l, mid, y);
+        build(2 * u + 1, mid + 1, r, y);
+        mn[u] = min(mn[2 * u], mn[2 * u + 1]);
+    }
+
+    void apply(int u, long long v) {
+        mn[u] += v;
+        lz[u] += v;
+    }
+
+    void push(int u) {
+        if (lz[u] != 0) {
+            apply(2 * u, lz[u]);
+            apply(2 * u + 1, lz[u]);
+            lz[u] = 0;
+        }
+    }
+
+    void range_add(int u, int l, int r, int ql, int qr, long long v) {
+        if (ql <= l && r <= qr) {
+            apply(u, v);
+            return;
+        }
+        push(u);
+        int mid = (l + r) / 2;
+        if (ql <= mid) range_add(2 * u, l, mid, ql, qr, v);
+        if (qr > mid) range_add(2 * u + 1, mid + 1, r, ql, qr, v);
+        mn[u] = min(mn[2 * u], mn[2 * u + 1]);
+    }
+};
+
+int main() {
+    ios::sync_with_stdio(false);
+    cin.tie(nullptr);
+
+    int n, m, q;
+    if (!(cin >> n >> m >> q)) return 0;
+
+    vector<long long> x(n + 1, 0), y(n, 0);
+    for (int i = 1; i < n; ++i) {
+        cin >> x[i] >> y[i];
+    }
+
+    vector<vector<pair<int, long long>>> cross(n + 1);
+    for (int i = 0; i < m; ++i) {
+        int u, v;
+        long long z;
+        cin >> u >> v >> z;
+        cross[u].push_back({v, z});
+    }
+
+    // Phase 1: Sweep i = 1 .. N to precompute optimal B-cut C[i]
+    LazySegTree seg_b(n);
+    seg_b.build(1, 0, n - 1, y);
+
+    vector<long long> C(n + 1, 0);
+    for (int i = 1; i <= n; ++i) {
+        for (auto& [v, z] : cross[i]) {
+            seg_b.range_add(1, 0, n - 1, 0, v - 1, z);
+        }
+        C[i] = seg_b.mn[1];
+    }
+
+    // Phase 2: Maintain min_{1 <= i <= N} (x[i] + C[i]) under point updates to x[i]
+    multiset<long long> active_cuts;
+    for (int i = 1; i <= n; ++i) {
+        active_cuts.insert(x[i] + C[i]);
+    }
+
+    cout << *active_cuts.begin() << '\n';
+    while (q--) {
+        int idx;
+        long long w;
+        cin >> idx >> w;
+        active_cuts.erase(active_cuts.find(x[idx] + C[idx]));
+        x[idx] = w;
+        active_cuts.insert(x[idx] + C[idx]);
+        cout << *active_cuts.begin() << '\n';
+    }
+    return 0;
+}
+```
+::::
+
+---
+
+## 7. Pre-Submission Checklist (`FM-16` & `FM-16a` Audit)
+
+Before submitting any Direction B Min-Cut DP, Stoer–Wagner, or Gomory–Hu Cut Tree solution, run through this 6-point verification audit:
+
+1. **Directed Cut Asymmetry Audit (`FM-16a`)**:
+   In any Direction B Min-Cut DP or $(\min, +)$ matrix transition (`CF 724E`, `CF 1919F2`, `CF 903G`), verify that a directed edge $u \to v$ of capacity $c_{uv}$ pays $c_{uv}$ **only when $u \in S$ and $v \in T$**, and pays **$0$** when $u \in T$ and $v \in S$.
+2. **Boundary Index Completeness (`k = 0` and `k = N`)**:
+   In prefix-suffix cut parameterizations (`CF 1919F1`, `CF 903G`, `ARC 125E`), confirm that both extreme cuts—putting **all** vertices in $S$ (`k = 0` or `i = N`, $x_N = 0$) and putting **all** vertices in $T$ (`j = 0`, $y_0 = 0$)—are included in the DP or Segment Tree domain.
+3. **Gusfield Star-Splitting Scope Guard (`FM-16`)**:
+   In Gusfield's loop (`for u = s+1 .. N`), confirm that you check `if (p[u] == t && vis[u]) p[u] = s;` (or in a Cut-Equivalent tree over all $u \neq s, t$, `if (p[u] == t && vis[u])`). Never re-parent vertices whose current parent is not $t$.
+4. **Full Uncontracted Graph Reset in Gomory–Hu**:
+   Before each of the $N - 1$ Dinic runs in Gusfield's algorithm, reset **all** edge capacities back to their initial undirected capacities $(c, c)$ on the **complete original graph $G$**—never delete vertices outside the current bucket.
+5. **Undirected Graph Prerequisite for Gomory–Hu & Stoer–Wagner**:
+   Confirm that the input graph $G$ is **undirected** ($w_{uv} = w_{vu}$). If $G$ is directed, neither Stoer–Wagner nor Gomory–Hu applies.
+6. **Parallel Edge Accumulation in Stoer–Wagner**:
+   When reading edges into an adjacency matrix for Stoer–Wagner (`POJ 2914`) and when contracting $t$ into $s$, always accumulate `g[u][v] += w` rather than overwriting `g[u][v] = w`.
+
+---
+
+## 8. Chapter Summary & Bridge to Part IV Checkpoint (`CP-IV`)
+
+### Chapter 16 Revision Summary
+
+- **Direction B Flow Elimination (`最大流转最小割 DP`)**: When $N \ge 10^4$ or dynamic queries $Q \ge 10^5$ prohibit augmenting paths, replace $\operatorname{MaxFlow}(s, t)$ with $\min_{S \subseteq V} C(S)$ and compress the $2^N$ cut space via cardinality DP (`CF 724E`), sorted slope-difference greedy ($w_i = s_i - p_i + (N - i)c$), $2 \times 2$ $(\min, +)$ tropical matrix Segment Trees (`CF 1919F2`), or prefix-suffix sweep-line Segment Trees (`CF 903G`).
+- **Stoer–Wagner Global Minimum Cut**: By active-vertex cut induction along a Maximum Adjacency Search (`MAS`) ordering $v_1, \dots, v_N$, the last two vertices $(s, t) = (v_{N-1}, v_N)$ satisfy $\lambda_G(s, t) = w(A_{N-1}, t)$. Contracting $s$ and $t$ across $N - 1$ phases computes $\lambda(G)$ in $O(VE + V^2 \log V)$ or $O(V^3)$ time.
+- **Gomory–Hu Cut Trees & Gusfield's Star-Splitting (`最小割树`)**: By Symmetric Submodularity and the Cut Uncrossing Lemma, all $\binom{N}{2}$ pairwise minimum cuts of an undirected graph are encoded as path bottlenecks on a single $N$-vertex tree $T_{\text{GH}}$ built in $N - 1$ Dinic calls on the uncontracted graph $G$.
+
+---
+
+### Part IV Two-Stage Blind Diagnostic Checkpoint (`CP-IV`: `#217`–`#224`)
+
+This checkpoint tests your diagnostic mastery across all of **Part IV (Chapters 14–16)**: 0-1 Fractional Programming & Maximum Density Subgraphs (`Ch 14`), Planar Dual Shortest Paths & Coarea Duality (`Ch 15`), and Direction B Min-Cut DP & Gomory–Hu Cut Trees (`Ch 16`)—mixed with **3 lookalike decoys** that do *not* require network flow or cut compression!
+
+#### Stage 1: Scrambled Blind Problem Statements (5 Genuine + 3 Decoys)
+
+- **`#217` (`CP-IV-1`)**: Given a tree $T = (V, E)$ with $N \le 2 \cdot 10^5$ vertices where each vertex $u$ has source capacity $s \xrightarrow{a_u} u$, sink capacity $u \xrightarrow{b_u} t$, and each tree edge $\{u, v\}$ has undirected capacity $c_{uv}$, compute $\operatorname{MaxFlow}(s, t)$.
+- **`#218` (`CP-IV-2`)**: Given $N \le 10^5$ items with values $v_i > 0$ and weights $w_i > 0$, select **exactly $K$ items** to maximize $\frac{\sum_{i \in S} v_i}{\sum_{i \in S} w_i}$.
+- **`#219` (`CP-IV-3`)**: Given an $N \times M$ planar grid ($N, M \le 600$) where every horizontal and vertical edge has capacity $c_e \ge 0$, $s$ is the entire top row, and $t$ is the entire bottom row, compute $\operatorname{MaxFlow}(s, t)$.
+- **`#220` (`CP-IV-4`)**: Given an undirected weighted graph $G = (V, E, w)$ ($N \le 2000, M \le 5000$), answer $Q \le 10^5$ queries asking for the maximum bottleneck capacity of a **single simple path** between $u$ and $v$.
+- **`#221` (`CP-IV-5`)**: Given an $N \times N$ symmetric non-negative matrix $M_{u,v}$ ($N \le 1000$), determine whether there exists an undirected capacitated graph $G = (V, E, w)$ such that $\operatorname{MinCut}_G(u, v) = M_{u,v}$ for all $u \neq v$.
+- **`#222` (`CP-IV-6`)**: Given $N \le 300$ projects with profits $p_i > 0$, time costs $t_i > 0$, and prerequisite dependencies $u \to v$, find a non-empty closed set of projects $C$ maximizing $\frac{\sum_{i \in C} p_i}{\sum_{i \in C} t_i}$.
+- **`#223` (`CP-IV-7`)**: Given an undirected connected planar graph $G = (V, E, w)$ ($N \le 10^5$) with positive edge weights $w_e > 0$, find a spanning tree of $G$ of minimum total weight.
+- **`#224` (`CP-IV-8`)**: Given a complete DAG on $\{1, \dots, N\}$ ($N \le 5000$) where every forward arc $i \to j$ ($1 \le i < j \le N$) has capacity $b_j$ (depending on the destination $j$), $s \to i$ has capacity $p_i$, and $i \to t$ has capacity $s_i$, compute $\operatorname{MaxFlow}(s, t)$.
+
+:::: {.callout-note collapse="true" title="Stage 2: Diagnostic Resolution & Decoy Elimination Key for CP-IV (#217–#224)"}
+| ID | Verdict | Target Paradigm & Diagnostic Explanation |
+| :---: | :---: | :--- |
+| **`#217`** | **Genuine (`Ch 16 §2.4`)** | **Direction B Tree Min-Cut DP**: At $N = 2 \cdot 10^5$, Dinic is too slow, but $\operatorname{MinCut}(s, t)$ on a tree is solved in **$O(N)$ time** via 2-state bottom-up Tree DP (`dp[u][0]` for $u \in T$, `dp[u][1]` for $u \in S$)! |
+| **`#218`** | **DECOY (Binary Search + Sort)** | **Unconstrained 0-1 Fractional Knapsack**: There are **zero graph dependencies** between items! Binary search $\lambda$ and greedily pick the $K$ items with the largest shifted weights $v_i - \lambda w_i$ in $O(N \log N \log V)$. |
+| **`#219`** | **Genuine (`Ch 15 §2`)** | **Top-to-Bottom Planar Grid Minimum Cut**: Contracting the top row into $s$ and the bottom row into $t$ places both terminals on the outer boundary; run **Planar Dual Dijkstra** from the Left Outer Face $S^*$ to the Right Outer Face $T^*$ in $O(NM \log(NM))$! |
+| **`#220`** | **DECOY (Maximum Spanning Tree)** | **Single-Path Bottleneck $\neq$ Gomory–Hu Cut Tree**: A single path's bottleneck capacity is maximized by the path minimum on the **Maximum Spanning Tree** (Kruskal in $O(M \log M)$), NOT $N - 1$ max-flows! |
+| **`#221`** | **Genuine (`Ch 16 §4.1`)** | **Ultrametric Realizability of Gomory–Hu Cut Matrices**: By Corollary 16.3, $M$ is realizable as $\lambda_G(u, v)$ iff $M_{u,w} \ge \min(M_{u,v}, M_{v,w})$ for all $u, v, w$, which holds iff $M$ equals the path-bottleneck matrix of its own **Maximum Spanning Tree** $T^*$ (checked in $O(N^2)$)! |
+| **`#222`** | **Genuine (`Ch 14 + Ch 09`)** | **0-1 Fractional Project Selection**: Binary search (or Dinkelbach) trial ratio $\lambda > 0$; assign each project net weight $w_i(\lambda) = p_i - \lambda t_i$ and solve Maximum Weight Closure (`Ch 09`) at each step. |
+| **`#223`** | **DECOY (Kruskal / Prim MST)** | **Minimum Spanning Tree**: Planarity does not turn MST into a flow problem—Kruskal/Prim (or linear-time planar MST) solves it directly without cuts. |
+| **`#224`** | **Genuine (`Ch 16 §2.2`)** | **Head-Weighted Complete DAG Min-Cut DP**: By Direction B (`§2.2`), $C(S) = \sum_{i \notin S} p_i + \sum_{i \in S} s_i + \sum_{j \notin S} \big|S \cap \{1, \dots, j-1\}\big| \cdot b_j$. Scanning $i = 1 \dots N$ and tracking $k = \big|S \cap \{1, \dots, i\}\big|$ gives $dp[i][k] = \min(dp[i-1][k] + p_i + k \cdot b_i,\; dp[i-1][k-1] + s_i)$ in $O(N^2)$ time! |
+::::
+
+---
+
+### Bridge to Part V: Min-Cost Max-Flow (MCMF), Equation Differencing & LP Duality (`Ch 17`–`Ch 21`)
+
+Across Parts I through IV (`Chapters 1–16`), every problem had a single scalar capacity per edge: we sought either a maximum flow or a minimum cut. Starting in **[Chapter 17 — Potentials, Reduced Costs, Primal–Dual Slope Convexity & Negative-Cycle Saturation](ch17-mcmf-foundations-potentials-slope-negative-cycles.qmd)**, every edge acquires a second dimension—a **unit cost $w_e$**—opening the rich world of Min-Cost Max-Flow (MCMF), Johnson potentials, piecewise-linear convex slope curves $C(f)$, equation differencing (`差分约束与连续守恒方程差分`), and Linear Programming Duality.
+
+---
+
+## Multilingual Bibliography & Historical References
+
+1. **`[EN]` Gomory, R. E., & Hu, T. C. (1961)**. *Multi-terminal network flows*. Journal of the Society for Industrial and Applied Mathematics (SIAM), 9(4), 551–570. (Introduces the Cut Uncrossing Lemma and the $N - 1$ max-flow Gomory–Hu Cut Tree).
+2. **`[EN]` Gusfield, D. (1990)**. *Very simple methods for all pairs network flow analysis*. SIAM Journal on Computing, 19(1), 143–155. (Introduces the 15-line uncontracted star-splitting algorithm for Flow-Equivalent and Cut-Equivalent Gomory–Hu trees).
+3. **`[EN]` Stoer, M., & Wagner, F. (1997)**. *A simple min-cut algorithm*. Journal of the ACM, 44(4), 585–591. (Proves that the last two vertices of Maximum Adjacency Search yield a pairwise minimum cut, giving $O(VE + V^2 \log V)$ global min-cut).
+4. **`[EN]` Karger, D. R. (1993) & Karger, D. R., & Stein, C. (1996)**. *A new approach to the minimum cut problem*. Journal of the ACM, 43(4), 601–640. (Proves the $\le \binom{N}{2}$ bound on global minimum cuts via randomized edge contraction).
+5. **`[EN]` Dinits, E. A., Karzanov, A. V., & Lomonosov, M. V. (1976)**. *On the structure of the system of minimum edge cuts in a graph*. Studies in Discrete Optimization, 290–306. (Establishes the canonical Cactus representation $\mathcal{K}(G)$ of all global minimum cuts).
+6. **`[ZH]` 胡伯涛 (Amber / Hu Botao, 2007)**. 《最小割模型在信息学竞赛中的应用》 (*Applications of Minimum Cut Models in Olympiad in Informatics*), 中国国家集训队论文 (Chinese IOI National Training Team Thesis).
+7. **`[ZH]` OI-Wiki Contributors**. *最小割树 (Gomory–Hu Tree) & 全局最小割 (Stoer–Wagner Algorithm)*. [https://oi-wiki.org/graph/flow/min-cut/](https://oi-wiki.org/graph/flow/min-cut/).
+8. **`[JA]` noshi91 & maspypy**. *燃やす埋める問題と劣モジュラ関数・最小カット木 (Project Selection, Submodular Cut Uncrossing, and Gomory–Hu Trees in Competitive Programming)*. AtCoder / Library Checker Technical Notes.
