@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 (async () => {
   const browser = await chromium.launch();
   const page = await browser.newPage({viewport: {width: 390, height: 900}});
-  await page.goto('http://127.0.0.1:8765/00-foundations/chapter.html', {waitUntil: 'networkidle'});
+  await page.goto('http://127.0.0.1:8765/math/00-foundations/chapter.html', {waitUntil: 'networkidle'});
   await page.getByRole('button', {name: 'Toggle sidebar navigation'}).click();
   assert.equal(await page.getByRole('button', {name: 'Toggle sidebar navigation'}).getAttribute('aria-expanded'), 'true');
   await page.getByRole('button', {name: 'Toggle sidebar navigation'}).click();
@@ -45,7 +45,7 @@ const assert = require('node:assert/strict');
   const next = page.locator('.page-navigation .nav-page-next a');
   assert(await next.count());
   await next.click();
-  assert.match(page.url(), /NOTATION\.html/);
+  assert.match(page.url(), /notation\.html/);
   console.log('Mobile navigation, search, Enter/Space solution activation, dark text/icon contrast, dark mode, and next-page navigation passed');
   await browser.close();
 })().catch(error => {console.error(error); process.exit(1);});

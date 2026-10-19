@@ -52,7 +52,7 @@ const assert = require('node:assert/strict');
     // Exercise both native hint dropdowns and Quarto solution callouts on desktop/mobile.
     for (const width of [1440, 390]) {
       await page.setViewportSize({width, height: 900});
-      await page.goto('http://127.0.0.1:8765/chapters/ch13-graphical-gf-eulerian-bipartite-dags-sccs.html');
+      await page.goto('http://127.0.0.1:8765/fps/chapters/ch13-graphical-gf-eulerian-bipartite-dags-sccs.html');
       await page.evaluate(async () => { if (window.MathJax?.startup?.promise) await Promise.race([window.MathJax.startup.promise, new Promise(resolve => setTimeout(resolve, 10000))]); });
       const hint = page.locator('main details').first();
       await hint.locator('summary').click();

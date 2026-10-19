@@ -6,12 +6,8 @@ const path = require('node:path');
 
 (async () => {
   const root = path.resolve(__dirname, '..');
-  const sources = fs.readdirSync(root).filter(x => x.endsWith('.qmd'));
-  for (const dir of fs.readdirSync(root).filter(x => /^\d\d-/.test(x))) {
-    for (const file of fs.readdirSync(path.join(root, dir)).filter(x => x.endsWith('.qmd'))) {
-      sources.push(dir + '/' + file);
-    }
-  }
+  const sources = fs.readdirSync(root, {recursive: true})
+    .filter(file => file.endsWith('.qmd') && !file.split(path.sep).some(part => part.startsWith('.') || part === '_site'));
   const browser = await chromium.launch({headless: true});
   const results = [];
   const page = await browser.newPage();
@@ -36,9 +32,9 @@ const path = require('node:path');
     }
   }
   for (const [source, width, name] of [
-    ['00-foundations/chapter.html', 1440, 'foundations-desktop'],
-    ['14-advanced-sieves/chapter.html', 390, 'sieves-mobile'],
-    ['11-set-power-series/chapter.html', 390, 'set-series-mobile'],
+    ['math/00-foundations/chapter.html', 1440, 'foundations-desktop'],
+    ['math/14-advanced-sieves/chapter.html', 390, 'sieves-mobile'],
+    ['math/11-set-power-series/chapter.html', 390, 'set-series-mobile'],
     ['index.html', 1440, 'index-desktop']
   ]) {
     await page.setViewportSize({width, height: 900});

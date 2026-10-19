@@ -19,7 +19,7 @@ These notes assume the reader already has a comprehensive, tested competitive-pr
 
 # Website conventions
 
-- The baseline chapters use reading-order directories `00-foundations` through `20-frontier-capstones`; the companion FPS track lives in `chapters/`, `checkpoints/`, and `capstones/`. Preserve both tracks when updating navigation.
+- The site hosts two separate textbooks under dedicated namespaces: the FPS textbook in `fps/` (`fps/index.qmd`, `fps/study-plan.qmd`, `fps/notation.qmd`, `fps/sources.qmd`, `fps/chapters/`, `fps/checkpoints/`, and `fps/capstones/`) and the general mathematics textbook in `math/` (`math/index.qmd`, `math/study-plan.qmd`, `math/notation.qmd`, `math/sources.qmd`, and `math/00-foundations` through `math/20-frontier-capstones`), with a root portal at `index.qmd`. Preserve both textbooks and their separate sidebars (`id: fps` and `id: math`) when updating navigation.
 - This is a Quarto website. Keep `_quarto.yml` navigation in sync with added or renamed pages.
 - Keep the interface minimal and reading-first: use neutral colors, flat surfaces, and no promotional hero sections, decorative gradients, or ornamental cards.
 - Use `.qmd` paths for internal links and verify the site with `quarto render` after structural edits.
