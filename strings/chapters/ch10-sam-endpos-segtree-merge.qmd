@@ -1,0 +1,612 @@
+---
+title: "Chapter 10: SAM + Persistent Segment Tree Merging on endpos and Substring Containment Clipping"
+subtitle: "Part III · Suffix Automata, Suffix Trees, Dominant Pairs & Bi-Directional Suffix Structures — The [l+L-1, r] Left-Boundary Clipping Identity, Link-Tree Binary Lifting, Single-Witness Top-Len Chains, and Clipped Interval LCS"
+---
+
+::: {.callout-note title="Prerequisites & Learning Objectives"}
+**Prerequisites**: [`Ch 09`](ch09-sam-duality-gsam-trie-bfs.qmd) ($\operatorname{SAM}(S)$ laminar $\operatorname{endpos}$ hierarchy, contiguous suffix-length interval $[\operatorname{len}(\operatorname{link}(u))+1, \operatorname{len}(u)]$, and 3-case Generalized SAM), Dynamic-Node Segment Trees, and Tree Binary Lifting (`倍增`).
+
+**Learning Objectives**:
+
+1. **Derive the Substring Containment Clipping Identity (`Theorem 10.1`)**: Prove why a pattern $P \in E(u)$ of length $L = |P|$ occurs inside $S[l..r]$ if and only if $L \le r - l + 1$ and $\operatorname{endpos}_S(u) \cap [l + L - 1, r] \neq \emptyset$, and construct concrete counterexamples showing how unclipped $[l, r]$ queries match substrings that straddle $l$.
+2. **Master Persistent Segment Tree Merging on $\mathcal{T}_{\text{link}}$ (`Theorem 10.2`)**: Prove the $O(N \log N)$ time and space bound for bottom-up $\operatorname{endpos}$ merging and understand why **allocating a fresh node `z = ++seg_sz` on every overlap** is required when queries inspect arbitrary interior states $u \in \operatorname{SAM}(S)$.
+3. **Execute Predecessor Length Jumps (`Corollary 10.3`) & Clipped Two-Pointer Walks (`[NOI2018] 你的名字`)**: Avoid the fatal bug of jumping $u \leftarrow \operatorname{link}(u)$ immediately when length $L + 1$ fails the clipped $[l + L, r]$ check without testing shorter lengths inside $[\operatorname{len}(\operatorname{link}(u))+1, \operatorname{len}(u)]$.
+4. **Apply the Single-Witness Top-Len Sufficiency Lemma (`Theorem 10.4`, `CF 700E`)**: Use right-context equivalence to test whether ancestor $v$ occurs $\ge 2$ times inside $\operatorname{longest}(u)$ using **only one arbitrary witness position** $e_0 = \operatorname{any\_pos}[u]$.
+:::
+
+---
+
+## 1. Why Whole-String SAM Fails on $S[l..r]$ & The Substring Containment Clipping Identity
+
+### 1.1 Diagnostic Signal: Restricting Automaton Queries to a Subsegment $S[l..r]$
+
+In [`Ch 09`](ch09-sam-duality-gsam-trie-bfs.qmd), every query operated on the **entire string** $S[1..N]$ (or an entire collection $\mathcal{S} = \{S_1, \dots, S_k\}$). In flagship contest problems—such as `[NOI2018] 你的名字`, `CF 1037H — Security`, `[HEOI2016] 字符串`, `CF 666E — Forensic Examination`, and `CF 700E — Cool Slogans`—the problem restricts pattern matching, longest common substrings, or lexicographical successor queries to an **arbitrary query substring $S[l..r]$** ($1 \le l \le r \le N$).
+
+Rebuilding $\operatorname{SAM}(S[l..r])$ from scratch for each query takes $\Theta\bigl((r - l + 1)\sigma\bigr)$ time and is hopeless for $Q \le 5 \times 10^5$ queries. Instead, we want to build $\operatorname{SAM}(S)$ **once** on the full string $S[1..N]$ and answer any query on $S[l..r]$ by inspecting the right-endpoint occurrence sets $\operatorname{endpos}_S(u)$. Two immediate obstacles arise:
+
+1. **The $\Theta(N^2)$ Explicit Set Barrier**: A state $u$ near the root of $\mathcal{T}_{\text{link}}$ can have $|\operatorname{endpos}_S(u)| = \Theta(N)$, so storing $\operatorname{endpos}_S(u)$ as a flat array or `std::vector` at every state takes $\Theta(N^2)$ memory.
+2. **The Left-Boundary Straddling Fallacy (`BP-10`)**: Even if we can query $\operatorname{endpos}_S(u)$ in any index range, testing whether $\operatorname{endpos}_S(u) \cap [l, r] \neq \emptyset$ is **mathematically wrong**! If a pattern $P \in E(u)$ of length $L = |P|$ has an ending position $e \in [l, l + L - 2]$, that occurrence spans $S[e - L + 1 .. e]$, whose starting index $s = e - L + 1 < l$ **sticks out to the left of $l$**!
+
+---
+
+### 1.2 The Substring Containment Clipping Identity (`[l + L - 1, r]`)
+
+To turn a right-endpoint set $\operatorname{endpos}_S(u)$ into an exact oracle for substring containment inside $S[l..r]$, we translate the left-boundary constraint on the starting index into a lower bound on the ending index $e$:
+
+::: {.callout-important title="Theorem 10.1 (The Substring Containment Clipping Identity)"}
+Let $P$ be a nonempty substring of $S[1..N]$ of exact length $L = |P|$, and let $u \in \operatorname{SAM}(S)$ be the unique state such that $P \in E(u)$ (so $\operatorname{len}(\operatorname{link}(u)) < L \le \operatorname{len}(u)$). For any query subsegment $S[l..r]$ ($1 \le l \le r \le N$):
+
+1. **Decision Form**: $P$ occurs as a contiguous substring of $S[l..r]$ if and only if
+   $$\boxed{L \le r - l + 1 \quad \text{and} \quad \operatorname{endpos}_S(u) \cap \bigl[\,l + L - 1,\;\; r\,\bigr] \;\neq\; \emptyset.}$$
+
+2. **Counting Form**: The exact number of occurrences of $P$ inside $S[l..r]$ is
+   $$\boxed{\operatorname{occ}\bigl(P,\; S[l..r]\bigr) \;=\; \Bigl|\operatorname{endpos}_S(u) \cap \bigl[\,l + L - 1,\;\; r\,\bigr]\Bigr|.}$$
+:::
+
+*Proof*:
+By definition of right-context equivalence ([`Lemma 9.1`](ch09-sam-duality-gsam-trie-bfs.qmd)), every string $w \in E(u)$ shares the exact same set of ending positions in $S$: $\operatorname{endpos}_S(P) = \operatorname{endpos}_S(u)$. An occurrence of $P$ (of length $L$) ending at index $e \in \operatorname{endpos}_S(u)$ occupies the 1-based closed interval $S[e - L + 1 .. e]$. This interval is contained inside $S[l..r]$ if and only if both endpoints lie in $[l, r]$:
+$$l \;\le\; e - L + 1 \quad \text{and} \quad e \;\le\; r \quad\Longleftrightarrow\quad l + L - 1 \;\le\; e \;\le\; r.$$
+Note that $[l + L - 1, r]$ is non-empty if and only if $l + L - 1 \le r \iff L \le r - l + 1$. Thus the occurrences of $P$ inside $S[l..r]$ are in bijection with $\operatorname{endpos}_S(u) \cap [l + L - 1, r]$. $\blacksquare$
+
+```
+  Index axis of S[1..N]:
+  1         l              e - L + 1       l + L - 1          e          r        N
+  |---------|------------------|---------------|--------------|----------|--------|
+            |<---------------- S[l .. r] -------------------->|
+                               |<----- P (length L) --------->|
+                               start = e - L + 1 >= l   <===>   e >= l + L - 1
+```
+
+::: {.callout-warning title="Counterexample 10.1 (The Unclipped $[l, r]$ Bug on $S = \texttt{ababa}$ — `BP-10`)"}
+Let $S[1..5] = \texttt{ababa}$, query range $[l, r] = [3, 5]$ ($S[3..5] = \texttt{aba}$, length $3$), and pattern $P = \texttt{baba}$ ($L = 4$).
+
+- In $\operatorname{SAM}(\texttt{ababa})$, $P = \texttt{baba}$ belongs to state $u = \operatorname{pos}_S[4]$ with $\operatorname{endpos}_S(u) = \{4\}$.
+- **Broken Unclipped Check ($\operatorname{endpos}_S(u) \cap [l, r]$)**: Queries $[3, 5]$, finds $4 \in [3, 5]$, and **falsely claims that $P = \texttt{baba}$ (length $4$) occurs inside $S[3..5] = \texttt{aba}$ (length $3$)**! Why? Because the occurrence ending at $e = 4$ starts at $e - L + 1 = 4 - 4 + 1 = 1 < 3$, spanning $S[1..4] = \texttt{baba}$ across the left boundary $l = 3$.
+- **Exact Clipped Check ($\operatorname{endpos}_S(u) \cap [l + L - 1, r]$)**: Queries $[3 + 4 - 1, 5] = [6, 5] = \emptyset$ and immediately returns $0$.
+:::
+
+---
+
+## 2. Core Combinatorial Word Invariants: Persistent Segment Tree Merging on $\mathcal{T}_{\text{link}}$ & Link-Tree Binary Lifting
+
+### 2.1 Bottom-Up Persistent Segment Tree Merging in $O(N \log N)$ Time and Space
+
+How do we represent $\operatorname{endpos}_S(u) \subseteq \{1, \dots, N\}$ at **all** $\le 2N - 1$ states of $\operatorname{SAM}(S)$ simultaneously so that any range query $[L_q, R_q]$ on any state $u$ takes $O(\log N)$ time?
+
+By [`Lemma 9.1`](ch09-sam-duality-gsam-trie-bfs.qmd), for every state $u \in \operatorname{SAM}(S)$, its occurrence set $\operatorname{endpos}_S(u)$ is the disjoint union of:
+
+1. The singleton $\{r\}$ if $u = \operatorname{pos}_S[r]$ is the prefix state for $S[1..r]$ ($1 \le r \le N$), and
+2. The occurrence sets $\operatorname{endpos}_S(v)$ of all children $v$ of $u$ in the Suffix Link Tree $\mathcal{T}_{\text{link}}(\operatorname{SAM}(S))$:
+   $$\operatorname{endpos}_S(u) \;=\; \bigl\{\, r \in \{1..N\} \;\big|\; \operatorname{pos}_S[r] = u \,\bigr\} \;\sqcup\; \bigsqcup_{\operatorname{link}(v) = u} \operatorname{endpos}_S(v).$$
+
+Therefore, we initialize $N$ dynamic-node 1-element Segment Trees: for each $r \in \{1, \dots, N\}$, insert point $r$ into $\operatorname{rt}[\operatorname{pos}_S[r]]$ (creating $\lceil \log_2 N \rceil + 1$ Segment Tree nodes per prefix). Then we iterate over all states $u > 1$ in decreasing order of $\operatorname{len}(u)$ (bottom-up on $\mathcal{T}_{\text{link}}$) and merge $\operatorname{rt}[u]$ into $\operatorname{rt}[\operatorname{link}(u)]$:
+$$\operatorname{rt}[\operatorname{link}(u)] \;\leftarrow\; \operatorname{merge}\bigl(\operatorname{rt}[\operatorname{link}(u)],\; \operatorname{rt}[u],\; 1,\; N\bigr).$$
+
+::: {.callout-important title="Theorem 10.2 (Complexity & Persistence Invariant of Bottom-Up Segment Tree Merging)"}
+1. **Why Destructive In-Place Merge Corrupts Interior SAM States**:
+   In a standard tree problem where queries are only answered *during* the bottom-up DFS at node $u$ and $u$'s children are never queried again, an in-place `merge(x, y)` mutates node `x` directly (`ls[x] = merge(ls[x], ls[y])`). In $\operatorname{SAM}(S)$, however, **online queries inspect arbitrary states $u$ after all merges are complete**! If `merge(rt[link[u]], rt[u])` reuses a subtree pointer `v` from `rt[u]` inside `rt[link[u]]` (when `!x || !y` returns `x | y`), and a subsequent merge at `link[link[u]]` mutates `v` in place, **it silently overwrites `rt[u]`'s Segment Tree**!
+
+2. **The Persistent Overlap Allocation Rule**:
+   Whenever `merge(x, y, l, r)` is called:
+
+   - If `x == 0 || y == 0`, return `x | y` directly ($O(1)$ pointer sharing).
+   - If `x != 0 && y != 0`, **allocate a brand-new Segment Tree node `z = ++seg_sz`** before recursing on the left and right children!
+3. **Strict $O(N \log N)$ Time and Space Bound**:
+   Across all $N$ point insertions and all $2N - 2$ bottom-up `merge` calls on $\mathcal{T}_{\text{link}}$, the persistent `merge` routine executes in **$O(N \log N)$ total time and allocates at most $2 N (\lceil \log_2 N \rceil + 1)$ Segment Tree nodes**.
+:::
+
+*Proof*:
+Why is sharing `x | y` when `x == 0 || y == 0` completely safe once we allocate a fresh node `z = ++seg_sz` whenever `x != 0 && y != 0`?
+Because a node `z` is **never modified after the `merge` call that created it returns**! Any future ancestor merge that traverses into a shared node `w` (inherited via `x == 0 || y == 0`) either passes `w` upward unchanged (if the other tree is empty at that position) or allocates a brand-new node `z'` (if the other tree is non-empty at that position), leaving `w` and all of its descendants untouched!
+
+To bound the total number of allocated nodes `z`: initially, the $N$ point insertions create $N$ root-to-leaf paths, comprising $\le N(\lceil \log_2 N \rceil + 1)$ distinct active interval pairs $(v_{\text{tree}}, [L_{\text{seg}}, R_{\text{seg}}])$ across the forest. During `merge(x, y, l, r)`, a recursive call and new node allocation `z = ++seg_sz` occur **only when both `x != 0` and `y != 0`**, meaning the Segment Tree interval $[l, r]$ was present in **both** trees `x` and `y` and is now coalesced into a **single** tree `z`—reducing the total number of active copies of interval $[l, r]$ across the forest by $1$! Since each of the $N$ points initially creates at most $1$ copy at each of the $\lceil \log_2 N \rceil + 1$ depths, at most $N(\lceil \log_2 N \rceil + 1)$ overlap merges can ever occur across the entire bottom-up pass! $\blacksquare$
+
+---
+
+### 2.2 Locating $S[l..r]$ in $O(\log N)$ via Link-Tree Binary Lifting (`倍增定位子串`)
+
+Suppose a query hands us a substring $P = S[l..r]$ of $S$ by its endpoints $(l, r)$, and we need to find the unique state $u \in \operatorname{SAM}(S)$ such that $S[l..r] \in E(u)$. Walking $S[l..r]$ character-by-character from the root takes $\Theta(r - l + 1)$ time, which is too slow when $r - l + 1 = \Theta(N)$.
+
+Instead, observe that $S[l..r]$ is the **length-$(r - l + 1)$ suffix of the prefix $S[1..r]$**!
+
+- During construction of $\operatorname{SAM}(S)$, record $\operatorname{pos}_S[r]$ = the state representing prefix $S[1..r]$ (which has $\operatorname{len}(\operatorname{pos}_S[r]) = r$).
+- By [`Lemma 9.1`](ch09-sam-duality-gsam-trie-bfs.qmd), all suffixes of $S[1..r]$ are partitioned in decreasing order of length along the vertical path from $v = \operatorname{pos}_S[r]$ up to the root $1$ in $\mathcal{T}_{\text{link}}(\operatorname{SAM}(S))$.
+- Precompute the binary-lifting table $\operatorname{up}[k][u] = \operatorname{up}[k-1][\operatorname{up}[k-1][u]]$ for $0 \le k \le \lfloor \log_2(2N) \rfloor$, where $\operatorname{up}[0][u] = \operatorname{link}(u)$.
+- To locate $S[l..r]$ of length $L = r - l + 1$: start at $u = \operatorname{pos}_S[r]$ and for $k = \lfloor \log_2(2N) \rfloor$ down to $0$, if $\operatorname{up}[k][u] > 1$ and $\operatorname{len}(\operatorname{up}[k][u]) \ge L$, jump $u \leftarrow \operatorname{up}[k][u]$.
+- The final state $u$ is the unique ancestor of $\operatorname{pos}_S[r]$ satisfying $\operatorname{len}(\operatorname{link}(u)) < L \le \operatorname{len}(u)$, located in **$O(\log N)$ time**!
+
+---
+
+## 3. Predecessor Length Jumps, Clipped Interval LCS & Single-Witness Chains
+
+### 3.1 Predecessor Maximum-Length Jumps (`Corollary 10.3`) & Clipped Interval LCS (`[NOI2018] 你的名字`)
+
+Suppose we are matching an external query string $T[1..M]$ against a restricted subsegment $S[l..r]$ on $\operatorname{SAM}(S)$. For each prefix $T[1..i]$, we want to compute $\operatorname{lim}[i] =$ the maximum length $L$ of a suffix of $T[1..i]$ that occurs inside $S[l..r]$.
+
+In unclipped two-string LCS on $\operatorname{SAM}(S)$, if state $u$ has transition $w = \delta_S(u, c) \neq 0$, we simply step $u \leftarrow w$ and increment $L \leftarrow L + 1$; if $\delta_S(u, c) = 0$, we jump straight to $u \leftarrow \operatorname{link}_S(u)$ and set $L \leftarrow \operatorname{len}(u)$.
+
+Why does jumping $u \leftarrow \operatorname{link}_S(u)$ immediately **fail** when matching against $S[l..r]$?
+
+::: {.callout-warning title="Counterexample 10.2 (The Intra-State Length-Skipping Trap in `[NOI2018] 你的名字` — `BP-10b`)"}
+Suppose at step $i-1$ we are at state $u$ with matched length $L = 5$, where state $u$ covers lengths $[\operatorname{minlen}(u), \operatorname{len}(u)] = [3, 5]$ ($\operatorname{len}(\operatorname{link}_S(u)) = 2$). Now we read $c = T[i]$, and $w = \delta_S(u, c) \neq 0$ has $\operatorname{endpos}_S(w) \cap [1, r] = \{l + 3\}$.
+
+- Can we extend our length-$5$ match to length $L_{\text{new}} = 6$ inside $S[l..r]$? By Theorem 10.1, length $6$ requires $\operatorname{endpos}_S(w) \cap [l + 5, r] \neq \emptyset$. Since $l + 3 < l + 5$, length $6$ **fails**!
+- What if we immediately jump $u \leftarrow \operatorname{link}_S(u)$ and reset $L \leftarrow \operatorname{len}(\operatorname{link}_S(u)) = 2$? Then trying $w = \delta_S(u, c)$ only achieves length $2 + 1 = 3$!
+- **What did we skip?** State $u$ *also* contains the suffixes of $T[1..i-1]$ of lengths $4$ and $3$! If we shrink our suffix of $T[1..i-1]$ from length $5$ to length $3$ (which **still lives in the same state $u$**!), then appending $c$ produces a suffix of $T[1..i]$ of length $L_{\text{new}} = 3 + 1 = 4$ in state $w$, which requires $\operatorname{endpos}_S(w) \cap [l + 3, r] \neq \emptyset$—and $e = l + 3$ **succeeds**!
+Jumping $u \leftarrow \operatorname{link}_S(u)$ prematurely threw away all intermediate lengths $[\operatorname{len}(\operatorname{link}_S(u)) + 1, L - 1]$ inside $E(u)$!
+:::
+
+We can handle intra-state length shrinking in two equivalent ways:
+
+1. **Method 1 — Unit-Step Two-Pointer Shrink (`Contract B`)**:
+   Whenever $w = \delta_S(u, c)$ is $0$ or fails $\operatorname{query}(\operatorname{rt}[w], 1, N, l + L, r)$ (note that $l + (L + 1) - 1 = l + L$), we decrement $L \leftarrow L - 1$ by **one unit**; only when $L$ drops to $\operatorname{len}(\operatorname{link}_S(u))$ do we step $u \leftarrow \operatorname{link}_S(u)$! Because $L$ increments at most $M = |T|$ times across the entire loop, $L$ can decrement at most $M$ times total, bounding the total number of Segment Tree queries by $\le 2M$ ($O(M \log N)$ time)!
+
+2. **Method 2 — Direct Predecessor Jump (`Corollary 10.3`)**:
+   Query the **largest ending position** $e_{\max} = \max\bigl(\operatorname{endpos}_S(w) \cap [1, r]\bigr)$ at or before $r$ in $O(\log N)$ time:
+
+::: {.callout-important title="Corollary 10.3 (Maximum Clipped Length inside State $w$ via Predecessor Query)"}
+For any state $w \in \operatorname{SAM}(S)$ and any raw length bound $L_{\text{raw}} \le \operatorname{len}(w)$, let $e_{\max} = \max\bigl(\operatorname{endpos}_S(w) \cap [1, r]\bigr)$ (or $-\infty$ if empty). Then the maximum length $L' \le L_{\text{raw}}$ of a string in $E(w)$ that occurs inside $S[l..r]$ is
+$$\boxed{L_{\text{valid}}(w) \;=\; \min\bigl(\,L_{\text{raw}},\;\; e_{\max} - l + 1\,\bigr),}$$
+which belongs to $E(w)$ if and only if $L_{\text{valid}}(w) > \operatorname{len}(\operatorname{link}_S(w))$.
+:::
+
+---
+
+### 3.2 The Single-Witness Top-Len Sufficiency Lemma (`CF 700E — Cool Slogans`)
+
+Consider `CF 700E`: given $S[1..N]$, find the maximum length $k$ of a sequence of substrings $s_1, s_2, \dots, s_k$ of $S$ such that for every $1 \le i < k$, $s_i$ occurs **at least twice** as a substring of $s_{i+1}$.
+
+There are $\Theta(N^2)$ distinct substrings of $S$. How do we compress the DP state space to the $\le 2N - 1$ states of $\operatorname{SAM}(S)$ and check the "at least twice" condition in $O(\log N)$ time?
+
+::: {.callout-important title="Theorem 10.4 (Top-Len Sufficiency & Single-Witness Containment Lemma)"}
+1. **Intra-State Coalescing (`Longest(u)` Sufficiency)**:
+   Suppose $w_1, w_2 \in E(u)$ are two strings in the **same** SAM state $u$ with $|w_1| < |w_2|$. Because $\operatorname{endpos}_S(w_1) = \operatorname{endpos}_S(w_2)$ and $|w_1| < |w_2|$, $w_1$ occurs **only once** inside $w_2$ (as its suffix; if $w_1$ also occurred earlier inside $w_2$, every ending position $e \in \operatorname{endpos}_S(w_2)$ would generate a second ending position $e - \Delta \in \operatorname{endpos}_S(w_1) \setminus \operatorname{endpos}_S(w_2)$, contradicting $\operatorname{endpos}_S(w_1) = \operatorname{endpos}_S(w_2)$!).
+   Furthermore, replacing any $s_i \in E(u)$ by $\operatorname{longest}(u)$ can only *help* $s_{i-1}$ occur twice inside $s_i$, and because $\operatorname{endpos}_S(s_i) = \operatorname{endpos}_S(\operatorname{longest}(u))$, any $s_{i+1}$ containing $s_i$ twice can be expanded along the same $\operatorname{endpos}$ class to contain $\operatorname{longest}(u)$ twice! Thus we may restrict every $s_i$ to be $\operatorname{longest}(u)$ for a chain of states $u_1, u_2, \dots, u_k$ down $\mathcal{T}_{\text{link}}$.
+
+2. **Single-Witness Containment Check**:
+   Let $v$ be a proper ancestor of $u$ on $\mathcal{T}_{\text{link}}$, and let $e_0 = \operatorname{any\_pos}[u] \in \operatorname{endpos}_S(u)$ be **any single arbitrary ending position** of $u$ in $S$. Then $\operatorname{longest}(v)$ occurs **at least twice** inside $\operatorname{longest}(u)$ if and only if
+   $$\boxed{\operatorname{endpos}_S(v) \;\cap\; \bigl[\,e_0 - \operatorname{len}(u) + \operatorname{len}(v),\;\; e_0 - 1\,\bigr] \;\neq\; \emptyset.}$$
+:::
+
+*Proof of (2)*:
+Pick the specific copy of $\operatorname{longest}(u)$ in $S$ that ends at $e_0$: namely, the substring $S[e_0 - \operatorname{len}(u) + 1 .. e_0]$. Since $v$ is an ancestor of $u$ on $\mathcal{T}_{\text{link}}$, $\operatorname{longest}(v)$ is already guaranteed to occur **once** as the suffix of $S[e_0 - \operatorname{len}(u) + 1 .. e_0]$ ending at $e_0$. Therefore, $\operatorname{longest}(v)$ occurs **at least twice** inside $S[e_0 - \operatorname{len}(u) + 1 .. e_0]$ if and only if it has at least one *additional* occurrence inside $S[e_0 - \operatorname{len}(u) + 1 .. e_0 - 1]$. Applying the Substring Containment Clipping Identity (Theorem 10.1) with $l = e_0 - \operatorname{len}(u) + 1$, $r = e_0 - 1$, and pattern length $L = \operatorname{len}(v)$ gives the exact interval:
+$$\bigl[\,l + L - 1,\;\; r\,\bigr] \;=\; \bigl[\,(e_0 - \operatorname{len}(u) + 1) + \operatorname{len}(v) - 1,\;\; e_0 - 1\,\bigr] \;=\; \bigl[\,e_0 - \operatorname{len}(u) + \operatorname{len}(v),\;\; e_0 - 1\,\bigr]! \quad \blacksquare$$
+
+---
+
+## 4. Reverse-Engineering Scratchpad, Algorithmic Contracts & Counterexample Atlas
+
+### 4.1 Contract B: Persistent Segment Tree Merge & Clipped Two-Pointer Walk (`[NOI2018] 你的名字`)
+
+```cpp
+// Persistent Segment Tree Merge on SAM Link Tree + Clipped Two-Pointer Walk
+int merge_seg(int x, int y, int l, int r) {
+    if (!x || !y) return x | y;
+    int z = ++seg_sz; // CRITICAL: Allocate fresh node to preserve child trees!
+    if (l == r) return z;
+    int mid = (l + r) >> 1;
+    ls[z] = merge_seg(ls[x], ls[y], l, mid);
+    rs[z] = merge_seg(rs[x], rs[y], mid + 1, r);
+    return z;
+}
+
+bool query_seg(int u, int l, int r, int ql, int qr) {
+    if (!u || ql > qr) return false;
+    if (ql <= l && r <= qr) return true;
+    int mid = (l + r) >> 1;
+    if (ql <= mid && query_seg(ls[u], l, mid, ql, qr)) return true;
+    if (qr > mid && query_seg(rs[u], mid + 1, r, ql, qr)) return true;
+    return false;
+}
+
+// Compute lim[1..|T|]: longest suffix of T[1..i] occurring in S[l_q .. r_q]
+void compute_clipped_lim(const string& T, int l_q, int r_q, int n, vector<int>& lim) {
+    int u = 1, L = 0;
+    lim.assign(T.size() + 1, 0);
+    for (int i = 1; i <= (int)T.size(); ++i) {
+        int c = T[i - 1] - 'a';
+        while (true) {
+            int w = ch[u][c];
+            // A match of length L + 1 in state w requires endpos(w) in [l_q + L, r_q]
+            if (w && query_seg(rt[w], 1, n, l_q + L, r_q)) {
+                u = w;
+                ++L;
+                break;
+            }
+            if (L == 0) break;
+            --L; // Unit shrink inside E(u); only jump to link[u] when L hits len[link[u]]!
+            if (L == len[link[u]]) u = link[u];
+        }
+        lim[i] = L;
+    }
+}
+```
+
+### 4.2 Summary of Boundary Pitfalls (`BP-10`)
+
+| Pitfall ID | Broken Shortcut | Structural Failure Mechanism | Exact Rescue |
+| :--- | :--- | :--- | :--- |
+| **`BP-10a`** | Querying unclipped $[l, r]$ instead of $[l + L - 1, r]$ | Matches occurrences ending at $e \in [l, l + L - 2]$, whose start position $e - L + 1 < l$ straddles the left boundary $l$ (`Counterexample 10.1`) | Always query $[l + L - 1, r]$ (`Theorem 10.1`) |
+| **`BP-10b`** | Jumping $u \leftarrow \operatorname{link}(u)$ immediately when length $L + 1$ fails $[l + L, r]$ | Skips valid intermediate lengths $[\operatorname{len}(\operatorname{link}(u)) + 1, L - 1]$ inside the same state $u$ (`Counterexample 10.2`) | Decrement $L \leftarrow L - 1$ and step $u \leftarrow \operatorname{link}(u)$ only when $L == \operatorname{len}(\operatorname{link}(u))$ (`Contract B`), or jump via $e_{\max} - l + 1$ (`Corollary 10.3`) |
+| **`BP-10c`** | Destructive in-place `merge(x, y)` without allocating a fresh node `z` | When `!x || !y` shares a child's subtree pointer and an ancestor later mutates that node in place, the child's Segment Tree is corrupted | Always allocate `int z = ++seg_sz;` whenever `x != 0 && y != 0` (`Theorem 10.2`) |
+| **`BP-10d`** | Binary lifting from $\operatorname{pos}_S[d]$ instead of $\operatorname{pos}_S[c + L - 1]$ for a prefix $S[c..c+L-1]$ | $S[c..c+L-1]$ is a suffix of $S[1..c+L-1]$, not a suffix of $S[1..d]$! | Lift from $\operatorname{pos}_S[c + L - 1]$ on $\operatorname{SAM}(S)$ (or lift from fixed $\operatorname{pos}_{S^R}[N - c + 1]$ on $\operatorname{SAM}(S^R)$) |
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Ladder (9 Non-Template Problems)
+
+---
+
+### Tier 1 — Stepping Stone: Binary Lifting + Persistent Segment Tree Merging on $\operatorname{endpos}$
+
+#### Problem 10.1 (`W2A-23` / `W2A-21`) — `CF 666E — Forensic Examination`
+
+- **Source & Constraints**: Codeforces Round 349 Div. 1 E. Given a primary text $S$ with $|S| \le 5 \times 10^5$, a dictionary of $m$ strings $T_1, T_2, \dots, T_m$ with $\sum_{k=1}^m |T_k| \le 5 \times 10^4$, and $Q \le 5 \times 10^5$ queries $(l, r, p_l, p_r)$ ($1 \le l \le r \le m$, $1 \le p_l \le p_r \le |S|$). For each query, find the dictionary index $k \in [l, r]$ that maximizes $\operatorname{occ}\bigl(S[p_l..p_r],\, T_k\bigr)$ (breaking ties by choosing the **smallest** index $k$), and output both $k$ and the maximum occurrence count. Time limit: $6.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Choosing the Smaller Side for the Generalized SAM"}
+Notice the asymmetry in constraints: $|S| \le 5 \times 10^5$, whereas $\sum_{k=1}^m |T_k| \le 5 \times 10^4$! Should we build the GSAM on $S$ alone, on $\{S, T_1, \dots, T_m\}$, or on $\{T_1, \dots, T_m\}$ alone and walk $S$ over it?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Walking $S$ on $\operatorname{GSAM}(T_1, \dots, T_m)$ & Binary Lifting"}
+Build the 3-case GSAM on $\{T_1, \dots, T_m\}$ ($\le 10^5$ states). Walk $S[1..|S|]$ across this GSAM: after reading $S[1..p_r]$, record the reached state $v_{p_r}$ and the matched suffix length $\operatorname{match\_len}[p_r]$. When does $S[p_l..p_r]$ of length $L = p_r - p_l + 1$ fail to appear in **any** $T_k$? And if $\operatorname{match\_len}[p_r] \ge L$, how do you locate the exact GSAM state $u$ for $S[p_l..p_r]$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Persistent Segment Tree Indexed by Dictionary ID $k \in [1, m]$"}
+At each GSAM state $u$, build a Persistent Segment Tree over the **dictionary index domain $[1, m]$**, where leaf $k$ stores the pair $\bigl(\operatorname{occ}(u, T_k),\, -k\bigr)$ and internal nodes maintain the range maximum!
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: Range-maximum occurrence query over dictionary indices $k \in [l, r]$ for an arbitrary substring $S[p_l..p_r]$.
+2. **Combinatorial Word Invariant**:
+   Construct $\operatorname{GSAM}(T_1, \dots, T_m)$ using the 3-case `extend_gsam` (`Ch 09, Contract A`). As each character of $T_k$ lands at GSAM state `last`, add $+1$ to position $k$ in `rt[last]` (a dynamic Segment Tree over $[1, m]$).
+   After building $\mathcal{T}_{\text{link}}$, merge `rt[u]` into `rt[link[u]]` bottom-up using **persistent** Segment Tree Merging (`Theorem 10.2`, summing leaf counts when $l = r$ and taking $\max$ of $(\text{cnt}, -k)$ on `pushup`).
+
+3. **Algorithmic Compilation (Query Compilation via Pre-Walk + Binary Lifting)**:
+   - Walk $S[1..|S|]$ on $\operatorname{GSAM}(T_1, \dots, T_m)$ to compute $\bigl(v_i, \operatorname{match\_len}[i]\bigr)$ for every $1 \le i \le |S|$.
+   - For query $(l, r, p_l, p_r)$, let $L = p_r - p_l + 1$.
+   - If $\operatorname{match\_len}[p_r] < L$, then $S[p_l..p_r]$ does not occur in any $T_k$; output `(l, 0)` immediately!
+   - Otherwise, binary lift from $u = v_{p_r}$ up $\mathcal{T}_{\text{link}}$ while $\operatorname{len}(\operatorname{up}[j][u]) \ge L$ to find the unique state $u$ with $S[p_l..p_r] \in E(u)$.
+   - Query `rt[u]` on range $[l, r]$. If the returned maximum count is $0$, output `(l, 0)`; else output `(-best.second, best.first)`.
+   Total time: $O\bigl((\sum |T_k| + |S| + Q)\log m\bigr)$.
+
+4. **Boundary Pitfall**: Using destructive Segment Tree Merging (`BP-10c`), or forgetting to return `(l, 0)` when the range query on $[l, r]$ returns a maximum count of $0$ (an empty Segment Tree branch returns count $0$ with index $0$ if uninitialized!).
+:::
+
+---
+
+#### Problem 10.2 (`W2A-20`) — `[HEOI2016 / TJOI2016] 字符串` (`Luogu P4094` / `LOJ 2059`)
+
+- **Source & Constraints**: HEOI / TJOI 2016. Given a string $S[1..N]$ of lowercase letters and $Q$ queries $(a, b, c, d)$ with $N, Q \le 10^5$ and $1 \le a \le b \le N, 1 \le c \le d \le N$. For each query, find the maximum length $L$ of a **prefix** of $S[c..d]$ that occurs as a contiguous substring inside $S[a..b]$. Time limit: $2.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Monotonicity of Prefix Containment"}
+If the length-$L$ prefix $S[c..c+L-1]$ occurs inside $S[a..b]$, then every shorter prefix $S[c..c+L'-1]$ ($L' < L$) also occurs inside $S[a..b]$. This monotonicity invites binary search on $L \in [1, \min(b - a + 1, d - c + 1)]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Testing Candidate Length $L$ via Theorem 10.1"}
+To test whether $P = S[c..c+L-1]$ occurs inside $S[a..b]$, first locate the state $u_L \in \operatorname{SAM}(S)$ representing $S[c..c+L-1]$ by binary lifting from $\operatorname{pos}_S[c + L - 1]$. What exact index range inside $\operatorname{rt}[u_L]$ must be non-empty?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Avoiding the $\operatorname{pos}_S[d]$ Lifting Trap"}
+Why must you binary lift from $\operatorname{pos}_S[c + L - 1]$ rather than from $\operatorname{pos}_S[d]$ on forward $\operatorname{SAM}(S)$? (Or, if you build $\operatorname{SAM}(S^R)$, how can you lift from the fixed node $\operatorname{pos}_{S^R}[N - c + 1]$?)
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: Binary search on prefix length $L$ coupled with substring containment inside $S[a..b]$.
+2. **Combinatorial Word Invariant**:
+   Build $\operatorname{SAM}(S)$ and merge $\operatorname{endpos}_S$ Segment Trees bottom-up on $\mathcal{T}_{\text{link}}$.
+   For a fixed query $(a, b, c, d)$ and candidate length $L \in [1, \min(b - a + 1, d - c + 1)]$:
+
+   - The prefix $P_L = S[c .. c + L - 1]$ is the length-$L$ suffix of prefix $S[1 .. c + L - 1]$.
+   - Binary lifting from $\operatorname{pos}_S[c + L - 1]$ up $\mathcal{T}_{\text{link}}$ locates the unique state $u_L \in \operatorname{SAM}(S)$ with $P_L \in E(u_L)$ in $O(\log N)$ time.
+   - By the Substring Containment Clipping Identity (`Theorem 10.1`), $P_L$ occurs in $S[a..b]$ if and only if:
+     $$\operatorname{endpos}_S(u_L) \;\cap\; \bigl[\,a + L - 1,\;\; b\,\bigr] \;\neq\; \emptyset.$$
+
+3. **Algorithmic Compilation**:
+   Binary search $L$: at each midpoint $L$, locate $u_L$ in $O(\log N)$ and call `query_seg(rt[u_L], 1, N, a + L - 1, b)` in $O(\log N)$. Total time: $O(N \log N + Q \log^2 N)$; space: $O(N \log N)$.
+
+4. **Boundary Pitfall**: Lifting from $\operatorname{pos}_S[d]$ instead of $\operatorname{pos}_S[c + L - 1]$ (`BP-10d`), or querying $[a, b - L + 1]$ on forward $\operatorname{SAM}(S)$ (which confuses right endpoints $\operatorname{endpos}_S$ with left endpoints $\operatorname{startpos}_S$!).
+:::
+
+---
+
+### Tier 2 — Intermediate: Single-Witness Link-Tree Chains & Prefix-LCP Decomposition
+
+#### Problem 10.3 (`W2A-24` / `W2A-25`) — `CF 700E — Cool Slogans`
+
+- **Source & Constraints**: Codeforces Round 364 Div. 1 E. Given a string $S[1..N]$ with $N \le 2 \times 10^5$. Find the maximum integer $k$ such that there exists a sequence of nonempty strings $s_1, s_2, \dots, s_k$ where $s_k$ is a substring of $S$ and, for every $1 \le i < k$, $s_i$ occurs **at least twice** as a substring of $s_{i+1}$. Time limit: $4.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Compressing Substrings to SAM States (`Theorem 10.4(1)`)"}
+By Theorem 10.4(1), every optimal chain $s_1, \dots, s_k$ can be chosen so that each $s_i = \operatorname{longest}(u_i)$ for a sequence of states $u_1, \dots, u_k$ descending down the Suffix Link Tree $\mathcal{T}_{\text{link}}(\operatorname{SAM}(S))$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Why We Only Need to Test ONE Ancestor `top[link[u]]` per State $u$"}
+As we move down $\mathcal{T}_{\text{link}}$ from parent $p = \operatorname{link}(u)$ to $u$, the DP value can increase by at most $+1$: $dp[u] \in \{dp[p], dp[p] + 1\}$. Among all ancestors $v$ of $u$ that achieved the value $dp[p]$, which one has the **shortest length** $\operatorname{len}(v)$ and is therefore **easiest** to fit twice inside $\operatorname{longest}(u)$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Top-Down DP with `top[u]` & Single-Witness Query (`Theorem 10.4(2)`)"}
+Maintain $\operatorname{top}[u] =$ the **highest** ancestor of $u$ on $\mathcal{T}_{\text{link}}$ that satisfies $dp[\operatorname{top}[u]] = dp[u]$. When processing $u$ from parent $p = \operatorname{link}(u)$, let $v = \operatorname{top}[p]$ and let $e_0 = \operatorname{any\_pos}[u]$ be any ending position of $u$. Check whether $v$ occurs twice inside $u$ via:
+$$\operatorname{query\_seg}\bigl(\operatorname{rt}[v],\; 1,\; N,\; e_0 - \operatorname{len}(u) + \operatorname{len}(v),\; e_0 - 1\bigr)!$$
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: Maximize the length of a nested substring chain where $s_i$ occurs $\ge 2$ times in $s_{i+1}$.
+2. **Combinatorial Word Invariant**:
+   By `Theorem 10.4`, we restrict attention to $\operatorname{longest}(u)$ for states $u \in \operatorname{SAM}(S)$, and for any proper ancestor $v$ of $u$ and any single witness $e_0 = \operatorname{any\_pos}[u] \in \operatorname{endpos}_S(u)$, $\operatorname{longest}(v)$ occurs $\ge 2$ times in $\operatorname{longest}(u)$ iff:
+   $$\operatorname{endpos}_S(v) \;\cap\; \bigl[\,e_0 - \operatorname{len}(u) + \operatorname{len}(v),\;\; e_0 - 1\,\bigr] \;\neq\; \emptyset.$$
+   Moreover, if $v_1$ is an ancestor of $v_2$, then $\operatorname{longest}(v_1)$ is a suffix of $\operatorname{longest}(v_2)$, so $\operatorname{longest}(v_1)$ occurs at least as many times inside $\operatorname{longest}(u)$ as $\operatorname{longest}(v_2)$ does. Thus to achieve $dp[u] = dp[\operatorname{link}(u)] + 1$, it is necessary and sufficient to test the **highest** ancestor $v = \operatorname{top}[\operatorname{link}(u)]$ that achieved $dp[v] = dp[\operatorname{link}(u)]$.
+
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{SAM}(S)$, propagate $\operatorname{any\_pos}[\operatorname{link}(u)] \leftarrow \operatorname{any\_pos}[u]$, and merge $\operatorname{rt}[u]$ bottom-up in $O(N \log N)$.
+   - Process states $u > 1$ **top-down** on $\mathcal{T}_{\text{link}}$ (in increasing order of $\operatorname{len}(u)$):
+     - If $\operatorname{link}(u) = 1$, set $dp[u] = 1$ and $\operatorname{top}[u] = u$.
+     - Else let $v = \operatorname{top}[\operatorname{link}(u)]$ and $e_0 = \operatorname{any\_pos}[u]$. If `query_seg(rt[v], 1, N, e_0 - len[u] + len[v], e_0 - 1)` is true, set $dp[u] = dp[\operatorname{link}(u)] + 1$ and $\operatorname{top}[u] = u$; otherwise set $dp[u] = dp[\operatorname{link}(u)]$ and $\operatorname{top}[u] = v$.
+   - Return $\max_{u > 1} dp[u]$. Total time and space: $O(N \log N)$.
+4. **Boundary Pitfall**: Using $e_0 - \operatorname{len}(u) + \operatorname{len}(v) - 1$ instead of $e_0 - \operatorname{len}(u) + \operatorname{len}(v)$ (off-by-one: the substring $\operatorname{longest}(u)$ ending at $e_0$ starts at $l = e_0 - \operatorname{len}(u) + 1$, so $l + \operatorname{len}(v) - 1 = e_0 - \operatorname{len}(u) + \operatorname{len}(v)$!).
+:::
+
+---
+
+#### Problem 10.4 (`W2A-27` / `W2A-29`) — `[BZOJ 3413] 匹配 (Matching)`
+
+- **Source & Constraints**: BZOJ 3413. Given a text $S[1..N]$ with $N \le 10^5$ and $Q$ query patterns $P_1, \dots, P_Q$ with $\sum |P_q| \le 10^5$. Naive brute-force string matching compares $P$ against $S[i..N]$ for $i = 1, 2, \dots$ in increasing order of $i$, stopping immediately as soon as a full match $S[i_0 .. i_0 + |P| - 1] = P$ is found (or testing all $1 \le i \le N$ if $P$ never occurs in $S$), where each index $i$ performs $\operatorname{LCP}(P, S[i..N]) + [i \neq i_0]$ character comparisons. Compute the exact total number of character comparisons performed for each query $P$. Time limit: $2.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Decomposing $\sum_{i \le i_0} \operatorname{LCP}(P, S[i..N])$ by Prefix Lengths"}
+Instead of summing $\operatorname{LCP}(P, S[i..N])$ index-by-index over $i \in [1, i_0]$, rewrite the sum by counting how many starting positions $i \in [1, i_0]$ satisfy $\operatorname{LCP}(P, S[i..N]) \ge k$ for each prefix length $k \in \{1, 2, \dots, |P|\}$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Translating Starting Index $i \le i_0$ to Ending Index $e \le i_0 + k - 1$"}
+An occurrence of prefix $P[1..k]$ starting at index $i$ ends at index $e = i + k - 1$. Therefore, $i \le i_0 \iff e \le i_0 + k - 1$! How do you find the first full occurrence $i_0$ of $P$ in $S$ using $\operatorname{SAM}(S)$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Walking $P$ on $\operatorname{SAM}(S)$ with Prefix-Sum Segment Tree Queries"}
+If $P$ occurs in $S$ at state $u_{|P|}$, its earliest ending position is $e_{\min} = \min \operatorname{endpos}_S(u_{|P|})$, giving $i_0 = e_{\min} - |P| + 1$ (if $P$ does not occur in $S$, set $i_0 = N$). Then for each matched prefix $P[1..k]$ at state $u_k$, how many occurrences of $P[1..k]$ start at $\le i_0$?
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: Sum $\operatorname{LCP}(P, S[i..N])$ over all $1 \le i \le i_0$ up to the first occurrence of $P$ in $O(|P| \log N)$ time.
+2. **Combinatorial Word Invariant**:
+   By the tail-sum identity for non-negative integers:
+   $$\sum_{i=1}^{i_0} \operatorname{LCP}\bigl(P,\, S[i..N]\bigr) \;=\; \sum_{k=1}^{|P|} \Bigl|\bigl\{\, i \in [1, i_0] \;\big|\; S[i .. i + k - 1] = P[1..k] \,\bigr\}\Bigr|.$$
+   Let $u_k \in \operatorname{SAM}(S)$ be the state reached by prefix $P[1..k]$ (for $1 \le k \le m_{\text{max}}$, where $m_{\text{max}} \le |P|$ is the longest prefix of $P$ occurring in $S$). An occurrence of $P[1..k]$ starting at $i \in [1, i_0]$ has ending position $e = i + k - 1 \in [k, i_0 + k - 1]$. Since every ending position of $P[1..k]$ automatically satisfies $e \ge k$, the count for prefix $k$ is simply:
+   $$C(k) \;=\; \Bigl|\operatorname{endpos}_S(u_k) \;\cap\; \bigl[\,1,\;\; i_0 + k - 1\,\bigr]\Bigr|.$$
+
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{SAM}(S)$ and maintain both range-sum (`cnt`) and minimum element (`mn`) in the persistent $\operatorname{endpos}$ Segment Trees $\operatorname{rt}[u]$.
+   - Walk $P$ from the root of $\operatorname{SAM}(S)$ to record $u_1, u_2, \dots, u_{m_{\text{max}}}$.
+   - If $m_{\text{max}} == |P|$, find $e_{\min} = \operatorname{mn}[\operatorname{rt}[u_{|P|}]]$, set $i_0 = e_{\min} - |P| + 1$, and initialize mismatch comparisons to $i_0 - 1$ (since $i = 1, \dots, i_0 - 1$ each perform $1$ mismatch comparison after their LCP, while $i = i_0$ matches completely). Otherwise, set $i_0 = N$ and initialize mismatch comparisons to $N$.
+   - Add $\sum_{k=1}^{m_{\text{max}}} \operatorname{query\_sum}(\operatorname{rt}[u_k], 1, N, 1, \min(N, i_0 + k - 1))$. Total time: $O\bigl((N + \sum |P_q|)\log N\bigr)$.
+4. **Boundary Pitfall**: Querying $[1, e_{\min}]$ for every $k$ instead of $[1, i_0 + k - 1] = [1, e_{\min} - |P| + k]$ (for $k < |P|$, an occurrence of $P[1..k]$ ending at $e_{\min}$ starts at $e_{\min} - k + 1 > i_0$!).
+:::
+
+---
+
+### Tier 3 — Advanced: Lexicographical Successor/Predecessor & Static-Pattern Interval LCS
+
+#### Problem 10.5 (`W2A-25` / `W2A-24`) — `CF 1037H — Security`
+
+- **Source & Constraints**: Manthan, Codefest 18 H. Given a string $S[1..N]$ with $N \le 10^5$ and $Q$ queries $(l, r, T)$ with $1 \le l \le r \le N$ and $\sum |T| \le 2 \times 10^5$. For each query, find the **lexicographically smallest** substring $W$ of $S[l..r]$ that is **strictly greater** than $T$ ($W >_{\text{lex}} T$), or output `-1` if no such substring exists. Time limit: $4.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Anatomy of the Lexicographically Smallest String $W >_{\text{lex}} T$"}
+Any string $W >_{\text{lex}} T$ shares a longest common prefix $T[1..i]$ of some length $i \in [0, |T|]$ with $T$, followed immediately by a single character $c > T[i+1]$ (where $T[|T|+1] = \text{sentinel } 0 < \texttt{a}$). To make $W = T[1..i] \cdot c \cdot \text{rest}$ as lexicographically small as possible:
+
+1. Should we **maximize** or **minimize** the shared prefix length $i$?
+2. Once $i$ is fixed, should we **minimize** $c > T[i+1]$, and what should $\text{rest}$ be?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Why $W$ Always Has Length $i + 1$ (`rest = ε`)"}
+To make $W$ lexicographically smallest among all strings starting with $T[1..i]c$, we should pick the **largest** $i \in [0, \min(|T|, r - l)]$, then the **smallest** character $c > T[i+1]$ such that $T[1..i]c$ occurs in $S[l..r]$, and stop immediately ($\text{rest} = \varepsilon$, since $T[1..i]c$ is already strictly greater than $T$ and shorter is smaller!).
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Exact Clipping Interval for $T[1..i]c$ of Length $i + 1$"}
+Walk $T$ from root $1$ of $\operatorname{SAM}(S)$ to record $u_0 = 1, u_1, \dots, u_k$ ($k \le |T|$). For $i = \min(k, r - l)$ down to $0$ and $c = \max(\texttt{a}, T[i+1] + 1)$ up to $\texttt{z}$, let $w = \delta_S(u_i, c)$. By Theorem 10.1, what is the exact clipped range for $T[1..i]c$ (which has length $L = i + 1$)?
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: Find the lexicographical successor of $T$ among all substrings of $S[l..r]$.
+2. **Combinatorial Word Invariant**:
+   Every substring $W$ of $S[l..r]$ with $W >_{\text{lex}} T$ has a well-defined first position $i + 1 \in [1, |T| + 1]$ where $W$ diverges from $T$ (with $W[1..i] = T[1..i]$ and $W[i+1] = c > T[i+1]$, taking $T[|T|+1] = \varepsilon < \texttt{a}$). Since $T[1..i]c >_{\text{lex}} T$ is already satisfied by the prefix of $W$ of length $i + 1$ and $T[1..i]c$ is itself a substring of $S[l..r]$, the optimal $W$ always has exact length $L = i + 1$!
+   Among two candidates $(i_1, c_1)$ and $(i_2, c_2)$ with $i_1 > i_2$, $T[1..i_1]c_1$ matches $T$ at position $i_2 + 1$ whereas $T[1..i_2]c_2$ has $c_2 > T[i_2+1]$, so **$i_1 > i_2$ is strictly smaller lexicographically**!
+
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{SAM}(S)$ with persistent $\operatorname{endpos}$ Segment Trees $\operatorname{rt}[u]$.
+   - For query $(l, r, T)$, walk $T$ from $u_0 = 1$ as far as possible in $\operatorname{SAM}(S)$ to obtain $u_0, u_1, \dots, u_k$ ($k \le \min(|T|, r - l)$).
+   - Iterate $i$ from $k$ down to $0$:
+     - Let $c_{\min} = \texttt{'a'}$ if $i == |T|$ else $T[i] + 1$ (0-based $T[i]$ is the $(i+1)$-th character).
+     - For $c = c_{\min}$ up to $\texttt{'z'}$:
+       - Let $w = \delta_S(u_i, c)$. Since $T[1..i]c$ has length $L = i + 1$, Theorem 10.1 requires:
+         $$\operatorname{endpos}_S(w) \;\cap\; \bigl[\,l + (i + 1) - 1,\;\; r\,\bigr] \;=\; \operatorname{endpos}_S(w) \;\cap\; \bigl[\,l + i,\;\; r\,\bigr] \;\neq\; \emptyset.$$
+
+       - If `w && query_seg(rt[w], 1, N, l + i, r)` is true, output $T[1..i] + c$ and return!
+   - If the loop finishes without success, output `-1`. Total time: $O\bigl((N + \sigma \sum |T|)\log N\bigr)$.
+4. **Boundary Pitfall**: Querying $[l + i + 1, r]$ instead of $[l + i, r]$ (since $L = i + 1$, $l + L - 1 = l + i$!).
+:::
+
+---
+
+#### Problem 10.6 (`W2A-30`) — Substring Lexicographical Predecessor in $S[l..r]$ (`CF 1037H` Dual Variant)
+
+- **Source & Constraints**: Given $S[1..N]$ ($N \le 10^5$) and $Q$ queries $(l, r, T)$ with $\sum |T| \le 2 \times 10^5$. For each query, find the **lexicographically largest** nonempty substring $W$ of $S[l..r]$ that is **strictly smaller** than $T$ ($W <_{\text{lex}} T$), or `-1` if none exists; output the length $|W|$ and one starting position of $W$ inside $S[l..r]$. Time limit: $3.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Why Lexicographical Predecessor Is Subtler Than Successor"}
+In `CF 1037H` ($W >_{\text{lex}} T$), once we picked $c > T[i+1]$, we stopped immediately because shorter strings are smaller. For $W <_{\text{lex}} T$, there are **two** ways $W$ can be smaller than $T$:
+
+1. $W$ is a **proper prefix** of $T$: $W = T[1..i]$ for some $1 \le i < |T|$.
+2. $W$ shares $T[1..i]$, diverges at $W[i+1] = c < T[i+1]$, and then extends as **long and lexicographically large as possible** inside $S[l..r]$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Greedy Right-Extension vs. Endpos Jump after $T[1..i]c$"}
+If $W$ starts with $P_0 = T[1..i]c$ (where $c < T[i+1]$) and occurs inside $S[l..r]$, then **any** occurrence of $P_0$ in $S[l..r]$ starting at $s \in [l, r - i]$ can be extended all the way to the right boundary $r$ ($S[s..r]$) and will **still** start with $T[1..i]c \prec T$! Which starting position $s$ of $P_0$ in $S[l..r]$ maximizes $S[s..r]$ lexicographically?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Suffix Rank Optimization on Valid Occurrences of $T[1..i]c$"}
+Among all occurrences $e \in \operatorname{endpos}_S(w) \cap [l + i, r]$ of $P_0 = T[1..i]c$ (where $w = \delta_S(u_i, c)$), the occurrence ending at $e$ starts at $s = e - i$. Extending it to $r$ produces $S[e - i .. r]$, which is a prefix of suffix $S[e - i .. N]$! Since all such suffixes share prefix $T[1..i]c$, their lexicographical order up to $r$ is maximized by either picking the occurrence with the **largest suffix rank $\operatorname{rk}[e - i]$** (if no two tie past $r$) or extending to $r$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: Maximize $W <_{\text{lex}} T$ among substrings of $S[l..r]$.
+2. **Combinatorial Word Invariant**:
+   Any nonempty $W <_{\text{lex}} T$ occurring in $S[l..r]$ either:
+
+   - Matches $T[1..i]$ with a divergence character $c < T[i+1]$ ($0 \le i < |T|$), and then extends right to $r$ to be as long and large as possible; or
+   - Is a proper prefix $T[1..i]$ ($1 \le i < |T|$) with no valid divergence $c < T[i+1]$ at depth $i$.
+   In fact, at the **largest** $i \in [0, |T|-1]$ where either (a) some $c < T[i+1]$ has $w = \delta_S(u_i, c)$ occurring in $S[l..r]$ ($\operatorname{endpos}_S(w) \cap [l + i, r] \neq \emptyset$), or (b) $i \ge 1$ and $T[1..i]$ itself occurs in $S[l..r]$ ($\operatorname{endpos}_S(u_i) \cap [l + i - 1, r] \neq \emptyset$):
+
+   - Case (a) strictly beats Case (b) at the same $i$ because $T[1..i]c >_{\text{lex}} T[1..i]$.
+   - In Case (a), pick the largest $c < T[i+1]$ with $\operatorname{endpos}_S(w) \cap [l + i, r] \neq \emptyset$. Every $e \in \operatorname{endpos}_S(w) \cap [l + i, r]$ yields a valid substring $S[e - i .. r]$ starting with $T[1..i]c$. If one occurrence $e_1$ is a proper prefix of $e_2$ ($e_1 > e_2$ with $\operatorname{LCE}(e_1 - i, e_2 - i) \ge r - e_1 + i + 1$), the longer one $S[e_2 - i .. r]$ is larger; otherwise the one with larger $\operatorname{rk}[e - i]$ is larger! Maintaining $\arg\max_{e \in [l+i, r]} \operatorname{rk}[e - i]$ (or storing $\operatorname{rk}[e]$ in the Segment Tree since all $e \in \operatorname{endpos}_S(w)$ share the first $i+1$ characters starting at $e - i$, so $\operatorname{rk}[e - i]$ has the **exact same relative order** as $\operatorname{rk}[e + 1]$!) finds the optimal $e^*$ in $O(\log N)$ time!
+3. **Algorithmic Compilation**:
+   At each leaf $e$ of the persistent Segment Tree, store $\operatorname{rk}[e + 1]$ (the suffix rank immediately following ending position $e$). For any fixed prefix $P_0 = T[1..i]c$ of length $i + 1$, two occurrences ending at $e_1, e_2 \in \operatorname{endpos}_S(w) \cap [l+i, r]$ are identical on their first $i+1$ characters, so comparing $S[e_1 - i .. N]$ vs. $S[e_2 - i .. N]$ is **equivalent to comparing $S[e_1 + 1 .. N]$ vs. $S[e_2 + 1 .. N]$**! Querying the maximum of $\operatorname{rk}[e + 1]$ over $e \in [l + i, r]$ (and checking if it truncates at $r$) runs in $O(\log N)$ time!
+
+4. **Boundary Pitfall**: Storing $\operatorname{rk}[e - i]$ (which depends on the query-specific depth $i$) instead of $\operatorname{rk}[e + 1]$ (which is completely independent of $i$ because the shared prefix $T[1..i]c$ ends at $e$!).
+:::
+
+---
+
+#### Problem 10.7 (`W2A-33` / `W2A-22`) — `[BJOI2020] 封印 (Seal)` (`Luogu P6640` / `LOJ 3298`)
+
+- **Source & Constraints**: BJOI 2020. Given two static strings $S[1..N]$ and $T[1..M]$ with $N, M \le 2 \times 10^5$, and $Q \le 2 \times 10^5$ queries $(l, r)$ ($1 \le l \le r \le N$). For each query, compute the length of the **Longest Common Substring (`LCS`)** between $S[l..r]$ and $T$. Time limit: $1.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal: Static $T$ vs. Dynamic $T$"}
+Unlike `[NOI2018] 你的名字` (where a new pattern $T$ is given in every query), here **$T$ is fixed across all $Q$ queries**! Do we even need Segment Tree Merging on $\operatorname{SAM}(S)$, or can we build $\operatorname{SAM}(T)$ once and precompute an array on $S$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Precomputing $\operatorname{lim}[i]$ on $S[1..N]$ Using $\operatorname{SAM}(T)$"}
+Build $\operatorname{SAM}(T)$ in $O(M)$ time and walk $S[1..N]$ across it to compute $\operatorname{lim}[i] =$ the longest suffix of $S[1..i]$ that occurs in $T$. For a query subsegment $S[l..r]$, a common substring ending at $i \in [l, r]$ cannot start before $l$, so its length is bounded by $\min(i - l + 1, \operatorname{lim}[i])$. Thus:
+$$\operatorname{LCS}\bigl(S[l..r],\, T\bigr) \;=\; \max_{l \le i \le r} \min\bigl(i - l + 1,\;\; \operatorname{lim}[i]\bigr).$$
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Binary Search Split + Static RMQ in $O(\log N)$ per Query"}
+Just as in Problem 9.8 (`[CTSC2012]`), the left endpoint $L_{\text{start}}(i) = i - \operatorname{lim}[i] + 1$ is **monotonically non-decreasing** in $i$! Split $i \in [l, r]$ at the threshold $m$ where $i - \operatorname{lim}[i] + 1 \le l$ vs. $i - \operatorname{lim}[i] + 1 > l$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: $Q$ range queries $(l, r)$ on $S[l..r]$ against a **single fixed** string $T$.
+2. **Combinatorial Word Invariant**:
+   Precompute $\operatorname{lim}[i]$ ($1 \le i \le N$) = longest suffix of $S[1..i]$ occurring in $\operatorname{SAM}(T)$ in $O(N + M)$ time.
+   For any query $[l, r]$, the longest common substring of $S[l..r]$ and $T$ ending at index $i \in [l, r]$ has length $\min(i - l + 1, \operatorname{lim}[i])$. Because $\operatorname{lim}[i] \le \operatorname{lim}[i-1] + 1$, the starting index $s(i) = i - \operatorname{lim}[i] + 1$ is **monotonically non-decreasing**:
+   $$s(1) \;\le\; s(2) \;\le\; \dots \;\le\; s(N).$$
+   Therefore, on any query interval $[l, r]$, there is a unique split index $m \in [l - 1, r]$ such that:
+
+   - For $i \in [l, m]$: $s(i) \le l \iff i - l + 1 \le \operatorname{lim}[i]$, so $\min(i - l + 1, \operatorname{lim}[i]) = i - l + 1$, whose maximum over $i \in [l, m]$ is simply **$m - l + 1$**!
+   - For $i \in [m + 1, r]$: $s(i) > l \iff \operatorname{lim}[i] < i - l + 1$, so $\min(i - l + 1, \operatorname{lim}[i]) = \operatorname{lim}[i]$, whose maximum is a static Range Maximum Query $\operatorname{RMQ}_{\operatorname{lim}}(m + 1, r)$!
+3. **Algorithmic Compilation**:
+   Build a Sparse Table (`ST`) over $\operatorname{lim}[1..N]$ in $O(N \log N)$ time. For each query $(l, r)$, binary search the largest $m \in [l - 1, r]$ with $m - \operatorname{lim}[m] + 1 \le l$ (or `std::upper_bound` on $s[l..r]$), and return:
+   $$\text{Ans}(l, r) \;=\; \max\Bigl(\,m - l + 1,\;\; \operatorname{RMQ}_{\operatorname{lim}}(m + 1, r)\Bigr)$$
+   in $O(\log N)$ time per query and $O(N \log N)$ space!
+
+4. **Boundary Pitfall**: Over-engineering with Persistent Segment Tree Merging on $\operatorname{SAM}(S)$ when $T$ is static, or forgetting the case $m = l - 1$ (where $m - l + 1 = 0$).
+:::
+
+---
+
+### Tier 4 — Mastery: Dual-SAM Clipped Substring Exclusion & Substring Journey DP
+
+#### Problem 10.8 (`W2A-34` / `W2A-23`) — `[NOI2018] 你的名字 (Your Name)` (`Luogu P4770` / `UOJ 395` / `LOJ 2720`)
+
+- **Source & Constraints**: NOI 2018 Day 1 T3. Given a reference string $S[1..N]$ with $N \le 5 \times 10^5$ and $Q \le 10^5$ queries $(T, l, r)$ with $1 \le l \le r \le N$ and $\sum |T| \le 10^6$. For each query, count the number of **distinct nonempty substrings** of $T$ that do **not** occur as a contiguous substring inside $S[l..r]$. Time limit: $4.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Dual Requirement: Clipping on $S[l..r]$ + Deduplicating on $T$"}
+A substring of $T$ can appear multiple times inside $T$ itself, yet must be counted **at most once** if it fails to appear in $S[l..r]$. Which automaton deduplicates the substrings of $T$, and which automaton tests containment inside $S[l..r]$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Computing $\operatorname{lim}[1..|T|]$ via Contract B (`§4.1`)"}
+First, run `compute_clipped_lim(T, l, r, N, lim)` (`Contract B`) on $\operatorname{SAM}(S)$ with Persistent Segment Tree Merging to find, for each $1 \le i \le |T|$, the maximum length $\operatorname{lim}[i]$ of a suffix of $T[1..i]$ that occurs inside $S[l..r]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Subtracting Prohibited Suffixes Inside Each State $v \in \operatorname{SAM}(T)$"}
+Second, build a fresh single-string $\operatorname{SAM}(T)$ for the query string $T$, recording an ending index $\operatorname{end\_idx}[v] \in \{1, \dots, |T|\}$ for each state $v \in \operatorname{SAM}(T)$. State $v$ represents suffixes of $T[1..\operatorname{end\_idx}[v]]$ of lengths in $[\operatorname{len}_T(\operatorname{link}_T(v)) + 1, \operatorname{len}_T(v)]$, while the suffixes of $T[1..\operatorname{end\_idx}[v]]$ occurring in $S[l..r]$ are precisely those of lengths $\le \operatorname{lim}[\operatorname{end\_idx}[v]]$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: Count distinct substrings of dynamic query $T$ excluded from $S[l..r]$ across $\sum |T| \le 10^6$.
+2. **Combinatorial Word Invariant**:
+   - **Step A (Clipped Matching on $\operatorname{SAM}(S)$)**: Build $\operatorname{SAM}(S)$ with persistent $\operatorname{endpos}_S$ Segment Trees $\operatorname{rt}[u]$ in $O(N \log N)$ time. For query $(T, l, r)$, execute `Contract B` (`§4.1`) to obtain $\operatorname{lim}[i]$ ($1 \le i \le |T|$), the length of the longest suffix of $T[1..i]$ occurring in $S[l..r]$.
+   - **Step B (Deduplication on $\operatorname{SAM}(T)$)**: Build $\operatorname{SAM}(T)$ in $O(|T|\sigma)$ time and propagate one witness ending position $i_v = \operatorname{end\_idx}[v] \in \operatorname{endpos}_T(v)$ bottom-up on $\mathcal{T}_{\text{link}}(\operatorname{SAM}(T))$.
+     Every string $w \in E_T(v)$ is a suffix of $T[1..i_v]$ of length $\ell \in [\operatorname{len}_T(\operatorname{link}_T(v)) + 1, \operatorname{len}_T(v)]$. Such a suffix $w$ occurs in $S[l..r]$ if and only if $\ell \le \operatorname{lim}[i_v]$!
+     Therefore, the number of strings in $E_T(v)$ that do **not** occur in $S[l..r]$ is:
+     $$\text{Valid}(v) \;=\; \max\Bigl(\,0,\;\; \operatorname{len}_T(v) - \max\bigl(\operatorname{len}_T(\operatorname{link}_T(v)),\; \operatorname{lim}[i_v]\bigr)\Bigr).$$
+
+3. **Algorithmic Compilation**:
+   Sum $\text{Valid}(v)$ over all non-root states $v > 1$ of $\operatorname{SAM}(T)$:
+   $$\text{Ans}(T, l, r) \;=\; \sum_{v \in \operatorname{SAM}(T),\; v > 1} \max\Bigl(\,0,\;\; \operatorname{len}_T(v) - \max\bigl(\operatorname{len}_T(\operatorname{link}_T(v)),\; \operatorname{lim}[\operatorname{end\_idx}[v]]\bigr)\Bigr).$$
+   Total time: $O\bigl((N + \sum |T|)\log N\bigr)$; space: $O(N \log N)$.
+
+4. **Boundary Pitfall**: Jumping $u \leftarrow \operatorname{link}_S(u)$ in Step A without unit-shrinking $L \leftarrow L - 1$ (`Counterexample 10.2` / `BP-10b`).
+:::
+
+---
+
+#### Problem 10.9 (`W2A-38` / `W2A-27`) — `CF 1063F — String Journey`
+
+- **Source & Constraints**: Codeforces Round 516 Div. 1 F. Given a string $S[1..N]$ with $N \le 5 \times 10^5$. Find the maximum integer $k$ for which there exist $k$ **non-overlapping** substrings $s_k, s_{k-1}, \dots, s_1$ of $S$ (occurring from left to right in $S$: $S = u_k s_k u_{k-1} s_{k-1} \cdots u_1 s_1 u_0$) such that $|s_i| = i$ for every $1 \le i \le k$ and $s_{i-1}$ is a substring of $s_i$ for every $2 \le i \le k$. Time limit: $5.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Why We May Force $|s_i| = i$ Without Loss of Generality"}
+If a valid journey $s'_k, \dots, s'_1$ has $|s'_i| > i$, we can trim characters from $s'_i$ from $i = 1$ up to $k$ so that $|s_i| = i$ while preserving $s_{i-1} \subset s_i$ and shrinking their intervals (which keeps them disjoint!). Once $|s_i| = i$ and $|s_{i-1}| = i - 1$, $s_{i-1}$ must be either the **prefix** $s_i[1..i-1]$ or the **suffix** $s_i[2..i]$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Right-to-Left Two-Pointer Monotonicity of $dp[i]$"}
+Let $dp[i]$ be the maximum chain length $L$ starting with $s_L = S[i .. i + L - 1]$ at left endpoint $i$. Because trimming the first character of $s_L$ at $i$ gives a valid chain of length $L - 1$ starting at $i + 1$, we have:
+$$dp[i] \;\le\; dp[i + 1] + 1!$$
+As $i$ moves from $N$ down to $1$, a candidate length $L$ increments at most once per step and decrements at most $N$ times total!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Checking Candidate $(i, L)$ via Link-Tree Euler-Tour Subtree Max on $\operatorname{SAM}(S^R)$"}
+A candidate $s_L = S[i..i+L-1]$ is valid iff there exists $j \ge i + L$ with $dp[j] \ge L - 1$ such that $S[j..j+L-2]$ equals either $S[i..i+L-2]$ or $S[i+1..i+L-1]$. On $\mathcal{T}_{\text{link}}(\operatorname{SAM}(S^R)) \cong \operatorname{ST}(S)$, when is $S[i..i+L-2]$ a prefix of $S[j..N]$? Whenever $\operatorname{pos}_{S^R}[N - j + 1]$ lies in the **Link-Tree subtree** of the state $u$ of $S[i..i+L-2]$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: Non-overlapping right-to-left substring chain DP with $dp[i] \le dp[i+1] + 1$.
+2. **Combinatorial Word Invariant**:
+   Build $\operatorname{SAM}(S^R)$ so that $\mathcal{T}_{\text{link}}(\operatorname{SAM}(S^R)) \cong \operatorname{ST}(S)$ (`Theorem 9.2`). Let $v_j = \operatorname{pos}_{S^R}[N - j + 1]$ be the state of suffix $S[j..N]$.
+   For a fixed left endpoint $i$ and candidate length $L \ge 2$, let $u_1$ be the state of $S[i .. i + L - 2]$ (length $L - 1$, found by binary lifting from $v_i$) and $u_2$ be the state of $S[i + 1 .. i + L - 1]$ (length $L - 1$, found by binary lifting from $v_{i+1}$).
+   A disjoint next block $s_{L-1}$ starting at $j \ge i + L$ exists if and only if there is some index $j \ge i + L$ with $dp[j] \ge L - 1$ whose suffix $S[j..N]$ starts with $S[i..i+L-2]$ or $S[i+1..i+L-1]$—which holds if and only if $v_j$ lies in the **Link-Tree subtree of $u_1$ or $u_2$**!
+
+3. **Algorithmic Compilation**:
+   - Compute the Euler tour $[\operatorname{dfn}[u], \operatorname{out}[u]]$ of $\mathcal{T}_{\text{link}}(\operatorname{SAM}(S^R))$ and build a point-update range-maximum Segment Tree over $[1, \text{tot}]$ initialized to $0$.
+   - Sweep $i$ from $N$ down to $1$, maintaining candidate $L$ (initially $L \leftarrow L + 1$):
+     - While $L > 1$ and the validity check for $(i, L)$ fails:
+       - Decrement $L \leftarrow L - 1$.
+       - Now the non-overlapping threshold $j = i + L$ becomes eligible! Insert `dp[i + L]` at position `dfn[v_{i + L}]` in the Segment Tree!
+     - Set $dp[i] = L$.
+   Total time: $O(N \log N)$ (since $L$ decrements $\le N$ times); space: $O(N \log N)$ (or $O(N)$ by tracking `u_1, u_2` incrementally).
+
+4. **Boundary Pitfall**: Inserting $dp[j]$ into the Segment Tree before $j \ge i + L$, which allows overlapping transitions $j < i + L$.
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### When to Reach for Each Tool in `Ch 10`
+
+| Diagnostic Signal in Problem Statement | Structural Invariant to Invoke | Complexity |
+| :--- | :--- | :--- |
+| Check / count occurrences of pattern $P$ (length $L$) inside $S[l..r]$ | **Substring Containment Clipping Identity (`Theorem 10.1`)**: query $\operatorname{endpos}_S(u) \cap [l + L - 1, r]$ | $O(\log N)$ per check |
+| Locate substring $S[l..r]$ in $\operatorname{SAM}(S)$ | **Link-Tree Binary Lifting (`§2.2`)**: lift from $\operatorname{pos}_S[r]$ while $\operatorname{len}(\operatorname{up}[k][u]) \ge r - l + 1$ | $O(\log N)$ |
+| Match external string $T$ against $S[l..r]$ (`[NOI2018] 你的名字`) | **Clipped Two-Pointer Walk (`Contract B`)**: unit-shrink $L \leftarrow L - 1$ and jump $u \leftarrow \operatorname{link}(u)$ only when $L == \operatorname{len}(\operatorname{link}(u))$ | $O(|T|\log N)$ |
+| Nested substring chain where $s_i$ occurs $\ge 2$ times in $s_{i+1}$ (`CF 700E`) | **Single-Witness Top-Len Lemma (`Theorem 10.4`)**: test $\operatorname{endpos}_S(v) \cap [e_0 - \operatorname{len}(u) + \operatorname{len}(v), e_0 - 1] \neq \emptyset$ for $v = \operatorname{top}[\operatorname{link}(u)]$ | $O(N \log N)$ |
+| Lexicographically next substring of $S[l..r]$ after $T$ (`CF 1037H`) | Backtrack $i = \min(|T|, r-l) \dots 0$, test $c > T[i+1]$ via $\operatorname{endpos}_S(\delta(u_i, c)) \cap [l + i, r] \neq \emptyset$ | $O(|T|\sigma \log N)$ |
+
+### Pre-Submission Diagnostic Checklist
+
+- [ ] **Left-Boundary Clipping (`BP-10a`)**: Did you clip every range query for a length-$L$ pattern in $S[l..r]$ to **$[l + L - 1, r]$** (and verify $l + L - 1 \le r$ before querying)?
+- [ ] **Persistent Node Allocation (`BP-10c`)**: In `merge_seg(x, y, l, r)`, when both `x != 0` and `y != 0`, do you allocate a brand-new node `int z = ++seg_sz;` so child Segment Trees are never overwritten?
+- [ ] **No Premature Link Jump (`BP-10b`)**: In two-pointer clipped matching, do you decrement `--L` first and only step `u = link[u]` when `L == len[link[u]]`?
+- [ ] **Correct Lifting Endpoint (`BP-10d`)**: For a prefix $S[c..c+L-1]$, are you binary lifting from $\operatorname{pos}_S[c + L - 1]$ (and not $\operatorname{pos}_S[d]$)?

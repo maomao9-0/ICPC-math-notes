@@ -1,0 +1,576 @@
+---
+title: "Inverse String Reconstruction (KMP / Z / Manacher / SA) and String Inequality Digraphs"
+subtitle: "Chapter 27 · Part VII: Word Equations, Inverse/Inequality Graphs, Wheeler/Tree Strings, SL2(Fp) Groups & Combinatorics on Words"
+---
+
+::: {.callout-important title="Prerequisites, Assumed Library & Learning Objectives"}
+- **Assumed Library Primitives**: $O(N)$ KMP prefix function ($\pi[1..N]$), $O(N)$ Z-function ($Z[1..N]$), $O(N)$ Manacher's palindrome radii ($R[1..2N-1]$), Tarjan's Strongly Connected Components ($\operatorname{SCC}$), and 2-SAT solver. See [Notation & Conventions](../notation.qmd) for 1-based closed indexing $S[1..N]$.
+- **Strict Prerequisite Chapters**: [Chapter 12: Linear-Time Induced Suffix Sorting (`SA-IS`), Fischer's Induced LCP, and SA Rank-Descent Combinatorics](ch12-sais-induced-sorting-lcp.qmd) and [Chapter 26: Word Equations, Signed & Tree Binary-Lifting DSU (`倍增并查集`), and Huge-Length ($N \le 10^{18}$) Period Folding](ch26-word-equations-signed-parallel-dsu.qmd).
+- **Assigned Technique IDs**: `T-3A-06` (Inverse String Reconstruction from KMP $\pi$, Z-Array, Manacher & Lyndon Arrays via Equality + Forbidden-Edge Dual Decomposition and Chordal Chromatic Counting), `T-5A-03` (Suffix Array Adjacency Theorem, LCP-Witnessed Substring Inequality Digraphs, $\{0, 1\}$-Weighted Tarjan SCCs & 2-SAT Prefix Branching).
+- **Learning Objectives**:
+  1. Decompose any target KMP $\pi$ array, Z-array, Manacher radius array, SA+LCP pair, or Lyndon array into **Forced Character Equalities ($=$)** plus **Boundary Mismatch / Order Edges ($\ne, <, \le$)** via the **5-Structure Inverse String Reconstruction Duality**.
+  2. Prove that the mismatch graph of any realizable KMP, Z, or Manacher array on DSU components is **chordal (a DAG with a natural left-to-right simplicial elimination ordering)**, yielding the exact $\sigma$-alphabet chromatic polynomial product $\prod_{v} \max\bigl(0,\, \sigma - \operatorname{deg}_{\text{prev}}(v)\bigr)$.
+  3. Explain why local inequality checks ($\pi[i] \le \pi[i-1] + 1$) are **insufficient** using the canonical $\pi = [0, 1, 0, 1, 1]$ counterexample ($S = \texttt{aabaa}$ has $\pi[5] = 2 \ne 1$), and enforce the **Mandatory Forward Verification Pass**.
+  4. Prove both necessity and backward-induction sufficiency of the **Suffix Array Adjacency Theorem (`CF 1526E`, `ARC 044 D`)**, and compile combined substring equations + LCP-witnessed inequalities $S[l_1..r_1] < S[l_2..r_2]$ into **Binary-Lifting DSU + $\{0, 1\}$-Weighted Tarjan SCC Condensation DAG Longest Path** and **2-SAT Prefix Branching (`CF 568C`)**.
+:::
+
+---
+
+## 1. The 5-Structure Inverse Reconstruction Duality: Equality + Forbidden-Edge Decomposition (`T-3A-06`)
+
+### 1.1 The Diagnostic Signal: Inverting String Data Structures
+
+In forward stringology, we are given a known string $S[1..N]$ and compute a structural summary: its KMP prefix function $\pi[1..N]$, Z-array $Z[2..N]$, Manacher palindrome radii $R[1..2N-1]$, Suffix Array $\operatorname{SA}[1..N]$ (with or without `height`), or Lyndon array $\lambda[1..N]$.
+
+In **Inverse String Reconstruction**, the problem is reversed: we are given a candidate integer array (or partial array with wildcards) and an alphabet $\Sigma$ of size $\sigma = |\Sigma|$, and we must:
+
+1. **Realizability & Lex-Smallest Construction**: Decide whether *any* string $S \in \Sigma^N$ produces the given structure, and if so, output the lexicographically smallest such string $S$; or
+2. **Exact Chromatic / Combinatorial Counting**: Count the total number of valid strings $S \in \Sigma^N$ modulo $M$ that realize the given structure.
+
+Why does naive backtracking or arbitrary graph coloring fail? Because a KMP, Z, or Manacher array encodes both **positive prefix/palindrome equalities** ($S[u] = S[v]$) and **negative termination mismatches** ($S[u] \ne S[v]$). General graph $\sigma$-coloring is NP-complete—yet for valid string arrays, the induced mismatch graph has a hidden **left-to-right chordal structure** that makes both greedy construction and exact $\sigma$-coloring solvable in $O(N)$ or $O(N \log N)$ time!
+
+---
+
+### 1.2 The Combinatorial Word Invariant: The 5-Structure Inverse Reconstruction Duality Table
+
+Every comparison-based string array is defined by a sequence of **longest match extensions**: each entry asserts that two substrings match up to a specific length $L$, and **mismatch (or compare by $<$) at the very next offset $L + 1$** (unless one substring hits the boundary of $S[1..N]$).
+
+::: {.callout-note title="Theorem 27.1 (The 5-Structure Inverse Reconstruction Duality)"}
+A string $S[1..N] \in \Sigma^N$ realizes a target string structure if and only if $S$ satisfies the structure's **Forced Equality Constraints** and **Termination Mismatch / Order Constraints** compiled in the table below:
+
+| Target Structure | Forced Equality Constraints (`DSU` / Direct Copy) | Termination Mismatch ($\ne$) or Order ($<, \le$) Constraints | Amortized Edge Count & Local Boundary Sanity |
+| :--- | :--- | :--- | :--- |
+| **1. KMP Array** $\pi[1..N]$ | If $\pi[i] > 0$: $S[i] = S[\pi[i]]$ | For every $q \in \operatorname{FailChain}(\pi[i-1])$ rejected before $\pi[i]$ ($q + 1 > \pi[i]$): $S[i] \ne S[q + 1]$; if $\pi[i] = 0$: also $S[i] \ne S[1]$ | $\le N$ equalities and $\le 2N$ mismatch edges by KMP potential $\Phi = \pi[i]$; requires $\pi[1] = 0$ and $0 \le \pi[i] \le \pi[i-1] + 1$. |
+| **2. Z-Array** $Z[2..N]$ | $\forall i \in [2, N]$: $S[1 .. Z[i]] = S[i .. i + Z[i] - 1]$ | If $i + Z[i] \le N$: $S[1 + Z[i]] \ne S[i + Z[i]]$ | $O(N)$ equalities via Z-box frontier sweep ($r_{\max}$ increases $\le N$ times) + $\le N - 1$ mismatch edges; requires $0 \le Z[i] \le N - i + 1$. |
+| **3. Manacher Radii** $R[1..2N-1]$ | Center $c$ spanning $[l_c, r_c]$: $S[l_c .. r_c] = (S[l_c .. r_c])^R$ | If $l_c > 1$ and $r_c < N$: $S[l_c - 1] \ne S[r_c + 1]$ | $O(N)$ equalities via Manacher rightmost boundary sweep ($r_{\max}$ increases $\le N$ times) + $\le 2N - 1$ mismatch edges. |
+| **4. Suffix Array** $\operatorname{SA}[1..N]$ (+ optional `height` $h[2..N]$) | With `height`: $S[\operatorname{SA}[i-1] .. +h_i - 1] = S[\operatorname{SA}[i] .. +h_i - 1]$ | **SA alone**: Theorem 27.3 ($S[u] \le S[v]$ or $S[u] < S[v]$).<br>**With `height`**: let $u = \operatorname{SA}[i-1], v = \operatorname{SA}[i]$; if $u+h_i, v+h_i \le N$: $S[u+h_i] < S[v+h_i]$ | If $v + h_i > N$, **impossible** (since $u \ne v$ and $S[u..N] < S[v..N]$ forbids $S[v..N]$ from being a prefix of $S[u..N]$). |
+| **5. Lyndon Array** $\lambda[1..N]$ ($R_{\mathcal{L}}[i] = i + \lambda[i] - 1$) | Periodicity inside Duval repeats where $R_{\mathcal{L}}[i]$ is frozen | By **Theorem 4.1 (`Ch 07`)**, $\operatorname{nsv}[i] = R_{\mathcal{L}}[i] + 1$: $S[i .. N] > S[R_{\mathcal{L}}[i] + 1 .. N]$ and $\forall j \in (i, R_{\mathcal{L}}[i]]: S[i .. N] < S[j .. N]$ | Intervals $[i, R_{\mathcal{L}}[i]]$ must be laminar (nested or disjoint), forming a valid Min-Cartesian Tree (`Ch 07`). |
+:::
+
+#### Proof of the Linear Edge-Count Bound for Inverse KMP, Z, and Manacher
+
+- **Inverse KMP**: At step $i$, computing $\pi[i]$ in forward KMP starts at $q = \pi[i-1]$, walks $q \leftarrow \pi[q]$ while $S[i] \ne S[q + 1]$, and stops as soon as $S[i] = S[q + 1]$ (setting $\pi[i] = q + 1$) or $q = 0$. Therefore, in the inverse problem, $\pi[i] \le \pi[i-1] + 1$ is achieved if and only if every ancestor length $q$ visited along the chain $\pi[i-1] \to \pi[\pi[i-1]] \to \dots$ down to $\pi[i]$ had a mismatch $S[i] \ne S[q + 1]$, and finally $S[i] = S[\pi[i]]$ (if $\pi[i] > 0$) or $S[i] \ne S[1]$ (if $\pi[i] = 0$). Because each mismatch step decreases the potential $q$ by at least $1$ while each index $i$ increases $q$ by at most $+1$, the total number of mismatch edges across $i = 2 \dots N$ is at most $2N - 2$.
+- **Inverse Z-Array & Manacher**: We can push all $N - 1$ range equalities $S[1..Z[i]] = S[i..i+Z[i]-1]$ (or Manacher palindromes $S[l_c..r_c] = S[l_c..r_c]^R$) down a Binary-Lifting DSU (`Ch 26`) in $O(N \log N)$ time—or even faster, in **$O(N)$ time**, by maintaining the rightmost covered index $r_{\max}$: whenever $i + Z[i] - 1 > r_{\max}$, we only copy/unite $S[r] = S[r - i + 1]$ for $r = \max(i, r_{\max} + 1) \dots i + Z[i] - 1$ and advance $r_{\max}$! $\blacksquare$
+
+---
+
+## 2. Chordal Mismatch-Graph Chromatic Counting & Mandatory Forward Verification (`T-3A-06`)
+
+### 2.1 Why the Mismatch Graph Is Chordal: Simplicial Elimination Ordering
+
+Suppose we contract all forced equalities of a valid KMP $\pi$ array, Z-array, or Manacher radius array into connected components using DSU (or direct left-to-right assignment). For each component $c$, let $\operatorname{first}(c) = \min\{i \in [1..N] : \operatorname{comp}(i) = c\}$ be the **earliest index** in $S[1..N]$ belonging to component $c$, and order the components $c_1, c_2, \dots, c_m$ by increasing $\operatorname{first}(c_1) < \operatorname{first}(c_2) < \dots < \operatorname{first}(c_m)$.
+
+Look closely at every mismatch constraint $S[u] \ne S[v]$ in Theorem 27.1:
+
+- **In KMP**: At index $i$, the mismatch edges are $S[i] \ne S[q + 1]$ where $q \le \pi[i-1] \le i - 1$, so $q + 1 \le i$ (and $q + 1 < i$ whenever $q < i - 1$; note $q = i - 1$ only happens if $\pi[i-1] = i - 1$, where $S[1..i-1] = \texttt{a}^{i-1}$ so $S[q + 1] = S[i-1] = S[1]$ is already at index $1 < i$!). Thus when $i = \operatorname{first}(c)$ is the first appearance of a new component ($\pi[i] = 0$), every forbidden partner $q + 1$ belongs to a component that **already appeared in $S[1..i-1]$**!
+- **In Z-Array**: A mismatch $S[1 + Z[i]] \ne S[i + Z[i]]$ relates index $i + Z[i]$ to the strictly earlier index $1 + Z[i] < i + Z[i]$.
+- **In Manacher**: A mismatch $S[l_c - 1] \ne S[r_c + 1]$ relates index $r_c + 1$ to the strictly earlier index $l_c - 1 < r_c + 1$.
+
+::: {.callout-note title="Theorem 27.2 (Chordal Mismatch-Graph & Exact Chromatic Polynomial Product)"}
+Let $\pi[1..N]$, $Z[1..N]$, or $R[1..2N-1]$ be a **realizable** KMP, Z, or Manacher array. Order the equality DSU components $c_1, c_2, \dots, c_m$ by their first appearance $\operatorname{first}(c_1) < \dots < \operatorname{first}(c_m)$.
+
+1. **Pairwise Distinctness of Forbidden Predecessors**: For any component $c_r$ with first occurrence $i = \operatorname{first}(c_r)$, let $N_{\text{prev}}(c_r) = \{c_j : j < r \text{ and } (c_j, c_r) \in E_{\ne}\}$ be the set of earlier components forbidden at $c_r$. In any valid string $S$ realizing the input array, **all components in $N_{\text{prev}}(c_r)$ must already carry pairwise distinct characters**! (Equivalently, $N_{\text{prev}}(c_r)$ forms a clique in the constraint graph, so $c_m, c_{m-1}, \dots, c_1$ is a **perfect elimination ordering** of a chordal graph.)
+2. **Exact Chromatic Polynomial Formula**: Over an alphabet $\Sigma$ of size $\sigma = |\Sigma|$, let $\operatorname{deg}_{\text{prev}}(c_r) := |N_{\text{prev}}(c_r)|$ be the number of distinct earlier components (or distinct characters in a canonical valid reconstruction $S^*$) forbidden at $c_r$. Then the exact number of valid strings $S \in \Sigma^N$ realizing the input array is:
+   $$\boxed{\#\{S \in \Sigma^N \text{ realizing the array}\} = \prod_{r=1}^{m} \max\bigl(0,\; \sigma - \operatorname{deg}_{\text{prev}}(c_r)\bigr).}$$
+:::
+
+#### Proof of Theorem 27.2
+Consider the first occurrence $i = \operatorname{first}(c_r)$ of component $c_r$:
+
+- In **KMP**, $i$ is a new component iff $\pi[i] = 0$. The forbidden positions at step $i$ are $\{q + 1 : q \in \operatorname{FailChain}(\pi[i-1])\} \cup \{1\}$. Why must all these positions $q + 1$ hold **pairwise distinct characters** in any valid string $S$? Suppose two distinct border lengths $q_1 > q_2$ on the failure chain of $i - 1$ satisfied $S[q_1 + 1] = S[q_2 + 1] = x$. Because $q_2 \in \operatorname{Border}(S[1..q_1])$, appending the matching character $S[q_1 + 1] = S[q_2 + 1]$ would extend border $q_2$ to length $q_2 + 1$ inside $S[1..q_1 + 1]$, meaning that in KMP's `slink` / next-character table (`Ch 02`), $q_1$ and $q_2$ share the same next character—so they represent the **same forbidden character** in $S[1..i-1]$! Thus the number of distinct characters forbidden at $S[i]$ is invariant across *every* valid assignment of $S[1..i-1]$ and equals the number of distinct components in $N_{\text{prev}}(c_r)$!
+- In **Z-Array** (if $i + Z[i] \le N$, only the single character $S[1 + Z[i]]$ is forbidden against $S[i + Z[i]]$ per Z-box termination) and **Manacher** (only $S[l_c - 1]$ is forbidden against $S[r_c + 1]$ per center $c$), once we verify that a canonical reconstruction $S^*$ is valid, every component $c_r$ at $i = \operatorname{first}(c_r)$ forbids a set of earlier indices whose values in any valid string must be pairwise distinct whenever they belong to distinct components that mutually conflict, or more directly: in any valid KMP/Manacher/Z array where each termination step at right endpoint $i$ forbids characters at earlier indices $< i$, two earlier indices $a, b < i$ both compared against $S[i]$ at step $i$ are linked by the shared prefix/palindrome of $S[1..i-1]$ unless they are already forced unequal by an earlier termination step! Consequently, the number of available choices for $c_r$ out of $\sigma$ letters is always $\max(0, \sigma - \operatorname{deg}_{\text{prev}}(c_r))$. $\blacksquare$
+
+---
+
+### 2.2 The Mandatory Forward Verification Pass & The $\pi = [0, 1, 0, 1, 1]$ Counterexample
+
+A classic trap in Inverse String Reconstruction is checking only **local** conditions (such as $\pi[1] = 0$ and $\pi[i] \le \pi[i-1] + 1$ for KMP, or $Z[i] \le N - i + 1$ for Z-arrays) and assuming the array is realizable if no direct self-loop $S[u] \ne S[u]$ occurs during construction.
+
+::: {.callout-warning title="Pitfall 27.1 (BP-27-01 / BP-5A-04: The $\pi = [0, 1, 0, 1, 1]$ Phantom-Equality Counterexample)"}
+Consider the target KMP array $\pi[1..5] = [0, 1, 0, 1, 1]$ of length $N = 5$.
+
+1. **Local Check Passes**: $\pi[1] = 0$, and at every step $\pi[i] \le \pi[i-1] + 1$ ($1 \le 1$, $0 \le 2$, $1 \le 1$, $1 \le 2$).
+2. **Trace of Forced Equalities & Mismatches**:
+   - $i = 1$: $\pi[1] = 0 \implies$ assign $S[1] = \texttt{'a'}$.
+   - $i = 2$: $\pi[2] = 1 \implies S[2] = S[1] = \texttt{'a'}$.
+   - $i = 3$: $\pi[3] = 0 \implies$ fail chain from $\pi[2] = 1$ forbids $S[3] \ne S[2] = \texttt{'a'}$ and $S[3] \ne S[1] = \texttt{'a'}$. Assign $S[3] = \texttt{'b'}$. Now $S[1..3] = \texttt{"aab"}$.
+   - $i = 4$: $\pi[4] = 1 \implies S[4] = S[1] = \texttt{'a'}$. Now $S[1..4] = \texttt{"aaba"}$.
+   - $i = 5$: $\pi[5] = 1 \implies$ starting from $q = \pi[4] = 1$, for $\pi[5]$ to drop from $q + 1 = 2$ down to $1$, we need a mismatch at $q = 1$: **$S[5] \ne S[q + 1] = S[2]$**, AND a match at $\pi[5] = 1$: **$S[5] = S[1]$**!
+3. **The Contradiction**: Because step $i = 2$ already forced $S[2] = S[1] = \texttt{'a'}$, step $i = 5$ simultaneously demands $S[5] \ne S[2] = \texttt{'a'}$ and $S[5] = S[1] = \texttt{'a'}$! Indeed, any string satisfying the positive equalities has $S = \texttt{"aabaa"}$, whose true KMP array is $[0, 1, 0, 1, \mathbf{2}] \ne [0, 1, 0, 1, 1]$!
+:::
+
+**Universal Safeguard**: Whenever you reconstruct a candidate string $S^*$ from an input KMP $\pi$, Z-array, or Manacher array $R$ (whose validity is not guaranteed by the problem statement):
+
+1. Build $S^*$ greedily over an unbounded integer alphabet $\{1, 2, \dots, N\}$ by assigning each new component $c_r$ the smallest positive integer not present among its forbidden neighbors $N_{\text{prev}}(c_r)$.
+2. **Run the standard $O(N)$ forward KMP / Z / Manacher algorithm on $S^*$** and check that the computed array equals the input array entry-for-entry, and that $\max_{1 \le i \le N} S^*[i] \le \sigma$!
+
+---
+
+## 3. The Suffix Array Adjacency Theorem (`CF 1526E`, `ARC 044 D`, `T-5A-03`)
+
+### 3.1 Characterizing Valid Strings for a Given Suffix Array
+
+Suppose we are given a permutation $\operatorname{SA}[1..N]$ of $\{1, 2, \dots, N\}$ (without the LCP/`height` array!) and asked to characterize **all** strings $S[1..N] \in \Sigma^N$ whose suffix array is $\operatorname{SA}$.
+
+Let $\operatorname{rk}[1..N+1]$ be the inverse rank array of $\operatorname{SA}$, defined by $\operatorname{rk}[\operatorname{SA}[i]] = i$ for $1 \le i \le N$, together with the **empty-suffix sentinel**:
+$$\boxed{\operatorname{rk}[N + 1] := 0.}$$
+Why $\operatorname{rk}[N + 1] = 0$? Because the empty suffix $S[N+1..N] = \varepsilon$ is strictly lexicographically smaller than every non-empty suffix $S[u..N]$.
+
+For any $i \in \{1, 2, \dots, N - 1\}$, consider two suffixes $u = \operatorname{SA}[i]$ and $v = \operatorname{SA}[i + 1]$ that are **adjacent** in the suffix array. Since $S[u..N] < S[v..N]$, their first characters must satisfy $S[u] \le S[v]$. When can they be **equal** ($S[u] = S[v]$), and when must they be **strictly unequal** ($S[u] < S[v]$)?
+
+::: {.callout-note title="Theorem 27.3 (Nong–Zhang–Chan / Burrows–Wheeler Suffix Array Adjacency Theorem)"}
+Let $\operatorname{SA}[1..N]$ be a permutation of $\{1, \dots, N\}$ and $\operatorname{rk}[1..N+1]$ be its inverse rank array with sentinel $\operatorname{rk}[N + 1] = 0$. A string $S[1..N] \in \Sigma^N$ has suffix array $\operatorname{SA}$ **if and only if** for every $i \in \{1, 2, \dots, N - 1\}$ with $u = \operatorname{SA}[i]$ and $v = \operatorname{SA}[i + 1]$:
+
+1. **Permissive Step ($\operatorname{rk}[u + 1] < \operatorname{rk}[v + 1]$)**: $S[u] \le S[v]$ (equality $S[u] = S[v]$ is allowed).
+2. **Forced Strict Step ($\operatorname{rk}[u + 1] > \operatorname{rk}[v + 1]$)**: $S[u] < S[v]$ (strict inequality is mandatory).
+
+Consequently, let $D := \sum_{i=1}^{N-1} \mathbf{1}\bigl[\operatorname{rk}[\operatorname{SA}[i] + 1] > \operatorname{rk}[\operatorname{SA}[i + 1] + 1]\bigr]$ be the number of **rank descents of shifted suffixes**. Then:
+
+- The **minimum alphabet size** required to realize $\operatorname{SA}$ is $\boxed{\sigma_{\min} = D + 1}$.
+- The **lexicographically smallest string** realizing $\operatorname{SA}$ sets $S[\operatorname{SA}[1]] = \texttt{'a'}$ and $S[\operatorname{SA}[i + 1]] = S[\operatorname{SA}[i]] + \mathbf{1}\bigl[\operatorname{rk}[\operatorname{SA}[i] + 1] > \operatorname{rk}[\operatorname{SA}[i + 1] + 1]\bigr]$.
+- Over an alphabet of size $K$, the **exact number of valid strings** $S \in \Sigma^N$ realizing $\operatorname{SA}$ is:
+  $$\boxed{\#\bigl\{S \in \Sigma^N : \operatorname{SA}(S) = \operatorname{SA}\bigr\} = \binom{N + K - 1 - D}{N} = \binom{N + K - 1 - D}{K - 1 - D}.}$$
+:::
+
+#### Proof of Theorem 27.3 (Necessity & Backward-Induction Sufficiency)
+
+- **Necessity ($\implies$)**: If $\operatorname{SA}(S) = \operatorname{SA}$, then for every $1 \le i < N$ with $u = \operatorname{SA}[i]$ and $v = \operatorname{SA}[i + 1]$, we have $S[u..N] < S[v..N]$. Writing $S[u..N] = S[u] \cdot S[u+1..N]$ and $S[v..N] = S[v] \cdot S[v+1..N]$, lexicographical order requires $S[u] \le S[v]$, and if $S[u] = S[v]$, stripping the shared first character requires $S[u+1..N] < S[v+1..N] \iff \operatorname{rk}[u + 1] < \operatorname{rk}[v + 1]$. Thus $\operatorname{rk}[u + 1] > \operatorname{rk}[v + 1]$ forces $S[u] < S[v]$.
+- **Sufficiency ($\impliedby$)**: Suppose $S[1..N]$ satisfies (1) and (2) for all $1 \le i < N$. By transitivity of $<$ on characters, to prove $S[\operatorname{SA}[1]..N] < S[\operatorname{SA}[2]..N] < \dots < S[\operatorname{SA}[N]..N]$, it suffices to prove $S[\operatorname{SA}[i]..N] < S[\operatorname{SA}[i + 1]..N]$ for every adjacent pair $(u, v) = (\operatorname{SA}[i], \operatorname{SA}[i + 1])$.
+  Suppose for contradiction that some adjacent pair $(u, v) = (\operatorname{SA}[i], \operatorname{SA}[i + 1])$ violates $S[u..N] < S[v..N]$. Among all violating adjacent pairs, choose the pair $(u, v)$ that **maximizes $\max(u, v)$** (i.e., minimizes the shorter remaining suffix length).
+  Since $S[u] \le S[v]$ holds by (1)–(2), the violation $S[u..N] \ge S[v..N]$ is possible **only** if $S[u] = S[v]$ and $S[u+1..N] \ge S[v+1..N]$. Because $S[u] = S[v]$ was permitted between $u = \operatorname{SA}[i]$ and $v = \operatorname{SA}[i + 1]$, Condition (2) guarantees $\operatorname{rk}[u + 1] < \operatorname{rk}[v + 1]$. (Note that $u$ cannot be $N$, because $\operatorname{rk}[N + 1] = 0 < \operatorname{rk}[v + 1]$ gives $S[N..N] = S[u] < S[v] \cdot S[v+1..N]$ strictly since $v \ne N$!)
+  Now look at the subarray of $\operatorname{SA}$ from index $a = \operatorname{rk}[u + 1] \ge 1$ to $b = \operatorname{rk}[v + 1] > a$: the sequence of suffixes starts at $S[\operatorname{SA}[a]..N] = S[u+1..N]$ and ends at $S[\operatorname{SA}[b]..N] = S[v+1..N]$. If every adjacent step $(\operatorname{SA}[j], \operatorname{SA}[j + 1])$ for $a \le j < b$ satisfied $S[\operatorname{SA}[j]..N] < S[\operatorname{SA}[j + 1]..N]$, transitivity would give $S[u+1..N] < S[v+1..N]$, contradicting $S[u+1..N] \ge S[v+1..N]$! Hence there exists some $j \in [a, b - 1]$ where $(u', v') = (\operatorname{SA}[j], \operatorname{SA}[j + 1])$ also violates $S[u'..N] < S[v'..N]$—and since $S[u'..N] \ge S[v'..N]$ forces $S[u'] = S[v']$, all suffixes in $[a, b]$ share the same first character, or even simpler: on the set of all pairs $(x, y)$ with $\operatorname{rk}[x] < \operatorname{rk}[y]$ and $S[x..N] \ge S[y..N]$, advancing $(u, v) \mapsto (u + 1, v + 1)$ strictly increases $\max(u, v)$ while maintaining $\operatorname{rk}[u + 1] < \operatorname{rk}[v + 1]$ and $S[u+1..N] \ge S[v+1..N]$, which must then contain an inverted adjacent pair inside $[\operatorname{rk}[u+1], \operatorname{rk}[v+1]]$! By induction on $\min(N - x, N - y)$ from the base case $\min = 0$, no such pair $(x, y)$ can exist.
+- **Stars-and-Bars Bijection**: Setting $\Delta_i = S[\operatorname{SA}[i + 1]] - S[\operatorname{SA}[i]] \ge \mathbf{1}[\operatorname{rk}[\operatorname{SA}[i]+1] > \operatorname{rk}[\operatorname{SA}[i+1]+1]]$ and subtracting the $D$ mandatory $+1$ jumps leaves $N$ non-negative increments summing to $\le K - 1 - D$, which by stars-and-bars equals $\binom{N + K - 1 - D}{N}$. $\blacksquare$
+
+---
+
+### 3.2 Hand-Checked Trace: Theorem 27.3 on $S = \texttt{"banana"}$ ($N = 6$)
+
+For $S = \texttt{"banana"}$, the sorted suffixes are:
+$$\operatorname{SA}[1..6] = [6, 4, 2, 1, 5, 3] \quad (\texttt{a} < \texttt{ana} < \texttt{anana} < \texttt{banana} < \texttt{na} < \texttt{nana}),$$
+so $\operatorname{rk}[1..6] = [4, 3, 6, 2, 5, 1]$ and sentinel $\operatorname{rk}[7] = 0$.
+
+| $i$ | $u = \operatorname{SA}[i]$ | $v = \operatorname{SA}[i+1]$ | $\operatorname{rk}[u+1]$ | $\operatorname{rk}[v+1]$ | Comparison | Constraint Induced | Minimal Assignment |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| $1$ | $6$ (`a`) | $4$ (`ana`) | $\operatorname{rk}[7] = 0$ | $\operatorname{rk}[5] = 5$ | $0 < 5$ | $S[6] \le S[4]$ | $S[6] = \texttt{'a'},\; S[4] = \texttt{'a'}$ |
+| $2$ | $4$ (`ana`) | $2$ (`anana`) | $\operatorname{rk}[5] = 5$ | $\operatorname{rk}[3] = 6$ | $5 < 6$ | $S[4] \le S[2]$ | $S[2] = \texttt{'a'}$ |
+| $3$ | $2$ (`anana`) | $1$ (`banana`) | $\operatorname{rk}[3] = 6$ | $\operatorname{rk}[2] = 3$ | $\mathbf{6 > 3}$ | $\mathbf{S[2] < S[1]}$ | $S[1] = \texttt{'b'}$ (Jump #1) |
+| $4$ | $1$ (`banana`) | $5$ (`na`) | $\operatorname{rk}[2] = 3$ | $\operatorname{rk}[6] = 1$ | $\mathbf{3 > 1}$ | $\mathbf{S[1] < S[5]}$ | $S[5] = \texttt{'c'}$ (Jump #2) |
+| $5$ | $5$ (`na`) | $3$ (`nana`) | $\operatorname{rk}[6] = 1$ | $\operatorname{rk}[4] = 2$ | $1 < 2$ | $S[5] \le S[3]$ | $S[3] = \texttt{'c'}$ |
+
+There are $D = 2$ forced strict jumps ($i = 3$ and $i = 4$), giving $\sigma_{\min} = D + 1 = 3$ and the unique minimal string $S[1..6] = \texttt{"bacaca"}$ (which is $\texttt{"banana"}$ with `'n'` renamed to `'c'`). Notice how at $i = 1$, sentinel $\operatorname{rk}[7] = 0 < \operatorname{rk}[5] = 5$ is what allows $S[6] = S[4] = \texttt{'a'}$!
+
+---
+
+## 4. LCP-Witnessed Substring Inequality Digraphs, $\{0, 1\}$-Weighted Tarjan SCCs & 2-SAT Prefix Branching (`T-5A-03`)
+
+### 4.1 LCP-Witnessed Substring Inequalities $\to$ DSU + $\{0, 1\}$-Weighted SCC DAG
+
+Unlike substring equality ($AB = CD \iff A = C \wedge B = D$), a lexicographical substring inequality $S[l_1..r_1] < S[l_2..r_2]$ or $S[l_1..r_1] \le S[l_2..r_2]$ is a **disjunction over the Longest Common Prefix (LCP)** $t = \operatorname{LCP}(S[l_1..r_1], S[l_2..r_2])$:
+$$S[l_1..r_1] < S[l_2..r_2] \iff \Bigl(\exists t \in [0, \min(L_1, L_2) - 1] : S[l_1 .. l_1 + t - 1] = S[l_2 .. l_2 + t - 1] \;\wedge\; S[l_1 + t] < S[l_2 + t]\Bigr)$$
+$$\lor\; \Bigl(L_1 < L_2 \;\wedge\; S[l_1 .. r_1] = S[l_2 .. l_2 + L_1 - 1]\Bigr),$$
+where $L_1 = r_1 - l_1 + 1$ and $L_2 = r_2 - l_2 + 1$.
+
+When the LCP witness $t$ is **given** (or determined by an inverse structure such as SA+LCP, Lyndon array, or explicit $\operatorname{LCP}(U, V) = t$ constraints), each inequality splits cleanly into **one range equality of length $t$** plus **at most one point character inequality at offset $t$**. We solve the resulting combined system of substring equalities ($=$), weak character inequalities ($S[u] \le S[v]$), and strict character inequalities ($S[u] < S[v]$) via a **4-Phase Pipeline**:
+
+1. **Phase 1 — Binary-Lifting DSU Equality Contraction (`Ch 26`)**:
+   Insert all substring equalities $S[l_1 .. l_1 + t - 1] = S[l_2 .. l_2 + t - 1]$ into a Binary-Lifting DSU and push down to level $0$ in $O((M + N \log N)\alpha(N))$ time. Let $V_0 = \{\operatorname{find}_0(i) : 1 \le i \le N\}$ be the contracted character vertices.
+2. **Phase 2 — $\{0, 1\}$-Weighted Inequality Digraph $G = (V_0, E_0 \cup E_1)$**:
+   - Every weak constraint $S[u] \le S[v]$ adds a directed edge $\operatorname{find}_0(u) \xrightarrow{w = 0} \operatorname{find}_0(v)$.
+   - Every strict constraint $S[u] < S[v]$ (i.e., $S[u] + 1 \le S[v]$) adds a directed edge $\operatorname{find}_0(u) \xrightarrow{w = 1} \operatorname{find}_0(v)$.
+3. **Phase 3 — Tarjan SCC Feasibility Criterion (Zero Weight-1 Cycles)**:
+   Run Tarjan's SCC algorithm on $G$ (treating both $w = 0$ and $w = 1$ edges as directed edges). Inside any Strongly Connected Component $\mathcal{C} \subseteq V_0$, every vertex can reach every other vertex via $\le$ edges, so **all vertices in $\mathcal{C}$ must be assigned the exact same character**! Therefore:
+   $$\boxed{\text{System is feasible over } \mathbb{Z}_{\ge 0} \iff \text{no weight-}1 \text{ edge } (x \xrightarrow{1} y) \text{ has } \operatorname{SCC}(x) = \operatorname{SCC}(y).}$$
+4. **Phase 4 — Condensation DAG Longest Path**:
+   Contract each SCC into a super-node in the condensation DAG $\mathcal{D}$, keeping all edges $(A \xrightarrow{w} B)$ with $A \ne B$. Compute the longest path to each SCC in topological order:
+   $$\boxed{\operatorname{dist}[B] = \max\Bigl(\{0\} \cup \bigl\{\operatorname{dist}[A] + w(A \to B) : (A \xrightarrow{w} B) \in \mathcal{D}\bigr\}\Bigr).}$$
+   Then $\sigma_{\min} = 1 + \max_{B} \operatorname{dist}[B]$ is the minimum required alphabet size, and setting $S[i] = \texttt{'a'} + \operatorname{dist}[\operatorname{SCC}(\operatorname{find}_0(i))]$ produces the **pointwise lexicographically smallest valid string** $S[1..N]$!
+
+---
+
+### 4.2 2-SAT Prefix Branching for Unanchored Global Inequalities (`CF 568C`)
+
+What if the LCP length $t$ is **not** given, as in `CF 568C — New Language`: we are given a reference string $S_0[1..N]$, a partition of $\Sigma = \texttt{'a'}..\texttt{'z'}$ into Vowels (`V`) and Consonants (`C`), and $M$ 2-SAT implication rules $(i, \text{type}_1) \implies (j, \text{type}_2)$, and we must find the **lexicographically smallest valid string $S[1..N] \ge S_0[1..N]$** ($N \le 200$)?
+
+Because there is only **one** global inequality $S \ge S_0$, there are only $N + 1$ possible values for $t = \operatorname{LCP}(S, S_0) \in \{0, 1, \dots, N\}$! Moreover, to minimize $S$ lexicographically, we want the shared prefix $S[1..t] = S_0[1..t]$ to be as **long as possible**:
+
+1. **Descending LCP Search ($t = N$ down to $0$)**:
+   - At $t = N$, check if $S = S_0$ itself satisfies the 2-SAT clauses.
+   - At $t < N$, fix $S[1..t] = S_0[1..t]$ (adding unary 2-SAT clauses $x_i \equiv \operatorname{type}(S_0[i])$ for $1 \le i \le t$). At position $t + 1$, we need $S[t + 1] > S_0[t + 1]$. Because the 2-SAT graph only depends on whether $S[t + 1]$ is a Vowel (`V`) or Consonant (`C`), we do **not** need to test all $26$ letters—we only test at most **two** candidates for $S[t + 1]$:
+     - $c_V = \min\{c > S_0[t + 1] : \operatorname{type}(c) = \texttt{V}\}$, and
+     - $c_C = \min\{c > S_0[t + 1] : \operatorname{type}(c) = \texttt{C}\}$ (tested in increasing order of character value).
+2. **Left-to-Right Greedy Completion ($i = t + 2 \dots N$)**:
+   Once the largest feasible $t$ (and minimum valid $S[t + 1] > S_0[t + 1]$) is locked in, $S > S_0$ is already guaranteed! For each remaining index $i = t + 2 \dots N$, test the smallest overall letter `'a'` and the smallest letter of the opposite `V`/`C` class via 2-SAT, locking in the smaller feasible choice. Total 2-SAT calls: at most $2(N + 1) + 2N = 4N + 2$.
+
+---
+
+### 4.3 Reverse-Engineering Scratchpad, Algorithmic Contracts & Boundary Pitfalls (`BP-27-01`–`BP-27-04` / `BP-5A-04`–`BP-5A-07`)
+
+```cpp
+// Phase 2-4 Solver: {0, 1}-Weighted Inequality Digraph on DSU_0 roots -> Lex-Smallest String
+// Input: num_vars, directed edges (u, v, w) where w=0 means S[u] <= S[v], w=1 means S[u] < S[v]
+// Returns: dist[0..num_vars-1] (0-indexed minimum character offsets), or empty vector if infeasible
+vector<int> solve_inequality_dag(int V, const vector<tuple<int, int, int>>& edges) {
+    vector<vector<pair<int, int>>> adj(V);
+    for (auto [u, v, w] : edges) {
+        if (u == v && w == 1) return {}; // Immediate self-loop S[u] < S[u]
+        adj[u].push_back({v, w});
+    }
+    vector<int> dfn(V, -1), low(V, 0), scc(V, -1), stk;
+    int timer = 0, scc_cnt = 0;
+    auto dfs = [&](auto& self, int u) -> void {
+        dfn[u] = low[u] = timer++;
+        stk.push_back(u);
+        for (auto [v, w] : adj[u]) {
+            if (dfn[v] == -1) {
+                self(self, v);
+                low[u] = min(low[u], low[v]);
+            } else if (scc[v] == -1) {
+                low[u] = min(low[u], dfn[v]);
+            }
+        }
+        if (low[u] == dfn[u]) {
+            while (true) {
+                int x = stk.back(); stk.pop_back();
+                scc[x] = scc_cnt;
+                if (x == u) break;
+            }
+            scc_cnt++;
+        }
+    };
+    for (int i = 0; i < V; ++i) if (dfn[i] == -1) dfs(dfs, i);
+
+    // Check feasibility: no weight-1 edge inside any SCC
+    // Note: Tarjan numbers SCCs in REVERSE topological order (scc_cnt - 1 down to 0)
+    vector<int> dist(scc_cnt, 0);
+    for (int u = 0; u < V; ++u) {
+        for (auto [v, w] : adj[u]) {
+            if (scc[u] == scc[v] && w == 1) return {}; // Positive cycle: S[u] < ... <= S[u]
+        }
+    }
+    vector<vector<pair<int, int>>> dag(scc_cnt);
+    for (int u = 0; u < V; ++u)
+        for (auto [v, w] : adj[u])
+            if (scc[u] != scc[v])
+                dag[scc[u]].push_back({scc[v], w});
+
+    for (int c = scc_cnt - 1; c >= 0; --c)
+        for (auto [nxt, w] : dag[c])
+            dist[nxt] = max(dist[nxt], dist[c] + w);
+
+    vector<int> ans(V);
+    for (int i = 0; i < V; ++i) ans[i] = dist[scc[i]];
+    return ans;
+}
+```
+
+::: {.callout-warning title="Pitfall 27.2 (BP-27-02 / BP-5A-05: Omitting Empty-Suffix Sentinel $\operatorname{rk}[N + 1] = 0$ in Theorem 27.3)"}
+In the Suffix Array Adjacency Theorem (`CF 1526E`, `ARC 044 D`), when $u = \operatorname{SA}[i] = N$ (the length-$1$ suffix $S[N..N]$), the shifted index is $u + 1 = N + 1$. Leaving $\operatorname{rk}[N + 1]$ uninitialized (or out of bounds) corrupts the comparison $\operatorname{rk}[N + 1] < \operatorname{rk}[v + 1]$. Because $\varepsilon < S[v+1..N]$ always holds, $\operatorname{rk}[N + 1] = 0$ (or $-1$ in 0-based indexing) is **always smaller** than $\operatorname{rk}[v + 1]$, so $u = N$ **never** forces a strict jump $S[N] < S[v]$!
+:::
+
+::: {.callout-warning title="Pitfall 27.3 (BP-27-03 / BP-5A-06: Proper-Prefix Trap When $d = \min(L_1, L_2)$ in LCP-Witnessed Inequalities)"}
+Suppose a constraint specifies $\operatorname{LCP}(S[l_1..r_1], S[l_2..r_2]) = d$ and $S[l_1..r_1] \le S[l_2..r_2]$ with $L_1 = r_1 - l_1 + 1$ and $L_2 = r_2 - l_2 + 1$.
+
+- If $d > \min(L_1, L_2)$, the input is immediately **impossible** (an LCP cannot exceed the shorter substring's length).
+- If $d == \min(L_1, L_2)$, **no mismatch character exists at offset $d$**! Instead, one substring is a prefix of the other, so $S[l_1..r_1] \le S[l_2..r_2]$ holds if and only if $L_1 \le L_2$ (and $S[l_1..r_1] < S[l_2..r_2]$ holds iff $L_1 < L_2$). Blindly adding a character edge $\operatorname{find}_0(l_1 + d) \to \operatorname{find}_0(l_2 + d)$ when $d == \min(L_1, L_2)$ reads out-of-bounds characters $S[r_1 + 1]$ and $S[r_2 + 1]$!
+:::
+
+::: {.callout-warning title="Pitfall 27.4 (BP-27-04 / BP-5A-07: Uninhabited `V`/`C` Class in 2-SAT String Construction `CF 568C`)"}
+In `CF 568C`, if every letter of $\Sigma$ is a Vowel (`V`) and **zero** letters are Consonants (`C`), the 2-SAT solver does not inherently know that `C` is an empty set! You **must** add unary clauses $(\neg \text{is\_C}(i))$ (i.e., edge `C(i) -> V(i)`) for every $1 \le i \le N$ whenever class `C` (or `V`) contains $0$ characters in $\Sigma$.
+:::
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Problem Ladder
+
+### Tier 1 — Stepping Stones (`W5A-03`, `W5A-04`)
+
+#### Problem 27.1 (`W5A-03`) — `AtCoder ARC 044 D — 文字列と辞書順 (String and Lexicographical Order)`
+
+- **Mathematical Statement**: Given a permutation $\operatorname{SA}[1..N]$ of $\{1, 2, \dots, N\}$, construct the lexicographically smallest uppercase English string $S[1..N] \in \{\texttt{A}, \dots, \texttt{Z}\}^N$ whose suffix array is $\operatorname{SA}$, or output `-1` if no such uppercase string exists.
+- **Constraints**: $1 \le N \le 10^6$, $|\Sigma| = 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At $N = 10^6$, we must determine the minimum character increment between adjacent suffixes $u = \operatorname{SA}[i]$ and $v = \operatorname{SA}[i + 1]$ in $O(1)$ time per step.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Apply **Theorem 27.3 (Suffix Array Adjacency Theorem)** with empty-suffix sentinel $\operatorname{rk}[N + 1] = 0$: $S[u] = S[v]$ is permitted if and only if $\operatorname{rk}[u + 1] < \operatorname{rk}[v + 1]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Compute $\operatorname{rk}[1..N]$ with $\operatorname{rk}[N + 1] = 0$. Set $c = 0$ and $S[\operatorname{SA}[1]] = \texttt{'A'}$. For $i = 1 \dots N - 1$, if $\operatorname{rk}[\operatorname{SA}[i] + 1] > \operatorname{rk}[\operatorname{SA}[i + 1] + 1]$, increment $c \leftarrow c + 1$; set $S[\operatorname{SA}[i + 1]] = \texttt{'A'} + c$. If $c \ge 26$, output `-1`; otherwise output $S[1..N]$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5A-03`)"}
+1. **Diagnostic Signal**: Constructive realization of $\operatorname{SA}[1..N]$ minimizing alphabet usage and lexicographical order simultaneously.
+2. **Combinatorial Word Invariant**: By Theorem 27.3, any valid string $S$ satisfies $S[\operatorname{SA}[i + 1]] - S[\operatorname{SA}[i]] \ge \mathbf{1}[\operatorname{rk}[\operatorname{SA}[i] + 1] > \operatorname{rk}[\operatorname{SA}[i + 1] + 1]]$. Taking equality at every step $i = 1 \dots N - 1$ minimizes every character $S[\operatorname{SA}[i]]$ pointwise!
+3. **Algorithmic Compilation**: Single $O(N)$ pass over $i = 1 \dots N - 1$ with sentinel $\operatorname{rk}[N + 1] = 0$.
+4. **Broken-Invariant Counterexample**: Printing characters in SA order $S[\operatorname{SA}[1]], \dots, S[\operatorname{SA}[N]]$ instead of original position order $S[1], \dots, S[N]$ outputs a sorted string `'AA...Z'` rather than the reconstructed word.
+:::
+
+---
+
+#### Problem 27.2 (`W5A-04` / `W5A-02`) — `CF 1526E — Oolimry and Suffix Array`
+
+- **Mathematical Statement**: Given a 0-indexed suffix array $\operatorname{SA}[0..N-1]$ of length $N$ and an alphabet size $K$, count the number of valid strings $S \in \{0, 1, \dots, K - 1\}^N$ whose suffix array is $\operatorname{SA}$, modulo $998244353$.
+- **Constraints**: $1 \le N, K \le 2 \times 10^5$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Unlike Problem 27.1 (which asks for one minimal string), here we must count **all** valid character assignments $0 \le S[\operatorname{SA}[0]] \le S[\operatorname{SA}[1]] \le \dots \le S[\operatorname{SA}[N-1]] \le K - 1$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 27.3**, once we count the $D$ forced strict steps where $\operatorname{rk}[\operatorname{SA}[i] + 1] > \operatorname{rk}[\operatorname{SA}[i + 1] + 1]$ (with 0-indexed sentinel $\operatorname{rk}[N] = -1$), subtracting $1$ from the right-hand side for each of the $D$ strict inequalities transforms the system into $0 \le y_0 \le y_1 \le \dots \le y_{N-1} \le K - 1 - D$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+If $K - 1 - D < 0$, output $0$; otherwise output $\binom{N + K - 1 - D}{N} \bmod 998244353$ in $O(N)$ time.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5A-04`)"}
+1. **Diagnostic Signal**: Counting all valid strings over a size-$K$ alphabet that realize $\operatorname{SA}$.
+2. **Combinatorial Word Invariant**: Let $x_i = S[\operatorname{SA}[i]] \in \{0, \dots, K - 1\}$ and $d_i = \mathbf{1}[\operatorname{rk}[\operatorname{SA}[i] + 1] > \operatorname{rk}[\operatorname{SA}[i + 1] + 1]]$. By Theorem 27.3, $S$ has suffix array $\operatorname{SA}$ iff $x_{i+1} - x_i \ge d_i$ for $0 \le i \le N - 2$. Defining $y_i = x_i - \sum_{j=0}^{i-1} d_j$ gives a bijection with non-decreasing sequences $0 \le y_0 \le y_1 \le \dots \le y_{N-1} \le K - 1 - D$, of which there are $\binom{N + (K - 1 - D)}{N}$.
+3. **Algorithmic Compilation**: Precompute factorials up to $N + K \le 4 \times 10^5$, compute $\operatorname{rk}[0..N]$ with $\operatorname{rk}[N] = -1$, count $D = \sum_{i=0}^{N-2} [\operatorname{rk}[\operatorname{SA}[i] + 1] > \operatorname{rk}[\operatorname{SA}[i + 1] + 1]]$, and return $\binom{N + K - 1 - D}{N} \bmod 998244353$ in $O(N)$ time.
+4. **Broken-Invariant Counterexample (`Pitfall 27.2`)**: Setting $\operatorname{rk}[N] = N$ instead of $-1$ falsely counts $u = \operatorname{SA}[i] = N - 1$ as a descent $\operatorname{rk}[N] > \operatorname{rk}[v + 1]$, inflating $D$ by $1$ whenever $\operatorname{SA}[N - 1] \ne N - 1$.
+:::
+
+---
+
+### Tier 2 — Intermediate (`W3A-08`, `W3A-14`)
+
+#### Problem 27.3 (`W3A-08`) — `Inverse KMP Prefix-Function & Z-Array Realizability and Lex-Smallest Reconstruction`
+
+- **Mathematical Statement**:
+  - **Part A (Inverse KMP)**: Given an integer array $A[1..N]$ and alphabet size $\sigma$, decide whether there exists a string $S \in \{1, \dots, \sigma\}^N$ whose KMP prefix function is $\pi(S) = A$. If so, output the lexicographically smallest such string $S$ and the total number of valid strings $S \in \{1, \dots, \sigma\}^N \bmod 998244353$.
+  - **Part B (Inverse Z-Array)**: Answer the same questions when $A[2..N]$ is the target Z-array $Z(S)[2..N]$.
+- **Constraints**: $1 \le N \le 5 \times 10^5$, $1 \le \sigma \le 10^9$, time limit $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Local checks ($A[1] = 0, A[i] \le A[i-1] + 1$ for KMP; $0 \le A[i] \le N - i + 1$ for Z) are necessary but **not sufficient** (`Pitfall 27.1`: $A = [0, 1, 0, 1, 1]$). How do we construct the canonical candidate $S^*$ in $O(N)$ time and verify it?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 27.1** and **Theorem 27.2**:
+
+- For **KMP**: if $A[i] > 0$, copy $S^*[i] = S^*[A[i]]$ (factor $1$ in chromatic product). If $A[i] == 0$, walk $q = A[i-1], A[q], \dots$ collecting the distinct forbidden characters $\{S^*[q + 1]\} \cup \{S^*[1]\}$; assign $S^*[i]$ the smallest integer $\ge 1$ not in this set, and multiply the chromatic count by $\max(0, \sigma - \operatorname{deg}_{\text{prev}}(i))$.
+- For **Z-Array**: sweep $i = 2 \dots N$ maintaining the rightmost Z-box frontier $r_{\max}$; whenever $i + A[i] - 1 > r_{\max}$, copy $S^*[r] = S^*[r - i + 1]$ for $r = \max(i, r_{\max} + 1) \dots i + A[i] - 1$, and record the mismatch $S^*[i + A[i]] \ne S^*[1 + A[i]]$ when $i + A[i] \le N$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+After constructing $S^*[1..N]$ in $O(N)$ time, **run the standard forward KMP (or Z-algorithm) on $S^*$** and check that $\pi(S^*) == A$ (or $Z(S^*) == A$) and $\max_i S^*[i] \le \sigma$. If this check fails, output `-1` (and count $0$)!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-08`)"}
+1. **Diagnostic Signal**: Unverified greedy construction accepts invalid arrays like $\pi = [0, 1, 0, 1, 1]$.
+2. **Combinatorial Word Invariant**:
+   - **Part A (KMP)**: Check $A[1] == 0$ and $0 \le A[i] \le A[i-1] + 1$. Set $S^*[1] = 1$ and $\text{ways} = \sigma \bmod M$. For $i = 2 \dots N$:
+     - If $A[i] > 0$: set $S^*[i] = S^*[A[i]]$.
+     - If $A[i] == 0$: walk $q = A[i-1]$ down via $q \leftarrow A[q]$ while $q > 0$, marking `used[S*[q + 1]] = i`, plus `used[S*[1]] = i`. Count the number $d$ of distinct characters marked at step $i$, set $S^*[i] = \min\{c \ge 1 : \text{used}[c] \ne i\}$, and update $\text{ways} \leftarrow \text{ways} \cdot \max(0LL, \sigma - d) \bmod M$.
+     - Finally, compute the forward KMP array $\pi_{\text{true}}[1..N]$ of $S^*$. If $\pi_{\text{true}} \ne A$ or $\max S^* > \sigma$, return `IMPOSSIBLE` ($0$ ways).
+   - **Part B (Z-Array)**: Maintain $r_{\max} = 1$ and forbidden lists `forb[i]` (storing $1 + A[j]$ for all $j < i$ where $j + A[j] == i$). For $i = 1 \dots N$: if $S^*[i]$ is not yet copied from a covering Z-box, mark all characters $\{S^*[x] : x \in \text{forb}[i]\}$, let $d$ be the number of distinct forbidden characters, assign $S^*[i]$ the smallest unused integer $\ge 1$, and multiply $\text{ways}$ by $\max(0LL, \sigma - d)$. Then if $i \ge 2$ and $i + A[i] - 1 > r_{\max}$, copy $S^*[r] = S^*[r - i + 1]$ for $r = \max(i, r_{\max} + 1) \dots i + A[i] - 1$ and update $r_{\max}$. Finally, run the forward Z-algorithm on $S^*$ to verify $Z_{\text{true}}(S^*) == A$.
+3. **Algorithmic Compilation**: Both construction and forward verification run in strict $O(N)$ time and $O(N)$ space.
+4. **Broken-Invariant Counterexample (`Pitfall 27.1`)**: On $A = [0, 1, 0, 1, 1]$, Part A builds $S^* = [1, 1, 2, 1, 1]$, and forward KMP produces $\pi_{\text{true}}(S^*) = [0, 1, 0, 1, 2] \ne A$, catching the phantom border at $i = 5$!
+:::
+
+---
+
+#### Problem 27.4 (`W3A-14`) — `Inverse Manacher Radius Reconstruction & Chordal Chromatic Counting` (`CF Gym 101981I` / `Gym 102001`)
+
+- **Mathematical Statement**: Given the $2N - 1$ Manacher palindrome radii $R[1..2N-1]$ of an unknown string $S[1..N]$ (representing the maximal palindrome lengths centered at the $N$ characters and $N - 1$ inter-character midpoints) and alphabet size $\sigma$, decide whether $R$ is realizable over $\Sigma$, construct the lexicographically smallest valid string $S^*$, and count all valid strings $S \in \Sigma^N \bmod 998244353$.
+- **Constraints**: $1 \le N \le 3 \times 10^5$, $1 \le \sigma \le 10^9$, time limit $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+There are $2N - 1$ palindrome centers $c$, and the sum of radii $\sum R[c]$ can be $\Theta(N^2)$. We can use Signed Binary-Lifting DSU (`Ch 26`) in $O(N \log N)$, or we can exploit Manacher's rightmost-boundary invariant in **$O(N)$ time**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In Manacher's algorithm, as center $c$ sweeps from $1$ to $2N - 1$, let $[l_c, r_c] \subseteq [1, N]$ be the palindrome span of center $c$. Only positions $r \in (\max(l_c - 1, r_{\max}),\; r_c]$ that extend **strictly past the previous rightmost palindrome boundary $r_{\max}$** create new character equalities $S[r] = S[l_c + r_c - r]$! Moreover, if $l_c > 1$ and $r_c < N$, the palindrome stops because of the single boundary mismatch $S[r_c + 1] \ne S[l_c - 1]$ (where $l_c - 1 < r_c + 1$).
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Sweep $c = 1 \dots 2N - 1$: whenever $r_c > r_{\max}$, record `parent_eq[r] = l_c + r_c - r` for $r = \max(l_c, r_{\max} + 1) \dots r_c$ and update $r_{\max} \leftarrow r_c$; if $l_c > 1$ and $r_c < N$, add $l_c - 1$ to `forb[r_c + 1]`. Then sweep $i = 1 \dots N$ left-to-right assigning $S^*[i] = S^*[\text{parent\_eq}[i]]$ (if copied) or the smallest integer not in $\{S^*[x] : x \in \text{forb}[i]\}$, multiply $\max(0, \sigma - \operatorname{deg}_{\text{prev}}(i))$, and **re-run forward Manacher on $S^*$**!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-14`)"}
+1. **Diagnostic Signal**: $\sum R[c] = \Theta(N^2)$ equalities collapse to $\le N$ frontier equalities plus $\le 2N - 1$ termination mismatches.
+2. **Combinatorial Word Invariant**: By Theorem 27.1 and Theorem 27.2, for any valid Manacher array, every new character $S[i]$ not determined by an earlier palindrome reflection `parent_eq[i] < i` is constrained only by mismatches $S[i] \ne S[l_c - 1]$ from centers $c$ whose right boundary was $r_c = i - 1$. Crucially, why must all forbidden partners $x \in \text{forb}[i]$ carry **pairwise distinct characters** in any valid string? Suppose two centers $c_1 < c_2$ both terminate at $r_{c_1} = r_{c_2} = i - 1$, forbidding $x_1 = l_{c_1} - 1$ and $x_2 = l_{c_2} - 1$ ($x_1 < x_2 < i$). Because $c_2$ is a suffix palindrome of $c_1$, reflecting $x_2 = l_{c_2} - 1$ across $c_1$ maps $x_2$ to the exact boundary mismatch of the mirror center $c'_2 = 2c_1 - c_2$ inside $c_1$, which already forced $S[x_1] \ne S[x_2]$! Thus $\text{forb}[i]$ is a clique in the constraint graph, and the chordal chromatic formula $\prod (\sigma - \operatorname{deg}_{\text{prev}}(i))$ is **exact**!
+3. **Algorithmic Compilation**:
+   - Check basic parity/range sanity of $R[1..2N-1]$ (an odd center at character $i$ must have odd palindrome length $\ge 1$; an even center between $i$ and $i+1$ must have even length $\ge 0$).
+   - Extract `parent_eq[1..N]` and `forb[1..N]` in $O(N)$ via the $r_{\max}$ sweep.
+   - Build $S^*[1..N]$ and accumulate $\prod (\sigma - d_i) \bmod 998244353$ in $O(N)$.
+   - Run forward Manacher on $S^*$ in $O(N)$ to verify $R_{\text{true}}(S^*) == R$.
+4. **Broken-Invariant Counterexample**: If $|\Sigma| = 2$ (`{'a', 'b'}`) and $R$ requires two distinct centers terminating at $i - 1$ with different left-boundary characters `'a'` and `'b'`, then $d_i = 2$, so $\sigma - d_i = 0$ and no binary string exists ($S^*[i] = 3 > \sigma$).
+:::
+
+---
+
+### Tier 3 — Advanced (`W5A-08`, `W5A-19`)
+
+#### Problem 27.5 (`W5A-08` / `W5A-05`) — `[SDOI2017] 字符串 / Period & Border Array Reconstruction` (`Luogu P4998` / `BZOJ 4974` / `LOJ #2143`)
+
+- **Mathematical Statement**: Given the shortest-period array $\operatorname{per}[1..N]$ of an unknown lowercase string $S[1..N] \in \{\texttt{a}, \dots, \texttt{z}\}^N$—where $\operatorname{per}[i]$ is the minimum weak period length of prefix $S[1..i]$—reconstruct the lexicographically smallest lowercase string $S[1..N]$ realizing $\operatorname{per}[1..N]$.
+- **Constraints**: $1 \le N \le 2 \times 10^5$, $|\Sigma| = 26$, input guaranteed realizable, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+How does the shortest prefix period $\operatorname{per}[i]$ relate to the KMP prefix function $\pi[i]$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Period–Border Duality (Theorem 1.1 in `Ch 01`)**, the shortest period $\operatorname{per}(S[1..i])$ and longest proper border $\pi[i]$ satisfy:
+$$\boxed{\pi[i] = i - \operatorname{per}[i] \quad \forall i \in \{1, \dots, N\}.}$$
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Convert $\operatorname{per}[i] \mapsto \pi[i] = i - \operatorname{per}[i]$ for $1 \le i \le N$, and run the $O(N)$ Inverse KMP algorithm of **Theorem 27.1** (using a 26-bit integer mask to find the smallest free letter `'a'..'z'` whenever $\pi[i] == 0$).
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5A-08`)"}
+1. **Diagnostic Signal**: Reconstructing $S$ from prefix periods $\operatorname{per}[1..N]$ at $N = 2 \times 10^5$.
+2. **Combinatorial Word Invariant**: By Theorem 1.1, $\pi[i] = i - \operatorname{per}[i]$. By Theorem 27.1:
+   - If $\pi[i] > 0$, then $S[i] = S[\pi[i]]$ is forced.
+   - If $\pi[i] == 0$, then $S[i] \notin \{S[q + 1] : q \in \operatorname{FailChain}(\pi[i-1])\} \cup \{S[1]\}$.
+3. **Algorithmic Compilation**:
+   ```cpp
+   S[1] = 'a';
+   for (int i = 2; i <= N; ++i) {
+       pi[i] = i - per[i];
+       if (pi[i] > 0) {
+           S[i] = S[pi[i]];
+       } else {
+           uint32_t mask = (1u << (S[1] - 'a'));
+           for (int q = pi[i - 1]; q > 0; q = pi[q])
+               mask |= (1u << (S[q + 1] - 'a'));
+           int c = __builtin_ctz(~mask);
+           S[i] = char('a' + c);
+       }
+   }
+   ```
+   By KMP potential analysis, the inner `for` loop executes at most $N$ times across the entire run. Total time: $O(N)$ with `ctz` bit-manipulation.
+4. **Broken-Invariant Counterexample**: Forgetting to include $S[1]$ in `mask` when $\pi[i] == 0$ assigns $S[i] = \texttt{'a'} = S[1]$, which forces $\pi[i] \ge 1 \ne 0$!
+:::
+
+---
+
+#### Problem 27.6 (`W5A-19` / `W5A-13`) — `CF 568C — New Language`
+
+- **Mathematical Statement**: An alphabet of the first $L$ lowercase letters ($\Sigma = \{\texttt{a}, \dots\}$ of size $L \le 26$) is partitioned into Vowels (`V`) and Consonants (`C`). A word $S[1..N] \in \Sigma^N$ is valid if it satisfies $M$ implication rules of the form $(p_1, t_1) \implies (p_2, t_2)$ ("if $S[p_1]$ has type $t_1 \in \{\texttt{V}, \texttt{C}\}$, then $S[p_2]$ must have type $t_2 \in \{\texttt{V}, \texttt{C}\}$"). Given a reference string $S_0[1..N]$, find the lexicographically smallest valid word $S[1..N]$ satisfying $S \ge S_0$, or output `-1`.
+- **Constraints**: $1 \le L \le 26$, $1 \le N \le 200$, $0 \le M \le 4 N^2$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+The condition $S \ge S_0$ is an unanchored lexicographical inequality coupled with a 2-SAT system on $\{1, \dots, N\}$. We cannot test all $L^N$ strings, nor can we branch on all $L = 26$ letters at every position in $O(26 N (N + M))$ without exploiting the binary `V`/`C` collapse.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **§4.2**, $S \ge S_0$ partitions into $N + 1$ disjoint cases indexed by $t = \operatorname{LCP}(S, S_0) \in \{0, 1, \dots, N\}$ (ordered from $t = N$ down to $0$ to minimize $S$). Moreover, two letters of the **same** `V`/`C` type are completely indistinguishable to the 2-SAT graph! Thus at any branching index $i$, we only ever need to test at most **two** letters: the smallest valid letter of type `V` and the smallest valid letter of type `C`!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Precompute for each minimum bound $b \in [0, L - 1]$ the smallest letter $\ge b$ of type `V` and the smallest letter $\ge b$ of type `C`. Remember **Pitfall 27.4**: if the entire alphabet $\Sigma$ has no `V` (or no `C`), add unary clauses forbidding that empty type at all $N$ positions!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5A-19`)"}
+1. **Diagnostic Signal**: Global inequality $S \ge S_0$ + 2-SAT implications.
+2. **Combinatorial Word Invariant**: For any fixed prefix $S[1..k]$, the 2-SAT feasibility of completing $S[k+1..N]$ depends **only** on the binary type vector $(\operatorname{type}(S[1]), \dots, \operatorname{type}(S[k])) \in \{\texttt{V}, \texttt{C}\}^k$, plus the global existence of at least one `V` and at least one `C` in $\Sigma$.
+3. **Algorithmic Compilation**:
+   - Build the base 2-SAT implication graph on $2N$ literals (including contrapositives $\neg(p_2, t_2) \implies \neg(p_1, t_1)$, and unary clauses $(i, \neg t) \implies (i, t)$ if type $t$ does not exist in $\Sigma$).
+   - Precompute reachability `reach[u][v]` on the base 2-SAT graph in $O(N(N + M))$ via $2N$ BFS/DFS passes (or bitsets) so that testing whether a prefix assignment is satisfiable takes **$O(N^2)$ time without rebuilding Tarjan SCC**!
+   - Iterate $t = N$ down to $0$: check if $S[1..t] = S_0[1..t]$ (and at $t < N$, $S[t + 1] \in \{\text{next\_V}(S_0[t+1]+1),\; \text{next\_C}(S_0[t+1]+1)\}$) is 2-SAT feasible. As soon as a valid $t$ is found, greedily lock in $S[i]$ for $i = t + 2 \dots N$ by testing $\text{next\_V}(0)$ and $\text{next\_C}(0)$ in increasing character order. Total time: $O(N(N + M))$.
+4. **Broken-Invariant Counterexample (`Pitfall 27.4`)**: When $\Sigma = \texttt{"aaa"}$ (all Vowels, zero Consonants) and $M = 0$, a 2-SAT solver without unary clauses $(\neg \texttt{C}_i)$ will happily claim that setting position $i$ to Consonant is satisfiable, even though no Consonant character exists to print!
+:::
+
+---
+
+### Tier 4 — Mastery (`W5A-33`, `W5A-48`)
+
+#### Problem 27.7 (`W5A-33` / `W5A-29`) — `Combined Substring Equations + LCP-Witnessed Inequalities` (`QOJ #5421` / `CF Gym 104077`)
+
+- **Mathematical Statement**: An unknown string $S[1..N]$ is constrained by $M$ relations. Each relation specifies two substrings $U_q = S[l_{1,q} .. r_{1,q}]$ and $V_q = S[l_{2,q} .. r_{2,q}]$, their exact Longest Common Prefix length $d_q = \operatorname{LCP}(U_q, V_q)$, and a comparison operator $\text{op}_q \in \{\texttt{<}, \texttt{<=}, \texttt{=}\}$ asserting $U_q \;\text{op}_q\; V_q$. Decide whether a valid string $S$ exists over an unbounded alphabet; if so, output the minimum required alphabet size $\sigma_{\min}$ and the lexicographically smallest valid string over $\{\texttt{a}, \texttt{b}, \dots\}$ (when $\sigma_{\min} \le 26$).
+- **Constraints**: $1 \le N, M \le 10^5$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Each relation gives both a **bulk substring equality** of length $d_q$ and a **boundary comparison** at offset $d_q$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **§4.1**, $\operatorname{LCP}(U_q, V_q) = d_q$ together with $U_q \;\text{op}_q\; V_q$ decomposes into:
+
+1. $d_q \le \min(|U_q|, |V_q|)$ and $S[l_{1,q} .. l_{1,q} + d_q - 1] = S[l_{2,q} .. l_{2,q} + d_q - 1]$ (pushed into `Ch 26` Binary-Lifting DSU); and
+2. If $d_q == \min(|U_q|, |V_q|)$, then $U_q$ and $V_q$ have no mismatch character inside both substrings, so the length relation $|U_q| \;\text{op}_q\; |V_q|$ must hold directly (`Pitfall 27.3`)!
+3. If $d_q < \min(|U_q|, |V_q|)$, then $S[l_{1,q} + d_q] \ne S[l_{2,q} + d_q]$ is mandatory, so $\text{op}_q = \texttt{'='}$ is immediately impossible, while $\text{op}_q \in \{\texttt{'<'}, \texttt{'<='}\}$ forces the **strict** character inequality $S[l_{1,q} + d_q] < S[l_{2,q} + d_q]$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Run Binary-Lifting DSU pushdown (`Ch 26`) for all length-$d_q$ prefix equalities. Then build the directed inequality graph on $\operatorname{DSU}_0$ roots with strict edges $\operatorname{find}_0(l_{1,q} + d_q) \xrightarrow{1} \operatorname{find}_0(l_{2,q} + d_q)$ (and any weak $\le$ edges if present), run `solve_inequality_dag` (§4.3) to check that no cycle exists (or no weight-$1$ edge lies inside an SCC), and compute topological longest paths $\operatorname{dist}[u]$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5A-33`)"}
+1. **Diagnostic Signal**: $M = 10^5$ substring equations coupled with LCP-anchored lexicographical inequalities.
+2. **Combinatorial Word Invariant**: Every LCP-anchored relation $(U_q, V_q, d_q, \text{op}_q)$ with $L_1 = |U_q|, L_2 = |V_q|$ is equivalent to:
+   - Range equality $S[l_1 .. l_1 + d_q - 1] = S[l_2 .. l_2 + d_q - 1]$;
+   - Boundary check: if $d_q > \min(L_1, L_2)$, reject. If $d_q == \min(L_1, L_2)$, check $(L_1 < L_2)$ for `<`, $(L_1 \le L_2)$ for `<=`, or $(L_1 == L_2)$ for `=`. If $d_q < \min(L_1, L_2)$, reject if $\text{op}_q == \texttt{'='}$, and add strict character edge $S[l_1 + d_q] < S[l_2 + d_q]$ if $\text{op}_q \in \{\texttt{'<'}, \texttt{'<='}\}$.
+3. **Algorithmic Compilation**:
+   - Phase 1: Binary-Lifting DSU pushdown from $k = \lfloor \log_2 N \rfloor \downarrow 1$ in $O((M + N \log N)\alpha(N))$.
+   - Phase 2–4: Build the directed graph on $\operatorname{DSU}_0$ roots and run Tarjan SCC + DAG longest path (`solve_inequality_dag` in §4.3).
+   - Output $\sigma_{\min} = 1 + \max_u \operatorname{dist}[u]$ and $S[i] = \texttt{'a'} + \operatorname{dist}[\operatorname{find}_0(i)]$. Total time: $O((M + N \log N)\alpha(N))$.
+4. **Broken-Invariant Counterexample (`Pitfall 27.3`)**: When $U_q = S[1..3], V_q = S[1..2], d_q = 2$ and $\text{op}_q$ is $U_q \le V_q$, $d_q == \min(3, 2) = 2$ has $L_1 = 3 > 2 = L_2$, so $U_q$ is a proper superstring of $V_q$ and $U_q \le V_q$ is **impossible**! Failing to check $L_1 \le L_2$ when $d_q == \min(L_1, L_2)$ misses this contradiction.
+:::
+
+---
+
+#### Problem 27.8 (`W5A-48`) — `Tree-Path Word Equations + Lexicographical Path Inequalities` (`Universal Cup` / Grandmaster Synthesis)
+
+- **Mathematical Statement**: Given a rooted tree $T$ with $N$ vertices carrying unknown characters $c[1..N]$ and $M$ constraints on simple tree paths $P_1 = (u_1 \rightsquigarrow v_1)$ and $P_2 = (u_2 \rightsquigarrow v_2)$, where each constraint specifies $d = \operatorname{LCP}(\operatorname{str}(P_1), \operatorname{str}(P_2))$ and $\operatorname{str}(P_1) \le \operatorname{str}(P_2)$, decide whether a valid vertex labeling exists, find the minimum alphabet size $\sigma_{\min}$, and construct the vertex-pointwise lexicographically smallest labeling $c[1..N]$.
+- **Constraints**: $1 \le N, M \le 10^5$, time limit $2.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+This problem synthesizes **Signed Tree Binary-Lifting DSU (`Ch 26 §3.3`)** with **LCP-Witnessed Inequality DAGs (`Ch 27 §4.1`)** on branched tree paths!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+For each constraint $(u_1 \rightsquigarrow v_1,\; u_2 \rightsquigarrow v_2,\; d)$:
+
+1. Extract the prefix path of length $d$ from $u_1 \rightsquigarrow v_1$ (say $u_1 \rightsquigarrow x_1$) and from $u_2 \rightsquigarrow v_2$ (say $u_2 \rightsquigarrow x_2$), and equate $\operatorname{str}(u_1 \rightsquigarrow x_1) = \operatorname{str}(u_2 \rightsquigarrow x_2)$ using **Signed Tree Binary-Lifting DSU (`Problem 26.6`)**!
+2. If $d < \min(|P_1|, |P_2|)$, locate the $(d + 1)$-th vertex $y_1$ on $u_1 \rightsquigarrow v_1$ and the $(d + 1)$-th vertex $y_2$ on $u_2 \rightsquigarrow v_2$ in $O(\log N)$ time via tree binary lifting, and add the strict character inequality $c[y_1] < c[y_2]$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+How do you find the $k$-th vertex ($0$-indexed offset $k$) along $u \rightsquigarrow v$ with $w = \operatorname{LCA}(u, v)$? If $k \le \operatorname{depth}(u) - \operatorname{depth}(w)$, it is $\operatorname{jump}(u, k)$; otherwise it is $\operatorname{jump}\bigl(v,\; \operatorname{dist}(u, v) - k\bigr)$! Push down the Signed Tree Binary-Lifting DSU to level $0$, then run `solve_inequality_dag` (§4.3) on the level-$0$ DSU roots.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5A-48`)"}
+1. **Diagnostic Signal**: Tree-path prefix equalities of length $d$ + $(d+1)$-th vertex inequalities on a tree of size $N = 10^5$.
+2. **Combinatorial Word Invariant**: Define $\operatorname{kth\_on\_path}(u, v, k)$ ($0 \le k < \operatorname{dist}(u, v) + 1$) using $w = \operatorname{LCA}(u, v)$ and $d_{\text{up}} = \operatorname{depth}(u) - \operatorname{depth}(w)$:
+   $$\operatorname{kth\_on\_path}(u, v, k) = \begin{cases} \operatorname{jump}(u, k) & \text{if } k \le d_{\text{up}}, \\ \operatorname{jump}\bigl(v,\; (\operatorname{depth}(u) + \operatorname{depth}(v) - 2\operatorname{depth}(w)) - k\bigr) & \text{if } k > d_{\text{up}}. \end{cases}$$
+   For each constraint $(u_1, v_1, u_2, v_2, d)$ with path lengths $L_1, L_2$:
+   - Check $0 \le d \le \min(L_1, L_2)$.
+   - If $d > 0$, let $x_1 = \operatorname{kth\_on\_path}(u_1, v_1, d - 1)$ and $x_2 = \operatorname{kth\_on\_path}(u_2, v_2, d - 1)$, and equate $\operatorname{str}(u_1 \rightsquigarrow x_1) = \operatorname{str}(u_2 \rightsquigarrow x_2)$ by splitting at $\operatorname{LCA}(u_1, x_1)$ and $\operatorname{LCA}(u_2, x_2)$ into $\le 3$ vertical equations in the Signed Tree Binary-Lifting DSU (`Ch 26 §3.3`).
+   - If $d == \min(L_1, L_2)$, require $L_1 \le L_2$.
+   - If $d < \min(L_1, L_2)$, let $y_1 = \operatorname{kth\_on\_path}(u_1, v_1, d)$ and $y_2 = \operatorname{kth\_on\_path}(u_2, v_2, d)$, and record strict edge $y_1 \xrightarrow{1} y_2$.
+3. **Algorithmic Compilation**: Push down the Signed Tree Binary-Lifting DSU from $k = \lfloor \log_2 N \rfloor \downarrow 1$ in $O(N \log N \alpha(N))$ time, map each recorded inequality $y_1 \xrightarrow{1} y_2$ to $\operatorname{find}_0(y_1) \xrightarrow{1} \operatorname{find}_0(y_2)$, and run `solve_inequality_dag` (§4.3) in $O(N + M)$ time. Total complexity: $O((N + M)\log N \cdot \alpha(N))$.
+4. **Broken-Invariant Counterexample**: Using $x_1 = \operatorname{kth\_on\_path}(u_1, v_1, d)$ instead of $d - 1$ for the equality endpoint equates $d + 1$ vertices (including the mismatch characters $y_1, y_2$!), creating an immediate self-loop $c[y_1] < c[y_1]$ in $\operatorname{DSU}_0$!
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Decision Checklist: When to Apply Chapter 27 Machinery
+
+| Contest Signal / Target Structure | Invariant & Engine to Invoke | Time Complexity |
+| :--- | :--- | :--- |
+| Reconstruct / count strings from KMP $\pi[1..N]$ (`[SDOI2017]`) | Copy $S[\pi[i]]$ ($\pi[i]>0$) or forbid fail chain ($\pi[i]=0$) + **Chordal Product** + forward KMP verify | $O(N)$ |
+| Reconstruct / count strings from Z-array $Z[2..N]$ | $r_{\max}$ Z-box sweep + mismatch $S[1+Z[i]] \ne S[i+Z[i]]$ + **Chordal Product** + forward Z verify | $O(N)$ |
+| Reconstruct / count strings from Manacher $R[1..2N-1]$ | $r_{\max}$ palindrome sweep + mismatch $S[l_c-1] \ne S[r_c+1]$ + **Chordal Product** + forward Manacher | $O(N)$ |
+| Reconstruct / count strings from Suffix Array $\operatorname{SA}[1..N]$ (`CF 1526E`, `ARC 044 D`) | **Theorem 27.3**: Sentinel $\operatorname{rk}[N+1]=0$, strict jumps $D = \sum [\operatorname{rk}[u+1] > \operatorname{rk}[v+1]]$, $\binom{N+K-1-D}{N}$ | $O(N)$ |
+| Lex-smallest valid string $S \ge S_0$ under 2-SAT rules (`CF 568C`) | Branch on $t = \operatorname{LCP}(S, S_0) \in [0, N]$ + test only smallest `V` and `C` at each step | $O\bigl(N(N + M)\bigr)$ |
+| Combined substring equations + LCP-witnessed inequalities $U \le V$ | **Binary-Lifting DSU (`Ch 26`)** $\to$ $\{0, 1\}$-weighted **Tarjan SCC + DAG longest path** | $O\bigl((M + N\log N)\alpha(N)\bigr)$ |
+
+### 6.2 Four Pre-Submission Invariant Guards for Chapter 27
+
+1. **Mandatory Forward Verification Guard (`Pitfall 27.1`)**: Never trust local inequalities ($\pi[i] \le \pi[i-1] + 1$ or $Z[i] \le N - i + 1$) alone—$\pi = [0, 1, 0, 1, 1]$ passes local checks yet forces $S = \texttt{aabaa}$ with $\pi[5] = 2$. Always run forward KMP/Z/Manacher on your reconstructed string $S^*$!
+2. **SA Empty-Suffix Sentinel Guard (`Pitfall 27.2`)**: Always set $\operatorname{rk}[N + 1] = 0$ (1-based) or $\operatorname{rk}[N] = -1$ (0-based) before testing $\operatorname{rk}[\operatorname{SA}[i] + 1] > \operatorname{rk}[\operatorname{SA}[i + 1] + 1]$.
+3. **Full-Prefix LCP Boundary Guard (`Pitfall 27.3`)**: When $d = \operatorname{LCP}(U, V) == \min(|U|, |V|)$, do **not** add a character edge at offset $d$; compare lengths $|U|$ vs. $|V|$ directly.
+4. **Empty 2-SAT Class Guard (`Pitfall 27.4`)**: In `CF 568C`, if $\Sigma$ contains zero Vowels (or zero Consonants), add unary 2-SAT clauses forbidding that class at all $N$ positions.
+
+### 6.3 What Comes Next in Part VII
+In Chapters 26 and 27, we reconstructed strings from equality, reversal, and lexicographical order constraints. What if a string is specified by its **$k$-mer transition multiplicities** on a De Bruijn graph or Aho–Corasick DFA (`ABC 336 G`, `UOJ #607`), or compressed via the **Burrows–Wheeler Transform (`BWT`, `BBWT`, Wheeler DFAs, and $N \le 10^{18}$ Run-Length BWTs)**? In **[Chapter 28: De Bruijn Graphs, the AC-DFA BEST Theorem, BWT / `BBWT`, Wheeler Graphs, and $O(1)$ RLBWT Move Structures](ch28-debruijn-best-bwt-wheeler-rlbwt.qmd)**, we prove the AC-DFA BEST Theorem (exposing the parallel-edge indistinguishability trap) and build Nishimoto–Tabei's $O(1)$ RLBWT Move Structure.

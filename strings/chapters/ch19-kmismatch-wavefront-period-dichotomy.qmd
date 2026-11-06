@@ -1,0 +1,531 @@
+---
+title: "k-Mismatch & k-Edit String Matching: Kangaroo Jumps, Wavefront DP, and the O(N sqrt(k log k)) 2k-Period Dichotomy"
+subtitle: "Chapter 19 · Part V: Algebraic/FFT String Matching, k-Mismatch, Structural Isomorphism & Grammar-Compressed Strings"
+---
+
+::: {.callout-important title="Prerequisites, Assumed Library & Learning Objectives"}
+
+- **Assumed Library Primitives**: $O(N)$ Z-function ($Z[1..N]$), $O(N \log N)$ Suffix Array + Kasai LCP + $O(1)$ Sparse Table RMQ for $O(1)$ Longest Common Extension ($\operatorname{LCE}$) queries, and $O(N \log N)$ FFT/NTT.
+- **Strict Prerequisite Chapters**: [Chapter 01 (Period–Border Duality & Fine–Wilf)](ch01-fine-wilf-periodicity-orbits.qmd), [Chapter 15 (Internal Pattern Matching & Substring LCE)](ch15-internal-pattern-matching-borders.qmd), and [Chapter 18 (Polynomial & FFT String Matching)](ch18-fft-wildcard-involution-matching.qmd).
+- **Assigned Technique IDs**: `T-3B-03` (Landau–Vishkin Kangaroo Jumps, Diagonal Wavefront Edit-Distance DP, Abrahamson Heavy–Light Split, and the Clifford–Gawrychowski–Uznański $2k$-Period Dichotomy).
+- **Learning Objectives**:
+  1. Decompose any alignment with Hamming distance $\le k$ into at most $k + 1$ maximal exact-matching runs jumped in $O(1)$ time per run via **Landau–Vishkin Kangaroo Jumps** ($O(Nk)$ total time, or $O(N+M)$ RMQ-free via two Z-arrays when $k = 1$).
+  2. Prove the **Landau–Vishkin Diagonal Dominance Theorem** for Levenshtein edit distance $\le k$, reducing the $O(NM)$ DP grid to the farthest-reaching wavefront $L(e, d)$ on diagonal $d = t - p \in [-k, k]$ in **$O(N + k^2)$** (global) or **$O(Nk)$** (substring) time.
+  3. Compute exact Hamming distances across all shifts over an arbitrary alphabet $|\Sigma| \le N$ in **$O(N\sqrt{M \log M})$** time via **Abrahamson's Heavy–Light Alphabet Split**.
+  4. Prove and implement the **Clifford–Gawrychowski–Uznański $O(N\sqrt{k \log k})$ $2k$-Period Dichotomy**—showing why $2k$-aperiodic patterns have at most $O(N/k)$ candidate alignments verifiable in **$O(N)$** time, whereas $2k$-periodic patterns compress into $\le 3k$ monochromatic RLE progressions modulo $p \le 2k$.
+:::
+
+---
+
+## 1. Landau–Vishkin $O(Nk)$ Kangaroo Jumps & $O(N + k^2)$ Diagonal Wavefront Edit DP (`T-3B-03`)
+
+### 1.1 The Diagnostic Signal: Navigating the Three $(N, M, k, |\Sigma|)$ Regimes
+
+Given a pattern $P[1..M]$ and a text $T[1..N]$ ($M \le N$) over an alphabet $\Sigma$, the **$k$-Mismatch Problem** asks for all starting positions $i \in \{1, 2, \dots, N - M + 1\}$ whose Hamming distance
+
+$$\operatorname{Ham}\bigl(P[1..M],\, T[i .. i + M - 1]\bigr) = \sum_{j=1}^{M} \mathbf{1}\bigl[P[j] \ne T[i + j - 1]\bigr]$$
+
+is at most $k$. More generally, the **$k$-Edit Problem** asks for all alignments (or global string pairs) within Levenshtein edit distance $\operatorname{ed}(P, T[l..r]) \le k$ (allowing character substitutions, insertions, and deletions).
+
+Why does no single naive algorithm solve approximate matching across all parameter regimes?
+
+1. **When $|\Sigma|$ is large ($|\Sigma| \le N$)**: Running $|\Sigma|$ separate indicator FFTs ([Chapter 18](ch18-fft-wildcard-involution-matching.qmd)) costs $O(|\Sigma| N \log M) = \Theta(N^2 \log M)$, which immediately TLEs. Even worse, because mismatch penalties $(P_j - T_{i+j-1})^2 > 0$ vary in magnitude across character pairs, a single polynomial sum cannot count the *number* of mismatches unless $k = 0$.
+2. **When $k$ is small ($k \le 20$)**: Running FFTs of any kind wastes $\Theta(N \log N)$ overhead when each alignment can only fail up to $k + 1$ times before being rejected.
+3. **When $k$ is moderate ($k \approx 2000$) and $|\Sigma|$ is large**: $O(Nk)$ per-alignment jumping reaches $5 \times 10^8$ operations, while $O(N\sqrt{M \log M})$ ignores the fact that $k \ll M$.
+
+This chapter builds the complete four-engine hierarchy that covers every $(N, M, k, |\Sigma|)$ regime:
+
+$$\underbrace{O(N+M)}_{\text{Two Z-Arrays }(k=1)} \;\longrightarrow\; \underbrace{O(Nk) \text{ / } O(N+k^2)}_{\text{Kangaroo LCE / Wavefront DP}} \;\longrightarrow\; \underbrace{O(N\sqrt{M\log M})}_{\text{Abrahamson Heavy–Light}} \;\longrightarrow\; \underbrace{O(N\sqrt{k\log k})}_{\text{2k-Period Dichotomy}}.$$
+
+---
+
+### 1.2 The Combinatorial Word Invariant: Landau–Vishkin Kangaroo Jumps for $k$-Mismatch ($O(Nk)$ Time)
+
+Fix an $O(1)$ Longest Common Extension ($\operatorname{LCE}$) oracle on the concatenated string $S = P + \texttt{'\#'} + T$ (where $\texttt{'\#'} \notin \Sigma$), constructed in $O(N + M)$ time via Suffix Array + Sparse Table RMQ.
+
+Consider a fixed text alignment $i \in \{1, \dots, N - M + 1\}$. Suppose $P[1..M]$ and $T[i..i+M-1]$ differ at $r$ indices $1 \le j_1 < j_2 < \dots < j_r \le M$. These $r$ mismatch positions partition $P[1..M]$ into at most $r + 1$ **maximal exact-matching segments**:
+
+$$P[1 .. j_1 - 1], \quad P[j_1 + 1 .. j_2 - 1], \quad \dots, \quad P[j_r + 1 .. M].$$
+
+Instead of advancing pattern cursor $j$ by $+1$ on each character match, **Landau and Vishkin (1986)** observed that a single $\operatorname{LCE}$ query leaps across an entire exact-matching segment in $O(1)$ time—like a kangaroo jumping from one mismatch directly to the next!
+
+```
+Pattern P[1..M]:   [=== Exact Run 1 ===] X [=== Exact Run 2 ===] X [=== Exact Run 3 ===]
+Text T[i..i+M-1]:  [=== Exact Run 1 ===] Y [=== Exact Run 2 ===] Z [=== Exact Run 3 ===]
+                   ^                     ^                       ^                     ^
+Cursor j:          j=1  --- LCE Jump --> j_1 --- LCE Jump -----> j_2 --- LCE Jump ---> M+1
+```
+
+::: {.callout-note title="Lemma 19.1 (Landau–Vishkin Kangaroo Decomposition for $k$-Mismatch)"}
+For any alignment $i \in \{1, \dots, N - M + 1\}$, start at pattern cursor $j = 1$ and mismatch counter $c = 0$. In each step while $j \le M$ and $c \le k$:
+
+1. Query the clamped longest common extension $\ell = \min\bigl(\operatorname{LCE}(P[j..],\, T[i + j - 1..]),\; M - j + 1\bigr)$.
+2. Advance $j \leftarrow j + \ell$. If $j > M$, then $\operatorname{Ham}(P, T[i..i+M-1]) = c \le k$; return `true` (and the exact mismatch list).
+3. Otherwise, $P[j] \ne T[i + j - 1]$ is the next mismatch! Increment $c \leftarrow c + 1$ and step past the mismatch via $j \leftarrow j + 1$.
+
+If the loop exits with $c > k$ while $j \le M$, then $\operatorname{Ham}(P, T[i..i+M-1]) > k$. Each alignment performs at most $k + 1$ $\operatorname{LCE}$ queries, deciding $k$-mismatch across all shifts in **$O(N + M + Nk)$ time** and $O(N + M)$ space, completely independent of $|\Sigma|$.
+:::
+
+::: {.callout-tip title="Special Case $k = 1$ in Pure $O(N + M)$ Time via Two Z-Arrays (Zero RMQ)"}
+When $k = 1$, an alignment $i$ has $\le 1$ mismatch if and only if the longest common prefix of $P[1..M]$ and $T[i..i+M-1]$ plus the longest common suffix of $P[1..M]$ and $T[i..i+M-1]$ covers at least $M - 1$ characters!
+Build the forward Z-array $Z_{\text{fwd}}$ on $P + \texttt{'\#'} + T$ and the reverse Z-array $Z_{\text{rev}}$ on $P^R + \texttt{'\#'} + T^R$ in $O(N + M)$ time. Then:
+
+$$\boxed{\operatorname{Ham}\bigl(P[1..M],\, T[i..i+M-1]\bigr) \le 1 \iff \operatorname{LCP}(i) + \operatorname{LCSuf}(i) \ge M - 1,}$$
+
+requiring **zero** Suffix Arrays or RMQ tables!
+:::
+
+---
+
+### 1.3 Landau–Vishkin Diagonal Wavefront DP for $k$-Edit Distance ($O(N + k^2)$ & $O(Nk)$)
+
+Now allow insertions and deletions in addition to substitutions. In the classic $(M + 1) \times (N + 1)$ Levenshtein dynamic programming grid between $P[1..M]$ (rows $p \in [0, M]$) and $T[1..N]$ (columns $t \in [0, N]$), a state $(p, t)$ represents aligning prefix $P[1..p]$ with prefix $T[1..t]$.
+
+Define **diagonal $d = t - p$**. Why is diagonal $d$ the natural coordinate system for edit distance?
+
+- **Exact character matches** $(p - 1, t - 1) \to (p, t)$ increment both $p$ and $t$ by $+1$, so $t - p = d$ stays **invariant** (sliding straight down diagonal $d$!).
+- **Substitution** $(p - 1, t - 1) \to (p, t)$ stays on **diagonal $d$** and advances row $p - 1 \to p$ (**$+1$**).
+- **Deletion from $P$** $(p - 1, t) \to (p, t)$ moves from cell $(p - 1, t)$ on **diagonal $t - (p - 1) = d + 1$** to $(p, t)$ on diagonal $d$, advancing row $p - 1 \to p$ (**$+1$**).
+- **Insertion into $P$ (deletion from $T$)** $(p, t - 1) \to (p, t)$ moves from cell $(p, t - 1)$ on **diagonal $(t - 1) - p = d - 1$** to $(p, t)$ on diagonal $d$, keeping row $p \to p$ (**$+0$**).
+
+```
+Diagonal d-1          Diagonal d            Diagonal d+1
+(p, t-1) ---------->  (p, t)   <----------  (p-1, t)
+ [Insertion: row +0]    ^                    [Deletion from P: row +1]
+                        | [Substitution: row +1]
+                      (p-1, t-1)
+                        |
+                        v  + LCE(P[p+1..], T[p+d+1..])  (Kangaroo slide along diagonal d!)
+                      (L(e,d), L(e,d)+d)
+```
+
+::: {.callout-note title="Theorem 19.2 (Landau–Vishkin Diagonal Dominance & Wavefront Recurrence, 1989)"}
+For each error budget $e \in \{0, 1, \dots, k\}$ and diagonal $d$, define $L(e, d) \in \{-\infty\} \cup \{0, 1, \dots, M\}$ to be the **maximum row $p$** reachable on diagonal $d$ (at column $t = p + d$) using at most $e$ edit operations.
+
+1. **Diagonal Monotonicity & Dominance**: If cell $(p, p+d)$ is reachable with $\le e$ edits, then any earlier cell $(p', p'+d)$ with $p' < p$ on the same diagonal $d$ is strictly dominated, because any edit path from $(p', p'+d)$ can replace its first $p - p'$ steps with zero-cost diagonal matches along a maximal LCE run without increasing total cost.
+2. **Base Wavefront ($e = 0$)**: For global alignment starting at $(0, 0)$, $L(0, 0) = \operatorname{LCE}(P[1..], T[1..])$ and $L(0, d) = -\infty$ for $d \ne 0$. (For substring search where $P$ may start at any text index, $L(0, d) = \operatorname{LCE}(P[1..], T[d+1..])$ for all $d \in [0, N]$.)
+3. **Wavefront Transition ($e - 1 \to e$)**: For each $e \in \{1, \dots, k\}$ and reachable diagonal $d$, let
+
+   $$\boxed{p_0(e, d) = \max\Bigl(\underbrace{L(e - 1, d) + 1}_{\text{substitution}},\; \underbrace{L(e - 1, d + 1) + 1}_{\text{deletion from } P},\; \underbrace{L(e - 1, d - 1)}_{\text{insertion into } P}\Bigr).}$$
+
+   If $p_0 = \min(M, p_0(e, d))$ satisfies $0 \le p_0 + d \le N$, then extending greedily along diagonal $d$ yields:
+
+   $$\boxed{L(e, d) = p_0 + \min\Bigl(\operatorname{LCE}\bigl(P[p_0 + 1..],\; T[p_0 + d + 1..]\bigr),\; M - p_0,\; N - (p_0 + d)\Bigr).}$$
+
+- **Complexity**: For global $k$-edit distance between strings of length $M, N$ ($|N - M| \le k$), only $2k + 1$ diagonals $d \in [-k, k]$ are reachable across $k$ layers, running in **$O(N + M + k^2)$ time**! For $k$-edit substring search across all diagonals $d \in [-k, N]$, there are $O(N)$ diagonals and $k$ layers, running in **$O(N k)$ time**.
+:::
+
+---
+
+## 2. Abrahamson's $O(N\sqrt{M \log M})$ Heavy–Light Alphabet Split (`T-3B-03`)
+
+Suppose we need the **exact Hamming distance** $\operatorname{Ham}(P, T[i..i+M-1]) = M - \sum_{j=1}^M \mathbf{1}[P[j] = T[i+j-1]]$ for **every** shift $i \in [1, N - M + 1]$ when $k$ can be as large as $M$ and the alphabet $\Sigma$ has up to $N$ distinct symbols.
+
+- Running FFT for every symbol $c \in \Sigma$ takes $O(|\Sigma| N \log M)$ (too slow when $|\Sigma| = N$).
+- Iterating over all pairs $(j, t)$ with $P[j] = T[t]$ takes $O\bigl(\sum_{t=1}^N \operatorname{freq}_P(T[t])\bigr)$ (too slow when a single heavy letter occurs $M$ times in $P$).
+
+**Abrahamson (1987)** and **Kosaraju (1987)** combined both methods by partitioning $\Sigma$ at frequency threshold $B = \lceil \sqrt{M \log_2 M} \rceil$:
+
+::: {.callout-note title="Theorem 19.3 (Abrahamson's Heavy–Light Alphabet Split)"}
+Partition the distinct characters occurring in $P[1..M]$ into two sets using threshold $B = \lceil \sqrt{M \log_2 M} \rceil$:
+
+$$\Sigma_{\text{heavy}} = \bigl\{c \in \Sigma : \operatorname{freq}_P(c) \ge B\bigr\}, \qquad \Sigma_{\text{light}} = \bigl\{c \in \Sigma : 1 \le \operatorname{freq}_P(c) < B\bigr\}.$$
+
+1. **Heavy Characters ($c \in \Sigma_{\text{heavy}}$ — via Frequency-Domain FFT)**: Because $\sum_{c \in \Sigma} \operatorname{freq}_P(c) = M$, there are at most $\lfloor M / B \rfloor = O(\sqrt{M / \log M})$ heavy characters! For each $c \in \Sigma_{\text{heavy}}$, compute the forward DFTs of $A_c[M-j] = \mathbf{1}[P[j]=c]$ and $B_c[t-1] = \mathbf{1}[T[t]=c]$, accumulate $\sum_{c \in \Sigma_{\text{heavy}}} \widehat{A}_c \odot \widehat{B}_c$ in the frequency domain, and run **1 single inverse FFT** in $O\bigl(\frac{M}{B} N \log M\bigr) = O(N\sqrt{M \log M})$ total time.
+2. **Light Characters ($c \in \Sigma_{\text{light}}$ — via Offset Lists)**: Store for each $c \in \Sigma_{\text{light}}$ the list $\operatorname{Occ}_P(c) = \{j \in [1, M] : P[j] = c\}$ of length $< B$. Scan $t = 1 \dots N$: whenever $T[t] \in \Sigma_{\text{light}}$, loop over every $j \in \operatorname{Occ}_P(T[t])$ and increment `match[t - j + 1]++`. Since each $t$ performs $< B$ increments, this takes $O(N B) = O(N\sqrt{M \log M})$ time!
+
+Combining both passes yields $\operatorname{Ham}(P, T[i..i+M-1]) = M - \text{match}[i]$ for all $i$ in **$O(N\sqrt{M \log M})$ worst-case time**.
+:::
+
+---
+
+## 3. Proof of the Clifford–Gawrychowski–Uznański $O(N\sqrt{k \log k})$ $2k$-Period Dichotomy (`T-3B-03`)
+
+Can we replace $\sqrt{M \log M}$ with $\sqrt{k \log k}$ when we only care about alignments with $\operatorname{Ham}(P, T[i..i+M-1]) \le k$? By covering $T[1..N]$ with $\lceil N / M \rceil$ overlapping windows of length $2M$ (each shifted by $M$), we first reduce to the case $N \le 2M$.
+
+Define a shift $p \in \{1, 2, \dots, k\}$ to be a **$2k$-approximate period** of $P[1..M]$ if shifting $P$ by $p$ causes at most $2k$ mismatches on the overlap:
+
+$$\operatorname{Ham}\bigl(P[1 .. M - p],\; P[p + 1 .. M]\bigr) = \sum_{j=1}^{M-p} \mathbf{1}\bigl[P[j] \ne P[j + p]\bigr] \le 2k.$$
+
+Using Kangaroo jumps on $P$ against itself (or testing $p = 1 \dots k$ in $O(k^2)$ LCE jumps), we determine in $O(M + k^2)$ time whether $P$ possesses any $2k$-approximate period $p \le k$. This splits every pattern $P$ into a sharp structural dichotomy (**Amir–Lewenstein–Porat 2004; Clifford et al. SODA 2016; Gawrychowski–Uznański ICALP 2018**):
+
+```
+                       Pattern P[1..M], Mismatch Budget k
+                                       |
+               Does there exist p in [1, k] with Ham(P[1..M-p], P[p+1..M]) <= 2k?
+                      /                                  \
+        NO (Case A: 2k-Aperiodic)               YES (Case B: 2k-Periodic, step p <= k)
+        -------------------------               --------------------------------------
+   Triangle inequality forces any two       Along the p residue classes mod p, P changes
+   valid k-mismatch shifts i_1 < i_2        character at most 2k times ==> <= 3k RLE runs!
+   to satisfy i_2 - i_1 > k!                Compress P and T into O(k) periodic RLE blocks;
+   ==> At most O(N/k) candidate shifts,     overlap ramps updated via stride-p diff2 array
+   verified by Kangaroo jumps in O(N)!      + Heavy-Light FFT in O(N sqrt(k log k)) time!
+```
+
+::: {.callout-note title="Theorem 19.4 (The $2k$-Period Structural Dichotomy for $k$-Mismatch)"}
+Assume $N \le 2M$ and $1 \le k \le M$.
+
+- **Case A ($P$ is $2k$-Aperiodic — $\forall p \in [1, k],\; \operatorname{Ham}(P[1..M-p], P[p+1..M]) > 2k$)**:
+  1. **Sparsity of Valid Alignments via Triangle Inequality**: Suppose $1 \le i_1 < i_2 \le N - M + 1$ are two valid $k$-mismatch alignments of $P$ in $T$, and let $d = i_2 - i_1$. On the overlap $T[i_2 .. i_1 + M - 1]$ of length $M - d$, the triangle inequality of Hamming distance gives:
+     $$\operatorname{Ham}\bigl(P[1..M-d],\, P[d+1..M]\bigr) \le \operatorname{Ham}\bigl(P[d+1..M],\, T[i_2..i_1+M-1]\bigr) + \operatorname{Ham}\bigl(P[1..M-d],\, T[i_2..i_1+M-1]\bigr) \le k + k = 2k.$$
+     Since $P$ has no $2k$-approximate period $d \le k$, we must have $i_2 - i_1 > k$! Thus **at most $\lceil N / k \rceil$ valid $k$-mismatch alignments exist in $T$**.
+
+  2. **$O(N)$ Witness Filtering**: Furthermore, by greedily collecting $2k$ disjoint mismatching pairs $(x_r, y_r)$ or rare character samples in $P$ (Amir–Lewenstein–Porat 2004), any valid alignment $i$ must agree with $P$ on at least $k$ of the $2k$ witnesses, filtering candidate shifts down to $O(N/k)$ indices that are verified via $O(k)$ Kangaroo jumps each in **$O(N)$ total time**!
+
+- **Case B ($P$ has a $2k$-Approximate Period $p \le k$ — $\operatorname{Ham}(P[1..M-p], P[p+1..M]) \le 2k$)**:
+  1. **$O(k)$ Monochromatic RLE Compression Modulo $p$**: Partition $P[1..M]$ into its $p$ arithmetic progressions modulo $p$: for each residue $r \in \{1, \dots, p\}$, form $P^{(r)} = (P[r], P[r+p], P[r+2p], \dots)$. Every transition $P[j] \ne P[j+p]$ is a character change between adjacent elements of some $P^{(r)}$. Because $\sum_{j=1}^{M-p} \mathbf{1}[P[j] \ne P[j+p]] \le 2k$, the total number of character changes across all $p$ progressions is at most $2k$! Therefore, across all $p$ residue classes combined, $P$ decomposes into at most
+
+     $$\boxed{R_P \le p + 2k \le 3k \quad \text{monochromatic RLE runs of step } p!}$$
+
+     Similarly, trimming $T$ to the active region where $\sum \mathbf{1}[T[t] \ne T[t+p]] = O(k)$ compresses $T$ into $R_T = O(k)$ monochromatic RLE runs of step $p$.
+
+  2. **Stride-$p$ Second-Order Difference Ramps & Heavy–Light RLE FFT**: When a monochromatic RLE run of character $c$ in $P^{(r)}$ (length $L_1$ steps of $p$) slides across a monochromatic RLE run of the same character $c$ in $T^{(r')}$ (length $L_2$ steps of $p$) along shifts $i \equiv r' - r \pmod p$, their overlap count as a function of $q = (i - (r' - r)) / p$ is a **piecewise-linear trapezoid (ramp)** with slope $+1$, then $0$, then $-1$.
+     A trapezoid adds $+1$ at its start and end and $-1$ at its two inner corners in the **stride-$p$ second-order difference array** `diff2[i]` (where `slope[i] = slope[i-p] + diff2[i]` and `match[i] = match[i-p] + slope[i]`), taking **$O(1)$ time per RLE run pair**! Applying Abrahamson's Heavy–Light split to the $O(k)$ RLE runs (or directly iterating over same-character RLE pairs when $O(k^2)$ fits in time, and FFT on heavy character RLE indicators for larger $k$) solves Case B in **$O(N\sqrt{k \log k})$ time**!
+:::
+
+---
+
+## 4. Reverse-Engineering Scratchpad, Algorithmic Contracts & Boundary Pitfalls (`BP-19-01`–`BP-19-03` / `BP-3B-05`–`BP-3B-07`)
+
+::: {.callout-note icon=false}
+## Algorithm Contract: Landau–Vishkin Kangaroo & Diagonal Wavefront Engines
+
+- **Kangaroo $k$-Mismatch (`kangaroo_kmismatch`)**:
+  - *Preconditions*: $O(1)$ $\operatorname{LCE}$ oracle on $S = P[1..M] + \texttt{'\#'} + T[1..N]$.
+  - *Loop Invariant*: At the start of each iteration at shift $i$, `c` equals the exact number of mismatches in $P[1..j-1]$ vs. $T[i..i+j-2]$, and $c \le k$.
+  - *Complexity*: $\le k + 1$ $\operatorname{LCE}$ queries per shift $\implies O(N + M + Nk)$ time.
+- **Wavefront $k$-Edit (`wavefront_kedit`)**:
+  - *State Invariant*: $L(e, d)$ ($0 \le e \le k,\; d \in [-k, k]$ for global or $[-k, N]$ for substring) is the maximum row $p \in [0, M]$ reachable on diagonal $d = t - p$ with $\le e$ edits.
+  - *Complexity*: $O(N + M + k^2)$ for global edit distance $\le k$; $O(N + M + Nk)$ for $k$-edit substring search.
+:::
+
+::: {.callout-warning title="Pitfall BP-19-01 / BP-3B-05: Unclamped LCE Jumping Past the End of P or T"}
+
+- **The Bug**: Writing `j += LCE(j, i + j - 1)` in Kangaroo jumping without clamping to $M - j + 1$ (or without placing a unique sentinel $\texttt{'\#'} \notin \Sigma$ between $P$ and $T$).
+- **Exact Counterexample**: If $P = \texttt{aaa}$ ($M = 3$) and $T = \texttt{aaaaaa}$ ($N = 6$), and $S = P + T = \texttt{aaaaaaaaa}$ has no separator, then at $i = 1, j = 2$, $\operatorname{LCE}(2, 2)$ returns $8$, jumping $j$ to $10 > M + 1$ and corrupting mismatch counts when a problem asks for the exact mismatch positions. Even with $P + \texttt{'\#'} + T$, if $P$ is a substring $S[l_1..r_1]$ of a larger string (Internal $k$-Mismatch), there is no physical sentinel after $r_1$!
+- **The Exact Fix**: Always clamp $\ell = \min\bigl(\operatorname{LCE}(p_{\text{start}}, t_{\text{start}}),\; M - j + 1\bigr)$ before advancing $j \leftarrow j + \ell$.
+:::
+
+::: {.callout-warning title="Pitfall BP-19-02 / BP-3B-06: Swapping Insertion and Deletion Diagonals in Landau–Vishkin Wavefront DP"}
+
+- **The Bug**: Writing $p_0(e, d) = \max(L(e-1, d)+1,\; L(e-1, d-1)+1,\; L(e-1, d+1))$ (adding $+1$ to $L(e-1, d-1)$ instead of $L(e-1, d+1)$).
+- **Why It Fails**: On diagonal $d = t - p$:
+  - Coming from diagonal $d - 1$ means $(p, t - 1) \to (p, t)$ (an insertion into $P$ / advancing $t$ by $+1$ while **row $p$ stays unchanged**: $+0$!).
+  - Coming from diagonal $d + 1$ means $(p - 1, t) \to (p, t)$ (a deletion from $P$ / advancing **row $p - 1 \to p$ by $+1$** while $t$ stays unchanged!).
+  Swapping the $+1$ between $d - 1$ and $d + 1$ shifts the matched prefix of $P$ by $2$ rows and produces wrong edit distances on every asymmetric insertion/deletion test!
+:::
+
+::: {.callout-warning title="Pitfall BP-19-03 / BP-3B-07: Omitting 2M-Window Chunking in the 2k-Period RLE Reduction"}
+
+- **The Bug**: Running Case B of Theorem 19.4 directly on the full text $T[1..N]$ ($N \gg M$) without first splitting $T$ into overlapping windows of length $2M$.
+- **Why It Fails**: Even if $P[1..M]$ has $\le 2k$ period breaks modulo $p$, a long text $T[1..N]$ can have $\Theta(N)$ period breaks modulo $p$, destroying the $O(k)$ RLE size bound on $T$! Splitting $T$ into $\lceil N / M \rceil$ windows of length $\le 2M$ ensures that any window of $T$ containing at least one valid $k$-mismatch match of $P$ has at most $4k + O(k) = O(k)$ period breaks on the active interval between its first and last valid match.
+:::
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Problem Ladder (`Ch 19`)
+
+Every problem below includes a self-contained mathematical statement, exact input constraints, three progressive hints, and a complete 4-step derivation.
+
+---
+
+### Tier 1 — Stepping Stone (`W3B-15`, `W3B-08`)
+
+#### Problem 19.1 (`W3B-15`) — `$k$-Mismatch Substring Search via O(1) LCE Kangaroo Jumps` (`[TJOI2017] DNA` / `Luogu P3763` & `Save Humanity`)
+
+- **Mathematical Statement**: Given a text $T[1..N]$, a pattern $P[1..M]$, and a small mismatch budget $k \le 3$ (or $k = 1$ in `Save Humanity`), count (or list) all starting indices $i \in \{1, \dots, N - M + 1\}$ such that $\operatorname{Ham}(P[1..M], T[i .. i + M - 1]) \le k$.
+- **Constraints**: $\sum (N + M) \le 5 \times 10^5$, $k \le 3$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Because $k \le 3$ is tiny, running FFT across multiple test cases is slower and more complex than jumping across the $\le 4$ exact-matching segments per alignment.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Lemma 19.1 (Landau–Vishkin Kangaroo Decomposition)**, any alignment $i$ with $\le k$ mismatches decomposes into at most $k + 1$ maximal exact-match segments. What even simpler $O(N + M)$ structure solves $k = 1$ without any RMQ table?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For $k = 1$, build $Z_{\text{fwd}}$ on $P + \texttt{'\#'} + T$ and $Z_{\text{rev}}$ on $P^R + \texttt{'\#'} + T^R$ and check $\operatorname{LCP}(i) + \operatorname{LCSuf}(i) \ge M - 1$. For $k \le 3$, build an $O(1)$ $\operatorname{LCE}$ oracle (SA + RMQ or rolling hash + binary search) and execute at most $k + 1 = 4$ Kangaroo jumps per shift $i$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-15`)"}
+
+1. **Diagnostic Signal**: Tiny mismatch bound $k \le 3$ over multiple test cases ($\sum(N+M) \le 5 \times 10^5$) makes $O(Nk)$ Kangaroo jumping optimal.
+2. **Combinatorial Word Invariant**: At alignment $i$, let $j \in [1, M]$ be the current cursor in $P$. Each step computes $\ell = \min(\operatorname{LCE}(P[j..], T[i+j-1..]), M - j + 1)$ and advances $j \leftarrow j + \ell$. If $j \le M$, then $P[j] \ne T[i+j-1]$ is a guaranteed mismatch, so we increment $c$ and advance $j \leftarrow j + 1$.
+3. **Algorithmic Compilation**:
+   - Build Suffix Array + Sparse Table RMQ on $P + \texttt{'\#'} + T$ in $O(N + M)$ time.
+   - For each $i \in [1, N - M + 1]$, run the Kangaroo loop for at most $k + 1$ iterations. If $j > M$ with $c \le k$, increment the answer. Total time: $O(N + M + Nk)$.
+4. **Broken-Invariant Counterexample (`BP-3B-05`)**: Always clamp $\ell \le M - j + 1$; furthermore, if the $(k+1)$-th jump reaches $j = M + 1$, the alignment has $\le k$ mismatches (do **not** reject it just because the loop ran $k + 1$ times!).
+:::
+
+---
+
+#### Problem 19.2 (`W3B-08`) — `Bounded-Alphabet & Damaged Substring Minimum Mismatch` (`AtCoder ABC 196 F` & `[BZOJ 4259]` Variant)
+
+- **Mathematical Statement**:
+  - **Part A (`ABC 196 F — Substring 2`)**: Given two binary strings $T \in \{\texttt{0}, \texttt{1}\}^N$ and $P \in \{\texttt{0}, \texttt{1}\}^M$ ($M \le N \le 10^6$), compute $\min_{1 \le i \le N-M+1} \operatorname{Ham}(P, T[i..i+M-1])$ using **at most 1 NTT**.
+  - **Part B (Minimum Mismatch with Wildcards)**: Given $T[1..N]$ and $P[1..M]$ ($M \le N \le 2 \times 10^5$) over $\Sigma = \{\texttt{a}, \texttt{b}, \texttt{c}, \texttt{d}\}$ plus wildcards `'?'`, find for every shift $i$ the minimum number of concrete character mismatches after replacing wildcards optimally.
+- **Constraints**: Part A: $N, M \le 10^6$; Part B: $N, M \le 2 \times 10^5$; time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Here $k$ is unconstrained (we want the minimum Hamming distance over all $i$, which could be $\Theta(M)$), so Kangaroo jumping takes $\Theta(NM)$ and we must use polynomial convolution.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial & Algebraic Invariant"}
+In Part A, over $\{0, 1\}$, why do we not need 2 NTTs (one for `'0'` and one for `'1'`)? Because $P_j \oplus T_{i+j-1} = P_j + T_{i+j-1} - 2 P_j T_{i+j-1}$! In Part B, two positions clash if and only if both are concrete and their letters differ: $\sum_{c \in \Sigma} \mathbf{1}[P_j = c] \mathbf{1}[T_{i+j-1} \notin \{c, \texttt{'?'}\}]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For Part A, compute $\sum P_j$ (scalar), $\sum_{j=1}^M T_{i+j-1}$ ($O(N)$ sliding-window prefix sum), and $\sum P_j T_{i+j-1}$ in **1 NTT** of size $2^{21}$. For Part B, accumulate $\sum_{c \in \Sigma} \widehat{A}_c \odot \widehat{B}_c$ in the frequency domain and invert in **1 IFFT**.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-08`)"}
+
+1. **Diagnostic Signal**: Unbounded mismatch count $k \le M$ at $N = 10^6$ requires minimizing FFT count.
+2. **Combinatorial & Algebraic Invariant**:
+   - **Part A (`ABC 196 F`)**: For $x, y \in \{0, 1\}$, $\mathbf{1}[x \ne y] = (x - y)^2 = x + y - 2xy$. Summing over $j \in [1, M]$ gives
+     $$\operatorname{Ham}\bigl(P,\, T[i..i+M-1]\bigr) = \sum_{j=1}^M P_j + \sum_{j=1}^M T_{i+j-1} - 2 \sum_{j=1}^M P_j T_{i+j-1}.$$
+   - **Part B**: Each wildcard `'?'` can be chosen independently unless positions overlap, so in a single alignment $i$ a `'?'` never causes a mismatch. The exact number of concrete mismatches at shift $i$ is $K(i) - \sum_{c \in \Sigma} \sum_{j=1}^M \mathbf{1}[P_j = c]\mathbf{1}[T_{i+j-1} = c]$, where $K(i) = \sum_{j=1}^M \mathbf{1}[P_j \ne \texttt{'?'}]\mathbf{1}[T_{i+j-1} \ne \texttt{'?'}]$.
+3. **Algorithmic Compilation**:
+   - **Part A**: Use 1 prefix-sum array on $T$ plus **1 single NTT** ($P^R * T$) to compute all $N - M + 1$ Hamming distances in $O(N \log N)$ time.
+   - **Part B**: Accumulate $\sum_{c \in \Sigma} \widehat{A}_c \odot \widehat{B}_c$ in the DFT domain alongside $\widehat{K}$ and invert in $O(|\Sigma| N \log N)$ time.
+4. **Broken-Invariant Counterexample**: Using $\sum (P_j - T_{i+j-1})^2$ when $|\Sigma| \ge 3$ computes squared $L_2$ distance (where $|\texttt{'a'} - \texttt{'c'}|^2 = 4 \ne 1$), **not** Hamming distance!
+:::
+
+---
+
+### Tier 2 — Intermediate (`W3B-20`, `W3B-25`)
+
+#### Problem 19.3 (`W3B-20`) — `Cyclic Shift with <= k Mismatches & Lexicographically Smallest Near-Match`
+
+- **Mathematical Statement**: Given a text $T[1..N]$, a pattern $P[1..M]$, and a mismatch budget $k \le 10$, find among all substrings $T[i .. i + M - 1]$ ($1 \le i \le N - M + 1$) that have Hamming distance $\le k$ to $P$ (or to a cyclic shift of $P$ when $N = M$), the one that is **lexicographically smallest**.
+- **Constraints**: $1 \le M \le N \le 2 \times 10^5$, $k \le 10$, $|\Sigma| \le 10^5$, time limit $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+First, find all valid candidate alignments $i$ with $\operatorname{Ham}(P, T[i..i+M-1]) \le k$ in $O(Nk)$ time via Kangaroo jumps. How do we find the lexicographically smallest substring $T[i..i+M-1]$ among the surviving candidates?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Two substrings $T[i_1..i_1+M-1]$ and $T[i_2..i_2+M-1]$ of equal length $M$ can be compared lexicographically in **$O(1)$ time** using the exact same $\operatorname{LCE}$ oracle already built for Kangaroo jumping!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Notice that since $T[i_1..i_1+M-1]$ and $T[i_2..i_2+M-1]$ are both substrings of $T$, their lexicographical order (up to length $M$) is determined directly by their Suffix Array ranks $\operatorname{rk}_T[i_1]$ vs. $\operatorname{rk}_T[i_2]$ (breaking ties by smallest $i$ if $\operatorname{LCE}_T(i_1, i_2) \ge M$)!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-20`)"}
+
+1. **Diagnostic Signal**: $k \le 10$ over a large alphabet $|\Sigma| \le 10^5$ with lexicographical tie-breaking over length-$M$ substrings.
+2. **Combinatorial Word Invariant**:
+   - Build the Suffix Array and $O(1)$ RMQ-LCE oracle on $S = P + \texttt{'\#'} + T$ in $O(N + M)$ time.
+   - For each $i \in [1, N - M + 1]$, run at most $k + 1$ Kangaroo LCE jumps to test $\operatorname{Ham}(P, T[i..i+M-1]) \le k$ in $O(k)$ time.
+3. **Algorithmic Compilation**:
+   - Among all valid indices $i$, compare $T[i_1..i_1+M-1]$ vs. $T[i_2..i_2+M-1]$ in $O(1)$ time: let $\ell = \min(\operatorname{LCE}_T(i_1, i_2), M)$; if $\ell == M$ they are equal, otherwise compare $T[i_1 + \ell] < T[i_2 + \ell]$ (which is equivalent to $\operatorname{rk}[M + 1 + i_1] < \operatorname{rk}[M + 1 + i_2]$).
+   - For cyclic shifts of $P$, double $T \leftarrow T + T[1..N-1]$ to handle wrap-around in the same $O(Nk)$ pipeline.
+4. **Broken-Invariant Counterexample**: Using raw $\operatorname{rk}_T[i_1] < \operatorname{rk}_T[i_2]$ without checking $\operatorname{LCE}_T(i_1, i_2) \ge M$ can prefer a shift $i_2$ that is identical to $i_1$ on the first $M$ characters merely because $T[i_2 + M ..]$ is smaller outside the window!
+:::
+
+---
+
+#### Problem 19.4 (`W3B-25`) — `Abrahamson Heavy–Light O(N sqrt(M log M)) All-Shifts Hamming Distance Array` (`[BZOJ 4293]` / `SDOI`)
+
+- **Mathematical Statement**: Given integer arrays $T[1..N]$ and $P[1..M]$ over a large integer alphabet $\Sigma = \{1, 2, \dots, 10^5\}$, compute the exact Hamming distance $\operatorname{Ham}(P[1..M], T[i .. i + M - 1])$ for **every** alignment $i \in \{1, \dots, N - M + 1\}$.
+- **Constraints**: $1 \le M \le N \le 10^5$, $1 \le P[j], T[t] \le 10^5$, time limit $2.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+We need the exact Hamming distance at **all** shifts $i$ (so $k$ is up to $M$), and $|\Sigma| \le 10^5$ is too large to run $|\Sigma|$ FFTs.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial & Algebraic Invariant"}
+Apply **Theorem 19.3 (Abrahamson's Heavy–Light Alphabet Split)**: partition characters $c \in \Sigma$ by their frequency $\operatorname{freq}_P(c)$ in $P$ at threshold $B = \lceil \sqrt{M \log_2 M} \rceil \approx 550$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For heavy characters ($\operatorname{freq}_P(c) \ge B$, at most $M / B \approx 180$ characters), accumulate $\widehat{A}_c \odot \widehat{B}_c$ in the DFT frequency domain (using 3-in-2 complex conjugate packing from Chapter 18 §2.3 to halve the forward FFTs!) and run **1 single IFFT**. For light characters ($\operatorname{freq}_P(c) < B$), scan $t = 1 \dots N$ and iterate over $j \in \operatorname{Occ}_P(T[t])$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-25`)"}
+
+1. **Diagnostic Signal**: All-shifts exact Hamming distance on unbounded alphabet $|\Sigma| \le 10^5$.
+2. **Combinatorial & Algebraic Invariant (Theorem 19.3)**:
+   - Count $\operatorname{freq}_P(c)$ for all $c$ in $P$ and choose threshold $B = \lceil \sqrt{M \log_2 M} \rceil$.
+   - **Heavy Pass ($\operatorname{freq}_P(c) \ge B$)**: There are $H \le \lfloor M / B \rfloor$ heavy symbols. Pack pairs of heavy indicator arrays into complex arrays $Z_P = A_{c_1} + i A_{c_2}$ and $Z_T = B_{c_1} + i B_{c_2}$ (Chapter 18 §2.3), accumulate $\sum_{c \in \Sigma_{\text{heavy}}} \widehat{A}_c \odot \widehat{B}_c$ in the frequency domain, and call `IDFT` **once** to initialize `match[i]`.
+3. **Algorithmic Compilation**:
+   - **Light Pass ($\operatorname{freq}_P(c) < B$)**: For each $t \in [1, N]$ with $T[t] \in \Sigma_{\text{light}}$, run `for (int j : occ_P[T[t]]) if (t >= j && t - j + 1 <= N - M + 1) match[t - j + 1]++;`.
+   - Output $M - \text{match}[i]$ for each $i \in [1, N - M + 1]$. Total time: $O(N\sqrt{M \log M})$.
+4. **Broken-Invariant Counterexample**: Defining heavy/light by $\operatorname{freq}_T(c) \ge B$ instead of $\operatorname{freq}_P(c) \ge B$ fails when $N = M$: if $\operatorname{freq}_T(c) < B$ is light but $\operatorname{freq}_P(c)$ is large, iterating over $\operatorname{Occ}_P(T[t])$ still takes $\Theta(M)$ per light text character! Partitioning by $\operatorname{freq}_P(c) < B$ guarantees every text index $t$ does $< B$ work, while heavy symbols have $|\Sigma_{\text{heavy}}| \le M / B$.
+:::
+
+---
+
+### Tier 3 — Advanced (`W3B-27`, `W3B-30`)
+
+#### Problem 19.5 (`W3B-27`) — `Landau–Vishkin O(N + k^2) & O(Nk) Diagonal Wavefront k-Edit Alignment` (`[BZOJ 3926 / UOJ]`)
+
+- **Mathematical Statement**:
+  - **Part A (Global $k$-Edit Distance in $O(N + k^2)$)**: Given strings $P[1..M]$ and $T[1..N]$ ($N, M \le 5 \times 10^5$) and edit budget $k \le 2000$, compute their exact Levenshtein edit distance if it is $\le k$, or report that it exceeds $k$.
+  - **Part B ($k$-Edit Substring Search in $O(Nk)$)**: Given $T[1..N]$, $P[1..M]$ ($N, M \le 10^5$), and $k \le 50$, find all right endpoints $r \in [1, N]$ in $T$ such that some suffix of $T[1..r]$ has Levenshtein edit distance $\le k$ to $P$.
+- **Constraints**: Part A: $N, M \le 5 \times 10^5, k \le 2000$; Part B: $N, M \le 10^5, k \le 50$; time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Standard $O(NM)$ or $O(Nk)$ edit-distance DP is too slow for Part A ($N = 5 \times 10^5, k = 2000 \implies Nk = 10^9$). Why do we only need $O(k^2)$ states after $O(N+M)$ LCE preprocessing in Part A?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 19.2 (Landau–Vishkin Diagonal Wavefront DP)**, on each diagonal $d = t - p \in [-e, e]$, only the single farthest reachable row $L(e, d)$ matters! Across $e = 0 \dots k$, there are only $\sum_{e=0}^k (2e + 1) = (k + 1)^2$ pairs $(e, d)$, each updated in $O(1)$ time via one $\operatorname{LCE}$ query!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+In Part A, check if $|N - M| > k$ first; then run Theorem 19.2 on $d \in [-e, e]$ and return the smallest $e \le k$ where $L(e, N - M) = M$. In Part B, any substring of $T$ can start at $(0, d)$ for $d \in [0, N]$ with $0$ edits, so initialize $L(0, d) = \operatorname{LCE}(P[1..], T[d+1..])$ for $d \in [0, N]$, evolve $e = 1 \dots k$ across $d \in [-e, N]$, and whenever $L(e, d) = M$, mark right endpoint $r = M + d$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-27`)"}
+
+1. **Diagnostic Signal**: Insertions and deletions shift alignment diagonal $d = t - p$ by $\pm 1$, collapsing exact runs along each diagonal into $O(1)$ $\operatorname{LCE}$ jumps.
+2. **Combinatorial Word Invariant (Theorem 19.2)**:
+   - Let $L(e, d)$ be the maximum row $p \in [0, M]$ reachable on diagonal $d = t - p$ using $\le e$ edits.
+   - **Recurrence**:
+     $$p_0(e, d) = \max\bigl(L(e-1, d) + 1,\; L(e-1, d+1) + 1,\; L(e-1, d-1)\bigr),$$
+     $$L(e, d) = p_0 + \min\bigl(\operatorname{LCE}(P[p_0+1..], T[p_0+d+1..]),\; M - p_0,\; N - (p_0 + d)\bigr).$$
+
+3. **Algorithmic Compilation**:
+   - **Part A ($O(N + M + k^2)$)**: Initialize $L(e, d) = -\infty$. Set $L(0, 0) = \min(\operatorname{LCE}(P[1..], T[1..]), M, N)$. Loop $e = 1 \dots k$ and $d = -e \dots e$: compute $L(e, d)$, and as soon as $d = N - M$ has $L(e, N - M) = M$, return $e$.
+   - **Part B ($O(N + M + Nk)$)**: Because the matched substring of $T$ can begin at any column $d \in [0, N]$ at row $p = 0$ with $0$ cost, set $L(0, d) = \min(\operatorname{LCE}(P[1..], T[d+1..]), M, N - d)$ for all $d \in [0, N]$. Loop $e = 1 \dots k$ and $d = -e \dots N$: whenever $L(e, d) = M$, the cell $(p = M, t = M + d)$ is reached, so text right endpoint $r = M + d \in [1, N]$ is valid!
+4. **Broken-Invariant Counterexample (`BP-3B-06`)**: Never write $L(e-1, d-1) + 1$ for insertion into $P$; moving from $(p, t-1)$ on diagonal $d-1$ to $(p, t)$ on diagonal $d$ leaves row $p$ unchanged ($+0$).
+:::
+
+---
+
+#### Problem 19.6 (`W3B-30`) — `$k$-Mismatch with Wildcards via Hybrid Kangaroo + Kalai Polynomial Filtering`
+
+- **Mathematical Statement**: Given a text $T[1..N]$ and a pattern $P[1..M]$ ($M \le N \le 2 \times 10^5$) over an integer alphabet $\Sigma \le 10^5$ plus wildcard `'?'`, where the total number of wildcards in $P$ is $g \le 500$ and the mismatch budget is $k \le 10$, find all alignments $i$ where $P$ and $T[i..i+M-1]$ have at most $k$ concrete mismatches.
+- **Constraints**: $1 \le M \le N \le 2 \times 10^5$, $g \le 500$, $k \le 10$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Because $P$ contains $g \le 500$ wildcards, naive Kangaroo jumping stops at **every** wildcard in $P$ ($g + k$ jumps per alignment $\implies 500 N$ operations, which TLEs!). How do we avoid stopping at individual wildcards?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Compress consecutive wildcards in $P$ into maximal wildcard blocks! Between wildcard blocks, $P$ consists of $W \le g + 1$ contiguous **wildcard-free segments** $P[l_1..r_1], \dots, P[l_W..r_W]$. If $W \le 20$, Kangaroo jumps skip across each wildcard block in $O(1)$ time! What if $W$ is around $500$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Partition the $W$ wildcard-free segments of $P$ into $2k + 1$ groups! By the Pigeonhole Principle, any alignment $i$ with $\le k$ mismatches must match **at least $k + 1$ of the $2k + 1$ groups with ZERO mismatches**! Use **Theorem 18.3 (Kalai's 1-NTT randomized projection)** on each of the $2k + 1$ groups to find which shifts $i$ match $\ge k + 1$ groups exactly, or jump across the $W$ segments when $W$ is small!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-30`)"}
+
+1. **Diagnostic Signal**: Standard $\operatorname{LCE}$ treats `'?'` as a literal character and stops at every `'?'`, turning $O(Nk)$ into $O(N(g + k))$.
+2. **Combinatorial & Algebraic Invariant**:
+   - **Mechanism 1 (Wildcard-Run Kangaroo Jumping for Small $W$)**: Decompose the non-wildcard positions of $P$ into $W \le g + 1$ maximal contiguous concrete segments $[l_1, r_1], \dots, [l_W, r_W]$. Inside each segment $[l_s, r_s]$, Kangaroo jumping leaps to the next concrete mismatch in $O(1)$ time via $\ell = \min(\operatorname{LCE}(j, i+j-1), r_s - j + 1)$, and once $j > r_s$, jumps directly to $l_{s+1}$ in $O(1)$ time!
+   - **Mechanism 2 (Pigeonhole $2k+1$ Kalai Group Filter for Larger $g$)**: Partition the concrete positions of $P$ into $B = 2k + 1$ disjoint masks $P^{(1)}, \dots, P^{(2k+1)}$. Any alignment $i$ with $\le k$ concrete mismatches leaves at least $(2k + 1) - k = k + 1$ masks completely mismatch-free!
+3. **Algorithmic Compilation**: Run Mechanism 1 in $O(N(W + k))$ when $W$ is small, or run Kalai's 1-NTT (or 2-NTT if $T$ also has wildcards, Theorem 18.3) on each of the $2k + 1$ masks to identify all shifts $i$ matching $\ge k + 1$ masks in $O(k N \log N)$ time.
+4. **Broken-Invariant Counterexample**: Partitioning into $k + 1$ groups only guarantees $1$ mismatch-free group (which can still have $> k$ mismatches in the other $k$ groups unless verified); partitioning into $2k + 1$ groups or verifying survivors via Kangaroo jumps guarantees exactness.
+:::
+
+---
+
+### Tier 4 — Mastery (`W3B-38`, `W3B-41`)
+
+#### Problem 19.7 (`W3B-38`) — `Clifford–Gawrychowski–Uznański O(N sqrt(k log k)) 2k-Period Dichotomy Engine` (`SODA 2016 / QOJ`)
+
+- **Mathematical Statement**: Given a text $T[1..N]$, a pattern $P[1..M]$, and a mismatch threshold $k$ over an integer alphabet $\Sigma \le 10^5$, find all alignments $i \in \{1, \dots, N - M + 1\}$ with $\operatorname{Ham}(P[1..M], T[i .. i + M - 1]) \le k$.
+- **Constraints**: $1 \le M \le N \le 2 \times 10^5$, $1 \le k \le 2500$, $|\Sigma| \le 10^5$, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At $N = 2 \times 10^5, k = 2500, |\Sigma| = 10^5$, $O(Nk)$ Kangaroo jumps ($5 \times 10^8$ LCE calls) and $O(|\Sigma| N \log M)$ FFT both TLE. We must invoke **Theorem 19.4 (The $2k$-Period Structural Dichotomy)**.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+First split $T$ into overlapping windows of length $2M$. Next, test shifts $p = 1 \dots k$ using Kangaroo jumps on $P$ vs. $P$ to check if $\operatorname{Ham}(P[1..M-p], P[p+1..M]) \le 2k$. How do we solve Case A ($2k$-aperiodic) in $O(N)$ time and Case B ($2k$-periodic with step $p \le k$) in $O(N\sqrt{k \log k})$ time?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+In Case A, extract $2k$ disjoint mismatching pairs $(x_r, x_r + p)$ or rare character samples to filter candidate shifts to $O(N/k)$ survivors, and verify each survivor with $O(k)$ Kangaroo jumps. In Case B, compress $P$ and the active window of $T$ into $\le 3k$ and $\le 5k$ monochromatic RLE runs along the $p$ residue classes $\bmod p$, and accumulate RLE interval overlaps using a stride-$p$ second-order difference array `diff2[i]`!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-38`)"}
+
+1. **Diagnostic Signal**: Medium $k \approx \sqrt{M}$ over a large alphabet $|\Sigma| \le N$.
+2. **Combinatorial & Algebraic Invariant (Theorem 19.4)**:
+   - Partition $T[1..N]$ into $\lceil N / M \rceil$ windows of length $\le 2M$.
+   - Search for the smallest $p \in [1, k]$ with $\operatorname{Ham}(P[1..M-p], P[p+1..M]) \le 2k$ using Kangaroo jumps on $P$.
+   - **Case A ($P$ is $2k$-Aperiodic)**: By Theorem 19.4(A), valid shifts are separated by $> k$ ($\le 2M/k$ valid shifts per window). Using Abrahamson/witness filtering (requiring candidate shifts to match heavy/sampled positions of $P$) leaves $O(M/k)$ candidate shifts, each verified by at most $k + 1$ Kangaroo LCE jumps in $O(M)$ time!
+   - **Case B ($P$ has $2k$-Approximate Period $p \le k$)**: Along each residue class $r \in \{1, \dots, p\}$ modulo $p$, compress $P^{(r)}$ and $T^{(r')}$ into maximal monochromatic runs of step $p$. By Theorem 19.4(B), $P$ has $R_P \le p + 2k \le 3k$ total runs, and the active region of each $2M$-window of $T$ has $R_T = O(k)$ runs.
+3. **Algorithmic Compilation**:
+   - When a run of character $c$ in $P$ covering indices $a_1, a_1+p, \dots, b_1$ aligns against a run of the same character $c$ in $T$ covering $a_2, a_2+p, \dots, b_2$ (with $i \equiv a_2 - b_1 \pmod p$), the number of matching positions contributed to shift $i$ as $i$ steps by $+p$ from $a_2 - b_1$ to $b_2 - a_1 + 2p$ is a trapezoid of slope $+1$, then $0$, then $-1$:
+     ```cpp
+     // Stride-p Second-Order Difference Trapezoid Update in O(1)
+     int s1 = a2 - b1 + 1;
+     int s2 = a2 - a1 + 1 + p;
+     int s3 = b2 - b1 + 1 + p;
+     int s4 = b2 - a1 + 1 + 2 * p;
+     if (s2 > s3) std::swap(s2, s3);
+     add_diff2(s1, +1); add_diff2(s2, -1);
+     add_diff2(s3, -1); add_diff2(s4, +1);
+     ```
+   - After processing all same-character run pairs (directly in $O(k^2)$ when $k \le 2500$, or via Heavy–Light FFT on run indicators in $O(M\sqrt{k \log k})$), sweep $i = 1 \dots 2M$ with `slope[i] = slope[i-p] + diff2[i]` and `match[i] = match[i-p] + slope[i]`.
+4. **Broken-Invariant Counterexample (`BP-3B-07`)**: Failing to chunk $T$ into $2M$-windows allows $T$ to have $\Theta(N)$ period breaks modulo $p$, blowing up $R_T$ from $O(k)$ to $\Theta(N)$.
+:::
+
+---
+
+#### Problem 19.8 (`W3B-41`) — `Internal k-Mismatch Queries on Substrings S[l_1..r_1] vs. S[l_2..r_2]`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ ($N \le 2 \times 10^5$) and $Q \le 2 \times 10^5$ online queries $(l_1, r_1, l_2, r_2, k)$ with $r_1 - l_1 = r_2 - l_2$ and $\sum k \le 10^6$:
+  - **Part A (Bounded-Pair Comparison)**: Decide whether $\operatorname{Ham}(S[l_1..r_1], S[l_2..r_2]) \le k$, and if so, return the exact list of mismatching offsets.
+  - **Part B (Internal $k$-Mismatch Substring Occurrences, $|T| < 2|P|$)**: Given query substrings $P = S[l_1..r_1]$ and $T = S[l_2..r_2]$ with $|T| < 2|P|$ and $k \le 50$, characterize the valid $k$-mismatch alignments of $P$ inside $T$ using the $2k$-Period Dichotomy.
+- **Constraints**: $N, Q \le 2 \times 10^5$, $\sum k \le 10^6$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+In Part A, both strings are internal substrings of $S[1..N]$, so there is **no** sentinel character `'#'` at $r_1$ or $r_2$. In Part B, $|T| < 2|P|$ mirrors the Bounded-Ratio Internal Pattern Matching (`IPM`) setting of [Chapter 15](ch15-internal-pattern-matching-borders.qmd)!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In Part A, clamped Kangaroo jumping $\ell = \min(\operatorname{LCE}_S(l_1 + d, l_2 + d), L - d)$ finds each mismatch in $O(1)$ time, costing $O(k + 1)$ per query ($O(N + Q + \sum k)$ total). In Part B, by **Theorem 19.4**, if $P = S[l_1..r_1]$ is $2k$-aperiodic, there are at most $\lceil |T| / k \rceil$ valid shifts separated by $> k$; if $P$ has a $2k$-period $p \le k$, all valid shifts lie in periodic progressions with $\le 3k$ RLE transitions!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Combine the $O(1)$ RMQ-LCE oracle on $S[1..N]$ with clamped Kangaroo jumping for Part A, and for Part B extract the $2k$-mismatch skeleton of $P$ and $T$ using Kangaroo jumps between shifted copies of $S$ in $O(k^2)$ time per query!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-41`)"}
+
+1. **Diagnostic Signal**: Internal substring queries $(l_1, r_1, l_2, r_2, k)$ prohibit per-query $O(|P|)$ scanning or FFT on the full string.
+2. **Combinatorial Word Invariant**:
+   - **Part A ($O(k)$ Internal Kangaroo Oracle)**: Build SA + Kasai LCP + Sparse Table RMQ on $S[1..N]$ in $O(N \log N)$ (or $O(N)$) time. Given $(l_1, r_1, l_2, r_2, k)$ of length $L = r_1 - l_1 + 1$, maintain offset $d \leftarrow 0$ and mismatch list `M_list`:
+     ```cpp
+     while (d < L && (int)M_list.size() <= k) {
+         int ell = std::min(LCE(l1 + d, l2 + d), L - d);
+         d += ell;
+         if (d < L) {
+             M_list.push_back(d);
+             d += 1;
+         }
+     }
+     ```
+     This runs in $O(\min(\operatorname{Ham}, k + 1))$ time per query, totaling $O(N + Q + \sum k)$ across all queries!
+3. **Algorithmic Compilation**:
+   - **Part B ($O(k^2)$ Internal Bounded-Ratio $k$-Mismatch, Charalampopoulos–Kociumaka–Wellnitz FOCS 2020)**: When $|T| < 2|P|$, running Part A between $P[1..M-p]$ and $P[p+1..M]$ (which are both substrings of $S$!) extracts the $O(k)$ periodic RLE runs of $P$ and $T$ modulo $p$ in $O(k)$ LCE queries without ever scanning $P$ or $T$ character-by-character!
+4. **Broken-Invariant Counterexample (`BP-3B-05`)**: Omitting `std::min(..., L - d)` in `LCE(l1 + d, l2 + d)` allows the match to continue into $S[r_1 + 1 ..]$ and $S[r_2 + 1 ..]$, missing mismatches or jumping past $L$.
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Decision Checklist: Choosing the Optimal $k$-Mismatch / $k$-Edit Engine
+
+| Problem Regime & Constraints | Optimal Structural Engine | Time Complexity |
+| :--- | :--- | :--- |
+| **$1$-Mismatch Substring Search** ($k = 1$, any $\|\Sigma\|$) | Forward & Reverse Z-arrays: $Z_{\text{fwd}}[i] + Z_{\text{rev}}[i] \ge M - 1$ | **$O(N + M)$** (Zero RMQ) |
+| **Small $k$-Mismatch** ($k \le 20$, any $\|\Sigma\|$) | Landau–Vishkin Kangaroo LCE Jumps (**Lemma 19.1**) | **$O(N + M + Nk)$** |
+| **Internal Substring $k$-Mismatch** ($\sum k \le 10^6$) | Clamped Internal Kangaroo LCE Jumps (`std::min(LCE, L - d)`) | **$O(N + Q + \sum k)$** |
+| **Global $k$-Edit Distance** ($N, M \le 5\times 10^5, k \le 2000$) | Landau–Vishkin Diagonal Wavefront $L(e, d)$ on $d \in [-k, k]$ (**Theorem 19.2**) | **$O(N + M + k^2)$** |
+| **$k$-Edit Substring Search** ($N \le 10^5, k \le 50$) | Landau–Vishkin Diagonal Wavefront $L(e, d)$ on $d \in [-k, N]$ | **$O(N + M + Nk)$** |
+| **All-Shifts Exact Hamming Distance** (any $k$, large $\|\Sigma\|$) | Abrahamson Heavy–Light Split at $B = \sqrt{M\log M}$ (**Theorem 19.3**) | **$O(N\sqrt{M \log M})$** |
+| **Moderate $k$-Mismatch** ($k \le 2500$, large $\|\Sigma\|$) | $2k$-Period Dichotomy: Aperiodic Kangaroo vs. Periodic RLE + `diff2` (**Theorem 19.4**) | **$O(N\sqrt{k \log k})$** |
+
+### 6.2 What Comes Next in Part V
+In Chapters 18 and 19, character compatibility was defined on fixed alphabet symbols (up to wildcards, permutations, or $k$ errors). What if two strings are considered equivalent whenever their characters can be **bijectively renamed** (`Parameterized Matching`), or share the same **relative order** (`Order-Preserving Matching`), or have the same **Cartesian tree shape** (`Cartesian-Tree Matching`), or occur with probability $\ge 1/z$ in a **Position-Weight Matrix**? In **[Chapter 20: Window-Clipped Structural Isomorphism (`p-KMP`, `Order-KMP`, `Cartesian-KMP`), `p-SA`, and $1/z$ Weighted Suffix Trees](ch20-structural-isomorphism-weighted-strings.qmd)**, we unify all three isomorphism families under the **Window-Clipping Operator** $\operatorname{clip}(v, q)$ and prove Barton et al.'s $1/z$ Heavy-String Decomposition.

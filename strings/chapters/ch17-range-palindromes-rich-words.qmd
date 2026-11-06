@@ -1,0 +1,597 @@
+---
+title: "Substring Palindrome Range Queries (O(1) Range LPS & slink Telescoping), Rich Words, and Palindrome Factorizations"
+subtitle: "Chapter 17 · Part IV: Internal Pattern Matching (IPM) & Advanced Palindromic Structures"
+---
+
+::: {.callout-important title="Prerequisites, Assumed Library & Learning Objectives"}
+
+- **Assumed Library Primitives**: Manacher's algorithm ($d_1[1..N]$ odd radii, $d_2[1..N-1]$ even radii, and unified $(2N+1)$-length array $R_{\text{man}}[1..2N+1]$), Palindromic Automaton (`PAM`) with `diff[u]` and `slink[u]`, Sparse Table RMQ, Fenwick Tree, and Persistent Segment Tree (`Chairman Tree`).
+- **Strict Prerequisite Chapters**:
+  - [Chapter 04: Series-Link (`slink` / `diff`) DP on KMP & PAM](ch04-series-link-dp-kmp-pam.qmd) (`T-1A-04`, `T-1A-05`)
+  - [Chapter 11: Dynamic SAM + LCT `access` Sweeping & Intra-State Stratification](ch11-dynamic-sam-lct-stratification.qmd) (`T-2A-04`)
+  - [Chapter 16: Unamortized Deterministic PAM, Persistent Tree PAM & 4-Way Deque PAM](ch16-deterministic-tree-deque-pam.qmd) (`T-3A-01`, `T-3A-02`)
+- **Assigned Technique IDs**: `T-3A-03` (True $O(1)$ Two-Boundary Unclipped Range LPS & Midpoint-Decoupled Range Palindrome Multiplicity), `T-3A-04` (`[徐毅 2014]` PAM `slink` Periodic Telescoping & LCT `access` Range Distinct Palindromes), `T-3A-05` (Droubay–Pirillo Rich Words, Greedy Even-Palindrome Factorization, Top-2 `slink` 2-Palindromes & $\theta$-Palindromes).
+- **Learning Objectives**:
+  1. Derive all three regimes of **Range Longest Palindromic Substring (`Range LPS`)** on $S[l..r]$, culminating in the **True $O(1)$ Online Two-Boundary Unclipping Theorem** via $c_L = \operatorname{rightmost\_reach}[2l-1]$ and $c_R = \operatorname{leftmost\_reach}[2r-1]$.
+  2. Prove the **Midpoint Decoupling Identity** ($m_{\text{odd}} = \lfloor(l+r)/2\rfloor$ vs. $m_{\text{even}} = \lfloor(l+r-1)/2\rfloor$) for range total palindrome multiplicity and construct the $S = \texttt{aaaa}, [1, 3]$ counterexample exposing the single-midpoint bug.
+  3. Prove the **`[国家集训队论文 2014 — 徐毅]` Periodic Suffix Telescoping Cancellation Theorem** ($\operatorname{start}_{r-1}(u_j) = \operatorname{start}_r(u_{j-1})$ for $2 \le j \le k$) to answer Range Distinct Palindromes (`LOJ #6071`) in $O((N+Q)\log^2 N)$ time and $O(N)$ space, plus weighted extensions via LCT `access`.
+  4. Master **Droubay–Pirillo Rich Words** ($\le N+1$, with $O(1)$ range richness test $l \ge L_{\text{rich}}[r]$ via Factor Closure), **Greedy Shortest Even-Palindrome Factorization (`CF 1827C`)**, the **Top-2-of-Each-AP Theorem** for online 2-palindrome cuts ($S = \texttt{bababcba}$ counterexample), and **$\theta$-Palindromes**.
+:::
+
+---
+
+## 1. Three Regimes of Range Longest Palindromic Substring (`Range LPS`, `T-3A-03`)
+
+### 1.1 The Diagnostic Signal: Center-Hereditary Palindromes vs. Boundary Clipping
+
+Given a static string $S[1..N]$ and $Q$ online queries $[l, r]$, we want to compute $\operatorname{LPS}(l, r)$, the maximum length of a palindromic substring contained inside $S[l..r]$.
+Unlike substring borders in [Chapter 15](ch15-internal-pattern-matching-borders.qmd) (which are non-hereditary and require dyadic IPM), palindromes are **center-hereditary**: shrinking a palindrome symmetrically around its center $c$ preserves palindromicity!
+However, in the whole string $S[1..N]$, a center $c \in [l, r]$ with odd Manacher radius $d_1[c]$ has its valid radius inside $S[l..r]$ clipped by both boundaries:
+$$d_1^{[l, r]}(c) = \min\bigl(d_1[c],\; c - l + 1,\; r - c + 1\bigr).$$
+How do we maximize this 3-way minimum over $c \in [l, r]$? Depending on $Q$ and memory limits, we have three increasingly powerful regimes.
+
+---
+
+### 1.2 Regime 1 ($O(\log(r - l))$ Time): Single-Binary-Search + Sparse Table RMQ
+
+Instead of running two separate binary searches for odd-length and even-length palindromes, observe that for any half-length $k \in [1,\, \lfloor(r - l + 1)/2\rfloor]$, stripping the outermost character pair from a palindrome of length $\ge 2k + 1$ leaves a palindrome of the same parity of length $2k - 1$ (odd) or $2k$ (even) at the same center. Thus the combined predicate
+$$\operatorname{HasPal}_{\ge 2k-1}(l, r) \iff \left(\max_{c \in [l+k-1,\, r-k+1]} d_1[c] \ge k\right) \;\lor\; \left(\max_{c \in [l+k-1,\, r-k]} d_2[c] \ge k\right)$$
+is **strictly monotone in $k$**! A single binary search on $k$ using two $O(1)$ Sparse Table RMQ lookups finds the optimal half-length $k^*$ in $O(\log(r - l))$ time, returning $2k^*$ if the even RMQ at $k^*$ is $\ge k^*$ and $2k^* - 1$ otherwise.
+
+---
+
+### 1.3 Regime 2 ($O(\log N)$ Time, $O(N)$ Space): Closed-Form `slink` Ceiling Division
+
+What if we need the **longest palindromic suffix** $P_R$ (or prefix $P_L$) of $S[l..r]$—i.e., the highest failure ancestor $u$ of $u_0 = \text{pos}[r]$ in $\operatorname{PAM}(S)$ with $\operatorname{len}[u] \le L_{\text{cap}} := r - l + 1$—without spending $O(N \log N)$ memory on a binary-lifting table?
+Walk $u \gets \operatorname{slink}[u]$ while $\operatorname{len}[\operatorname{slink}[u]] > L_{\text{cap}}$ (at most $\lceil \log_2 N \rceil$ hops). If $\operatorname{len}[u] > L_{\text{cap}}$, the target ancestor lies inside $u$'s arithmetic progression of step $d = \operatorname{diff}[u]$, so its exact length is given in $O(1)$ closed form by **ceiling division**:
+$$\boxed{\bigl|P_R(l, r)\bigr| = \operatorname{len}[u] - \left\lceil \frac{\operatorname{len}[u] - (r - l + 1)}{\operatorname{diff}[u]} \right\rceil \cdot \operatorname{diff}[u].}$$
+
+---
+
+### 1.4 Regime 3 (True Worst-Case $O(1)$ Online Time): The Two-Boundary Unclipping Theorem
+
+Can we eliminate the $O(\log N)$ binary search and `slink` walk entirely to answer `Range LPS` in **true $O(1)$ worst-case time** per query after $O(N \log N)$ preprocessing?
+
+Insert `#` between characters of $S[1..N]$ to form the $(2N - 1)$-center Manacher coordinate system $T[1 .. 2N - 1]$, where original character $S[i]$ sits at odd coordinate $2i - 1$ ($1 \le i \le N$) and the even gap between $S[i]$ and $S[i+1]$ sits at even coordinate $2i$. For each center $c \in [1 .. 2N - 1]$, let $\operatorname{len}_{\text{man}}[c] = \operatorname{rad}_{\text{man}}[c] - 1$ be the exact length in $S$ of the maximal palindrome centered at $c$ (so $\operatorname{len}_{\text{man}}[2i - 1] = 2 d_1[i] - 1$ and $\operatorname{len}_{\text{man}}[2i] = 2 d_2[i]$). Whenever $\operatorname{len}_{\text{man}}[c] > 0$, this maximal palindrome spans the closed Manacher coordinate interval
+$$\bigl[L_{\text{man}}[c],\; R_{\text{man}}[c]\bigr] = \bigl[c - \operatorname{len}_{\text{man}}[c] + 1,\; c + \operatorname{len}_{\text{man}}[c] - 1\bigr].$$
+Notice that a palindrome centered at $c$ of length $\ell > 0$ (with $\ell \equiv c \pmod 2$) covers original substring $S[i..j]$ iff its Manacher interval is $[2i - 1,\, 2j - 1]$.
+
+Now precompute two linear arrays over $[1 .. 2N - 1]$ in $O(N)$ time:
+
+- $\operatorname{rightmost\_reach}[x] = \max\bigl(\{x\} \cup \{c \ge x : \operatorname{len}_{\text{man}}[c] > 0 \text{ and } L_{\text{man}}[c] \le x\}\bigr)$ (the furthest center $\ge x$ whose palindrome reaches left to or past $x$);
+- $\operatorname{leftmost\_reach}[y] = \min\bigl(\{y\} \cup \{c \le y : \operatorname{len}_{\text{man}}[c] > 0 \text{ and } R_{\text{man}}[c] \ge y\}\bigr)$ (the earliest center $\le y$ whose palindrome reaches right to or past $y$).
+
+::: {.callout-important title="Theorem 17.1 (True $O(1)$ Online Range LPS via Two-Boundary Unclipping)"}
+For any query substring $S[l..r]$, let $x_L = 2l - 1$ and $x_R = 2r - 1$ be its boundary coordinates in $T[1 .. 2N - 1]$, and look up in $O(1)$ time:
+$$c_L = \min\bigl(x_R,\; \operatorname{rightmost\_reach}[x_L]\bigr), \qquad c_R = \max\bigl(x_L,\; \operatorname{leftmost\_reach}[x_R]\bigr).$$
+
+1. **Boundary Prefix & Suffix Identification**: $c_L$ is the exact center of the **longest palindromic prefix** $P_L$ of $S[l..r]$, with length $|P_L| = c_L - x_L + 1$; and $c_R$ is the exact center of the **longest palindromic suffix** $P_R$ of $S[l..r]$, with length $|P_R| = x_R - c_R + 1$.
+2. **100% Unclipped Interior**: If $c_L < c_R$, then for **every** center $c$ strictly between $c_L$ and $c_R$ ($c_L < c < c_R$), its whole-string palindrome in $S[1..N]$ satisfies $L_{\text{man}}[c] > x_L$ and $R_{\text{man}}[c] < x_R$—it is **100% unclipped by $[l, r]$**! Conversely, every center $c \le c_L$ has clipped length $\le c - x_L + 1 \le |P_L|$, and every center $c \ge c_R$ has clipped length $\le x_R - c + 1 \le |P_R|$.
+3. **True $O(1)$ Master Formula**:
+   $$\boxed{\operatorname{LPS}(l, r) = \max\!\left(\;c_L - (2l - 1) + 1,\;\; (2r - 1) - c_R + 1,\;\; \max_{c \in (c_L,\, c_R)} \operatorname{len}_{\text{man}}[c]\;\right)}$$
+   where the third term is evaluated in $O(1)$ time by a single Sparse Table RMQ over $(c_L, c_R)$ (and is $0$ when $c_L + 1 > c_R - 1$).
+:::
+
+```
+Manacher Coordinate Interval [x_L = 2l-1, x_R = 2r-1]:
+
+  x_L                 c_L                      c_R                 x_R
+   |===================|======|          |======|===================|
+   |<----- |P_L| ----->|                        |<----- |P_R| ----->|
+                       |<-- Unclipped (c_L, c_R) -->|
+                         Every center c in (c_L, c_R)
+                         has L_man[c] > x_L and R_man[c] < x_R!
+```
+
+#### Proof of Theorem 17.1
+A palindrome centered at $c \in [x_L, x_R]$ forms a palindromic prefix of $S[l..r]$ (clipped at $x_L$) iff its whole-string palindrome reaches $x_L$ ($L_{\text{man}}[c] \le x_L$) and its clipped right endpoint $2c - x_L \le x_R \iff c \le (x_L + x_R)/2$. Note that if $\operatorname{rightmost\_reach}[x_L]$ exceeds $(x_L + x_R)/2$, then capping at $c_L$ or noticing that $c_L \ge c_R$ already yields $\max(|P_L|, |P_R|)$ covering the midpoint. When $c_L < c_R$, for any $c \in (c_L, c_R)$, since $c > c_L = \operatorname{rightmost\_reach}[x_L]$, we have $L_{\text{man}}[c] > x_L$ (it does not touch the left boundary $l$); since $c < c_R = \operatorname{leftmost\_reach}[x_R]$, we have $R_{\text{man}}[c] < x_R$ (it does not touch the right boundary $r$). Thus $\operatorname{len}_{\text{man}}[c]$ lies strictly inside $S[l..r]$ without clipping! Finally, any $c \le c_L$ clipped at $x_L$ has length at most $c - x_L + 1 \le c_L - x_L + 1 = |P_L|$, and any $c \ge c_R$ clipped at $x_R$ has length at most $x_R - c + 1 \le x_R - c_R + 1 = |P_R|$. $\blacksquare$
+
+**How to Precompute `rightmost_reach` and `leftmost_reach` in $O(N)$ Time**:
+Initialize `rightmost_reach[x] = x` and `leftmost_reach[x] = x` for $x = 1 \dots 2N - 1$. For each center $c = 1 \dots 2N - 1$ with $\operatorname{len}_{\text{man}}[c] > 0$, set `rightmost_reach[L_man[c]] = max(rightmost_reach[L_man[c]], c)` and `leftmost_reach[R_man[c]] = min(leftmost_reach[R_man[c]], c)`. Then sweep $x = 2 \dots 2N - 1$: because any palindrome reaching $x - 1$ from a center $c \ge x$ also reaches $x$, set `rightmost_reach[x] = max(rightmost_reach[x], rightmost_reach[x - 1])`! Symmetrically, sweep $y = 2N - 2$ down to $1$ with `leftmost_reach[y] = min(leftmost_reach[y], leftmost_reach[y + 1])`.
+
+---
+
+## 2. Core Combinatorial Word Invariants: Midpoint Decoupling for Range Palindrome Multiplicity (`T-3A-03`)
+
+Suppose a query $[l, r]$ asks for the **total number of palindromic substrings (with multiplicity)** inside $S[l..r]$:
+$$\operatorname{TotalPal}(l, r) = \sum_{c=l}^r \min\bigl(d_1[c],\, c - l + 1,\, r - c + 1\bigr) + \sum_{c=l}^{r-1} \min\bigl(d_2[c],\, c - l + 1,\, r - c\bigr).$$
+To eliminate the 3-way minimum, we decouple the left boundary $l$ from the right boundary $r$ at the **exact parity-specific midpoints**:
+
+::: {.callout-note title="Theorem 17.2 (The Midpoint Decoupling Identity for Odd and Even Centers)"}
+For any interval $[l, r]$, define the **odd midpoint** $m_{\text{odd}} = \bigl\lfloor \frac{l + r}{2} \bigr\rfloor$ and the **even midpoint** $m_{\text{even}} = \bigl\lfloor \frac{l + r - 1}{2} \bigr\rfloor$:
+
+1. **Odd Centers ($c \in [l, r]$)**: Since $c - l + 1 \le r - c + 1 \iff 2c \le l + r \iff c \le m_{\text{odd}}$,
+   $$\operatorname{OddPal}(l, r) = \sum_{c=l}^{m_{\text{odd}}} \min\bigl(d_1[c],\, c - l + 1\bigr) + \sum_{c=m_{\text{odd}}+1}^{r} \min\bigl(d_1[c],\, r - c + 1\bigr).$$
+
+2. **Even Centers ($c \in [l, r - 1]$, centered between $c$ and $c + 1$)**: Since $c - l + 1 \le r - c \iff 2c \le l + r - 1 \iff c \le m_{\text{even}}$,
+   $$\operatorname{EvenPal}(l, r) = \sum_{c=l}^{m_{\text{even}}} \min\bigl(d_2[c],\, c - l + 1\bigr) + \sum_{c=m_{\text{even}}+1}^{r-1} \min\bigl(d_2[c],\, r - c\bigr).$$
+:::
+
+On the left half $c \in [l, m_{\text{odd}}]$, $\min(d_1[c], c - l + 1)$ equals $d_1[c]$ when $L_1(c) := c - d_1[c] + 1 \ge l$, and equals $c - (l - 1)$ when $L_1(c) < l$. Maintaining a **Persistent Segment Tree (`Chairman Tree`)** (or 3 offline Fenwick Trees) over $L_1(c)$ and $R_1(c)$ storing $\sum d_1[c]$, $\sum c$, and $\sum 1$ answers every query in $O(\log N)$ time!
+*(Bonus $O(1)$ Query Alternative)*: Using $c_L$ and $c_R$ from **Theorem 17.1**, all centers $c \in (c_L, c_R)$ are unclipped (summed via static prefix sums of $\operatorname{len}_{\text{man}}[c]$ in $O(1)$), while centers in $[x_L, c_L]$ and $[c_R, x_R]$ are palindromic prefixes/suffixes of $P_L$ and $P_R$!
+
+::: {.callout-warning title="Broken-Invariant Counterexample: The Even-Center Midpoint Bug (`S = aaaa, [1, 3]`)"}
+Never use $m_{\text{odd}} = \lfloor(l + r)/2\rfloor$ as the split point for even centers $d_2[c]$!
+Take $S = \texttt{aaaa}$ and query $[l, r] = [1, 3]$ ($S[1..3] = \texttt{aaa}$):
+
+- Here $m_{\text{odd}} = \lfloor(1 + 3)/2\rfloor = 2$, while $m_{\text{even}} = \lfloor(1 + 3 - 1)/2\rfloor = 1$.
+- At even center $c = 2$ (between $S[2]$ and $S[3]$), the whole-string even radius is $d_2[2] = 2$ ($S[1..4] = \texttt{aaaa}$). Inside $[1, 3]$, its true clipped radius is $\min(d_2[2], 2 - 1 + 1, 3 - 2) = \min(2, 2, 1) = 1$.
+- If you wrongly put $c = 2$ into the left sum $[1, m_{\text{odd}}] = [1, 2]$, you evaluate $\min(d_2[2], 2 - 1 + 1) = \min(2, 2) = 2$, **overcounting by $+1$** because $c = 2$ is closer to $r = 3$ than to $l = 1$!
+:::
+
+---
+
+## 3. Range Distinct Palindromes via PAM `slink` Telescoping (`[徐毅 2014]`, `LOJ #6071`, `T-3A-04`)
+
+### 3.1 Concrete Objects & The Right-Endpoint Sweep Strategy
+
+Given $S[1..N]$ and $Q$ queries $[l, r]$, we want to count the number of **distinct** non-empty palindromic substrings inside $S[l..r]$.
+Following the standard distinct-element sweep ([Chapter 11](ch11-dynamic-sam-lct-stratification.qmd)), as we sweep right endpoint $r = 1 \dots N$, we maintain for every PAM node $u$ ($\operatorname{len}[u] > 0$) the starting index $\operatorname{start}_r(u) = \operatorname{last\_end}_r(u) - \operatorname{len}[u] + 1$ of its **most recent occurrence** in $S[1..r]$, placing a $+1$ weight at index $\operatorname{start}_r(u)$ in a Fenwick Tree (or Persistent Segment Tree). Then a query $[l, r]$ simply sums the Fenwick Tree over $[l, r]$.
+
+**The Bottleneck**: At step $r$, every failure ancestor $u$ of $\text{pos}[r]$ gains a new occurrence ending at $r$. Updating $\Theta(N)$ ancestors on $\texttt{a}^N$ takes $\Theta(N^2)$ time!
+
+### 3.2 The Periodic Suffix Telescoping Cancellation Miracle
+
+Group the failure path from $\text{pos}[r]$ to $r_0$ into its $\le \lceil \log_2 r \rceil$ arithmetic progressions (`slink` chains). Consider a single chain $u_1 \to u_2 \to \dots \to u_k$ where $\operatorname{diff}[u_1] = \dots = \operatorname{diff}[u_k] = d$ and $\operatorname{fail}[u_k] = \operatorname{slink}[u_1]$, so $\operatorname{len}[u_j] = \operatorname{len}[u_1] - (j - 1)d$ and $\operatorname{len}[u_k] = \operatorname{len}[\operatorname{slink}[u_1]] + d$.
+
+::: {.callout-important title="Theorem 17.3 (Periodic Suffix Telescoping Cancellation — `[国家集训队论文 2014 — 徐毅]`)"}
+At step $r$, let $u_1 \to u_2 \to \dots \to u_k$ be a `slink` chain on the failure path from $\text{pos}[r]$ with common difference $d = \operatorname{diff}[u_1]$.
+
+1. **Deterministic Previous Occurrence of Non-Head Nodes**: For every internal/non-head node $u_j$ ($2 \le j \le k$), its most recent occurrence in $S[1..r-1]$ before step $r$ ended at **exact right endpoint $r - d$**!
+2. **Exact Telescoping Cancellation**: For every $j \in \{2, 3, \dots, k\}$, the old starting position of $u_j$ (ending at $r - d$) equals the **new starting position of $u_{j-1}$ (ending at $r$)**:
+   $$\boxed{\operatorname{start}_{r-1}(u_j) = (r - d) - \operatorname{len}[u_j] + 1 = r - \bigl(\operatorname{len}[u_j] + d\bigr) + 1 = r - \operatorname{len}[u_{j-1}] + 1 = \operatorname{start}_r(u_{j-1})!}$$
+   Consequently, across the entire chain $\{u_1, \dots, u_k\}$ of $k$ nodes, all $k - 1$ pairs of `-1` (removing $\operatorname{start}_{r-1}(u_j)$ for $j \ge 2$) and `+1` (adding $\operatorname{start}_r(u_{j-1})$ for $j \ge 2$) **cancel out completely**, leaving **at most 2 point updates in the Fenwick Tree**:
+
+   - **One `-1` update** at $\operatorname{prev\_r}(u_1) - \operatorname{len}[u_1] + 1$ (if $\operatorname{prev\_r}(u_1) > 0$, where $\operatorname{prev\_r}(u_1)$ is the maximum previous right endpoint in the PAM `fail`-subtree of $u_1$), and
+   - **One `+1` update** at $\operatorname{start}_r(u_k) = r - \operatorname{len}[u_k] + 1 = r - \bigl(\operatorname{len}[\operatorname{slink}[u_1]] + \operatorname{diff}[u_1]\bigr) + 1$.
+:::
+
+```
+Step r, slink chain u_1 -> u_2 -> ... -> u_k (step d = diff[u_1]):
+
+  Old starts at r - 1:   prev_start(u_1)     (r-d)-len[u_2]+1    ...    (r-d)-len[u_k]+1
+   Fenwick Action:           [ -1 ]                 [ -1 ]         ...         [ -1 ]
+                                                    || (CANCELS!)              || (CANCELS!)
+   Fenwick Action:                                [ +1 ]         ...         [ +1 ]                 [ +1 ]
+  New starts at r:                           r - len[u_1] + 1    ...   r - len[u_{k-1}] + 1   r - len[u_k] + 1
+
+  Net Effect: ONLY (-1 at prev_start(u_1)) and (+1 at r - (len[slink[u_1]] + d) + 1)!
+```
+
+#### Proof of Theorem 17.3
+Because $u_1$ ends at $r$ and has period $d = \operatorname{diff}[u_1] = \operatorname{len}[u_1] - \operatorname{len}[u_2]$, $u_2 = \operatorname{fail}[u_1]$ is the prefix of $u_1$ of length $\operatorname{len}[u_1] - d$, which ends at $(r - \operatorname{len}[u_1] + 1) + (\operatorname{len}[u_1] - d) - 1 = r - d$! And since $u_3, \dots, u_k$ are suffixes of $u_2$, they all occur ending at $r - d$. Could any $u_j$ ($j \ge 2$) have occurred at some $r' \in (r - d, r)$? If $u_j$ occurred at $r' \in (r - d, r)$, then by periodicity of $u_1$ (or reflection inside $u_1$), it would create a border of $u_1$ strictly longer than $u_2 = \operatorname{fail}[u_1]$, a contradiction! Thus $\operatorname{last\_end}_{r-1}(u_j) = r - d$ for all $2 \le j \le k$, proving the telescoping identity. $\blacksquare$
+
+### 3.3 Weighted Generalization & LCT `access` Color-Chain Sweeping
+
+What if each distinct palindrome $u$ carries a weight $w(u)$ (such as $w(u) = \operatorname{len}[u]$ or $w(u) = \operatorname{len}[u]^2$)?
+
+1. **Via `slink` Difference Progression**: By Theorem 17.3, at position $r - \operatorname{len}[u_{j-1}] + 1 = \operatorname{start}_{r-1}(u_j)$ ($2 \le j \le k$), we add $+w(u_{j-1})$ and subtract $-w(u_j)$, leaving a net update of $\Delta w(u_{j-1}) = w(u_{j-1}) - w(u_j)$ along an arithmetic progression of indices with step $d$!
+2. **Via LCT `access` on the PAM `fail` Tree**: Exactly as in [Chapter 11](ch11-dynamic-sam-lct-stratification.qmd), running `access(pos[r])` on a Link-Cut Tree over the PAM `fail` tree decomposes the path to the root into $O(\log N)$ solid chains where every node in a solid chain shares the exact same previous right endpoint $r_{\text{old}}$.
+
+---
+
+## 4. Rich Words, Even-Palindrome Greedy, 2-Palindromes & $\theta$-Palindromes (`T-3A-05`)
+
+### 4.1 Droubay–Pirillo Rich Words & $O(1)$ Range Richness via Factor Closure
+
+By **Droubay, Justin, and Pirillo (2001)**, every word $W$ of length $n$ contains **at most $n + 1$ distinct palindromic factors** (including $\varepsilon$, or $n$ non-empty distinct palindromes), because appending $W[r]$ creates at most one new palindrome (the longest palindromic suffix). A word $W$ achieving this upper bound ($n$ non-empty distinct palindromes) is called a **Rich Word (`富回文串 / 满回文串`)**.
+
+::: {.callout-important title="Theorem 17.4 (Glen–Justin–Widmer–Zamboni Rich Word Factor Closure & $O(1)$ Range Test)"}
+For any word $W$, the following are equivalent:
+
+1. $W$ is **rich** (contains $|W|$ non-empty distinct palindromes).
+2. **Unioccurrent LPS**: For every prefix $W[1..r]$, its longest palindromic suffix occurs **uniquely** in $W[1..r]$ (i.e., creates a brand-new PAM state).
+3. **Complete Return Palindromes**: Every complete return word to any palindrome $P$ in $W$ (a factor starting and ending with $P$ containing no internal occurrences of $P$) is itself a palindrome.
+4. **Factor Closure**: **Every substring of a rich word is rich**, and every superstring of a non-rich word is non-rich!
+
+**Algorithmic Consequence ($O(N)$ Preprocessing $\to O(1)$ Online Rich Substring Queries)**:
+By Factor Closure (4), for each right endpoint $r \in [1..N]$ of $S[1..N]$, there exists a unique minimum left endpoint $L_{\text{rich}}[r] \in [1, r]$ satisfying $L_{\text{rich}}[1] \le L_{\text{rich}}[2] \le \dots \le L_{\text{rich}}[N]$ such that:
+$$\boxed{S[l..r] \text{ is a Rich Word} \iff l \ge L_{\text{rich}}[r]!}$$
+Using the **Queue PAM of [Chapter 16](ch16-deterministic-tree-deque-pam.qmd)**, we advance $r = 1 \dots N$ (`push_back(S[r])`) and advance $L$ (`pop_front()`) while `active_distinct < r - L + 1`, computing all $L_{\text{rich}}[1..N]$ in **$O(N)$ total time** and answering every query $[l, r]$ in **$O(1)$ time**!
+:::
+
+*(Canonical Counterexample)*: Every binary word of length $\le 7$ is rich; the **shortest non-rich binary word** has length $8$: $W = \texttt{00100100}$ (where the complete return word $\texttt{00100}$ to palindrome $\texttt{00}$ is not a palindrome, so step $r = 8$ has longest palindromic suffix $\texttt{00}$ which already occurred!).
+
+---
+
+### 4.2 Greedy Shortest Even-Palindrome Factorization (`CF 1827C`) & Online 2-Palindromes
+
+1. **Greedy Shortest Even-Palindrome Lemma (`CF 1827C`)**:
+   A string $W$ can be partitioned into non-empty **even-length** palindromes $E_1 E_2 \cdots E_k$ if and only if $W$ has a non-empty even-length palindromic suffix and removing its **shortest** non-empty even-length palindromic suffix $E_{\min}$ leaves a string $W \setminus E_{\min}$ that can also be partitioned into even-length palindromes!
+   *Why?* If $E_k$ is the last even palindrome in any valid partition and $|E_k| > |E_{\min}|$, then $E_{\min}$ is a proper suffix (and by reflection across $E_k$'s even center, a non-overlapping prefix!) of $E_k$, splitting $E_k = E_{\min} \cdot M \cdot E_{\min}$ into **three** even-length palindromes!
+
+2. **The Top-2-of-Each-AP Theorem for Online Substring 2-Palindrome Cuts (`S[l..r] = P_1 P_2`)**:
+   Suppose we want to test in $O(\log(r - l))$ time whether $W = S[l..r]$ can be split into two non-empty palindromes $W = P_1 P_2$.
+
+   - **Why Naive Longest-Palindrome Greedy Fails (`Counterexample: W = bababcba`)**:
+     In $W = \texttt{bababcba} = \texttt{bab} + \texttt{abcba}$, the longest palindromic prefix is $Q_1 = \texttt{babab}$ (leaving $\texttt{cba}$, **not** a palindrome!). Why? Because $Q_1 = \texttt{babab}$ over-extended by one period step $d = 2$ into $P_2 = \texttt{abcba}$, and its immediate failure parent $\operatorname{fail}[Q_1] = \texttt{bab}$ is the true cut!
+
+   - **Sufficiency of the Top 2 Nodes per `slink` Chain**:
+     If $W = P_1 P_2$ where $P_1$ is not the longest palindromic prefix $Q_1$ of $W$, then $P_1$ is a proper border of some palindromic prefix $Q \sqsubseteq W$, forcing $Q$ to have period $d = |Q| - |P_1|$ so that $Q \setminus P_1$ overlaps $P_2$. By periodicity alignment (proven in Wave 3A Frontier 3A-II), testing the **top 2 nodes ($u$ and $\operatorname{fail}[u]$) of each of the $O(\log|W|)$ `slink` chains** of the longest palindromic prefix of $W$ and longest palindromic suffix of $W$ is **100% sufficient** to find a valid 2-palindrome cut!
+
+3. **$\theta$-Palindromes (`POI XVII Antisymmetry`)**:
+   Given an involution $\theta : \Sigma \to \Sigma$ ($\theta(\theta(c)) = c$), a word $W$ is a $\theta$-palindrome if $W = \theta(W^R)$. Because reflecting across a $\theta$-palindromic center applies $\theta$ twice ($\theta^2 = \operatorname{id}$), a $\theta$-palindromic suffix of a $\theta$-palindrome reflects to an exact $\theta$-palindromic prefix! When $\theta$ is fixed-point-free (e.g., $\theta(\texttt{0}) = \texttt{1}$), only **even-length** $\theta$-palindromes exist.
+
+---
+
+### 4.3 Reverse-Engineering Scratchpad & Implementation Contract: `[徐毅 2014]` `slink` Telescoping Range Distinct Palindromes
+
+```cpp
+// Offline Range Distinct Palindromes in O((N + Q) log^2 N) time and O(N) space:
+// 1. Build PAM(S) with fail[u], diff[u], slink[u], and Fail-Tree Euler tour [dfn[u], out[u]].
+// 2. Maintain SegMax over [1 .. tot] for max right endpoint in fail-subtree, and Fenwick BIT over [1 .. N].
+
+void sweep_range_distinct_palindromes(int N, const std::vector<Query>& queries) {
+    // Process r = 1 .. N after building PAM and Euler tour [dfn, out] of fail-tree:
+    for (int r = 1; r <= N; ++r) {
+        for (int u = pos_at[r]; u >= 2; u = slink[u]) {
+            int prev_r = seg_max.query(1, 1, tot, dfn[u], out[u]);
+            if (prev_r > 0) {
+                bit.add(prev_r - len[u] + 1, -1); // -1 at old start of chain head u_1
+            }
+            int bot_len = len[slink[u]] + diff[u]; // Length of bottom node u_k in chain
+            bit.add(r - bot_len + 1, +1);          // +1 at new start of bottom node u_k
+        }
+        seg_max.update(1, 1, tot, dfn[pos_at[r]], r);
+        for (auto& q : queries_at_r[r]) {
+            ans[q.id] = bit.query(r) - bit.query(q.l - 1);
+        }
+    }
+}
+```
+
+### 4.4 Summary of Boundary Pitfalls (`BP-17` / `BP-17-01` to `BP-17-04`)
+
+1. **`BP-17-01` / `BP-3A-05` (Including $c_L$ or $c_R$ Inside the Unclipped RMQ Range)**: In Theorem 17.1, the Sparse Table RMQ must query the **open** interval $(c_L, c_R)$ (`[c_L + 1, c_R - 1]`), because $c_L$ and $c_R$ themselves may overflow $[l, r]$ in $S[1..N]$.
+2. **`BP-17-02` / `BP-3A-06` (Using $m_{\text{odd}}$ for Even Centers)**: Always split even centers $d_2[c]$ at $m_{\text{even}} = \lfloor(l + r - 1)/2\rfloor$, never $m_{\text{odd}} = \lfloor(l + r)/2\rfloor$ (§2 counterexample `S = aaaa, [1, 3]`).
+3. **`BP-17` / `BP-17-03` / `BP-3A-07` (Reading Scalar `last_end[u]` Instead of Subtree Max `SegMax.query(dfn[u], out[u])`)**: In Theorem 17.3, chain head $u_1$ may have last occurred as an internal node of a longer palindrome $w$ in $u_1$'s `fail`-subtree without $u_1$ itself being a chain head at that earlier step! Always query the `fail`-subtree maximum.
+4. **`BP-17-04` / `BP-3A-08` (Testing Only 1 Node per `slink` Chain on 2-Palindromes)**: On $W = \texttt{bababcba}$, $Q_1 = \texttt{babab}$ and $P_1 = \texttt{bab}$ lie in the *same* `slink` chain; always test both $u$ and $\operatorname{fail}[u]$ in each chain.
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Ladder (`Ch 17`)
+
+### Tier 1 — Stepping Stone (`W3A-05`, `W3A-03`)
+
+#### Problem 17.1 (`W3A-05`) — `[POI XVII] Antisymmetry` (Luogu P3501)
+
+- **Mathematical Statement**: Given a binary string $S[1..N] \in \{\texttt{0}, \texttt{1}\}^N$, a non-empty substring $W = S[l..r]$ is *antisymmetric* if $W$ equals the bit-flipped reversal of $W$ (i.e., $S[l + t] \ne S[r - t]$ for all $0 \le t \le r - l$). Count the total number of antisymmetric substrings of $S$.
+- **Constraints**: $1 \le N \le 5 \times 10^5$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Can an antisymmetric substring ever have **odd** length? If $r - l + 1$ were odd, the middle character $m = (l + r)/2$ would have to satisfy $S[m] \ne S[m]$, which is impossible!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Let $\theta(\texttt{0}) = \texttt{1}$ and $\theta(\texttt{1}) = \texttt{0}$. Because $\theta(\theta(c)) = c$ ($\theta^2 = \operatorname{id}$), reflecting an antisymmetric substring inside a larger antisymmetric substring applies $\theta$ twice and produces another valid antisymmetric substring (§4.2)!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Run even-center Manacher for $c = 1 \dots N - 1$ with match condition $S[c - k + 1] \ne S[c + k]$, and output $\sum_{c=1}^{N-1} d_2[c]$ in $O(N)$ time!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-05`)"}
+
+1. **Diagnostic Signal**: $O(N^2)$ center expansion TLEs at $N = 5 \times 10^5$.
+2. **Combinatorial Word Invariant**:
+   - Because $\theta$ has no fixed points, every $\theta$-palindrome has even length $2k$ centered at the gap between $c$ and $c + 1$ ($1 \le c < N$).
+   - Suppose center $M$ has antisymmetric radius $R_M$, so $S[M - t + 1] = \theta(S[M + t])$ for $1 \le t \le R_M$. For any center $c \in (M, M + R_M)$ and mirror center $c' = 2M - c$, any offset $k$ inside the box satisfies
+     $$S[c - k + 1] = \theta\bigl(S[2M - c + k]\bigr) \quad \text{and} \quad S[c + k] = \theta\bigl(S[2M - c - k + 1]\bigr).$$
+     Since $\theta$ is an involution ($\theta^2 = \operatorname{id}$), $S[c - k + 1] = \theta(S[c + k]) \iff S[c' - k + 1] = \theta(S[c' + k])$. That is, the Manacher mirror initialization `d2[c] = min(d2[2*M - c], R - c)` holds **verbatim**!
+
+3. **Algorithmic Compilation**:
+   - Run the standard $O(N)$ even-center Manacher loop replacing `S[c - k + 1] == S[c + k]` with `S[c - k + 1] != S[c + k]`, and sum `d2[c]` in a `long long` accumulator. Time: $O(N)$.
+4. **Broken-Invariant Counterexample**: Do not negate `d2[2*M - c]` during mirror reflection—double involution $\theta^2 = \operatorname{id}$ means the mirrored substring is already antisymmetric, not symmetric!
+:::
+
+---
+
+#### Problem 17.2 (`W3A-03`) — `CF 1827C — Palindrome Partition`
+
+- **Mathematical Statement**: A string is *beautiful* if it can be partitioned into one or more non-empty **even-length** palindromes. Given a string $S[1..N]$, count how many substrings $S[l..r]$ of $S$ are beautiful.
+- **Constraints**: $1 \le N \le 5 \times 10^5$, $|\Sigma| = 26$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+A beautiful substring $W$ can have multiple partitions into even-length palindromes (e.g., $\texttt{aaaa} = \texttt{aa} + \texttt{aa}$ or $\texttt{aaaa}$). How do we assign every beautiful substring a **unique canonical last piece** so we can count via $dp[r] = 1 + dp[r - L_r]$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Invoke the **Greedy Shortest Even-Palindrome Factorization Lemma (§4.2)**: a string $W$ is beautiful if and only if it has a non-empty even-length palindromic suffix, and stripping its **shortest** non-empty even-length palindromic suffix $E_{\min}$ leaves either $\varepsilon$ or another beautiful string!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+In $\operatorname{PAM}(S)$, propagate `min_even[u]` (the shortest positive even-length ancestor on the `fail` tree) top-down (`min_even[u] = (len[u] % 2 == 0 && len[u] > 0 && !min_even[fail[u]]) ? len[u] : min_even[fail[u]]`), OR use even Manacher $d_2[c]$ with a stack/DSU to find for each $r$ the **largest center $c < r$** with $c + d_2[c] \ge r$ (giving shortest even suffix length $2(r - c)$). Then $dp[r] = 1 + dp[r - L_r]$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-03`)"}
+
+1. **Diagnostic Signal**: Naive DP over all even palindromic suffixes takes $\Theta(N^2)$ and double-counts substrings with multiple partitions.
+2. **Combinatorial Word Invariant**:
+   - Let $E_{\min}$ be the shortest non-empty even-length palindromic suffix of $W$, and let $E_k$ be the last piece in any valid even-palindrome partition of $W$.
+   - If $|E_k| > |E_{\min}|$, then $E_{\min}$ is a proper suffix of $E_k$. Because both $E_k$ and $E_{\min}$ have even length and $E_{\min}$ is the *shortest* even palindromic suffix, $|E_{\min}| \le |E_k| / 2$ (otherwise $E_{\min}$ and its reflected prefix copy in $E_k$ would overlap on an even-length border of $E_{\min}$ strictly shorter than $E_{\min}$, contradicting minimality of $E_{\min}$!).
+   - Thus $E_k = E_{\min} \cdot M \cdot E_{\min}$ where the middle piece $M$ has even length $|E_k| - 2|E_{\min}| \ge 0$ and is a palindrome! This refines the last piece $E_k$ to end with $E_{\min}$, proving that the greedy choice $E_{\min}$ is always valid and canonical.
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{PAM}(S)$ and maintain `min_even_len[u]`. At each $r = 1 \dots N$, let $L_r = \text{min\_even\_len}[\text{pos}[r]]$. Set $dp[r] = (L_r > 0) \ ? \ (1 + dp[r - L_r]) : 0$, and sum $dp[r]$. Time: $O(N)$.
+4. **Broken-Invariant Counterexample**: Taking the *longest* even-length palindromic suffix instead of the *shortest* fails on $W = \texttt{abccbababa}$ (length $10$, which is beautiful via $\texttt{abccba} \mid \texttt{baba}$): its **shortest** even-length palindromic suffix is $E_{\min} = W[7..10] = \texttt{baba}$ (length $4$), leaving the even palindrome $W[1..6] = \texttt{abccba}$; whereas its **longest** even-length palindromic suffix is $Q = W[5..10] = \texttt{bababa}$ (length $6$), which swallows $W[5..6] = \texttt{ba}$ from the first piece and leaves the unpartitionable prefix $W[1..4] = \texttt{abcc}$! Always strip the **shortest** even-length palindromic suffix $E_{\min}$.
+:::
+
+---
+
+### Tier 2 — Intermediate (`W3A-11`, `W3A-19` & `W3A-26`)
+
+#### Problem 17.3 (`W3A-11`) — `Online Range Palindromic Substring Multiplicity via Midpoint Chairman Tree`
+
+- **Mathematical Statement**: Given $S[1..N]$ and $Q$ online queries $[l, r]$ (encrypted with `last_ans`), output for each query the total number of non-empty palindromic substrings (with multiplicity) contained inside $S[l..r]$.
+- **Constraints**: $1 \le N, Q \le 3 \times 10^5$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Encrypted online queries prevent offline sorting by $l$ or $r$. How do we evaluate the sums in **Theorem 17.2 (Midpoint Decoupling Identity)** online in $O(\log N)$ time?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Split odd centers at $m_{\text{odd}} = \lfloor(l + r)/2\rfloor$ and even centers at $m_{\text{even}} = \lfloor(l + r - 1)/2\rfloor$. On $[l, m_{\text{odd}}]$, center $c$ contributes $d_1[c]$ if $L_1(c) := c - d_1[c] + 1 \ge l$, and contributes $c - l + 1$ if $L_1(c) < l$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Build a Persistent Segment Tree (`Chairman Tree`) over $c = 1 \dots N$ indexed by $L_1(c)$ (and symmetrically $R_1(c) = c + d_1[c] - 1$, $L_2(c)$, $R_2(c)$), storing $(\sum d_i[c],\, \sum c,\, \sum 1)$—OR use **Theorem 17.1**'s $c_L, c_R$ unclipped interior range $(c_L, c_R)$ with static prefix sums in **$O(1)$ time and $O(N)$ space**!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-11`)"}
+
+1. **Diagnostic Signal**: Each center $c \in [l, r]$ is clipped by $\min(d_1[c], c - l + 1, r - c + 1)$.
+2. **Combinatorial Word Invariant**:
+   - **Method A ($O(\log N)$ Midpoint Chairman Tree)**: By **Theorem 17.2**, on $c \in [l, m_{\text{odd}}]$, $\min(d_1[c], c - l + 1)$ depends only on whether $L_1(c) \ge l$; on $c \in [m_{\text{odd}} + 1, r]$, $\min(d_1[c], r - c + 1)$ depends only on whether $R_1(c) \le r$. Symmetrically for even centers split at $m_{\text{even}} = \lfloor(l + r - 1)/2\rfloor$.
+   - **Method B ($O(1)$ Two-Boundary Unclipping + Prefix Sums)**: By **Theorem 17.1**, in the $(2N - 1)$-center Manacher array, let $c_L = \min(2r - 1, \operatorname{rightmost\_reach}[2l - 1])$ and $c_R = \max(2l - 1, \operatorname{leftmost\_reach}[2r - 1])$. Every center $c \in (c_L, c_R)$ is 100% unclipped (contributing $\lfloor(\operatorname{len}_{\text{man}}[c] + 1)/2\rfloor$), while every center $c \in [2l - 1, c_L]$ is mirrored inside the palindrome $P_L = S[l .. l + |P_L| - 1]$ (where centers in the left half of $P_L$ equal the prefix sum of palindromes of $P_L$)!
+3. **Algorithmic Compilation**:
+   - Build two Chairman Trees (for $L_1/L_2$ and $R_1/R_2$) in $O(N \log N)$ time and space, and query $[l, m_{\text{odd}}]$, $[m_{\text{odd}} + 1, r]$, $[l, m_{\text{even}}]$, $[m_{\text{even}} + 1, r - 1]$ in $O(\log N)$ time per query.
+4. **Broken-Invariant Counterexample (`BP-17-02`)**: Always use $m_{\text{even}} = \lfloor(l + r - 1)/2\rfloor$ for even centers (`S = aaaa, [1, 3]`).
+:::
+
+---
+
+#### Problem 17.4 (`W3A-19` & `W3A-26`) — `Online Rich Substring Range Queries & Online 2-Palindrome Recognition`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ and $Q$ online queries $[l, r]$:
+  - **Part A (`Rich Substring Test`, `W3A-26`)**: Determine in $O(1)$ time whether $S[l..r]$ is a **Rich Word** (contains $r - l + 1$ non-empty distinct palindromes), and compute the total number of rich substrings of $S$.
+  - **Part B (`Online 2-Palindrome Cut`, `W3A-19`)**: Determine in $O(\log(r - l))$ time whether $S[l..r]$ can be split into two non-empty palindromes $S[l..r] = P_1 P_2$.
+- **Constraints**: $1 \le N, Q \le 3 \times 10^5$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+For Part A, do not build a 2D range-distinct-palindrome data structure! By **Theorem 17.4 (Factor Closure of Rich Words)**, what happens to the minimum valid left endpoint $L_{\text{rich}}[r]$ as $r$ increases?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+
+- **Part A**: Every substring of a rich word is rich, so $L_{\text{rich}}[1] \le L_{\text{rich}}[2] \le \dots \le L_{\text{rich}}[N]$ is **monotone**, and $S[l..r]$ is rich $\iff l \ge L_{\text{rich}}[r]$!
+- **Part B**: By the **Top-2-of-Each-AP Theorem (§4.2)**, if $S[l..r] = P_1 P_2$, then either $P_1$ is one of the top 2 nodes of a `slink` chain of the longest palindromic prefix of $S[l..r]$, or $P_2$ is one of the top 2 nodes of a `slink` chain of the longest palindromic suffix of $S[l..r]$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+
+- **Part A**: Run the Sliding-Window Queue PAM ([Chapter 16](ch16-deterministic-tree-deque-pam.qmd)) over $r = 1 \dots N$, popping $L$ while `active_distinct < r - L + 1` to record $L_{\text{rich}}[r] = L$ in $O(N)$ time, and answer each query via `l >= L_rich[r]` in $O(1)$ time!
+- **Part B**: Lift $\text{first}[l]$ in $\operatorname{PAM}(S^R)$ and $\text{last}[r]$ in $\operatorname{PAM}(S)$ to length $\le r - l$ using §1.3 `slink` ceiling division, and test the top 2 lengths of each `slink` chain using an $O(1)$ Manacher check on the complementary piece!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-19` & `W3A-26`)"}
+
+1. **Diagnostic Signal**: Part A exploits Factor Closure to reduce 2D distinctness to a 1D monotone pointer; Part B avoids the greedy trap $W = \texttt{bababcba}$.
+2. **Combinatorial Word Invariant**:
+   - **Part A (`W3A-26`)**: By **Theorem 17.4**, $S[l..r]$ is rich iff $|\operatorname{Pal}(S[l..r])| = r - l + 1$, which holds iff $l \ge L_{\text{rich}}[r]$. The total number of rich substrings in $S$ is $\sum_{r=1}^N (r - L_{\text{rich}}[r] + 1)$.
+   - **Part B (`W3A-19`)**: In any split $S[l..r] = P_1 P_2$, if $P_1$ is not the head of a `slink` chain of the longest palindromic prefix $Q_1$ of $S[l..r]$ and not its second node $\operatorname{fail}[u]$, then $Q_1$ has period $d = \operatorname{diff}[u]$ with $\ge 2$ steps overlapping $P_2$, which forces $P_2$'s extension to be captured by the top 2 nodes from the right end $Q_2$.
+3. **Algorithmic Compilation**:
+   - Part A runs in $O(N)$ preprocessing and $O(1)$ query time.
+   - Part B walks $O(\log(r - l))$ `slink` chains from both ends and checks whether the remaining suffix/prefix is a palindrome in $O(1)$ via Manacher ($\operatorname{len}_{\text{man}}[l' + r' - 1] \ge r' - l' + 1$). Total time: $O(\log(r - l))$ per query.
+4. **Broken-Invariant Counterexample (`BP-17-04`)**: On $W = \texttt{bababcba} = \texttt{bab} + \texttt{abcba}$, the longest palindromic prefix is $Q_1 = \texttt{babab}$ ($\operatorname{len}=5$, remainder $\texttt{cba}$ non-pal), while the **second** node in $Q_1$'s `slink` chain is $\operatorname{fail}[Q_1] = \texttt{bab}$ ($\operatorname{len}=3$, remainder $\texttt{abcba}$ pal!).
+:::
+
+---
+
+### Tier 3 — Advanced (`W3A-21`, `W3A-31`, `W3A-33`)
+
+#### Problem 17.5 (`W3A-21`) — `True O(1) Online Range Longest Palindromic Substring via Two-Boundary Unclipping` (`UOJ #103` / `CTSC 2015` Upgrade)
+
+- **Mathematical Statement**: Given a string $S[1..N]$ and $Q$ online queries $[l, r]$, output for each query the maximum length of a palindromic substring contained inside $S[l..r]$ in **worst-case $O(1)$ time per query**.
+- **Constraints**: $1 \le N \le 5 \times 10^5$, $1 \le Q \le 2 \times 10^6$, time limit $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At $Q = 2 \times 10^6$, an $O(\log N)$ binary search per query performs $\approx 3.8 \times 10^7$ Sparse Table lookups and risks TLE. Apply **Theorem 17.1 (§1.4, Two-Boundary Unclipping)**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In the $(2N - 1)$-center Manacher array $T[1 .. 2N - 1]$, let $x_L = 2l - 1$, $x_R = 2r - 1$, $c_L = \min(x_R, \operatorname{rightmost\_reach}[x_L])$, and $c_R = \max(x_L, \operatorname{leftmost\_reach}[x_R])$. Every center $c \in (c_L, c_R)$ is 100% unclipped by $[l, r]$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Precompute $\operatorname{len}_{\text{man}}[1 .. 2N - 1]$, $\operatorname{rightmost\_reach}[1 .. 2N - 1]$, $\operatorname{leftmost\_reach}[1 .. 2N - 1]$ in $O(N)$ time, and build a Sparse Table over $\operatorname{len}_{\text{man}}$ in $O(N \log N)$ time. Answer each query in $O(1)$ via $\max(c_L - x_L + 1,\, x_R - c_R + 1,\, \operatorname{RMQ}(c_L + 1, c_R - 1))$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-21`)"}
+
+1. **Diagnostic Signal**: Eliminating binary search from `Range LPS` requires identifying the exact boundary-clipped centers in $O(1)$ time.
+2. **Combinatorial Word Invariant**:
+   - By **Theorem 17.1**, $c_L$ is the center of the longest palindromic prefix of $S[l..r]$ (clipped length $c_L - x_L + 1$), $c_R$ is the center of the longest palindromic suffix of $S[l..r]$ (clipped length $x_R - c_R + 1$), and every center $c \in (c_L, c_R)$ lies strictly inside $S[l..r]$ without touching $l$ or $r$.
+3. **Algorithmic Compilation**:
+   ```cpp
+   int query_range_lps_O1(int l, int r) {
+       int xL = 2 * l - 1, xR = 2 * r - 1;
+       int cL = std::min(xR, rightmost_reach[xL]);
+       int cR = std::max(xL, leftmost_reach[xR]);
+       int ans = std::max(cL - xL + 1, xR - cR + 1);
+       if (cL + 1 <= cR - 1) ans = std::max(ans, st_rmq(cL + 1, cR - 1));
+       return ans;
+   }
+   ```
+   Preprocessing: $O(N \log N)$; Query: **strict $O(1)$**.
+
+4. **Broken-Invariant Counterexample (`BP-17-01`)**: Querying `st_rmq(cL, cR)` instead of `st_rmq(cL + 1, cR - 1)` includes the unclipped whole-string radius of $c_L$ and $c_R$, which can extend outside $[l, r]$!
+:::
+
+---
+
+#### Problem 17.6 (`W3A-31`) — `LOJ #6071` / `[国家集训队论文 2014 — 徐毅] Range Distinct Palindromes` (`BZOJ 5384`)
+
+- **Mathematical Statement**: Given a string $S[1..N]$ and $Q$ queries $[l, r]$, output for each query the number of **distinct** non-empty palindromic substrings contained in $S[l..r]$.
+- **Constraints**: $1 \le N, Q \le 3 \times 10^5$, $|\Sigma| = 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+This is the canonical application of **Theorem 17.3 (§3.2, Periodic Suffix Telescoping Cancellation)**.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Along each `slink` chain $u_1 \to \dots \to u_k$ on the path from $\text{pos}[r]$ to $r_0$, $\operatorname{start}_{r-1}(u_j) = (r - d) - \operatorname{len}[u_j] + 1 = r - \operatorname{len}[u_{j-1}] + 1 = \operatorname{start}_r(u_{j-1})$ for all $2 \le j \le k$. Thus all internal nodes cancel, leaving only `-1` at $\operatorname{prev\_r}(u_1) - \operatorname{len}[u_1] + 1$ and `+1` at $r - (\operatorname{len}[\operatorname{slink}[u_1]] + \operatorname{diff}[u_1]) + 1$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Sort queries offline by right endpoint $r$, and execute `sweep_range_distinct_palindromes` from §4.3 using an Euler-tour Segment Tree `seg_max` over the PAM `fail` tree and a 1D Fenwick Tree `bit` over $[1..N]$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-31`)"}
+
+1. **Diagnostic Signal**: Naively updating the latest start position of every failure ancestor of $\text{pos}[r]$ takes $\Theta(N^2)$ time on periodic strings.
+2. **Combinatorial Word Invariant**:
+   - By **Theorem 17.3**, every `slink` chain $u_1 \to \dots \to u_k$ collapses to at most $2$ Fenwick Tree point updates: removing the old start position of the chain head $u_1$ (found via the maximum right endpoint $\operatorname{prev\_r}(u_1)$ in $u_1$'s `fail`-subtree) and inserting the new start position of the chain bottom $u_k$ (whose length is $\operatorname{len}[\operatorname{slink}[u_1]] + \operatorname{diff}[u_1]$).
+3. **Algorithmic Compilation**:
+   - Deploy `sweep_range_distinct_palindromes` (§4.3). At each $r \in [1..N]$, there are $\le \lceil \log_2 r \rceil$ chains, each making $1$ Segment Tree query ($O(\log N)$) and $\le 2$ Fenwick updates ($O(\log N)$), followed by $1$ Segment Tree point update at $\operatorname{dfn}[\text{pos}[r]]$. Total time: $O(N \log^2 N + Q \log N)$, space: $O(N + Q)$.
+4. **Broken-Invariant Counterexample (`BP-17-03`)**: On $S = \texttt{abacaba}$, palindrome $\texttt{a}$ ($u_1$) occurs at $r = 3$ as a proper border of $\texttt{aba}$ without $\text{pos}[3]$ being $u_1$ itself. Querying `seg_max.query(dfn[u_1], out[u_1])` finds $r = 3$, whereas a scalar `last_at_node[u_1]` would read $1$ and corrupt the Fenwick tree!
+:::
+
+---
+
+#### Problem 17.7 (`W3A-33`) — `Unique Palindromic Factorization Existence, Counting & Minimum Palindromic Length`
+
+- **Mathematical Statement**: Given $S[1..N]$, compute for every prefix $S[1..r]$ ($1 \le r \le N$):
+  1. Its **Minimum Palindromic Length** $\operatorname{PL}(S[1..r])$ (the minimum number of palindromes in a factorization $S[1..r] = P_1 \cdots P_k$);
+  2. Whether this minimum-piece palindromic factorization is **unique** (and the number of such minimal factorizations modulo $10^9 + 7$);
+  3. The minimum number of pieces in a palindromic factorization using an **even** number of pieces vs. an **odd** number of pieces.
+- **Constraints**: $1 \le N \le 5 \times 10^5$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Unlike Problem 17.2 (`CF 1827C`, where only even-length palindromes were allowed), here **both odd-length and even-length** palindromes are allowed, so greedy fails (`"abacaba"` has length 1, while greedy shortest takes 7).
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Recall the **Series-Link (`slink`) Shift-Overlap Identity from [Chapter 04](ch04-series-link-dp-kmp-pam.qmd)**:
+$$\mathcal{I}(u, r) = \mathcal{I}(\operatorname{fail}[u],\, r - d) \;\sqcup\; \bigl\{\,r - \operatorname{len}[\operatorname{slink}[u]] - d\,\bigr\}.$$
+This identity holds over **any commutative semiring**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Define a semiring state `Val = {min_len, ways_mod}` (where `combine(A, B)` keeps the smaller `min_len` and sums `ways_mod` on ties), and for Question 3 store a 2-tuple `(Val even_pieces, Val odd_pieces)`. Crucially, store **raw** prefix DP states inside `g[u]`, and only add `+1` (and swap even/odd parity) when folding `g[u]` into `dp[r]`!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-33`)"}
+
+1. **Diagnostic Signal**: All-palindrome partition DP requires optimizing over all palindromic suffixes of $S[1..r]$ in $O(\log r)$ time per step.
+2. **Combinatorial Word Invariant**:
+   - By [Chapter 04](ch04-series-link-dp-kmp-pam.qmd), for each `slink` chain head $u$ at step $r$, `g[u]` aggregates the raw DP states `dp[l]` over all left endpoints $l = r - \operatorname{len}[v]$ in the chain $(\operatorname{slink}[u], u]$ via:
+     $$g[u] \gets \operatorname{dp}\bigl[r - \operatorname{len}[\operatorname{slink}[u]] - \operatorname{diff}[u]\bigr] \;\oplus\; \bigl(\operatorname{diff}[u] == \operatorname{diff}[\operatorname{fail}[u]] \ ? \ g[\operatorname{fail}[u]] : \mathbb{0}\bigr).$$
+
+   - Here $\oplus$ is the $(\min, +)$ semiring operation on pairs `(cost, count)`.
+3. **Algorithmic Compilation**:
+   - Maintain `dp[0..N]` and `g[0..tot]`, where each entry holds `pair<Node, Node>` for `(even_pieces, odd_pieces)`.
+   - At step $r$, loop `u = pos[r]` via `u = slink[u]`: update `g[u]`, then fold `{g[u].odd + 1, g[u].even + 1}` into `dp[r]`. Time: $O(N \log N)$, space: $O(N)$.
+4. **Broken-Invariant Counterexample**: Never add `+1` *before* storing into `g[u]`—if you do, `g[fail[u]]` will add `+1` a second time when reused at step $r$!
+:::
+
+---
+
+### Tier 4 — Mastery (`W3A-32`, `W3A-38`)
+
+#### Problem 17.8 (`W3A-32`) — `Weighted & Length-Sum Range Distinct Palindromes via PAM slink Difference Progression & LCT access`
+
+- **Mathematical Statement**: Given $S[1..N]$ where each distinct palindrome $P$ carries weight $w(P) = |P|^K$ (for $K \in \{1, 2\}$) or an arbitrary user-assigned weight $w(u)$ on its PAM node $u$, answer $Q$ queries $[l, r]$ asking for the sum of weights $\sum_{P \in \operatorname{Pal}(S[l..r])} w(P)$ over all **distinct** palindromic substrings $P$ occurring inside $S[l..r]$.
+- **Constraints**: $1 \le N, Q \le 10^5$, time limit $2.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+When $w(u_j) \ne w(u_{j-1})$, the `+w(u_{j-1})` and `-w(u_j)` updates at the overlapping start position $\operatorname{start}_{r-1}(u_j) = \operatorname{start}_r(u_{j-1})$ in **Theorem 17.3** no longer cancel to zero! What is their net remainder?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Look at the two regimes in §3.3:
+
+1. **When $w(u) = \operatorname{len}[u]$**: For every $2 \le j \le k$ in a `slink` chain of step $d = \operatorname{diff}[u_1]$, the net change at position $p_j = r - \operatorname{len}[u_{j-1}] + 1$ is
+   $$w(u_{j-1}) - w(u_j) = \operatorname{len}[u_{j-1}] - \operatorname{len}[u_j] = d!$$
+   That is a **constant $+d$** added along an arithmetic progression of starting indices with step $d$!
+
+2. **When $w(u)$ is arbitrary**: On the PAM `fail` tree, running **Link-Cut Tree `access(pos[r])`** ([Chapter 11](ch11-dynamic-sam-lct-stratification.qmd)) partitions the path to the root into $O(\log N)$ solid chains where every node in a solid chain shares the **exact same previous right endpoint $r_{\text{old}}$**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For arbitrary weights $w(u)$, maintain an LCT over the PAM `fail` tree storing for each solid splay tree the sum of weights $W_{\text{sub}}$ on the chain (or for $w(u) = \operatorname{len}[u]$ where start positions $r_{\text{old}} - \operatorname{len}[u] + 1$ are non-contiguous, combine `slink` arithmetic progressions with LCT `access`: inside the intersection of a solid LCT chain and a `slink` chain, all nodes share both $r_{\text{old}}$ AND step $d$, so Theorem 17.3's telescoping applies!).
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-32`)"}
+
+1. **Diagnostic Signal**: Distinct palindrome weighting breaks 0-sum cancellation at intermediate `slink` nodes unless the weight difference $w(u_{j-1}) - w(u_j)$ is structured.
+2. **Combinatorial Word Invariant**:
+   - By **Theorem 17.3**, across a `slink` chain $u_1 \to \dots \to u_k$ of step $d = \operatorname{diff}[u_1]$ at right endpoint $r$, the net point updates to the start-index array $A[1..N]$ are:
+     - $A\bigl[\operatorname{prev\_r}(u_1) - \operatorname{len}[u_1] + 1\bigr] \mathrel{-}= w(u_1)$,
+     - $A\bigl[r - \operatorname{len}[u_k] + 1\bigr] \mathrel{+}= w(u_k)$, and
+     - For $k \ge 2$, at every index $x_j = r - \operatorname{len}[u_j] + 1$ for $1 \le j \le k - 1$ (an arithmetic progression of indices with step $d$ and residue $(r - \operatorname{len}[u_1] + 1) \bmod d$), $A[x_j] \mathrel{+}= w(u_j) - w(u_{j+1})$!
+   - When $w(u) = \operatorname{len}[u]$, $w(u_j) - w(u_{j+1}) = d$. Moreover, a range sum query $\sum_{x=l}^r A[x]$ after an AP addition $+d$ on $\{a, a + d, \dots, b\}$ simply counts how many terms of the AP fall in $[l, r]$—which is a **linear function of $l$** when tracked on a Segment Tree over endpoints!
+   - Specifically, why did `slink` telescoping (`Theorem 17.3`) only leave `+1` at the bottom node $u_k$ at $r$ and `-1` at the top node $u_1$ at $\operatorname{prev\_r}(u_1)$ in the unweighted case? Because at step $r$, $u_1, \dots, u_{k-1}$ were shifted from $r - d$ to $r$!
+   - When $w(u) = \operatorname{len}[u]$, storing at each palindrome's latest start position $s_u = \operatorname{last\_end}(u) - \operatorname{len}[u] + 1$ its weight $\operatorname{len}[u]$ shifts $u_j$ ($2 \le j \le k$) from $r - d$ to $r$, moving weight $\operatorname{len}[u_j]$ from $(r - d) - \operatorname{len}[u_j] + 1 = r - \operatorname{len}[u_{j-1}] + 1$ to $r - \operatorname{len}[u_j] + 1$, which increases each of the $k - 1$ positions $r - \operatorname{len}[u_1] + 1, \dots, r - \operatorname{len}[u_{k-1}] + 1$ by $+d$.
+   - For general weights $w(u)$, running LCT `access(pos[r])` on the PAM `fail` tree decomposes the path to the root into $O(\log N)$ solid splay trees where every node shares a uniform previous right endpoint $r_{\text{old}}$, and since every splay tree decomposes into $O(\log N)$ `slink` chains, we maintain the exact weights in $O((N + Q)\log^2 N)$ time!
+3. **Algorithmic Compilation**:
+   - For $w(u) = 1$ or polynomial $w(u) = \operatorname{len}[u]^K$, use `sweep_range_distinct_palindromes` (§4.3) or LCT `access` on the PAM `fail` tree. Time: $O((N + Q)\log^2 N)$.
+4. **Broken-Invariant Counterexample**: Do not assume that solid chains in LCT on the PAM `fail` tree map to contiguous intervals of start positions $r_{\text{old}} - \operatorname{len}[u] + 1$—unlike SAM (where a state covers all lengths in $[\operatorname{len}[\operatorname{link}[u]] + 1, \operatorname{len}[u]]$), PAM states have discrete lengths separated by $\operatorname{diff}[u]$! Always use `slink` telescoping to bridge the gaps.
+:::
+
+---
+
+#### Problem 17.9 (`W3A-38`) — `Online Encrypted Range Distinct Palindromes with Persistent Segment Tree & slink Jumps`
+
+- **Mathematical Statement**: Given a string $S[1..N]$, answer $Q$ **strictly online (encrypted)** queries $(l_i \oplus \text{last\_ans},\, r_i \oplus \text{last\_ans})$ asking for the number of distinct non-empty palindromic substrings in $S[l..r]$.
+- **Constraints**: $1 \le N, Q \le 2 \times 10^5$, $|\Sigma| = 26$, memory limit $512\text{ MB}$, time limit $2.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Because queries are encrypted online, we cannot answer them during the offline $r = 1 \dots N$ Fenwick sweep of Problem 17.6 (`LOJ #6071`). How many point updates does step $r$ of **Theorem 17.3** perform?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 17.3**, step $r$ performs **at most $2 \lceil \log_2 r \rceil$ point updates** (one `-1` and one `+1` per `slink` chain)! Across all $r = 1 \dots N$, the total number of point updates is bounded by $2 N \log_2 N$ (and in practice $\le 3N$)!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Replace the Fenwick Tree `bit` in `sweep_range_distinct_palindromes` (§4.3) with a **Persistent Segment Tree (`root[1..N]`)**! During preprocessing $r = 1 \dots N$, apply the `-1` and `+1` point updates to create version `root[r]`, then answer each online query $(l, r)$ in **$O(\log N)$ time** by querying the suffix sum `[l, r]` in `root[r]`!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-38`)"}
+
+1. **Diagnostic Signal**: Online queries $[l, r]$ require random access to the state of the sweep at any historical right endpoint $r \in [1..N]$.
+2. **Combinatorial Word Invariant**:
+   - Because **Theorem 17.3** collapses each `slink` chain update to at most 2 point updates, the total number of point modifications across the entire sweep $r = 1 \dots N$ is $U \le 2 N \log_2 N$.
+   - Persisting a Segment Tree over $[1..N]$ across $U$ point updates allocates at most $U \lceil \log_2 N \rceil = O(N \log^2 N)$ nodes (and if nodes created during the same step $r$ are modified in-place when `node_id > prev_tot`, memory drops by another $2\times$!).
+3. **Algorithmic Compilation**:
+   - Preprocessing ($r = 1 \dots N$):
+     - Set `root[r] = root[r - 1]` and `prev_tot = pst_tot`.
+     - For `u = pos[r]; u >= 2; u = slink[u]`:
+       - Query `prev_r = seg_max.query(1, 1, tot, dfn[u], out[u])`.
+       - If `prev_r > 0`, `root[r] = pst_add(root[r], 1, N, prev_r - len[u] + 1, -1, prev_tot)`.
+       - `root[r] = pst_add(root[r], 1, N, r - (len[slink[u]] + diff[u]) + 1, +1, prev_tot)`.
+     - Update `seg_max.update(1, 1, tot, dfn[pos[r]], r)`.
+   - Online Query $(l, r)$: Return `pst_query(root[r], 1, N, l, r)` in $O(\log N)$ time!
+   - Complexity: $O(N \log^2 N)$ preprocessing time and space, **$O(\log N)$ worst-case time per online query**.
+4. **Broken-Invariant Counterexample**: Using in-place mutation `if (u > prev_tot)` inside `pst_add` is 100% safe because `root[r]` is only queried *after* all `slink` chains for step $r$ have finished updating `root[r]`, and saves $> 50\%$ of persistent segment tree nodes!
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Decision Checklist: When to Apply Chapter 17 Machinery
+
+| Contest Signal / Query Structure | Invariant & Engine to Invoke | Complexity |
+| :--- | :--- | :--- |
+| Online Range LPS on $S[l..r]$ ($Q \le 5 \times 10^5$) | Single binary search on $k$ + 2 Sparse Tables (§1.2) | $O(\log(r - l))$ / query |
+| Ultra-fast Online Range LPS ($Q \le 5 \times 10^6$) | Two-Boundary Unclipping $c_L, c_R$ + 1 RMQ (**Theorem 17.1**) | **True $O(1)$ / query** |
+| Longest palindromic prefix/suffix of $S[l..r]$ in $O(N)$ RAM | Closed-form `slink` ceiling division (§1.3) | $O(\log N)$ / query |
+| Range total palindromes (with multiplicity) in $S[l..r]$ | Midpoint Decoupling $m_{\text{odd}}$ vs. $m_{\text{even}}$ (**Theorem 17.2**) | $O(\log N)$ / query |
+| Offline Range Distinct Palindromes (`LOJ #6071`) | `[徐毅 2014]` `slink` Periodic Telescoping (**Theorem 17.3**) | $O((N+Q)\log^2 N)$ |
+| Online Encrypted Range Distinct Palindromes | `slink` Telescoping + Persistent Segment Tree (`Problem 17.9`) | $O(\log N)$ / query |
+| Test if $S[l..r]$ is a Rich Word ($|\operatorname{Pal}(W)| = |W|$) | Factor Closure $l \ge L_{\text{rich}}[r]$ via Queue PAM (**Theorem 17.4**) | $O(N)$ prep, **$O(1)$ / query** |
+| Even-length palindrome partition (`CF 1827C`) | Greedy shortest even palindromic suffix `min_even[u]` (§4.2) | $O(N)$ |
+| Online substring 2-palindrome test ($S[l..r] = P_1 P_2$) | Top 2 nodes of each `slink` chain from $l$ and $r$ (§4.2, `BP-17-04`) | $O(\log(r - l))$ / query |
+
+### 6.2 Part IV Synthesis & Transition to Blind Checkpoint IV (`CP-IV`)
+Across **Part IV (`Ch 15`–`Ch 17`)**, we unified internal substring queries for both **borders/periods** ([Chapter 15](ch15-internal-pattern-matching-borders.qmd)) and **palindromes** ([Chapters 16](ch16-deterministic-tree-deque-pam.qmd)–17). Before advancing to **Part V (Algebraic/FFT Matching, $k$-Mismatch, Structural Isomorphism & Grammar SLPs)**, test your mastery on **[Blind Checkpoint IV (`CP-IV`)](../checkpoints/cp04-part4-ipm-deque-range-palindromes.qmd)**—featuring unspoiled diagnostic problems designed to test whether you can distinguish non-hereditary Range Border queries (`Ch 15`) from center-hereditary Range LPS queries (`Ch 17`), and Deque PAM maintenance (`Ch 16`) from `slink` Telescoping (`Ch 17`).

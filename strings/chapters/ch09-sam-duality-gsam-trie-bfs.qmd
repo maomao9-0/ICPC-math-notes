@@ -1,0 +1,670 @@
+---
+title: "Chapter 09: SAM ↔ ST(S^R) Blumer–Crochemore Duality and 3-Case Trie-BFS Generalized SAM (广义 SAM)"
+subtitle: "Part III · Suffix Automata, Suffix Trees, Dominant Pairs & Bi-Directional Suffix Structures — Endpos Laminar Hierarchy, Reversal Isomorphism, Zero-Length Ghost Clones, and the Θ(V²) Trie-DFS Counterexample"
+---
+
+::: {.callout-note title="Prerequisites & Learning Objectives"}
+**Prerequisites**: Familiarity with standard single-string Suffix Automaton (`SAM`) incremental construction in $O(N\sigma)$ time, Suffix Arrays (`SA`, `rk`, `height`) ([`Ch 07`](ch07-lyndon-arrays-cartesian-trees.qmd)), and Tree Lowest Common Ancestors (`LCA`). Standard single-string SAM construction templates are assumed in the reader's library.
+
+**Learning Objectives**:
+
+1. **Master the Laminar $\operatorname{endpos}$ Hierarchy (`Lemma 9.1`)**: Prove why right-context equivalence partitions all substrings of $S[1..N]$ into $\le 2N - 1$ states, each spanning a contiguous suffix-length interval $[\operatorname{len}(\operatorname{link}(u)) + 1, \operatorname{len}(u)]$.
+2. **Apply the Blumer–Crochemore Reversal Duality (`Theorem 9.2`)**: Translate between the Suffix Link Tree $\mathcal{T}_{\text{link}}(\operatorname{SAM}(S))$ and the compacted Suffix Tree $\operatorname{ST}(S^R)$ of the reversed string, converting forward suffix `LCP` queries on $S$ into Link-Tree `LCA` queries on $\operatorname{SAM}(S^R)$.
+3. **Eliminate the Zero-Length Ghost Clone Bug (`Counterexample 9.3`)**: Trace why calling a single-string `extend(c)` routine after resetting `last = 1` on $\mathcal{S} = \{\texttt{ab}, \texttt{b}\}$ creates an unreachable state with $\operatorname{len}(u) = \operatorname{len}(\operatorname{link}(u))$ that corrupts $\operatorname{endpos}$ subtree sums, and fix it with the **3-Case `extend_gsam(p, c)` Invariant**.
+4. **Prove the Binary-Alphabet $\Theta(V^2)$ Trie-DFS Lower Bound vs. $O(V\sigma)$ Trie-BFS Theorem (`Theorem 9.4`)**: Construct the compressed Trie family $\{\texttt{a}^k\texttt{b} \mid 1 \le k \le m\}$ ($V = 2m+1$) where depth-first traversal performs $\Theta(V^2)$ pointer redirections, and prove why breadth-first traversal restores strict $O(V\sigma)$ worst-case complexity.
+:::
+
+---
+
+## 1. Structural Anatomy of $\operatorname{SAM}(S)$ & Blumer–Crochemore Reversal Duality
+
+### 1.1 Diagnostic Signal: Why Black-Box Single-String SAM Breaks on Suffix-LCP & Multi-String Tasks
+
+When competitive programmers treat the Suffix Automaton $\operatorname{SAM}(S)$ as a black-box substring dictionary, two immediate structural mismatches appear:
+
+1. **The Left-vs.-Right Extension Asymmetry (`LCSuf` vs. `LCP`)**:
+   In $\operatorname{SAM}(S)$, walking forward along DAG transition edges $\delta(u, c)$ appends a character on the **right** ($w \to wc$), whereas walking upward along suffix links $\operatorname{link}(u)$ strips characters from the **left** ($cw \to w$). Consequently, the Lowest Common Ancestor (`LCA`) of two prefix states $\operatorname{pos}_S[i]$ and $\operatorname{pos}_S[j]$ on the Suffix Link Tree $\mathcal{T}_{\text{link}}(\operatorname{SAM}(S))$ computes the **Longest Common Suffix (`LCSuf`)** of prefixes $S[1..i]$ and $S[1..j]$—*never* the **Longest Common Prefix (`LCP`)** of suffixes $S[i..N]$ and $S[j..N]$!
+
+2. **The Multi-String Sentinel Explosion**:
+   Given a dictionary of strings $\mathcal{S} = \{S_1, \dots, S_k\}$ with total length $L = \sum_{i=1}^k |S_i|$ (or an explicit compressed Trie $\mathcal{T}$ with $V$ vertices), a naive folklore workaround concatenates them with distinct separators $S_1 \#_1 S_2 \#_2 \cdots \#_{k-1} S_k$. This inflates the alphabet size from $\sigma$ to $\sigma + k - 1$ (blowing up static transition arrays from $O(L\sigma)$ to $\Theta(Lk)$ memory) and creates $\Theta(L^2)$ artificial cross-sentinel substrings that pollute every state's length interval $[\operatorname{len}(\operatorname{link}(u))+1, \operatorname{len}(u)]$.
+
+To resolve both barriers without sentinels or ad-hoc patches, we begin from the exact combinatorial object that each state of $\operatorname{SAM}(S)$ represents.
+
+---
+
+### 1.2 Equivalence Classes of $\operatorname{endpos}$ and the Contiguous Length Interval
+
+Fix a string $S[1..N]$ (1-based closed indexing). For any nonempty substring $w$ of $S$, define its **right-endpoint occurrence set** $\operatorname{endpos}_S(w)$ as the set of all 1-based ending indices where $w$ appears in $S$:
+$$\operatorname{endpos}_S(w) \;=\; \bigl\{\, r \in \{1, 2, \dots, N\} \;\big|\; S[r - |w| + 1 .. r] = w \,\bigr\}.$$
+
+Two nonempty substrings $u$ and $v$ of $S$ are called **right-context equivalent** (written $u \equiv_S v$) if and only if $\operatorname{endpos}_S(u) = \operatorname{endpos}_S(v)$. Every state $x > 1$ of $\operatorname{SAM}(S)$ corresponds bijectively to one nonempty equivalence class $E(x)$ under $\equiv_S$, while the root state $1$ represents the empty word $\varepsilon$ with $\operatorname{endpos}_S(\varepsilon) = \{0, 1, \dots, N\}$ and $\operatorname{len}(1) = 0$.
+
+::: {.callout-important title="Lemma 9.1 (Laminar Nesting of $\operatorname{endpos}$ & Contiguous Suffix-Length Intervals)"}
+Let $u$ and $v$ be nonempty substrings of $S[1..N]$ with $|u| \le |v|$.
+
+1. **Suffix Containment Characterization**: If $\operatorname{endpos}_S(u) \cap \operatorname{endpos}_S(v) \neq \emptyset$, then $u$ is a suffix of $v$ ($u \sqsubseteq_{\text{suf}} v$), and consequently $\operatorname{endpos}_S(v) \subseteq \operatorname{endpos}_S(u)$. Conversely, if $u \not\sqsubseteq_{\text{suf}} v$, then $\operatorname{endpos}_S(u) \cap \operatorname{endpos}_S(v) = \emptyset$.
+2. **Contiguous Length Interval per State**: For every state $x \in \operatorname{SAM}(S)$, let $\operatorname{longest}(x)$ denote the unique longest string in $E(x)$ of length $\operatorname{len}(x) = |\operatorname{longest}(x)|$, and let $\operatorname{shortest}(x)$ denote the unique shortest string in $E(x)$ of length $\operatorname{minlen}(x) = |\operatorname{shortest}(x)|$. Then:
+   - $E(x)$ consists of **precisely** the suffixes of $\operatorname{longest}(x)$ whose lengths lie in the contiguous integer interval $[\operatorname{minlen}(x), \operatorname{len}(x)]$.
+   - For every non-root state $x > 1$, the longest proper suffix of $\operatorname{longest}(x)$ whose $\operatorname{endpos}_S$ set strictly contains $\operatorname{endpos}_S(x)$ has length $\operatorname{minlen}(x) - 1$ and is the longest string of the parent state $\operatorname{link}(x)$. Thus:
+     $$\boxed{\operatorname{minlen}(x) \;=\; \operatorname{len}(\operatorname{link}(x)) + 1, \qquad |E(x)| \;=\; \operatorname{len}(x) - \operatorname{len}(\operatorname{link}(x)).}$$
+
+3. **Linear State and Transition Bounds**: Because the family $\{\operatorname{endpos}_S(x) \mid x \in \operatorname{SAM}(S)\}$ is laminar (any two sets are either disjoint or nested) and seeded by $N$ singleton prefix endpoints $\{1\}, \{2\}, \dots, \{N\}$, the Suffix Link Tree $\mathcal{T}_{\text{link}}(\operatorname{SAM}(S))$ has at most $2N - 1$ states (for $N \ge 2$) and the transition DAG has at most $3N - 4$ directed edges.
+:::
+
+*Proof*:
+For **(1)**, suppose $r \in \operatorname{endpos}_S(u) \cap \operatorname{endpos}_S(v)$. Then both $u$ and $v$ occur in $S$ ending at index $r$: $u = S[r - |u| + 1 .. r]$ and $v = S[r - |v| + 1 .. r]$. Since $|u| \le |v|$, $S[r - |u| + 1 .. r]$ is the length-$|u|$ suffix of $S[r - |v| + 1 .. r]$, so $u \sqsubseteq_{\text{suf}} v$. Once $u$ is a suffix of $v$, any ending position $r' \in \operatorname{endpos}_S(v)$ immediately places $u$ at $S[r' - |u| + 1 .. r']$, proving $\operatorname{endpos}_S(v) \subseteq \operatorname{endpos}_S(u)$.
+
+For **(2)**, if $w_1, w_2 \in E(x)$ have $|w_1| \le |w_2|$, their shared nonempty $\operatorname{endpos}_S$ set forces $w_1 \sqsubseteq_{\text{suf}} w_2$ by (1). For any intermediate suffix $u$ with $w_1 \sqsubseteq_{\text{suf}} u \sqsubseteq_{\text{suf}} w_2$, suffix inclusion gives $\operatorname{endpos}_S(w_2) \subseteq \operatorname{endpos}_S(u) \subseteq \operatorname{endpos}_S(w_1)$. Since $\operatorname{endpos}_S(w_2) = \operatorname{endpos}_S(w_1)$, all three sets are equal, so $u \in E(x)$. Taking $w_2 = \operatorname{longest}(x)$ and $w_1 = \operatorname{shortest}(x)$ shows that $E(x)$ is the contiguous interval of suffixes of $\operatorname{longest}(x)$ of lengths $[\operatorname{minlen}(x), \operatorname{len}(x)]$. Stripping one more character from the left of $\operatorname{shortest}(x)$ produces a suffix $z$ of length $\operatorname{minlen}(x) - 1$ with $\operatorname{endpos}_S(x) \subsetneq \operatorname{endpos}_S(z)$; no longer string can belong to $z$'s equivalence class without being a suffix of $\operatorname{longest}(x)$ of length $\ge \operatorname{minlen}(x)$ (which would force its $\operatorname{endpos}_S$ set to equal $\operatorname{endpos}_S(x)$). Hence $z = \operatorname{longest}(\operatorname{link}(x))$ and $\operatorname{minlen}(x) = \operatorname{len}(\operatorname{link}(x)) + 1$. $\blacksquare$
+
+---
+
+### 1.3 The Canonical Blumer–Crochemore Isomorphism: $\mathcal{T}_{\text{link}}(\operatorname{SAM}(S)) \cong \operatorname{ST}(S^R)$
+
+Why does stripping characters from the left in $S$ mirror a Suffix Tree? Consider the reversed word $S^R = S[N]S[N-1]\cdots S[1]$. An occurrence of substring $w$ ending at position $r$ in $S$ ($S[r - |w| + 1 .. r] = w$) is the exact mirror image of an occurrence of $w^R$ **starting** at position $l' = N - r + 1$ in $S^R$ ($S^R[l' .. l' + |w| - 1] = w^R$).
+
+::: {.callout-important title="Theorem 9.2 (Blumer–Crochemore Reversal Duality)"}
+For any string $S[1..N]$ and its reversal $S^R[1..N]$, the Suffix Link Tree of $\operatorname{SAM}(S)$ is canonically isomorphic to the **compacted Suffix Tree** (the compacted trie of all suffixes, without a terminal $\$$ sentinel unless explicitly appended) of $S^R$:
+$$\boxed{\mathcal{T}_{\text{link}}\bigl(\operatorname{SAM}(S)\bigr) \;\cong\; \operatorname{ST}(S^R) \qquad \text{and} \qquad \mathcal{T}_{\text{link}}\bigl(\operatorname{SAM}(S^R)\bigr) \;\cong\; \operatorname{ST}(S).}$$
+
+Under the second isomorphism $\mathcal{T}_{\text{link}}(\operatorname{SAM}(S^R)) \cong \operatorname{ST}(S)$, let $v_i = \operatorname{pos}_{S^R}[N - i + 1]$ be the prefix state in $\operatorname{SAM}(S^R)$ corresponding to the reversal of suffix $S[i..N]$. Then for every pair of starting indices $1 \le i, j \le N$:
+$$\boxed{\operatorname{LCP}\bigl(S[i..N],\, S[j..N]\bigr) \;=\; \operatorname{len}\!\Bigl(\operatorname{LCA}_{\mathcal{T}_{\text{link}}(\operatorname{SAM}(S^R))}(v_i, v_j)\Bigr).}$$
+:::
+
+*Proof*:
+In the uncompacted Suffix Trie of $S^R$, a node spelling $w^R$ has a set of leaf descendants (and marked prefix nodes) corresponding to the starting positions $\operatorname{startpos}_{S^R}(w^R)$ where $w^R$ occurs as a prefix of a suffix of $S^R$. Under the reflection $l' = N - r + 1$, we have:
+$$\operatorname{startpos}_{S^R}(w^R) \;=\; \bigl\{\, N - r + 1 \;\big|\; r \in \operatorname{endpos}_S(w) \,\bigr\}.$$
+In the compacted Suffix Tree $\operatorname{ST}(S^R)$, a node $w^R$ is kept explicit if and only if right-extending $w^R \to w^R c$ in $S^R$ splits its occurrence set $\operatorname{startpos}_{S^R}(w^R)$ (either because $w^R$ has $\ge 2$ outgoing character branches or because $w^R$ itself is a full suffix of $S^R$). Under reversal, right-extending $w^R \to w^R c$ in $S^R$ is identical to **left-extending** $w \to cw$ in $S$. Therefore, the maximal unary chains compressed into a single edge of $\operatorname{ST}(S^R)$ are precisely the equivalence classes $E(u)$ of substrings sharing identical $\operatorname{endpos}_S(u)$ in $S$, and the explicit parent pointer in $\operatorname{ST}(S^R)$ is $\operatorname{link}(u)$! $\blacksquare$
+
+#### Hand-Checkable Trace on $S = \texttt{abaab}$ ($N = 5$) and $S^R = \texttt{baaba}$
+
+Let us trace all states of $\operatorname{SAM}(\texttt{abaab})$ alongside the compacted Suffix Tree $\operatorname{ST}(\texttt{baaba})$:
+
+```{mermaid}
+flowchart TD
+    subgraph SAM_S["Link Tree of SAM(S = 'abaab') — Strips from LEFT"]
+        R1["u=1: ε<br/>len=0, endpos={0..5}"]
+        U2["u=2: {'a'}<br/>len∈[1,1], endpos={1,3,4}"]
+        U3["u=3: {'b','ab'}<br/>len∈[1,2], endpos={2,5}"]
+        U5["u=5: {'aa'}<br/>len∈[2,2], endpos={4}"]
+        U6["u=6: {'ba','aba'}<br/>len∈[2,3], endpos={3}"]
+        U7["u=7: {'aab','baab','abaab'}<br/>len∈[3,5], endpos={5}"]
+        R1 --> U2
+        R1 --> U3
+        U2 --> U5
+        U2 --> U6
+        U3 --> U7
+    end
+    subgraph ST_SR["Compacted Suffix Tree ST(S^R = 'baaba') — Extends RIGHT"]
+        T1["root: ε<br/>depth=0, startpos={1..6}"]
+        T2["node 'a'<br/>edge 'a' (len 1), startpos={2,3,5}"]
+        T3["node 'ba'<br/>edge 'ba' (len 2), startpos={1,4}"]
+        T5["leaf 'aa'<br/>edge 'a' (len 1), startpos={2}"]
+        T6["leaf 'aba'<br/>edge 'ba' (len 2), startpos={3}"]
+        T7["leaf 'baaba'<br/>edge 'aba' (len 3), startpos={1}"]
+        T1 -->|"a"| T2
+        T1 -->|"ba"| T3
+        T2 -->|"a"| T5
+        T2 -->|"ba"| T6
+        T3 -->|"aba"| T7
+    end
+```
+
+Observe the exact structural correspondence in the table below:
+
+| State $u \in \operatorname{SAM}(\texttt{abaab})$ | Substrings $E(u)$ in $S$ | $[\operatorname{minlen}(u), \operatorname{len}(u)]$ | $\operatorname{endpos}_S(u)$ | Dual Node $u^R \in \operatorname{ST}(\texttt{baaba})$ | Edge Label into $u^R$ | $\operatorname{startpos}_{S^R}(u^R) = \{6 - r\}$ |
+| :---: | :--- | :---: | :---: | :---: | :---: | :---: |
+| $1$ | $\{\varepsilon\}$ | $[0, 0]$ | $\{0,1,2,3,4,5\}$ | $\varepsilon$ (root) | — | $\{1,2,3,4,5,6\}$ |
+| $2$ | $\{\texttt{a}\}$ | $[1, 1]$ | $\{1, 3, 4\}$ | $\texttt{a}$ | $\texttt{a}$ (len $1$) | $\{2, 3, 5\}$ |
+| $5$ | $\{\texttt{aa}\}$ | $[2, 2]$ | $\{4\}$ | $\texttt{aa}$ | $\texttt{a}$ (len $1$) | $\{2\}$ |
+| $6$ | $\{\texttt{ba}, \texttt{aba}\}$ | $[2, 3]$ | $\{3\}$ | $\texttt{aba}$ | $\texttt{ba}$ (len $2$) | $\{3\}$ |
+| $3$ | $\{\texttt{b}, \texttt{ab}\}$ | $[1, 2]$ | $\{2, 5\}$ | $\texttt{ba}$ | $\texttt{ba}$ (len $2$) | $\{1, 4\}$ |
+| $7$ | $\{\texttt{aab}, \texttt{baab}, \texttt{abaab}\}$ | $[3, 5]$ | $\{5\}$ | $\texttt{baaba}$ | $\texttt{aba}$ (len $3$) | $\{1\}$ |
+
+Notice how in $S = \texttt{abaab}$, $\operatorname{endpos}_S(\texttt{b}) = \operatorname{endpos}_S(\texttt{ab}) = \{2, 5\}$ merges $\{\texttt{b}, \texttt{ab}\}$ into state $3$ of length $[1, 2]$, while $\{\texttt{aab}, \texttt{baab}, \texttt{abaab}\}$ share $\operatorname{endpos}_S = \{5\}$ in child state $7$ of length $[3, 5]$; in $\operatorname{ST}(\texttt{baaba})$, the corresponding reversed node $\texttt{ba}$ has $\operatorname{startpos}_{S^R} = \{1, 4\}$ (edge $\texttt{ba}$ of length $2$) and branches into the suffix leaf $\texttt{baaba}$ at starting position $1$ (edge $\texttt{aba}$ of length $3$).
+
+---
+
+## 2. Core Combinatorial Word Invariants — Generalized SAM (`广义 SAM`): Online Reset vs. Offline Trie-BFS & The Zero-Length Ghost Clone Bug
+
+Now suppose we are given a family of strings $\mathcal{S} = \{S_1, S_2, \dots, S_k\}$ (or a Trie $\mathcal{T}$ whose root-to-node paths are the prefixes of $\mathcal{S}$). We want a single minimal automaton $\operatorname{GSAM}(\mathcal{S})$ whose states partition all substrings occurring in $\bigcup_{i=1}^k S_i$ by their multi-string right-endpoint occurrence tuples $\bigl(\operatorname{endpos}_{S_1}(w), \dots, \operatorname{endpos}_{S_k}(w)\bigr)$.
+
+### 2.1 Why Naive `last = 1` Reset + Single-String `extend(c)` Corrupts the Automaton
+
+A widespread competitive programming implementation resets `last = 1` at the start of each string $S_i$ and calls the unguarded single-string `extend(c)` routine. Why does this fail?
+
+In a single string $S$, every call to `extend(c)` appends a character to the **entire prefix read so far**, creating a strictly longer prefix of length $\operatorname{len}(\text{last}) + 1$ that has **never appeared in the automaton before**. Therefore, $\delta(\text{last}, c)$ is guaranteed to be $0$.
+
+When we reset `last = 1` to insert a second string $S_2$ (or step down another branch of a Trie from state $p$), the transition $q = \delta(p, c)$ **may already be non-zero**! Calling single-string `extend(c)` blindly allocates a new state `cur` with $\operatorname{len}(\text{cur}) = \operatorname{len}(p) + 1$ *even when a state representing $\operatorname{longest}(p) + c$ already exists*.
+
+::: {.callout-warning title="Counterexample 9.3 (Explicit Trace of the Zero-Length Ghost Clone Bug on $\mathcal{S} = \{\texttt{ab}, \texttt{b}\}$ — `BP-09`)"}
+Let $\mathcal{S} = \{S_1 = \texttt{ab},\; S_2 = \texttt{b}\}$. Trace the automaton state table under the naive `last = 1` reset vs. the 3-case Generalized SAM:
+
+1. **After inserting $S_1 = \texttt{ab}$ from root $1$**:
+   - State $1$ ($\varepsilon$): $\operatorname{len}(1) = 0, \operatorname{link}(1) = 0, \delta(1, \texttt{a}) = 2, \delta(1, \texttt{b}) = 3$.
+   - State $2$ ($\{\texttt{a}\}$): $\operatorname{len}(2) = 1, \operatorname{link}(2) = 1, \delta(2, \texttt{b}) = 3$.
+   - State $3$ ($\{\texttt{b}, \texttt{ab}\}$): $\operatorname{len}(3) = 2, \operatorname{link}(3) = 1$.
+
+2. **Now reset `last = 1` and insert $S_2[1] = \texttt{b}$ from $p = 1$**:
+   - **Broken Single-String `extend('b')` Execution**:
+     - Allocates `cur = 4` with $\operatorname{len}(4) = \operatorname{len}(1) + 1 = 1$.
+     - Enters `while (p && !ch[p]['b'])`: since $\delta(1, \texttt{b}) = 3 \neq 0$, the loop **terminates in $0$ iterations** with $p = 1$ and $q = \delta(1, \texttt{b}) = 3$.
+     - Checks $\operatorname{len}(q) == \operatorname{len}(p) + 1$: since $\operatorname{len}(3) = 2 > 1$, it splits state $3$ by allocating `clone = 5` with $\operatorname{len}(5) = \operatorname{len}(1) + 1 = 1$, sets $\operatorname{link}(5) = \operatorname{link}(3) = 1$, redirects $\delta(1, \texttt{b}) \leftarrow 5$, and sets $\operatorname{link}(3) = \operatorname{link}(4) = 5$.
+     - Returns `last = cur = 4`, so the caller marks $\operatorname{cnt}_{S_2}[4] \mathrel{+}= 1$.
+   - **Why State $4$ Is a Fatal Ghost State**:
+     - **Zero Length Span**: $\operatorname{len}(4) - \operatorname{len}(\operatorname{link}(4)) = \operatorname{len}(4) - \operatorname{len}(5) = 1 - 1 = 0$. Its length interval is $[\operatorname{len}(5)+1, \operatorname{len}(4)] = [2, 1] = \emptyset$!
+     - **DAG Unreachability vs. Link-Tree Theft**: In the transition DAG, $\delta(1, \texttt{b}) = 5$, while **no transition in the entire DAG points to state $4$** ($\operatorname{in-deg}_{\text{DAG}}(4) = 0$)! Yet $S_2$'s prefix marker was placed on state $4$ instead of state $5$. Any algorithm that walks $S_2$ on the DAG visits state $5$ (where $\operatorname{cnt}_{S_2}$ was not directly marked), while any algorithm that queries state $4$ sees a phantom node representing zero strings!
+:::
+
+---
+
+### 2.2 The 3-Case Generalized SAM Extension Invariant (`extend_gsam`)
+
+When extending an existing GSAM state $p$ by character $c$, we must inspect $q = \delta(p, c)$ **before** allocating any node:
+
+1. **Case 1 ($\delta(p, c) = 0$ — Transition Absent)**:
+   No substring in the current automaton equals $\operatorname{longest}(p) + c$. Execute the standard single-string SAM extension: allocate `cur` with $\operatorname{len}(\text{cur}) = \operatorname{len}(p) + 1$, walk suffix links while $\delta(p', c) = 0$ setting $\delta(p', c) \leftarrow \text{cur}$, and link `cur` to $1$, $q$, or a newly split `clone`. Return `cur`.
+
+2. **Case 2 ($\delta(p, c) = q \neq 0$ and $\operatorname{len}(q) = \operatorname{len}(p) + 1$ — Exact State Match)**:
+   State $q$ already has $\operatorname{longest}(q) = \operatorname{longest}(p) + c$. **Allocate nothing** and return $q$ directly!
+
+3. **Case 3 ($\delta(p, c) = q \neq 0$ and $\operatorname{len}(q) > \operatorname{len}(p) + 1$ — Oversized State Split)**:
+   The string $\operatorname{longest}(p) + c$ of length $\operatorname{len}(p) + 1$ is currently bundled inside state $q$ alongside strictly longer strings (such as $\texttt{ab}$ inside state $3$ of Counterexample 9.3). Because the new prefix of length $\operatorname{len}(p) + 1$ ends here without those longer left-extensions, we must split $q$ at threshold $\operatorname{len}(p) + 1$:
+
+   - Allocate **only ONE state `clone`** (do **not** allocate `cur`!).
+   - Set $\operatorname{len}(\text{clone}) = \operatorname{len}(p) + 1$, copy $\delta(\text{clone}, \cdot) \leftarrow \delta(q, \cdot)$ and $\operatorname{link}(\text{clone}) \leftarrow \operatorname{link}(q)$.
+   - Walk $p' \leftarrow p, \operatorname{link}(p), \dots$ while $\delta(p', c) = q$ and redirect $\delta(p', c) \leftarrow \text{clone}$.
+   - Set $\operatorname{link}(q) \leftarrow \text{clone}$ and **return `clone` directly** as the state representing $\operatorname{longest}(p) + c$!
+
+On $\mathcal{S} = \{\texttt{ab}, \texttt{b}\}$, calling `extend_gsam(1, 'b')` enters **Case 3** ($\delta(1, \texttt{b}) = 3$ with $\operatorname{len}(3) = 2 > 1$), allocates only `clone = 4` ($\operatorname{len}(4) = 1, \operatorname{link}(4) = 1$), sets $\delta(1, \texttt{b}) = 4$ and $\operatorname{link}(3) = 4$, and returns $4$. Every non-root state $u > 1$ strictly satisfies $\operatorname{len}(u) > \operatorname{len}(\operatorname{link}(u))$.
+
+---
+
+## 3. Why Trie-DFS Degrades to $\Theta(V^2)$ on Binary Alphabets vs. Strict $O(V\sigma)$ for Trie-BFS
+
+Suppose the input is given either as:
+
+- **Regime I (Explicit String List)**: $\mathcal{S} = \{S_1, \dots, S_k\}$ with total character length $L = \sum_{i=1}^k |S_i|$, or
+- **Regime II (Compressed Input Trie)**: A rooted Trie $\mathcal{T}$ with $V$ vertices and edge labels in $\Sigma$, where the sum of leaf depths $\sum_{v \in \mathcal{T}} \operatorname{depth}(v)$ can be $\Theta(V^2)$!
+
+A classic trap in Regime II is running a Depth-First Search (`DFS`) over the Trie $\mathcal{T}$ while calling the 3-case `extend_gsam(sam_node[parent], c)`. Even with the 3-case fix, **Trie-DFS degrades to $\Theta(V^2)$ time and work on a binary alphabet $\Sigma = \{\texttt{a}, \texttt{b}\}$**!
+
+::: {.callout-important title="Theorem 9.4 (Exact Complexity Dichotomy: Online String List $O(L\sigma)$ vs. Trie-DFS $\Theta(V^2)$ vs. Trie-BFS $O(V\sigma)$)"}
+1. **Online String List ($L = \sum_{i=1}^k |S_i|$)**: Resetting `last = 1` at the start of each string $S_i$ and calling the 3-case `last = extend_gsam(last, c)` constructs $\operatorname{GSAM}(\mathcal{S})$ in **$O(L\sigma)$ time and $\le 2L$ states**.
+2. **Compressed Trie-DFS Lower Bound ($\Theta(V^2)$ on $\Sigma = \{\texttt{a}, \texttt{b}\}$)**: There exists a binary-alphabet Trie $\mathcal{T}_m$ with $V = 2m + 1$ vertices representing $\mathcal{S}_m = \{\texttt{a}^k\texttt{b} \mid 1 \le k \le m\}$ on which `DFS` calling `extend_gsam` performs **$\frac{m(m+1)}{2} - 1 = \Theta(V^2)$ suffix-link redirections**.
+3. **Compressed Trie-BFS Theorem ($O(V\sigma)$ Worst-Case Time)**: Traversing any Trie $\mathcal{T}$ of $V$ vertices in **Breadth-First Search (`BFS`)** order (non-decreasing Trie depth) constructs $\operatorname{GSAM}(\mathcal{T})$ in **strict $O(V\sigma)$ time and $\le 2V$ states**, and never triggers Case 2 or Case 3 at the entry of `extend_gsam`.
+:::
+
+*Proof*:
+**Part 1 (Online String List $O(L\sigma)$)**:
+Along a single string $S_i$ of length $|S_i|$, let $p_t$ be the state `last` after reading $S_i[1..t]$ (so $\operatorname{len}(p_t) = t$). Consider the potential function $\Phi(t) = \operatorname{minlen}(p_t) = \operatorname{len}(\operatorname{link}(p_t)) + 1 \ge 1$. When extending $p_{t-1}$ by $c = S_i[t]$:
+
+- Every suffix-link step $p' \leftarrow \operatorname{link}(p')$ in the `while` loops of Case 1 or Case 3 strictly decreases $\operatorname{len}(p')$. If the loop takes $h \ge 1$ steps and stops at $p^*$, then the new state $p_t$ (either `cur` or `clone`) has $\operatorname{link}(p_t)$ at length $\le \operatorname{len}(p^*) + 1$, whereas $\operatorname{len}(\operatorname{link}(p_{t-1}))$ was walked through $h - 1$ strict link steps before reaching $p^*$. Thus $\Phi(t) \le \Phi(t-1) - h + 2$, so $h \le \Phi(t-1) - \Phi(t) + 2$.
+- Summing over $t = 1, \dots, |S_i|$ telescopes to $\sum_{t=1}^{|S_i|} h_t \le 2|S_i|$, and summing over all $i = 1, \dots, k$ yields $\le 2\sum |S_i| = 2L$ link steps!
+
+**Part 2 (Why Trie-DFS Explodes to $\Theta(V^2)$ on $\mathcal{T}_m = \{\texttt{a}^k\texttt{b} \mid 1 \le k \le m\}$)**:
+In the compressed Trie $\mathcal{T}_m$, all $m$ strings share a single spine of $m$ `'a'`-edges ($v_0 \xrightarrow{\texttt{a}} v_1 \xrightarrow{\texttt{a}} \cdots \xrightarrow{\texttt{a}} v_m$), and each spine vertex $v_k$ ($1 \le k \le m$) has a single leaf child $u_k$ via edge $v_k \xrightarrow{\texttt{b}} u_k$. Thus $\mathcal{T}_m$ has $V = 2m + 1$ vertices (even though $\sum_{k=1}^m |\texttt{a}^k\texttt{b}| = \Theta(m^2)$!).
+Suppose alphabetical `DFS` always visits child `'a'` before child `'b'`:
+
+1. `DFS` first plunges all the way down the `'a'`-spine to $v_m$, creating SAM states $s_k = \operatorname{state}(\texttt{a}^k)$ with $\operatorname{len}(s_k) = k$ and $\operatorname{link}(s_k) = s_{k-1}$ for $1 \le k \le m$ ($s_0 = 1$).
+2. At the bottom of the spine, `DFS` visits the leaf $v_m \xrightarrow{\texttt{b}} u_m$ (spelling $\texttt{a}^m\texttt{b}$). Since no `'b'`-transition exists yet, Case 1 walks the **entire suffix-link chain** $s_m \to s_{m-1} \to \dots \to s_0$, setting:
+   $$\delta(s_j, \texttt{b}) \;=\; q_m \quad (\text{where } \operatorname{len}(q_m) = m + 1) \qquad \forall j \in \{0, 1, \dots, m\}.$$
+
+3. Next, `DFS` backtracks to $v_{m-1}$ and visits leaf $v_{m-1} \xrightarrow{\texttt{b}} u_{m-1}$ from $p = s_{m-1}$. It inspects $\delta(s_{m-1}, \texttt{b}) = q_m$, which is **already non-zero** with $\operatorname{len}(q_m) = m + 1 > \operatorname{len}(s_{m-1}) + 1 = m$!
+   Thus **Case 3 triggers**, allocating $\text{clone}_{m-1}$ of length $m$ and executing `while (p && ch[p]['b'] == q_m) { ch[p]['b'] = clone_{m-1}; p = link[p]; }` across **all $m$ states** $s_{m-1}, s_{m-2}, \dots, s_0$!
+
+4. Next, `DFS` backtracks to $v_{m-2}$ and visits $v_{m-2} \xrightarrow{\texttt{b}} u_{m-2}$ from $p = s_{m-2}$. Now $\delta(s_{m-2}, \texttt{b}) = \text{clone}_{m-1}$ has length $m > m - 1$, triggering **Case 3 again** and redirecting $s_{m-2}, s_{m-3}, \dots, s_0$ ($m - 1$ steps)!
+5. Continuing down to $k = 1$, every single backtrack step $k \in \{m-1, m-2, \dots, 1\}$ triggers Case 3 and walks all $k + 1$ ancestors $s_k, s_{k-1}, \dots, s_0$:
+   $$\text{Total Case-3 Redirections} \;=\; \sum_{k=1}^{m-1} (k + 1) \;=\; \frac{m(m+1)}{2} - 1 \;=\; \Theta(m^2) \;=\; \Theta(V^2)!$$
+*(Why didn't the potential $\Phi$ save `DFS`? Because whenever `DFS` backtracks from a deep branch of depth $m$ to a shallow branch of depth $k$, it resets the active state without paying for the $\Theta(m)$ drop in potential!)*
+
+**Part 3 (Why Trie-BFS Runs in Strict $O(V\sigma)$ Time)**:
+In `BFS` over $\mathcal{T}$, vertices are popped from the queue in non-decreasing order of Trie depth $d = \operatorname{depth}(x) = \operatorname{len}(\operatorname{sam}(x))$.
+
+- First, if $\mathcal{T}$ is a standard deterministic Trie (where each vertex $x$ has at most one outgoing edge per character $c \in \Sigma$), when `BFS` processes edge $x \xrightarrow{c} y$ at depth $d + 1$, no state in the GSAM has $\operatorname{len} > d + 1$ yet. Could $\delta(\operatorname{sam}(x), c)$ already be non-zero? If $\delta(\operatorname{sam}(x), c) = q \neq 0$, then since the maximum state length in the GSAM before layer $d+1$ is at most $d+1$ and $\operatorname{len}(q) \ge \operatorname{len}(\operatorname{sam}(x)) + 1 = d + 1$, we must have $\operatorname{len}(q) = d + 1$ (Case 2; Case 3 $\operatorname{len}(q) > d + 1$ is **impossible** under BFS!).
+- Second, why is the total number of suffix-link steps in the `while` loops bounded by $O(V)$ across the entire BFS? Define for each GSAM state $u$ its **longest non-empty transition depth** $M(u) = \max\bigl(\{0\} \cup \{\operatorname{len}(\operatorname{link}(u)) + 1\} \cup \{\operatorname{len}(u) \mid \exists c, \delta(u, c) \neq 0\}\bigr)$. More simply, in the first loop `while (p && !ch[p][c])`, each step permanently fills an empty transition slot `ch[p][c] = cur` (at most $V_{\text{GSAM}} \cdot \sigma \le 2V\sigma$ times total!). In the clone redirection loop `while (p && ch[p][c] == q) ch[p][c] = clone`, because BFS processes nodes in non-decreasing order of $d = \operatorname{len}(\text{cur})$, any state $q$ being split at step $d+1$ has $\operatorname{len}(q) \le d + 1$. Thus for every redirected state $p'$, its target length $\operatorname{len}(\delta(p', c))$ is set to $\operatorname{len}(\text{clone}) = \operatorname{len}(p_0) + 1 \le \operatorname{len}(q)$, and crucially $\operatorname{link}(q)$ increases from $\operatorname{link}_{\text{old}}(q)$ (length $< \operatorname{len}(p_0) + 1$) to $\text{clone}$ (length $= \operatorname{len}(p_0) + 1$). Specifically, every step of the clone loop visits an ancestor $p'$ of the previous node whose $\operatorname{len}(p') \ge \operatorname{len}(\operatorname{link}_{\text{old}}(q))$, advancing the pointer along the suffix-link chain by at most $2$ amortised steps per BFS transition (exactly as in Blumer et al.'s DAWG potential proof when processed in non-decreasing length order!). Hence Trie-BFS runs in strict $O(V\sigma)$ time and $\le 2V$ states. $\blacksquare$
+
+---
+
+## 4. Reverse-Engineering Scratchpad, Algorithmic Contracts & Multi-String Aggregation Patterns
+
+### 4.1 Contract A: The 3-Case `extend_gsam` & Offline Trie-BFS Engine
+
+When building a Generalized SAM either from an explicit Trie $\mathcal{T}$ (via BFS) or from a list of strings $\mathcal{S} = \{S_1, \dots, S_k\}$ (online with `last = 1`), the 3-case `extend_gsam(p, c)` routine is the single unified primitive:
+
+```cpp
+// Non-standard 3-Case Generalized SAM Extension + Trie-BFS Driver
+// State 1 is the root (len[1] = 0, link[1] = 0). Total states <= 2 * V.
+int extend_gsam(int p, int c) {
+    if (ch[p][c]) {
+        int q = ch[p][c];
+        if (len[q] == len[p] + 1) return q; // Case 2: Exact length match
+        int clone = ++tot;                  // Case 3: Split q -> clone WITHOUT cur
+        len[clone] = len[p] + 1;
+        memcpy(ch[clone], ch[q], sizeof(ch[q]));
+        link[clone] = link[q];
+        while (p && ch[p][c] == q) {
+            ch[p][c] = clone;
+            p = link[p];
+        }
+        link[q] = clone;
+        return clone;
+    }
+    int cur = ++tot;                        // Case 1: Standard SAM extension
+    len[cur] = len[p] + 1;
+    while (p && !ch[p][c]) {
+        ch[p][c] = cur;
+        p = link[p];
+    }
+    if (!p) {
+        link[cur] = 1;
+    } else {
+        int q = ch[p][c];
+        if (len[q] == len[p] + 1) {
+            link[cur] = q;
+        } else {
+            int clone = ++tot;
+            len[clone] = len[p] + 1;
+            memcpy(ch[clone], ch[q], sizeof(ch[q]));
+            link[clone] = link[q];
+            while (p && ch[p][c] == q) {
+                ch[p][c] = clone;
+                p = link[p];
+            }
+            link[q] = link[cur] = clone;
+        }
+    }
+    return cur;
+}
+
+// Offline Trie-BFS Construction in strict O(V * sigma) time:
+void build_gsam_from_trie() {
+    queue<int> q;
+    sam_pos[1] = 1; // Trie root 1 maps to GSAM root 1
+    q.push(1);
+    while (!q.empty()) {
+        int u = q.front();
+        q.pop();
+        for (int c = 0; c < SIGMA; ++c) {
+            int v = trie_ch[u][c];
+            if (v) {
+                sam_pos[v] = extend_gsam(sam_pos[u], c);
+                q.push(v);
+            }
+        }
+    }
+}
+```
+
+---
+
+### 4.2 Three Canonical Multi-String Aggregation Patterns on $\mathcal{T}_{\text{link}}(\operatorname{GSAM})$
+
+Once $\operatorname{GSAM}(\mathcal{S})$ is constructed for $\mathcal{S} = \{S_1, \dots, S_k\}$ ($L = \sum |S_i|$), how do we propagate multi-string occurrence information up the Link Tree $\mathcal{T}_{\text{link}}$?
+
+1. **Pattern I — Small Fixed $k$ ($k \le 10$, e.g., `CF 452E`, `CF 316G3`)**:
+   Maintain an explicit array $\operatorname{cnt}[u][i]$ ($1 \le i \le k$) at every GSAM state $u$. As each prefix $S_i[1..r]$ lands at GSAM state $u_{i,r}$, increment $\operatorname{cnt}[u_{i,r}][i] \mathrel{+}= 1$. Bucket-sort all GSAM states by $\operatorname{len}(u)$ in $O(L)$ time and push counts bottom-up in decreasing order of $\operatorname{len}(u)$:
+   $$\operatorname{cnt}[\operatorname{link}(u)][i] \;\mathrel{+}=\; \operatorname{cnt}[u][i] \qquad \forall i \in \{1, \dots, k\}.$$
+
+2. **Pattern II — Exclusive Ownership / At-Most-One-String Check (`[USACO 2017 Dec Plat] Standing Out`)**:
+   For large $k \le 10^5$, we want to know whether state $u$'s subtree in $\mathcal{T}_{\text{link}}$ contains prefixes from **only one** string $S_i$, or from $\ge 2$ distinct strings. Maintain a single integer $\operatorname{owner}[u] \in \{0, 1, \dots, k, -1\}$:
+   $$\operatorname{merge\_owner}(a, b) = \begin{cases} a \text{ (or } b\text{)} & \text{if } b = 0 \text{ (or } a = 0\text{) or } a = b, \\ -1 & \text{otherwise (collision of } \ge 2 \text{ distinct strings).} \end{cases}$$
+   Propagating $\operatorname{owner}[\operatorname{link}(u)] \leftarrow \operatorname{merge\_owner}(\operatorname{owner}[\operatorname{link}(u)], \operatorname{owner}[u])$ takes $O(1)$ time and space per state!
+
+3. **Pattern III — Exact Number of Distinct Strings in Subtree (`CF 204E` — DFS-Order LCA Subtraction)**:
+   Suppose $k \le 10^5$ and we need $\operatorname{distinct}[u] =$ the exact number of distinct strings $S_i$ that appear in $u$'s subtree on $\mathcal{T}_{\text{link}}$.
+   For a fixed string $S_i$, let $v_1, v_2, \dots, v_m$ be the GSAM states visited by the prefixes of $S_i$, **sorted by their Link-Tree DFS entry time** $\operatorname{dfn}[v_1] \le \operatorname{dfn}[v_2] \le \dots \le \operatorname{dfn}[v_m]$ (and deduplicated). By the standard Virtual Tree / Tree-Union identity:
+
+   - Adding $+1$ to $\operatorname{diff}[v_t]$ for each $1 \le t \le m$, and
+   - Subtracting $-1$ from $\operatorname{diff}[\operatorname{LCA}_{\text{link}}(v_{t-1}, v_t)]$ for each $2 \le t \le m$
+   ensures that the Link-Tree subtree sum $\operatorname{distinct}[u] = \sum_{w \in \operatorname{subtree}(u)} \operatorname{diff}[w]$ counts string $S_i$ **at most once** (and exactly once iff $\ge 1$ node $v_t$ lies in $\operatorname{subtree}(u)$)! Summing over all $S_i$ computes $\operatorname{distinct}[u]$ for every state in $O(L \log L)$ (or $O(L)$ with $O(1)$ RMQ LCA) time and $O(L)$ space.
+
+---
+
+### 4.3 Summary of Boundary Pitfalls (`BP-2A-01`, `BP-2A-02` / `BP-09`)
+
+| Pitfall ID | Broken Shortcut | Structural Failure Mechanism | Exact Rescue |
+| :--- | :--- | :--- | :--- |
+| **`BP-2A-01` (`BP-09a`)** | Calling single-string `extend(c)` after `last = 1` reset | When $\delta(p, c) = q \neq 0$ with $\operatorname{len}(q) > \operatorname{len}(p)+1$, allocates both `cur` and `clone` of length $\operatorname{len}(p)+1$; `cur` has $\operatorname{len}(\text{cur}) - \operatorname{len}(\operatorname{link}(\text{cur})) = 0$, is unreachable in the DAG, and steals $S_i$'s $\operatorname{endpos}$ marker | Use 3-Case `extend_gsam(p, c)`: in Case 3 ($\operatorname{len}(q) > \operatorname{len}(p)+1$), allocate **only `clone`** and return `clone` |
+| **`BP-2A-02` (`BP-09b`)** | Traversing a compressed Trie $\mathcal{T}$ ($V$ nodes) via `DFS` | On $\mathcal{T}_m = \{\texttt{a}^k\texttt{b} \mid 1 \le k \le m\}$ ($V = 2m+1$), `DFS` inserts $\texttt{a}^m\texttt{b}$ first and triggers Case 3 on every backtrack $k = m-1\dots 1$, taking $\sum (k+1) = \Theta(V^2)$ time | Traverse $\mathcal{T}$ in **BFS order** (non-decreasing depth) for strict $O(V\sigma)$ time and $\le 2V$ states |
+| **`BP-2A-03`** | Confusing Link-Tree DP with Transition-DAG DP | Propagating $|\operatorname{endpos}(u)|$ on the DAG or propagating lexicographical path counts on $\mathcal{T}_{\text{link}}$ | Accumulate occurrence counts bottom-up on **$\mathcal{T}_{\text{link}}$**; accumulate substring extensions bottom-up on the **Transition DAG** |
+| **`BP-2A-04`** | Using $\operatorname{SAM}(S)$ instead of $\operatorname{SAM}(S^R)$ for suffix `LCP` | $\operatorname{LCA}_{\text{link}}(\operatorname{pos}_S[i], \operatorname{pos}_S[j])$ computes $\operatorname{LCSuf}(S[1..i], S[1..j])$, not $\operatorname{LCP}(S[i..N], S[j..N])$ | Build $\operatorname{SAM}(S^R)$ and map suffix $S[i..N]$ to $v_i = \operatorname{pos}_{S^R}[N - i + 1]$ (`Theorem 9.2`) |
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Ladder (8 Non-Template Problems)
+
+Every problem below requires combining the structural invariants of $\operatorname{SAM}(S)$ or the 3-case Generalized SAM (`广义 SAM`) with non-trivial Link-Tree aggregation, sliding-window state tracking, or tree-path reductions. Pure template verification exercises (`Luogu P3804`, `Luogu P6139`, `SPOJ SUBLEX`) are quarantined.
+
+---
+
+### Tier 1 — Stepping Stone: Multi-String Link-Tree Aggregation & Length-Interval Difference Arrays
+
+#### Problem 9.1 (`W2A-05`) — `CF 204E — Little Elephant and Strings`
+
+- **Source & Constraints**: Codeforces Round 129 Div. 1 E. Given $n$ strings $S_1, S_2, \dots, S_n$ over $\Sigma = \{\texttt{a}, \dots, \texttt{z}\}$ with total length $L = \sum_{i=1}^n |S_i| \le 10^5$ and a threshold integer $1 \le k \le n$. For **each** string $S_i$ ($1 \le i \le n$), compute how many of its $\binom{|S_i|+1}{2}$ substrings $S_i[l..r]$ ($1 \le l \le r \le |S_i|$) appear as a substring in **at least $k$ distinct strings** among $S_1, \dots, S_n$. Time limit: $2.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal & What to Count per GSAM State"}
+If two substrings $w_1, w_2 \in E(u)$ belong to the same state $u$ of $\operatorname{GSAM}(S_1, \dots, S_n)$, they occur in the **exact same subset** of input strings! Let $\operatorname{distinct}[u]$ be the number of distinct strings $S_j$ ($1 \le j \le n$) that have at least one prefix in the Link-Tree subtree of $u$. Why does every ancestor of a valid state $u$ ($\operatorname{distinct}[u] \ge k$) also satisfy $\operatorname{distinct}[\operatorname{link}(u)] \ge k$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Computing $\operatorname{distinct}[u]$ in $O(L \log L)$ Time Without Bitsets"}
+Since $n$ can be up to $10^5$, maintaining an $n$-bit mask per state takes $\Theta(n^2)$ memory. Instead, for each string $S_i$, collect the GSAM states $v_1, v_2, \dots, v_{|S_i|}$ visited by its prefixes, sort them by their Link-Tree DFS entry time $\operatorname{dfn}[v_t]$, and deduplicate identical states. How can you use $\operatorname{LCA}_{\text{link}}(v_{t-1}, v_t)$ so that a bottom-up subtree sum counts string $S_i$ **at most once** in every state $u$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Answering for Each Prefix $S_i[1..r]$ in $O(1)$"}
+Fix a string $S_i$ and a right endpoint $r \in [1, |S_i|]$, which lands at GSAM state $u_{i,r}$ (with $\operatorname{len}(u_{i,r}) \ge r$). All suffixes of $S_i[1..r]$ lie along the root-to-$u_{i,r}$ path in $\mathcal{T}_{\text{link}}$. Because $\operatorname{distinct}[w]$ is monotonically non-increasing as $w$ moves down from the root, the valid suffixes of $S_i[1..r]$ are all suffixes of length $\le \min\bigl(r, \operatorname{len}(u^*)\bigr)$, where $u^*$ is the **deepest ancestor** of $u_{i,r}$ satisfying $\operatorname{distinct}[u^*] \ge k$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: We must count, for every prefix $S_i[1..r]$, how many of its $r$ nonempty suffixes occur in $\ge k$ distinct strings among $\{S_1, \dots, S_n\}$.
+2. **Combinatorial Word Invariant**:
+   Build $\operatorname{GSAM}(S_1, \dots, S_n)$ using the 3-case `extend_gsam` routine (`Contract A`), recording the state $u_{i,r}$ reached after prefix $S_i[1..r]$.
+   For any state $u \in \operatorname{GSAM}$, all strings $w \in E(u)$ occur in string $S_j$ if and only if at least one prefix state $u_{j,r'}$ ($1 \le r' \le |S_j|$) lies in the Link-Tree subtree of $u$. By Pattern III (`§4.2`), sorting the visited states of $S_j$ in Link-Tree DFS order $v_1, \dots, v_m$ ($\operatorname{dfn}[v_1] < \dots < \operatorname{dfn}[v_m]$) and updating:
+   $$\operatorname{diff}[v_t] \mathrel{+}= 1 \quad (1 \le t \le m), \qquad \operatorname{diff}[\operatorname{LCA}_{\text{link}}(v_{t-1}, v_t)] \mathrel{-}= 1 \quad (2 \le t \le m)$$
+   guarantees that the subtree sum $\operatorname{distinct}[u] = \sum_{w \in \operatorname{subtree}(u)} \operatorname{diff}[w]$ equals the exact number of distinct strings containing $u$.
+
+3. **Algorithmic Compilation (Top-Down Valid Ancestor Propagation)**:
+   Because $\operatorname{subtree}(u) \subseteq \operatorname{subtree}(\operatorname{link}(u))$, we have $\operatorname{distinct}[u] \le \operatorname{distinct}[\operatorname{link}(u)]$. In a single top-down pass on $\mathcal{T}_{\text{link}}$, compute for each state $u$:
+   $$\operatorname{best\_len}[u] \;=\; \begin{cases} \operatorname{len}(u) & \text{if } \operatorname{distinct}[u] \ge k, \\ \operatorname{best\_len}[\operatorname{link}(u)] & \text{if } \operatorname{distinct}[u] < k \quad (\text{with } \operatorname{best\_len}[1] = 0). \end{cases}$$
+   Then for string $S_i$ and right endpoint $r$, the suffixes of $S_i[1..r]$ occurring in $\ge k$ strings are precisely those of lengths $1, 2, \dots, \min(r, \operatorname{best\_len}[u_{i,r}])$. (In fact, since $S_i[1..r]$ itself has length $r$ and belongs to $u_{i,r}$ or a descendant, if $\operatorname{best\_len}[u_{i,r}]$ comes from a proper ancestor $u^* \neq u_{i,r}$, then $\operatorname{len}(u^*) < \operatorname{minlen}(u_{i,r}) \le r$; if $u^* = u_{i,r}$, then all $r$ suffixes of $S_i[1..r]$ are valid, so $\min(r, \operatorname{best\_len}[u_{i,r}])$ is exact in all cases!)
+   Summing $\sum_{r=1}^{|S_i|} \min(r, \operatorname{best\_len}[u_{i,r}])$ yields the answer for $S_i$ in $O(L \log L)$ total time and $O(L)$ space.
+
+4. **Boundary Pitfall**: Forgetting to deduplicate identical states $v_{t-1} = v_t$ visited by two prefixes of the same string $S_j$ (possible if a state is revisited across duplicate strings or branches), or forgetting to clamp at $r$ when $\operatorname{len}(u_{i,r}) > r$ (when $S_i[1..r]$ lands in a state $u_{i,r}$ whose $\operatorname{longest}(u_{i,r})$ came from a longer prefix of another string!).
+:::
+
+---
+
+#### Problem 9.2 (`W2A-14`) — `CF 452E — Three Strings`
+
+- **Source & Constraints**: MemSQL Start[c]UP 2.0 Round 1 E. Given three strings $S_1, S_2, S_3$ over lowercase English letters with $1 \le |S_1|, |S_2|, |S_3| \le 3 \times 10^5$. Let $M = \min(|S_1|, |S_2|, |S_3|)$. For **every** length $L \in \{1, 2, \dots, M\}$, compute:
+  $$A(L) \;=\; \sum_{w \in \Sigma^L} \operatorname{occ}(w, S_1) \cdot \operatorname{occ}(w, S_2) \cdot \operatorname{occ}(w, S_3) \pmod{10^9 + 7},$$
+  where $\operatorname{occ}(w, S_t)$ is the number of occurrences of string $w$ as a contiguous substring of $S_t$. Time limit: $2.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Grouping Substrings by Right-Equivalence Across All Three Strings"}
+Any substring $w \in \Sigma^L$ with $\operatorname{occ}(w, S_1)\operatorname{occ}(w, S_2)\operatorname{occ}(w, S_3) > 0$ must belong to some non-root state $u > 1$ of $\operatorname{GSAM}(S_1, S_2, S_3)$. What do all strings $w \in E(u)$ have in common?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — The Contiguous Length Interval Contribution"}
+In state $u > 1$ of $\operatorname{GSAM}(S_1, S_2, S_3)$, let $\operatorname{cnt}_t[u] = |\operatorname{endpos}_{S_t}(u)|$ for $t \in \{1, 2, 3\}$. By Lemma 9.1(2), $E(u)$ contains **exactly one** distinct string of each length $L \in [\operatorname{len}(\operatorname{link}(u)) + 1, \operatorname{len}(u)]$, and all of them have product $\Pi(u) = \operatorname{cnt}_1[u]\operatorname{cnt}_2[u]\operatorname{cnt}_3[u]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — 1D Difference Array Compilation"}
+Instead of iterating over every length $L$ inside $[\operatorname{len}(\operatorname{link}(u)) + 1, \operatorname{len}(u)]$, how can each state $u > 1$ contribute $\Pi(u)$ to its entire length range in $O(1)$ time?
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: We need a length-stratified sum of occurrence products across three strings up to $3 \times 10^5$.
+2. **Combinatorial Word Invariant**:
+   Construct $\operatorname{GSAM}(S_1, S_2, S_3)$ using the 3-case `extend_gsam` (`Contract A`). Mark $\operatorname{cnt}_t[\text{last}] \mathrel{+}= 1$ after each character of $S_t$ ($t \in \{1, 2, 3\}$), and push $\operatorname{cnt}_t[\operatorname{link}(u)] \mathrel{+}= \operatorname{cnt}_t[u]$ bottom-up on $\mathcal{T}_{\text{link}}$ in decreasing order of $\operatorname{len}(u)$.
+   Every distinct substring $w \in \Sigma^+$ appearing in $S_1 \cup S_2 \cup S_3$ belongs to a unique state $u > 1$, and for each state $u > 1$, the lengths of the strings in $E(u)$ form the contiguous integer interval:
+   $$I(u) \;=\; \bigl[\,\operatorname{len}(\operatorname{link}(u)) + 1,\;\; \operatorname{len}(u)\,\bigr].$$
+   Since every string $w \in E(u)$ has $\operatorname{occ}(w, S_t) = \operatorname{cnt}_t[u]$, we obtain the exact identity:
+   $$A(L) \;=\; \sum_{\substack{u > 1 \\ \operatorname{len}(\operatorname{link}(u)) + 1 \le L \le \operatorname{len}(u)}} \operatorname{cnt}_1[u]\cdot \operatorname{cnt}_2[u]\cdot \operatorname{cnt}_3[u] \pmod{10^9 + 7}.$$
+
+3. **Algorithmic Compilation**:
+   Maintain a 1D difference array $\Delta[1..M+2]$ initialized to $0$. For each state $u > 1$, compute $P_u = \operatorname{cnt}_1[u] \operatorname{cnt}_2[u] \operatorname{cnt}_3[u] \bmod (10^9+7)$, let $l = \operatorname{len}(\operatorname{link}(u)) + 1$ and $r = \min(M, \operatorname{len}(u))$; if $l \le r$, add $+P_u$ to $\Delta[l]$ and $-P_u$ to $\Delta[r + 1]$. Finally, take prefix sums $A(L) = \sum_{j=1}^L \Delta[j] \bmod (10^9+7)$. Total time and space: $O(|S_1| + |S_2| + |S_3|)$.
+
+4. **Boundary Pitfall**: Updating at the root $u = 1$ (where $\operatorname{len}(1) = 0$), or using naive single-string `extend` after `last = 1` (which splits counts across ghost clones and produces wrong answers on inputs like `ab`, `b`, `b`).
+:::
+
+---
+
+### Tier 2 — Intermediate: Exclusive Ownership & Cyclic Sliding Windows on SAM
+
+#### Problem 9.3 (`W2A-08`) — `[USACO 2017 Dec Platinum] Standing Out from the Herd` (`Luogu P6140`)
+
+- **Source & Constraints**: USACO 2017 December Contest, Platinum. Given $k$ strings $S_1, S_2, \dots, S_k$ of lowercase letters with total length $L = \sum_{i=1}^k |S_i| \le 10^5$. For each string $S_i$ ($1 \le i \le k$), count the number of **distinct nonempty substrings** of $S_i$ that do **not** appear as a substring in any other string $S_j$ ($j \neq i$). Time limit: $2.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Translating Exclusivity to $\mathcal{T}_{\text{link}}(\operatorname{GSAM})$"}
+A distinct substring $w$ of $S_i$ fails to appear in any $S_j$ ($j \neq i$) if and only if $\operatorname{endpos}_{S_j}(w) = \emptyset$ for all $j \neq i$. In $\operatorname{GSAM}(S_1, \dots, S_k)$, what property must state $u$ (where $w \in E(u)$) satisfy on $\mathcal{T}_{\text{link}}$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — $O(1)$ Exclusive Owner Merging"}
+We do not need the full set of strings in $u$'s subtree—only whether that set is a singleton $\{i\}$ or has size $\ge 2$! Define $\operatorname{owner}[u] \in \{0, 1, \dots, k, -1\}$ as in Pattern II (`§4.2`). How do you initialize $\operatorname{owner}[u]$ when building the GSAM?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Handling Collisions at the Same Prefix State"}
+What if string $S_1$ and string $S_2$ both have a prefix that lands on the **exact same** GSAM state $u$ during construction? Be sure to merge $i$ into $\operatorname{owner}[u]$ via $\operatorname{merge\_owner}(\operatorname{owner}[u], i)$ rather than overwriting $\operatorname{owner}[u] = i$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: Partition all distinct substrings of $\bigcup_{i=1}^k S_i$ into those occurring in a single string $S_i$ vs. those shared by $\ge 2$ strings.
+2. **Combinatorial Word Invariant**:
+   In $\operatorname{GSAM}(S_1, \dots, S_k)$, all $\operatorname{len}(u) - \operatorname{len}(\operatorname{link}(u))$ distinct substrings in $E(u)$ occur in the exact same subset of strings $C(u) \subseteq \{1, \dots, k\}$. Specifically, $j \in C(u)$ iff $u$'s subtree in $\mathcal{T}_{\text{link}}$ contains at least one prefix state of $S_j$.
+   Define the **coarsened ownership tag** $\operatorname{owner}[u]$:
+   $$\operatorname{owner}[u] \;=\; \begin{cases} 0 & \text{if } |C(u)| = 0, \\ i & \text{if } C(u) = \{i\}, \\ -1 & \text{if } |C(u)| \ge 2. \end{cases}$$
+
+3. **Algorithmic Compilation**:
+   - Initialize $\operatorname{owner}[u] = 0$ for all states.
+   - While inserting string $S_i$ via `last = extend_gsam(last, c)`, update $\operatorname{owner}[\text{last}] \leftarrow \operatorname{merge\_owner}(\operatorname{owner}[\text{last}], i)$ at every step.
+   - Sort states in decreasing order of $\operatorname{len}(u)$ and push tags to parents:
+     $$\operatorname{owner}[\operatorname{link}(u)] \;\leftarrow\; \operatorname{merge\_owner}\bigl(\operatorname{owner}[\operatorname{link}(u)],\; \operatorname{owner}[u]\bigr).$$
+
+   - Finally, for every state $u > 1$ with $\operatorname{owner}[u] = i > 0$, add $\operatorname{len}(u) - \operatorname{len}(\operatorname{link}(u))$ to $\operatorname{ans}[i]$. Total time and space: $O(L)$.
+4. **Boundary Pitfall**: Overwriting $\operatorname{owner}[\text{last}] = i$ on construction (which loses the collision if an earlier string $S_{i'}$ already ended a prefix at `last`), or failing to handle Case 2/Case 3 in `extend_gsam`.
+:::
+
+---
+
+#### Problem 9.4 (`W2A-11`) — `CF 235C — Cyclical Quest`
+
+- **Source & Constraints**: Codeforces Round 146 Div. 1 C. Given a reference text $S$ with $|S| \le 10^6$ and $Q$ query strings $X_1, \dots, X_Q$ with $\sum_{q=1}^Q |X_q| \le 10^6$. For each query $X_q$ of length $m = |X_q|$, count the total number of substrings $S[l..r]$ of length $m$ that are equal to **some cyclic shift** of $X_q$. Time limit: $3.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Representing All Cyclic Shifts via Doubling"}
+Every cyclic shift of $X$ of length $m = |X|$ is a contiguous length-$m$ substring of the string $Y = X \cdot X[1..m-1]$ of length $2m - 1$. How can we slide a fixed-length window of length $m$ across $Y$ inside $\operatorname{SAM}(S)$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Two-Operation Window Maintenance on $\operatorname{SAM}(S)$"}
+Maintain the current state $u \in \operatorname{SAM}(S)$ and the current matched suffix length $L$ of $Y[1..i]$:
+
+1. **Right Append (`+c`)**: While $u > 1$ and $\delta(u, c) = 0$, jump $u \leftarrow \operatorname{link}(u)$ and set $L \leftarrow \operatorname{len}(u)$. If $\delta(u, c) \neq 0$, step $u \leftarrow \delta(u, c)$ and increment $L \leftarrow L + 1$.
+2. **Left Pop (when $L > m$)**: To drop the oldest character from the left of a matched window of length $L = m + 1$, decrement $L \leftarrow L - 1$. When does $u$ itself need to change?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Deduplicating Periodic Cyclic Shifts"}
+When $L$ drops to $\operatorname{len}(\operatorname{link}(u))$, the string of length $L$ no longer belongs to $E(u)$—it is $\operatorname{longest}(\operatorname{link}(u))$, so we step $u \leftarrow \operatorname{link}(u)$! Also, what if $X = \texttt{abab}$ ($m = 4$)? Its $4$ cyclic shifts are $\texttt{abab}, \texttt{baba}, \texttt{abab}, \texttt{baba}$. How do we avoid counting $\texttt{abab}$ twice?
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: Match all $m$ cyclic shifts of $X$ against $S$ and sum their occurrence counts in $S$ in $O(m)$ time per query.
+2. **Combinatorial Word Invariant**:
+   Build $\operatorname{SAM}(S)$ once and compute $|\operatorname{endpos}_S(u)|$ for every state $u$ via a bottom-up sum on $\mathcal{T}_{\text{link}}$.
+   For a query $X$ of length $m$, form $Y = X \cdot X[1..m-1]$ of length $2m - 1$. As $i$ goes from $1$ to $2m - 1$, maintain $(u, L)$ representing the longest suffix of $Y[1..i]$ of length **at most $m$** that occurs in $S$:
+
+   - First advance $(u, L)$ by $c = Y[i]$ using standard SAM matching.
+   - Second, if $L > m$ (so $L = m + 1$), shrink the matched suffix from the left by setting $L \leftarrow m$. By Lemma 9.1(2), the suffixes in $E(u)$ span $[\operatorname{len}(\operatorname{link}(u)) + 1, \operatorname{len}(u)]$. Thus the shortened suffix of length $m$ stays in $E(u)$ if $m > \operatorname{len}(\operatorname{link}(u))$, and moves to $\operatorname{link}(u)$ if $m = \operatorname{len}(\operatorname{link}(u))$!
+   Whenever $L = m$, state $u$ is the unique SAM state containing the cyclic shift $Y[i-m+1..i]$.
+
+3. **Algorithmic Compilation (Deduplicating Periodic Shifts)**:
+   Two cyclic shifts $Y[i_1-m+1..i_1]$ and $Y[i_2-m+1..i_2]$ of the **same length $m$** belong to the **same SAM state $u$** if and only if they are **identical strings** (since a single SAM state $u$ contains at most one suffix of any fixed length $m$!). Therefore, stamping `vis[u] = query_id` and adding $|\operatorname{endpos}_S(u)|$ only when `vis[u] != query_id` automatically deduplicates periodic cyclic shifts! Total time: $O(|S| + \sum |X_q|)$.
+
+4. **Boundary Pitfall**: Using `if (L < len[link[u]])` instead of `if (L <= len[link[u]])` (since $\operatorname{minlen}(u) = \operatorname{len}(\operatorname{link}(u)) + 1$, length $\operatorname{len}(\operatorname{link}(u))$ already belongs to $\operatorname{link}(u)$!), or clearing `vis` with `memset` per query.
+:::
+
+---
+
+### Tier 3 — Advanced: Tree-Path GSAM Reductions & Multi-Rule Occurrence Filtering
+
+#### Problem 9.5 (`W2A-02` / `W2A-12`) — `[ZJOI2015] 诸神眷顾的幻想乡` (`Luogu P3346` / `LOJ 2130`)
+
+- **Source & Constraints**: ZJOI 2015. Given an unrooted tree $T$ with $N \le 10^5$ vertices, where each vertex $v$ carries a character label $c_v \in \{0, 1, \dots, \sigma-1\}$ with $\sigma \le 10$. Crucially, **$T$ has at most $K \le 20$ leaf vertices** (vertices of degree $1$). Every simple directed path $u \leadsto v$ in $T$ spells a string by concatenating its vertex labels. Count the total number of **distinct nonempty strings** spelled by all simple directed paths in $T$. Time limit: $1.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Why $K \le 20$ Leaves Eliminates $\Theta(N^2)$ Paths"}
+Any simple directed path $u \leadsto v$ in a tree can be extended backwards from $u$ until it hits some leaf $r$ of $T$. That means the string spelled by $u \leadsto v$ is a **contiguous substring** of the string spelled by $r \leadsto v$ when $T$ is rooted at leaf $r$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Converting $K$ Leaf-Rooted Trees into a Generalized SAM"}
+If we root $T$ at each of the $K \le 20$ leaves $r_1, \dots, r_K$, each rooted tree $T_{r_j}$ is a Trie of $N$ vertices whose root-to-node paths generate all simple paths starting at $r_j$. Every simple path in $T$ is a suffix of a root-to-node path in at least one $T_{r_j}$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Avoiding the $\Theta(V^2)$ Trie-DFS Trap"}
+Each rooted tree $T_{r_j}$ has $N$ vertices, giving $K N \le 2 \times 10^6$ total Trie states across the $K$ trees. How should you insert the nodes of $T_{r_j}$ into the shared 3-case GSAM so that every parent $p$ passes its exact GSAM state `sam_pos[p]` to its tree child $v$:
+$$\operatorname{sam\_pos}[v] \;=\; \operatorname{extend\_gsam}(\operatorname{sam\_pos}[p],\; c_v),$$
+and why does BFS over the merged Trie (or over each tree) guarantee linear complexity?
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: Count distinct substrings among all $\binom{N}{2}$ tree paths on a tree with $\le 20$ leaves.
+2. **Combinatorial Word Invariant**:
+   Let $\mathcal{L}_{\text{leaves}} = \{r \in V(T) \mid \deg_T(r) = 1\}$, with $|\mathcal{L}_{\text{leaves}}| = K \le 20$. For any simple directed path $u \leadsto v$ in $T$, extend the path greedily from $u$ away from $v$ until reaching a leaf $r \in \mathcal{L}_{\text{leaves}}$. Then $u \leadsto v$ is a **suffix** of the root-to-$v$ path $r \leadsto v$ in the tree $T_r$ rooted at $r$. Conversely, every suffix of a root-to-$v$ path in $T_r$ is a simple directed path in $T$.
+   Therefore, the set of all strings spelled by simple paths in $T$ is **identical** to the set of all substrings of the $K$ leaf-rooted Tries $T_{r_1}, \dots, T_{r_K}$!
+
+3. **Algorithmic Compilation**:
+   - Identify all leaves $r \in \mathcal{L}_{\text{leaves}}$.
+   - Either merge the $K$ leaf-rooted trees into a single deterministic Trie of size $V \le K N + 1$ and run `build_gsam_from_trie()` via **BFS** (`Contract A`), or run BFS on each $T_r$ calling `sam_pos[v] = extend_gsam(sam_pos[parent], c_v)`.
+   - By Lemma 9.1(2), the total number of distinct nonempty substrings in $\operatorname{GSAM}$ is:
+     $$\text{Ans} \;=\; \sum_{u = 2}^{\text{tot}} \bigl(\operatorname{len}(u) - \operatorname{len}(\operatorname{link}(u))\bigr).$$
+   Total states: $\le 2KN \le 4 \times 10^6$. Total time: $O(KN\sigma) \approx 4 \times 10^7$ operations.
+
+4. **Boundary Pitfall**: Using a global `last` variable across DFS siblings instead of passing `sam_pos[parent]`, or using unguarded single-string `extend` (`BP-2A-01`).
+:::
+
+---
+
+#### Problem 9.6 (`W2A-19`) — `CF 316G3 — Good Substrings`
+
+- **Source & Constraints**: ABBYY Cup 3.0 G3. Given a primary string $S$ with $|S| \le 5 \times 10^4$ and $n \le 10$ constraint rules $(P_i, L_i, R_i)$ ($1 \le i \le n$), where $|P_i| \le 5 \times 10^4$ and $0 \le L_i \le R_i \le |P_i|$. A nonempty string $w$ is called **good** if $w$ is a substring of $S$ and, for **every** $i \in \{1, \dots, n\}$, the number of occurrences of $w$ in $P_i$ satisfies $L_i \le \operatorname{occ}(w, P_i) \le R_i$. Count the number of **distinct** good strings $w$. Time limit: $2.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Why Single-String $\operatorname{SAM}(S)$ Cannot Handle $L_i = 0$ Easily"}
+If we only built $\operatorname{SAM}(S)$, a substring $w$ of $S$ might share a state $u \in \operatorname{SAM}(S)$ with a shorter suffix $w' \in E(u)$ where $w'$ occurs in $P_i$ *more* times than $w$ does! How do we refine the equivalence classes so that all strings in a state $u$ have identical occurrence counts in $S$ **and** in every $P_1, \dots, P_n$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Refining Equivalence Classes via $\operatorname{GSAM}(S, P_1, \dots, P_n)$"}
+In $\operatorname{GSAM}(S, P_1, \dots, P_n)$, any two strings $w_1, w_2 \in E(u)$ have identical $\operatorname{endpos}$ sets in $S$ **and** in each $P_i$! Thus $\operatorname{occ}(w, S) = \operatorname{cnt}_0[u]$ and $\operatorname{occ}(w, P_i) = \operatorname{cnt}_i[u]$ are constant across the entire length interval $[\operatorname{len}(\operatorname{link}(u)) + 1, \operatorname{len}(u)]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Bottom-Up Vector Propagation"}
+Since $n \le 10$, maintain $\operatorname{cnt}[u][0..n]$ at each state $u$ of the GSAM, push counts up $\mathcal{T}_{\text{link}}$, and sum $\operatorname{len}(u) - \operatorname{len}(\operatorname{link}(u))$ over all valid states $u > 1$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: Joint occurrence-count constraints across $S$ and $n \le 10$ rule strings $P_1, \dots, P_n$ (including $L_i = 0$).
+2. **Combinatorial Word Invariant**:
+   Build $\operatorname{GSAM}(S, P_1, \dots, P_n)$ using the 3-case `extend_gsam` (`Contract A`). Because every rule string $P_i$ is inserted into the **same** GSAM, if a suffix $w'$ of $w \subseteq S$ has extra occurrences in some $P_i$ that do not extend left to $w$, inserting $P_i$ automatically splits their state via Case 1/Case 3 `clone` creation!
+   Consequently, for every state $u > 1$ of $\operatorname{GSAM}(S, P_1, \dots, P_n)$ and every $w \in E(u)$:
+   $$\operatorname{occ}(w, S) = \operatorname{cnt}[u][0], \qquad \operatorname{occ}(w, P_i) = \operatorname{cnt}[u][i] \quad (1 \le i \le n).$$
+
+3. **Algorithmic Compilation**:
+   - Insert $S$ (index $0$) and $P_1, \dots, P_n$ (indices $1..n$) into the GSAM, incrementing $\operatorname{cnt}[\text{last}][idx] \mathrel{+}= 1$ after each character.
+   - Bucket-sort states by $\operatorname{len}(u)$ and push $\operatorname{cnt}[\operatorname{link}(u)][j] \mathrel{+}= \operatorname{cnt}[u][j]$ for $0 \le j \le n$ in decreasing order of $\operatorname{len}(u)$.
+   - Output:
+     $$\text{Ans} \;=\; \sum_{\substack{u > 1,\; \operatorname{cnt}[u][0] > 0 \\ \forall i \in [1, n],\; L_i \le \operatorname{cnt}[u][i] \le R_i}} \bigl(\operatorname{len}(u) - \operatorname{len}(\operatorname{link}(u))\bigr).$$
+   Total time: $O\bigl((|S| + \sum |P_i|)(\sigma + n)\bigr)$.
+
+4. **Boundary Pitfall**: Building $\operatorname{SAM}(S)$ alone without inserting $P_1, \dots, P_n$ fails whenever two strings in the same $\operatorname{SAM}(S)$ equivalence class have different occurrence counts inside some $P_i$.
+:::
+
+---
+
+### Tier 4 — Mastery: Signed-Weight Extremization & Monotonic-Deque GSAM Covering DP
+
+#### Problem 9.7 (`W2A-29` / `W2A-14`) — `CF 616F — Expensive Strings`
+
+- **Source & Constraints**: Educational Codeforces Round 5 F. Given $n$ strings $t_1, t_2, \dots, t_n$ with $\sum_{i=1}^n |t_i| \le 5 \times 10^5$, and $n$ **signed** integer costs $c_1, c_2, \dots, c_n \in [-10^7, 10^7]$. For any string $w \in \Sigma^*$, define its profit as:
+  $$f(w) \;=\; |w| \cdot \sum_{i=1}^n c_i \cdot \operatorname{occ}(w, t_i).$$
+  Compute $\max_{w \in \Sigma^*} f(w)$ (note that $f(\varepsilon) = 0$, so the maximum is always $\ge 0$). Time limit: $6.0\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Why Signed Costs $c_i < 0$ Do Not Break Intra-State Extremization"}
+In $\operatorname{GSAM}(t_1, \dots, t_n)$, every string $w \in E(u)$ has the exact same total coefficient $W(u) = \sum_{i=1}^n c_i \cdot \operatorname{occ}(w, t_i)$. Within $E(u)$, $|w|$ varies over $[\operatorname{len}(\operatorname{link}(u)) + 1, \operatorname{len}(u)]$. Which length $|w|$ in $E(u)$ maximizes $|w| \cdot W(u)$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Case Split on the Sign of $W(u)$"}
+If $W(u) > 0$, then $|w| \cdot W(u)$ is strictly increasing in $|w|$ and is maximized at the longest string $|w| = \operatorname{len}(u)$. What if $W(u) \le 0$? Then $|w| \cdot W(u) \le 0 = f(\varepsilon)$, so state $u$ can never beat the empty string $\varepsilon$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — $O(1)$ Weight Accumulation per State"}
+We do not need to store $\operatorname{cnt}[u][i]$ separately for each $i \in \{1, \dots, n\}$! By linearity of summation, we can accumulate $W(\text{last}) \mathrel{+}= c_i$ directly at each prefix of $t_i$ and push $W(\operatorname{link}(u)) \mathrel{+}= W(u)$ bottom-up on $\mathcal{T}_{\text{link}}$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: Optimize a bilinear objective $|w| \cdot \sum_i c_i \operatorname{occ}(w, t_i)$ with signed weights $c_i \in [-10^7, 10^7]$ over all substrings of a multi-string dictionary.
+2. **Combinatorial Word Invariant**:
+   In $\operatorname{GSAM}(t_1, \dots, t_n)$, for any state $u > 1$ and any $w \in E(u)$:
+   $$\sum_{i=1}^n c_i \cdot \operatorname{occ}(w, t_i) \;=\; \sum_{i=1}^n c_i \cdot |\operatorname{endpos}_{t_i}(u)| \;\triangleq\; W(u).$$
+   By linearity, $W(u)$ is the sum of $c_i$ over all prefix positions $(i, r)$ whose GSAM state $u_{i,r}$ lies in the Link-Tree subtree of $u$. Whenever $W(u) > 0$, $\max_{w \in E(u)} |w|\cdot W(u) = \operatorname{len}(u)\cdot W(u)$; whenever $W(u) \le 0$, $\max_{w \in E(u)} |w|\cdot W(u) \le 0 = f(\varepsilon)$.
+
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{GSAM}(t_1, \dots, t_n)$ via `extend_gsam`. At each character of $t_i$, add `W[last] += c[i]` (using 64-bit `long long`).
+   - Bucket-sort states by $\operatorname{len}(u)$ and push `W[link[u]] += W[u]` in decreasing order of $\operatorname{len}(u)$.
+   - Return $\max\bigl(0LL,\; \max_{u > 1} \operatorname{len}(u) \cdot W(u)\bigr)$ in $O(\sum |t_i| \sigma)$ time and $O(\sum |t_i|)$ space.
+4. **Boundary Pitfall**: Using naive single-string `extend` after `last = 1`: when a ghost clone is created with $\operatorname{len}(\text{cur}) = \operatorname{len}(p) + 1$ and $\operatorname{link}(\text{cur}) = \text{clone}$, if $W(\text{cur}) > 0$ and $W(q) < 0$, evaluating $\operatorname{len}(\text{cur}) \cdot W(\text{cur})$ evaluates an unmerged partial sum on a non-existent equivalence class and outputs a strictly false positive maximum!
+:::
+
+---
+
+#### Problem 9.8 (`W2A-31` / `W2A-13`) — `[CTSC2012] 熟悉的文章 (Familiar Article)` (`Luogu P4022` / `LOJ 2255`)
+
+- **Source & Constraints**: CTSC 2012. Given a dictionary of $m$ binary strings $D_1, \dots, D_m \in \{\texttt{0}, \texttt{1}\}^+$ and $Q$ query essays $T_1, \dots, T_Q \in \{\texttt{0}, \texttt{1}\}^+$ with $\sum |D_i| \le 1.1 \times 10^6$ and $\sum |T_q| \le 1.1 \times 10^6$. For an essay $T$ of length $N = |T|$ and an integer threshold $L_0 \ge 1$, a **familiar partition** selects a set of pairwise disjoint substrings of $T$, each of length $\ge L_0$ and each occurring as a substring in at least one dictionary string $D_j$, such that the sum of their lengths is at least $\lceil 0.9 N \rceil$ (i.e., $10 \times \text{covered} \ge 9 N$). Find the maximum integer $L_0$ for which $T$ admits a familiar partition (or $0$ if none exists). Time limit: $1.5\text{s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Precomputing the Longest Dictionary Suffix $\operatorname{lim}[i]$ in $O(N)$"}
+Build the 3-case Generalized SAM over the dictionary $\mathcal{D} = \{D_1, \dots, D_m\}$. Walk the query essay $T[1..N]$ on $\operatorname{GSAM}(\mathcal{D})$ to compute, for every $1 \le i \le N$, the maximum length $\operatorname{lim}[i]$ of a suffix of $T[1..i]$ that occurs in $\mathcal{D}$. Why is this walk done **once per query $T$ outside** the binary search on $L_0$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — The Monotonic Left-Boundary Invariant $i - \operatorname{lim}[i]$"}
+When we extend $T[1..i-1]$ by one character $T[i]$, the longest dictionary suffix can grow by at most $+1$: $\operatorname{lim}[i] \le \operatorname{lim}[i-1] + 1$. Rearranging this inequality gives:
+$$i - \operatorname{lim}[i] \;\ge\; (i - 1) - \operatorname{lim}[i-1]!$$
+Why does the monotonicity of the left boundary $i - \operatorname{lim}[i]$ allow us to check a candidate $L_0$ in $O(N)$ time?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Sliding Monotonic Deque on $dp[j] - j$"}
+For a fixed $L_0$, let $dp[i]$ be the maximum covered characters in $T[1..i]$. Choosing a valid dictionary block $T[j+1..i]$ requires its length $i - j$ to satisfy $L_0 \le i - j \le \operatorname{lim}[i]$, i.e., $j \in [i - \operatorname{lim}[i],\, i - L_0]$. Rewrite the transition as:
+$$dp[i] \;=\; \max\!\Bigl(\,dp[i-1],\;\; i + \max_{j \in [i - \operatorname{lim}[i],\, i - L_0]} \bigl(dp[j] - j\bigr)\Bigr).$$
+Since both interval endpoints $i - \operatorname{lim}[i]$ and $i - L_0$ are monotonically non-decreasing in $i$, a sliding monotonic deque maintains the maximum in amortized $O(1)$ per index!
+:::
+
+::: {.callout-tip collapse="true" title="Full Mathematical Derivation & Algorithmic Contract"}
+**4-Step Zero-Magic Derivation**:
+
+1. **Diagnostic Signal**: Binary search on threshold $L_0$ coupled with an $O(N)$ interval-covering DP driven by GSAM suffix-match lengths.
+2. **Combinatorial Word Invariant (Left-Endpoint Monotonicity)**:
+   Build $\operatorname{GSAM}(D_1, \dots, D_m)$ in $O(\sum |D_i|)$ time. For a query $T[1..N]$, walk $T$ on the GSAM to obtain $\operatorname{lim}[i]$ for $1 \le i \le N$.
+   Because stripping the last character from a valid suffix of $T[1..i]$ of length $\operatorname{lim}[i]$ yields a valid dictionary suffix of $T[1..i-1]$ of length $\operatorname{lim}[i] - 1$, we have $\operatorname{lim}[i] - 1 \le \operatorname{lim}[i-1]$, which is equivalent to:
+   $$\boxed{L_{\text{left}}(i) \;\triangleq\; i - \operatorname{lim}[i] \quad \text{is monotonically non-decreasing in } i!}$$
+
+3. **Algorithmic Compilation**:
+   Binary search $L_0 \in [1, N]$. To test $L_0$:
+
+   - Maintain a monotonic decreasing deque of indices $j$ ordered by $g(j) = dp[j] - j$.
+   - As $i$ goes from $L_0$ to $N$:
+     1. Push $j = i - L_0$ into the back of the deque (popping indices $j'$ from the back with $g(j') \le g(i - L_0)$).
+     2. Pop indices $j'$ from the front of the deque with $j' < i - \operatorname{lim}[i]$.
+     3. Set $dp[i] = dp[i-1]$; if the deque is non-empty, set $dp[i] = \max\bigl(dp[i],\, i + g(\text{dq.front()})\bigr)$.
+   - $L_0$ is feasible iff $10 \cdot dp[N] \ge 9 N$. Total time: $O\bigl(\sum |D_i| + \sum |T_q| \log |T_q|\bigr)$.
+4. **Boundary Pitfall**: Using a Segment Tree inside the binary search ($O(N \log^2 N)$ TLE), or pushing $j = i - L_0$ only when $i - L_0 \ge i - \operatorname{lim}[i]$ (note that $j = i - L_0$ might be $< i - \operatorname{lim}[i]$ at step $i$, yet become $\ge i' - \operatorname{lim}[i']$ at a later step $i' > i$; always push $j = i - L_0$ unconditionally and let the front pop filter $j' < i - \operatorname{lim}[i]$!).
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### When to Reach for Each Tool in `Ch 09`
+
+| Diagnostic Signal in Problem Statement | Structural Invariant to Invoke | Complexity |
+| :--- | :--- | :--- |
+| Sum / optimize a function of $\operatorname{occ}(w, S)$ over all distinct substrings $w$ | Each state $u > 1$ in $\operatorname{SAM}(S)$ bundles $\operatorname{len}(u) - \operatorname{len}(\operatorname{link}(u))$ substrings sharing $|\operatorname{endpos}_S(u)|$ (`Lemma 9.1`) | $O(N\sigma)$ |
+| Pairwise suffix `LCP(S[i..N], S[j..N])` aggregation or Suffix Tree DP | **Blumer–Crochemore Duality (`Theorem 9.2`)**: $\operatorname{ST}(S) \cong \mathcal{T}_{\text{link}}(\operatorname{SAM}(S^R))$ with $v_i = \operatorname{pos}_{S^R}[N - i + 1]$ | $O(N\sigma)$ |
+| Multi-string substring statistics on $\mathcal{S} = \{S_1, \dots, S_k\}$ ($\sum |S_i| = L$) | **3-Case Online `extend_gsam` (`Contract A`)**: handles $\delta(p, c) \neq 0$ without zero-length ghost clones (`Counterexample 9.3`) | $O(L\sigma)$ |
+| Substring statistics on a compressed Trie $\mathcal{T}$ ($V$ nodes) or tree paths with $\le 20$ leaves | **Offline Trie-BFS GSAM (`Theorem 9.4`)**: BFS guarantees non-decreasing depth and prevents the $\Theta(V^2)$ Trie-DFS blowup on $\{\texttt{a}^k\texttt{b}\}$ | $O(V\sigma)$ |
+| Count how many distinct strings $S_i$ contain state $u$ ($k \le 10^5$) | **DFS-Order LCA Subtraction (`Pattern III`, `CF 204E`)**: $+1$ at $v_t$, $-1$ at $\operatorname{LCA}_{\text{link}}(v_{t-1}, v_t)$ | $O(L \log L)$ |
+
+### Pre-Submission Diagnostic Checklist
+
+- [ ] **No Sentinel Bloat**: Did you build a 3-case Generalized SAM instead of concatenating $k$ strings with $k$ distinct `#_i` separators?
+- [ ] **3-Case Guard in `extend_gsam`**: When `ch[p][c] != 0`, does your code return `q` immediately if `len[q] == len[p] + 1` (Case 2), and allocate **only `clone`** (never `cur`!) if `len[q] > len[p] + 1` (Case 3)?
+- [ ] **BFS on Compressed Tries**: If the input is a Trie of $V$ vertices, are you traversing the Trie in **BFS order** (never DFS)?
+- [ ] **DAG vs. Link Tree**: Are occurrence counts $|\operatorname{endpos}(u)|$ accumulated bottom-up on $\mathcal{T}_{\text{link}}$, while lexicographical path counts are accumulated bottom-up on the Transition DAG?
+- [ ] **Reversal for `LCP`**: If the problem asks for prefix `LCP` of suffixes $S[i..N]$ and $S[j..N]$, did you build $\operatorname{SAM}(S^R)$ and map $S[i..N]$ to $\operatorname{pos}_{S^R}[N - i + 1]$?

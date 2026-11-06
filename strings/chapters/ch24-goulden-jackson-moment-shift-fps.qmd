@@ -1,0 +1,627 @@
+---
+title: "The Goulden–Jackson Cluster Method, Bivariate (t − 1) Exact k-Occurrence FPS, and the t = 1 + u Binomial Moment Shift"
+subtitle: "Chapter 24 · Part VI: Subsequence Automata, Seaweed Braids, String Generating Functions & Automaton DP"
+---
+
+::: {.callout-important title="Prerequisites, Assumed Library & Learning Objectives"}
+- **Assumed Library Primitives**: $O(N)$ KMP prefix function ($\pi[1..N]$) and Z-function ($Z[1..N]$), $O(\sum |P_i| \cdot |\Sigma|)$ Aho–Corasick (AC) automaton construction, $O(N \log N)$ Formal Power Series (`FPS`) ring arithmetic (`poly_inv`, `poly_ln`, `poly_exp`, `poly_pow`) over $\mathbb{F}_p[[x]] \bmod x^{N+1}$, and $O(D \log D \log N)$ Bostan–Mori rational coefficient extraction $[x^N] P(x)/Q(x)$ (covered in [FPS Chapter 01](../../fps/chapters/ch01-ring-convolutions-newton-inv.qmd), [FPS Chapter 02](../../fps/chapters/ch02-calculus-frobenius-sparse-ode-newton.qmd), and [FPS Chapter 05](../../fps/chapters/ch05-rational-bostan-mori-berlekamp-massey.qmd)).
+- **Strict Prerequisite Chapters**: [Chapter 01: Period–Border Duality & Fine–Wilf](ch01-fine-wilf-periodicity-orbits.qmd), [Chapter 02: Weak Periodicity & Border Arithmetic Progressions](ch02-weak-periodicity-border-aps.qmd), and [Chapter 18: FFT Wildcard & Involution Matching](ch18-fft-wildcard-involution-matching.qmd).
+- **Assigned Technique IDs**: `T-4A-01` (Goulden–Jackson Cluster Method & Guibas–Odlyzko Autocorrelation Systems), `T-4A-02` (Bivariate $(t-1)$ Exact $k$-Occurrence FPS & Non-Antichain Embedded Weight Absorption), `T-4A-03` (The $t = 1 + u$ Binomial Moment Shift for Huge $n \le 10^{18}$).
+- **Learning Objectives**:
+  1. Collapse the $O(\sum |P_i|)$-state Aho–Corasick transition matrix into an **$m \times m$ polynomial linear system** $\sum_{i=1}^m C_i(x) C_{i,j}(x) = -x^{|P_j|}$ via both **Goulden–Jackson signed marked-word clusters** and **Guibas–Odlyzko unsigned first-hit end-tagging**, proving ring invertibility $\det \mathbf{C}(0) = 1$ and the **Sherman–Morrison rank-1 determinantal reduction**.
+  2. Derive the **Bivariate $(t-1)$ Cluster Sieve** and the exact $k$-occurrence rational generating function $F_k(x) = [t^k] F(x, t) = \frac{x^L D_1(x)^{k-1}}{D_0(x)^{k+1}}$ both algebraically and bijectively, and enforce the **$D_1(0) = 0$ valuation shift $d = \min \operatorname{Per}(P)$** before calling `poly_ln`.
+  3. Formulate **Non-Antichain Embedded Substring Weight Absorption** ($\widetilde{W}_j, \widetilde{C}_{i,j}$) when $P_a \subsetneq P_b$ cannot be discarded ($t_a \ne 0$), and extend linear clusters to **Cyclic / Necklace Goulden–Jackson** via the logarithmic derivative plus wrap-around seam trace.
+  4. Execute the **`Universal Cup` $t = 1 + u$ Binomial Moment Shift**, expanding $F(x, 1 + u)$ around $t = 1$ ($u = 0$) so the denominator collapses from degree-$jL$ $D_0(x)^{j+1}$ to the degree-$(j+1)$ monomial power **$(1 - \sigma x)^{j+1}$**, computing $\mathbb{E}[\operatorname{occ}_P(W)^K]$ at $n \le 10^{18}, |P| \le 10^5$ in $O(KL \log(KL))$ time completely independent of $n$.
+:::
+
+---
+
+## 1. The Goulden–Jackson Cluster Method & Autocorrelation Systems (`T-4A-01`)
+
+### 1.1 The Diagnostic Signal: Why Aho–Corasick Matrix Power and Naive PIE Fail
+
+Given an alphabet $\Sigma$ of size $\sigma = |\Sigma|$ and a finite pattern dictionary $\mathcal{P} = \{P_1, P_2, \dots, P_m\} \subset \Sigma^+$, we wish to count the number $a_n$ of length-$n$ words $W \in \Sigma^n$ that avoid all patterns in $\mathcal{P}$ as contiguous substrings, packaged into the ordinary generating function (OGF)
+$$F(x) = \sum_{n \ge 0} a_n x^n \in \mathcal{R}[[x]].$$
+
+Two textbook approaches hit a hard complexity wall when pattern lengths $|P_i|$ are large:
+
+1. **Why Aho–Corasick Automaton DP / Matrix Exponentiation Fails**: The Aho–Corasick automaton on $\mathcal{P}$ has $V = \Theta\bigl(\sum_{i=1}^m |P_i|\bigr)$ prefix states. When $\sum_{i=1}^m |P_i| \approx 10^5$ and $n \le 10^5$ (or $n \le 10^{18}$), neither $O(n V)$ dynamic programming nor $O(V^3 \log n)$ transition matrix exponentiation can finish within the time limit.
+2. **Why Naive Inclusion–Exclusion (PIE) Fails**: If we attempt to apply PIE over the set of positions where forbidden patterns occur, choosing $k$ pattern occurrences $e_1 = [l_1, r_1], \dots, e_k = [l_k, r_k]$ inside $W[1..n]$ leaves $n - \bigl|\bigcup_{q=1}^k [l_q, r_q]\bigr|$ unconstrained characters. Because the union size $\bigl|\bigcup_{q=1}^k [l_q, r_q]\bigr|$ depends on the **exact pairwise overlap lengths** of adjacent intervals, we cannot simply pick $k$ starting indices with a binomial coefficient.
+
+**The Goulden–Jackson Breakthrough (1979)**: Instead of tracking all $O(\sum |P_i|)$ partial prefix states step-by-step, group overlapping designated occurrences into maximal connected chains called **clusters** (`簇`). Because two patterns in a reduced dictionary can overlap *only* where a suffix of $P_i$ equals a prefix of $P_j$, all internal prefix states disappear, compressing the entire $V \times V$ automaton into an **$m \times m$ polynomial linear system**!
+
+---
+
+### 1.2 The Combinatorial Word Invariant: Marked Words, The Antichain Precondition & Unique Cluster Factorization
+
+Before writing any generating function, let us name the concrete combinatorial objects being counted and state the structural precondition on $\mathcal{P}$.
+
+- **The Antichain Precondition (`反链条件`)**: A pattern set $\mathcal{P} = \{P_1, \dots, P_m\}$ is an *antichain* under the substring relation if no pattern $P_i$ is a contiguous substring of another pattern $P_j$ ($i \ne j \implies P_i \not\subseteq P_j$). For pure avoidance, if $P_i \subseteq P_j$, then any word $W$ containing $P_j$ already contains $P_i$; thus $P_j$ is redundant and can be deleted in $O\bigl(\sum |P_i| \cdot |\Sigma|\bigr)$ time using the Aho–Corasick failure tree before constructing the system.
+- **Marked Words $(W, M)$**: For any word $W \in \Sigma^*$, let $\operatorname{Occ}(W)$ denote the set of all occurrences of patterns from $\mathcal{P}$ in $W$, where each occurrence $e = (i, [l, r])$ records the matched pattern $P_i$ and its 1-based closed index interval $[l, r]$ in $W$ ($r - l + 1 = |P_i|$). A **marked word** (`标记串`) is a pair $(W, M)$ where $W \in \Sigma^*$ is an arbitrary word and $M \subseteq \operatorname{Occ}(W)$ is a chosen subset of its pattern occurrences, assigned the signed formal weight $(-1)^{|M|} x^{|W|}$.
+
+Summing the weight $(-1)^{|M|} x^{|W|}$ over all pairs $(W, M)$ double-counts each word $W$ according to the subset sieve $\sum_{M \subseteq \operatorname{Occ}(W)} (-1)^{|M|} = (1 - 1)^{|\operatorname{Occ}(W)|} = [\operatorname{Occ}(W) = \emptyset]$:
+$$\begin{aligned}
+\sum_{W \in \Sigma^*} \sum_{M \subseteq \operatorname{Occ}(W)} (-1)^{|M|} x^{|W|}
+&= \sum_{W \in \Sigma^*} x^{|W|} \sum_{k=0}^{|\operatorname{Occ}(W)|} \binom{|\operatorname{Occ}(W)|}{k} (-1)^k && \text{(group subsets } M \text{ by size } k = |M|\text{)} \\
+&= \sum_{W \in \Sigma^*} x^{|W|} (1 - 1)^{|\operatorname{Occ}(W)|} = \sum_{\substack{W \in \Sigma^* \\ \operatorname{Occ}(W) = \emptyset}} x^{|W|} = F(x). && \text{(only } \mathcal{P}\text{-avoiding words survive)}
+\end{aligned}$$
+
+Now look at any marked word $(W, M)$ from left to right. Under the Antichain Precondition, no interval in $M$ can be strictly nested inside another, so sorting the marked occurrences $M = \{e_1, e_2, \dots, e_s\}$ by their left endpoints $l_1 < l_2 < \dots < l_s$ automatically sorts them by their right endpoints $r_1 < r_2 < \dots < r_s$. Two consecutive marked occurrences $e_q = [l_q, r_q]$ and $e_{q+1} = [l_{q+1}, r_{q+1}]$ **overlap** if and only if $l_{q+1} \le r_q$, sharing a non-empty overlap subsegment $[l_{q+1}, r_q]$ of length $k = r_q - l_{q+1} + 1 \ge 1$.
+
+```
+Marked Word (W, M):   b  |  a   b   a   b   a  |  a  |  a   b   a  |
+                         |<-- P_1 = aba -->|         |<-- P_1 -->|
+                                 |<-- P_1 = aba -->|
+Component Structure: [b] [--- Cluster of size s=2 --] [a] [Cluster s=1]
+Weights:              x         (-1)^2 x^5            x     (-1)^1 x^3
+```
+
+Taking the connected components of the intervals in $M$ decomposes $(W, M)$ uniquely into a free sequence ($\operatorname{SEQ}$) of two kinds of atomic blocks:
+
+1. **Unmarked free characters** $c \in \Sigma$ that do not belong to any interval in $M$, with generating function $\sigma x$.
+2. **Clusters (`簇`)**: maximal connected chains $e_1, e_2, \dots, e_s$ ($s \ge 1$) of overlapping marked occurrences where $l_{q+1} \le r_q$ for every $1 \le q < s$. Let $C_j(x)$ be the generating function of all clusters whose **rightmost** marked pattern is $P_j$, and let $C(x) = \sum_{j=1}^m C_j(x)$ be the total cluster generating function.
+
+Because every marked word $(W, M)$ is a unique sequence of free characters and clusters, the symbolic $\operatorname{SEQ}$ construction gives:
+$$F(x) = \operatorname{SEQ}\bigl(\sigma x + C(x)\bigr) = \frac{1}{1 - \sigma x - \sum_{j=1}^m C_j(x)}. \tag{24.1}$$
+
+---
+
+### 1.3 Dual Derivations of the $m \times m$ Overlap System & Ring Invertibility
+
+To compute $C_1(x), \dots, C_m(x)$, we define the **proper overlap set** $\operatorname{Overlap}(P_i, P_j)$ and **full overlap set** $\operatorname{Overlap}^+(P_i, P_j)$ between $P_i$ on the left and $P_j$ on the right:
+$$\operatorname{Overlap}(P_i, P_j) = \Bigl\{ k \in \{1, \dots, \min(|P_i|, |P_j|)\} \setminus \bigl\{|P_i| \text{ if } i = j\bigr\} \;\Big|\; P_i\bigl[|P_i|-k+1 .. |P_i|\bigr] = P_j[1..k] \Bigr\},$$
+$$\operatorname{Overlap}^+(P_i, P_j) = \Bigl\{ k \in \{1, \dots, \min(|P_i|, |P_j|)\} \;\Big|\; P_i\bigl[|P_i|-k+1 .. |P_i|\bigr] = P_j[1..k] \Bigr\},$$
+along with their **Overlap (Cross-Correlation) Polynomials** (`互相关多项式`):
+$$\widetilde{C}_{i,j}(x) = \sum_{k \in \operatorname{Overlap}(P_i, P_j)} x^{|P_j| - k}, \qquad C_{i,j}(x) = \delta_{i,j} + \widetilde{C}_{i,j}(x) = \sum_{k \in \operatorname{Overlap}^+(P_i, P_j)} x^{|P_j| - k}. \tag{24.2}$$
+Notice the exponent $|P_j| - k$: when $P_j$ overlaps the tail of $P_i$ by $k$ characters, appending $P_j$ extends the word length by the remaining $|P_j| - k$ suffix characters $P_j[k+1..|P_j|]$.
+
+::: {.callout-note title="Theorem 24.1 (Goulden–Jackson Cluster System & Guibas–Odlyzko End-Tagged Duality)"}
+Let $\mathcal{P} = \{P_1, \dots, P_m\}$ be an antichain of patterns over $\Sigma$ ($\sigma = |\Sigma|$), and let $\mathbf{C}(x) = [C_{i,j}(x)]_{1 \le i, j \le m}$.
+
+1. **Signed Cluster Linear System (Goulden–Jackson, 1979)**: The cluster generating functions $C_1(x), \dots, C_m(x)$ satisfy the $m \times m$ polynomial linear system:
+   $$\boxed{\sum_{i=1}^m C_i(x) C_{i,j}(x) = -x^{|P_j|} \quad \forall j \in \{1, \dots, m\}.} \tag{24.3}$$
+2. **Unsigned First-Hit End-Tagged System (Guibas–Odlyzko, 1981)**: Let $F_i(x)$ be the OGF of words that avoid $\mathcal{P}$ until their very last character, where they complete their **first** occurrence of a pattern in $\mathcal{P}$, namely $P_i$. Then $F(x)$ and $F_1(x), \dots, F_m(x)$ satisfy:
+   $$\boxed{(1 - \sigma x) F(x) + \sum_{i=1}^m F_i(x) = 1, \qquad \sum_{i=1}^m F_i(x) C_{i,j}(x) = F(x) x^{|P_j|} \quad \forall j \in \{1, \dots, m\},} \tag{24.4}$$
+   and the exact duality identity $\dfrac{F_i(x)}{F(x)} = -C_i(x)$ holds for every $1 \le i \le m$.
+3. **Commutative Ring Invertibility Invariant**: Over *any* commutative ring $\mathcal{R}$ (regardless of characteristic), $\mathbf{C}(0) = I_m$, so $\det \mathbf{C}(x) \in 1 + x \mathcal{R}[x]$ is a **unit** in $\mathcal{R}[[x]]$ and the system (24.3) has a unique solution $C_i(x) \in \mathcal{R}[[x]]$.
+:::
+
+#### Dual Proof of Theorem 24.1
+
+- **Proof of (1) via Signed Cluster Peeling**: Every cluster ending with $P_j$ falls into one of two disjoint cases:
+  - *Base Case ($s = 1$)*: The cluster consists of the single marked occurrence $P_j$ alone, contributing $(-1)^1 x^{|P_j|} = -x^{|P_j|}$.
+  - *Inductive Step ($s \ge 2$)*: Stripping the rightmost marked occurrence $P_j$ leaves a valid smaller cluster ending with some $P_i$ (counted by $C_i(x)$), which overlaps $P_j$ along a proper suffix-prefix match $k \in \operatorname{Overlap}(P_i, P_j)$. Appending $P_j$ adds $|P_j| - k$ characters and multiplies the sign by $-1$, contributing $-C_i(x) x^{|P_j|-k}$.
+  Summing over all $i$ and $k \in \operatorname{Overlap}(P_i, P_j)$ yields $C_j(x) = -x^{|P_j|} - \sum_{i=1}^m C_i(x) \widetilde{C}_{i,j}(x)$. Moving the sum to the left and using $\delta_{i,j} + \widetilde{C}_{i,j}(x) = C_{i,j}(x)$ gives (24.3).
+- **Proof of (2) via Unsigned End-Tagging**:
+  - First, take any $\mathcal{P}$-avoiding word $W$ (counted by $F(x)$) and append one character $c \in \Sigma$ (total GF $\sigma x F(x)$). The extended word $Wc$ is either a non-empty $\mathcal{P}$-avoiding word (GF $F(x) - 1$) or hits $\mathcal{P}$ for the very first time at its right end as some $P_i$ (GF $\sum_{i=1}^m F_i(x)$). Thus $1 + \sigma x F(x) = F(x) + \sum_{i=1}^m F_i(x)$, proving the first identity of (24.4).
+  - Second, take any $\mathcal{P}$-avoiding word $W$ and append the entire pattern $P_j$ (total GF $F(x) x^{|P_j|}$). Because $W P_j$ ends with $P_j$, it certainly contains at least one occurrence of $\mathcal{P}$. Look at the **earliest** occurrence of any pattern $P_i \in \mathcal{P}$ inside $W P_j$: since $W$ avoids $\mathcal{P}$ and $\mathcal{P}$ is an antichain, this first occurrence $P_i$ must start inside $W$ (or at the start of $P_j$) and end at some prefix $P_j[1..k]$ of $P_j$, where $k \in \operatorname{Overlap}^+(P_i, P_j)$! The prefix of $W P_j$ up to the end of $P_i$ is counted by $F_i(x)$, and the remaining suffix $P_j[k+1..|P_j|]$ is fixed of length $|P_j| - k$ (weight $x^{|P_j|-k}$). Summing over $i$ and $k$ gives $\sum_{i=1}^m F_i(x) C_{i,j}(x) = F(x) x^{|P_j|}$. Dividing by $F(x)$ shows that $(-F_i(x)/F(x))_{i=1}^m$ satisfies (24.3), so $F_i(x)/F(x) = -C_i(x)$ by uniqueness!
+- **Proof of (3) (Ring Invertibility)**: Because $\mathcal{P}$ is an antichain, for $i \ne j$ no overlap $k \in \operatorname{Overlap}^+(P_i, P_j)$ can equal $|P_j|$ (otherwise $P_j$ would be a suffix of $P_i$). Thus $|P_j| - k \ge 1$ for all $i \ne j$, meaning $C_{i,j}(0) = 0$ for $i \ne j$. For $i = j$, $k = |P_j|$ contributes $x^0 = 1$ while proper borders $k < |P_j|$ contribute positive powers of $x$, so $C_{j,j}(0) = 1$. Hence $\mathbf{C}(0) = I_m$ and $\det \mathbf{C}(0) = 1 \in \mathcal{R}^\times$. $\blacksquare$
+
+---
+
+### 1.4 Single-Pattern Closed Form & The Rank-1 Sherman–Morrison Reduction
+
+For a single pattern $P$ ($m = 1, L = |P|$), $\operatorname{Overlap}^+(P, P) = \operatorname{Borders}^+(P) = \operatorname{Border}(P) \cup \{L\}$ by Period–Border Duality ([Theorem 1.1](ch01-fine-wilf-periodicity-orbits.qmd)), so the autocorrelation polynomial is $C_P(x) = \sum_{k \in \operatorname{Borders}^+(P)} x^{L - k} = \sum_{p \in \operatorname{Per}^+(P)} x^p$ (with $p = 0$ giving $x^0 = 1$). Solving $C_1(x) C_P(x) = -x^L$ and substituting into (24.1) and (24.4) yields:
+$$\boxed{F(x) = \frac{C_P(x)}{(1 - \sigma x) C_P(x) + x^L}, \qquad F_1(x) = \frac{x^L}{(1 - \sigma x) C_P(x) + x^L}.} \tag{24.5}$$
+
+For $m \ge 2$ patterns, writing $u_i(x) = -C_i(x) = F_i(x)/F(x)$ converts (24.3) into the vector equation $\mathbf{u}(x)^T \mathbf{C}(x) = \mathbf{x}^T$, where $\mathbf{x} = (x^{|P_1|}, \dots, x^{|P_m|})^T$. Substituting $\sum_{i=1}^m u_i(x) = \mathbf{x}^T \mathbf{C}(x)^{-1} \mathbf{1}$ into $F(x) = \bigl(1 - \sigma x + \sum_{i=1}^m u_i(x)\bigr)^{-1}$ and applying the **Sherman–Morrison–Woodbury Matrix Determinant Lemma** ($\det(A + \mathbf{v}\mathbf{w}^T) = \det(A)(1 + \mathbf{w}^T A^{-1} \mathbf{v})$) gives the explicit rational determinantal form:
+$$\boxed{F(x) = \frac{\det \mathbf{C}(x)}{(1 - \sigma x)\det \mathbf{C}(x) + \mathbf{x}^T \operatorname{adj}\bigl(\mathbf{C}(x)\bigr)\mathbf{1}}, \qquad F_i(x) = \frac{\bigl(\mathbf{x}^T \operatorname{adj}(\mathbf{C}(x))\bigr)_i}{(1 - \sigma x)\det \mathbf{C}(x) + \mathbf{x}^T \operatorname{adj}\bigl(\mathbf{C}(x)\bigr)\mathbf{1}}.} \tag{24.6}$$
+Since the $j$-th column of $\mathbf{C}(x)$ has polynomial degree at most $|P_j|$, Equation (24.6) proves that the rational generating function $F(x) = P(x)/Q(x)$ has denominator degree $\deg Q(x) \le 1 + \sum_{j=1}^m (|P_j| - 1) \le \sum_{j=1}^m |P_j|$!
+
+---
+
+## 2. Bivariate $(t-1)$ Cluster Sieve, Exact $k$-Occurrence FPS & Extensions (`T-4A-02`)
+
+### 2.1 The Bivariate $(t-1)$ Cluster Sieve & Exact $k$-Occurrence Rational GF
+
+What if we do not want to forbid $\mathcal{P}$, but instead want to count words $W \in \Sigma^n$ containing **exactly $k$ occurrences** of a pattern $P$ (or weight each occurrence of $P_i$ by a formal variable $t_i$)? Define the multivariate occurrence generating function
+$$F(x; t_1, \dots, t_m) = \sum_{W \in \Sigma^*} x^{|W|} \prod_{i=1}^m t_i^{\operatorname{occ}_i(W)}.$$
+
+Instead of building a larger automaton that counts up to $k$ occurrences, apply the **$(t_i - 1)$ Binomial Taylor Shift** ([FPS Chapter 08](../../fps/chapters/ch08-connected-component-ie-rook-goulden-jackson.qmd)): rewrite each occurrence weight $t_{\operatorname{pat}(e)} = 1 + (t_{\operatorname{pat}(e)} - 1)$ and expand the product over all $e \in \operatorname{Occ}(W)$:
+$$\prod_{e \in \operatorname{Occ}(W)} \Bigl(1 + \bigl(t_{\operatorname{pat}(e)} - 1\bigr)\Bigr) = \sum_{M \subseteq \operatorname{Occ}(W)} \prod_{e \in M} \bigl(t_{\operatorname{pat}(e)} - 1\bigr).$$
+This is the **exact same sum over marked words $(W, M)$** as in Section 1.2, except that each marked occurrence of $P_j$ in $M$ carries weight **$(t_j - 1)$** instead of $-1$! When $\mathcal{P}$ is an antichain, replacing $-1$ by $(t_j - 1)$ in (24.3) immediately gives the **Weighted Goulden–Jackson System**:
+$$\boxed{\sum_{i=1}^m C_i(x; \mathbf{t}) \Bigl(\delta_{i,j} - (t_j - 1)\widetilde{C}_{i,j}(x)\Bigr) = (t_j - 1) x^{|P_j|} \quad \forall j \in \{1, \dots, m\}.} \tag{24.7}$$
+
+Now specialize (24.7) to a single pattern $P$ of length $L = |P|$ with autocorrelation polynomial $C_P(x) = 1 + \widetilde{C}_P(x)$. Solving (24.7) for $C_1(x, t) = \frac{(t - 1) x^L}{1 - (t - 1)(C_P(x) - 1)}$ and substituting into $F(x, t) = \frac{1}{1 - \sigma x - C_1(x, t)}$ yields:
+$$F(x, t) = \frac{1 - (t - 1)\bigl(C_P(x) - 1\bigr)}{(1 - \sigma x)\Bigl(1 - (t - 1)\bigl(C_P(x) - 1\bigr)\Bigr) - (t - 1) x^L} = \frac{C_P(x) - t\bigl(C_P(x) - 1\bigr)}{D_0(x) - t D_1(x)}, \tag{24.8}$$
+where we define the two fundamental denominator polynomials of $P$:
+$$D_0(x) = (1 - \sigma x) C_P(x) + x^L, \qquad D_1(x) = (1 - \sigma x)\bigl(C_P(x) - 1\bigr) + x^L = D_0(x) - (1 - \sigma x). \tag{24.9}$$
+
+::: {.callout-important title="Theorem 24.2 (Exact $k$-Occurrence Rational OGF & The $D_1(0) = 0$ Valuation Invariant)"}
+For any single pattern $P \in \Sigma^L$ and integer $k \ge 1$, the ordinary generating function $F_k(x) = [t^k] F(x, t)$ of words containing **exactly $k$** (possibly overlapping) occurrences of $P$ is:
+$$\boxed{F_k(x) = [t^k] F(x, t) = \frac{x^L \, D_1(x)^{k-1}}{D_0(x)^{k+1}} = \frac{x^L \Bigl((1 - \sigma x)\bigl(C_P(x) - 1\bigr) + x^L\Bigr)^{k-1}}{\Bigl((1 - \sigma x) C_P(x) + x^L\Bigr)^{k+1}}.} \tag{24.10}$$
+Furthermore, while $D_0(0) = 1$, the polynomial $D_1(x)$ satisfies **$D_1(0) = 0$**, and its lowest nonzero term has exact degree equal to the shortest period of $P$:
+$$\boxed{\operatorname{val}_x\bigl(D_1(x)\bigr) = d_{\min} = \operatorname{per}(P) = L - \pi[L] \ge 1, \qquad [x^{d_{\min}}] D_1(x) = 1.}$$
+Consequently, $F_k(x) = 0 \bmod x^{N+1}$ whenever $L + (k - 1) d_{\min} > N$, and to compute $D_1(x)^{k-1} \bmod x^{N+1}$ via FPS $\ln/\exp$, one **must** first factor out $x^{d_{\min}}$ by writing $D_1(x) = x^{d_{\min}} \widehat{D}_1(x)$ with $\widehat{D}_1(0) = 1$.
+:::
+
+#### Dual Proof of Theorem 24.2 (Algebraic Extraction & Bijective 3-Piece Decomposition)
+
+1. **Algebraic Proof**: Expand (24.8) as a geometric series in $t$:
+   $$F(x, t) = \frac{C_P(x) - t(C_P(x) - 1)}{D_0(x)\bigl(1 - t \frac{D_1(x)}{D_0(x)}\bigr)} = \frac{C_P(x)}{D_0(x)} + \sum_{k \ge 1} t^k \, \frac{C_P(x) D_1(x) - (C_P(x) - 1) D_0(x)}{D_0(x)^2} \left(\frac{D_1(x)}{D_0(x)}\right)^{k-1}.$$
+   Using $D_0(x) - D_1(x) = 1 - \sigma x$, the numerator simplifies via a direct cancellation:
+   $$C_P(x) D_1(x) - \bigl(C_P(x) - 1\bigr) D_0(x) = D_0(x) - C_P(x)\bigl(D_0(x) - D_1(x)\bigr) = D_0(x) - (1 - \sigma x)C_P(x) = x^L,$$
+   which yields (24.10).
+2. **Bijective 3-Piece Word Decomposition**: Why is $F_k(x) = \frac{x^L}{D_0(x)} \cdot \left(\frac{D_1(x)}{D_0(x)}\right)^{k-1} \cdot \frac{1}{D_0(x)}$? Cut any word $W$ containing *exactly* $k \ge 1$ occurrences of $P$ at the right endpoints $r_1 < r_2 < \dots < r_k$ of those $k$ occurrences:
+   - **Piece 1 (Prefix up to the 1st occurrence $r_1$)**: By (24.5), $F_1^{\text{first}}(x) = \frac{x^L}{D_0(x)}$ counts prefixes ending at the first occurrence of $P$.
+   - **Piece 2 ($k - 1$ Inter-Occurrence Transitions $r_q \to r_{q+1}$)**: After an occurrence of $P$ finishes at $r_q$, how can we extend the string so that $P$ occurs *at least once more*? Every non-empty extension either avoids $P$ forever or hits a next occurrence of $P$. By (24.5), after an occurrence of $P$ on the tape, the generating function of extensions that *never* complete another copy of $P$ is $\frac{1}{D_0(x)}$ (since any proper border of $P$ is already active on the tape!). Subtracting the $P$-free extensions $\frac{1}{D_0(x)}$ from all unrestricted extensions $\frac{1}{1 - \sigma x}$ and dividing by $\frac{1}{1 - \sigma x}$ (to stop at the *first* subsequent copy of $P$) gives the exact inter-occurrence transition factor:
+     $$T_{P \to P}(x) = 1 - \frac{1 - \sigma x}{D_0(x)} = \frac{D_0(x) - (1 - \sigma x)}{D_0(x)} = \frac{D_1(x)}{D_0(x)}!$$
+   - **Piece 3 (Suffix after the $k$-th occurrence $r_k$)**: After the $k$-th occurrence of $P$, the remaining suffix must never complete a $(k+1)$-th occurrence of $P$ (even using borders of the $k$-th copy of $P$), which is counted by $\frac{1}{D_0(x)}$.
+   Multiplying the three factors gives $\frac{x^L}{D_0(x)} \left(\frac{D_1(x)}{D_0(x)}\right)^{k-1} \frac{1}{D_0(x)} = \frac{x^L D_1(x)^{k-1}}{D_0(x)^{k+1}}$.
+3. **Proof of the Valuation Invariant**: Since $C_P(x) - 1 = \sum_{b \in \operatorname{Border}(P) \setminus \{0\}} x^{L - b} = x^{d_{\min}} + \text{higher terms}$ where $d_{\min} = L - \pi[L] = \operatorname{per}(P) \ge 1$, the lowest degree term in $(1 - \sigma x)(C_P(x) - 1) + x^L$ is $1 \cdot x^{d_{\min}}$ (even if $C_P(x) = 1$, where $d_{\min} = L$ comes from $+x^L$). $\blacksquare$
+
+---
+
+### 2.2 Non-Antichain Embedded Substring Weight Absorption
+
+When $\mathcal{P} = \{P_1, \dots, P_m\}$ is **not** an antichain ($P_i \subsetneq P_j$ for some $i \ne j$) and we are solving a weighted problem where $t_i \ne 0$, we **cannot** delete the super-pattern $P_j$! If we naively ran (24.7) on a non-antichain, a marked copy of $P_i$ strictly inside a marked copy of $P_j$ would be missed whenever $P_i$ is not a prefix or suffix of $P_j$.
+
+To restore the left-to-right chain property without extra automaton states, we restrict cluster chains to **maximal** marked intervals (no marked interval in the chain is a sub-interval of another) and **absorb** all subset choices of shorter patterns $P_i \subsetneq P_j$ into the weight of the enclosing super-pattern $P_j$:
+
+1. **Absorbed Single-Pattern Weight $\widetilde{W}_j$**: Every time $P_j$ appears as a maximal marked interval in a cluster, any occurrence $e$ of a shorter pattern $P_i \subsetneq P_j$ that lies completely inside $P_j$ can independently be marked (weight $t_i - 1$) or unmarked (weight $1$), summing to $1 + (t_i - 1) = t_i$. Thus the effective weight of marking $P_j$ is:
+   $$\boxed{\widetilde{W}_j = (t_j - 1) \prod_{P_i \subsetneq P_j} t_i^{\operatorname{occ}(P_i, P_j)}.} \tag{24.11}$$
+2. **Overlap Double-Count & Straddling Correction $\widetilde{C}_{a,b}^{\text{abs}}(x; \mathbf{t})$**: When two maximal marked patterns $P_a$ and $P_b$ overlap by $k \in \operatorname{Overlap}(P_a, P_b)$ characters ($P_a[|P_a|-k+1..|P_a|] = P_b[1..k]$, with neither containing the other), two adjustments occur at the junction $P_a P_b[k+1..|P_b|]$:
+   - Any occurrence of a pattern $P_i$ contained *entirely inside the overlap segment* $P_b[1..k]$ was multiplied into **both** $\widetilde{W}_a$ and $\widetilde{W}_b$, so we must divide by $t_i^{\operatorname{occ}(P_i,\, P_b[1..k])}$.
+   - Any occurrence of a pattern $P_i$ inside the merged word $P_a P_b[k+1..|P_b|]$ that **straddles** the junction (starts before $|P_a| - k + 1$ and ends after $|P_a|$, so it lies inside neither $P_a$ nor $P_b$ alone) must be multiplied in by $t_i$.
+   Hence the $(a, b)$ proper overlap polynomial becomes:
+   $$\boxed{\widetilde{C}_{a,b}^{\text{abs}}(x; \mathbf{t}) = \sum_{k \in \operatorname{Overlap}(P_a, P_b)} x^{|P_b| - k} \frac{\prod_{P_i \text{ straddling } (P_a, P_b, k)} t_i}{\prod_{P_i \subseteq P_b[1..k]} t_i^{\operatorname{occ}(P_i,\, P_b[1..k])}}.} \tag{24.12}$$
+
+---
+
+### 2.3 Cyclic / Necklace Goulden–Jackson Cluster Method
+
+Suppose we want to count **circular strings** of length $n$ (indexed $1, 2, \dots, n \pmod n$) that avoid $\mathcal{P} = \{P_1, \dots, P_m\}$, including occurrences that wrap across the cyclic boundary $n \to 1$. When $V = \sum |P_i| \approx 10^5$, computing $\operatorname{Tr}(M_{\text{AC}}^n)$ is impossible.
+
+How do marked words behave on a circle of length $n \ge \max |P_i|$?
+
+1. **Non-Wrapping Rooted Clusters (Logarithmic Derivative)**: Any linear cluster of length $L \le n$ can be placed on the circle in $n$ ways, and in $L$ of those placements the cluster covers the root position $1$. Thus, circular configurations where clusters do not wrap all the way around the circle are generated by applying the root-marking operator $x \frac{d}{dx} \ln(\cdot)$ to $F(x) = (1 - \sigma x - C(x))^{-1}$:
+   $$x \frac{d}{dx} \ln \frac{1}{1 - \sigma x - C(x)} = \frac{\sigma x + x C'(x)}{1 - \sigma x - C(x)} = -x \frac{Q'(x)}{Q(x)},$$
+   where $Q(x) = (1 - \sigma x)\det \mathbf{C}(x) + \mathbf{x}^T \operatorname{adj}(\mathbf{C}(x))\mathbf{1}$ is the rational denominator of $F(x)$ from (24.6)!
+2. **All-Wrapping Circular Clusters (Seam Trace Correction)**: When a cluster of $s \ge 1$ overlapping marked patterns wraps around the circle of length $n$ so that the tail of the last pattern $P_{i_s}$ overlaps the head of the first pattern $P_{i_1}$ across the seam $n \to 1$, the cluster is a closed cycle of proper overlap transitions $(-\widetilde{\mathbf{C}}(x))$! Including the $L - k$ rotation offset across the seam gives the trace $\operatorname{Tr}\Bigl(\bigl(-x \frac{d}{dx} \widetilde{\mathbf{C}}(x)\bigr)\bigl(I_m + \widetilde{\mathbf{C}}(x)\bigr)^{-1}\Bigr) = -x \frac{d}{dx} \ln \det \mathbf{C}(x)$. Combining both pieces shows that for all $n \ge \max |P_i|$, the cyclic avoidance count $a_n^{\text{cyc}}$ is simply the negative power sum of the roots of the rational denominator $Q(x)$:
+   $$\boxed{\sum_{n \ge \max |P_i|} a_n^{\text{cyc}} x^n = -x \frac{Q'(x)}{Q(x)} \pmod{\text{terms of degree } < \max |P_i|}.} \tag{24.13}$$
+
+---
+
+## 3. The $t = 1 + u$ Binomial Moment Shift for Huge $n \le 10^{18}$ (`T-4A-03`)
+
+### 3.1 The Diagnostic Signal: Why Expanding Around $t = 0$ Fails for Moments at $n \le 10^{18}$
+
+Consider the following `Universal Cup` / `QOJ` master problem: given a single pattern $P$ of length $L = |P| \le 10^5$, a small integer $K \le 20$, and a massive string length $n \le 10^{18}$, compute the **$K$-th moment of pattern occurrences**
+$$M_K(n) = \sum_{W \in \Sigma^n} \bigl(\operatorname{occ}_P(W)\bigr)^K \bmod 998244353.$$
+
+Why does Theorem 24.2 ($[t^k] F(x, t) = \frac{x^L D_1(x)^{k-1}}{D_0(x)^{k+1}}$) fail here?
+
+- Expanding around **$t = 0$** isolates words with *exactly $k$* occurrences, where $k$ can be as large as $n \approx 10^{18}$.
+- Even if we differentiate $F(x, t)$ $K$ times with respect to $t$ at $t = 1$, a naive rational-function differentiation keeps powers of $D_0(x) - D_1(x)$ and $D_1(x)$ mixed together unless we reorganize the expansion variable from the very beginning!
+
+**The $t = 1 + u$ Binomial Moment Shift**: Instead of expanding $F(x, t)$ in powers of $t$ around $t = 0$, substitute **$t = 1 + u$** ($u = t - 1$, expanding around $t = 1$)!
+
+- **Combinatorial Meaning**: Because $t^{\operatorname{occ}_P(W)} = (1 + u)^{\operatorname{occ}_P(W)} = \sum_{j \ge 0} \binom{\operatorname{occ}_P(W)}{j} u^j$, the coefficient $[x^n u^j] F(x, 1 + u)$ counts pairs $(W, S)$ where $W \in \Sigma^n$ is a word and $S \subseteq \operatorname{Occ}_P(W)$ is a **designated subset of $j$ occurrences of $P$** in $W$:
+  $$B_j(n) = [x^n u^j] F(x, 1 + u) = \sum_{W \in \Sigma^n} \binom{\operatorname{occ}_P(W)}{j}.$$
+- **Algebraic Denominator Collapse**: In the first expression of (24.8), $(t - 1)$ is literally $u$! At $u = 0$, all cluster terms vanish and the denominator reduces from $D_0(x)$ (degree $L$) to the **degree-1 polynomial $1 - \sigma x$**!
+
+::: {.callout-important title="Theorem 24.3 (The $t = 1 + u$ Binomial Moment Shift & Denominator Collapse)"}
+For any pattern $P \in \Sigma^L$, substituting $t = 1 + u$ into the bivariate generating function $F(x, t)$ yields:
+$$\boxed{F(x, 1 + u) = \frac{1}{1 - \sigma x} + \sum_{j \ge 1} u^j \, \frac{x^L \, D_1(x)^{j-1}}{(1 - \sigma x)^{j+1}},} \tag{24.14}$$
+where $D_1(x) = (1 - \sigma x)\bigl(C_P(x) - 1\bigr) + x^L$ has degree $L$. Consequently, for every $j \ge 1$, the $j$-th binomial moment $B_j(n) = \sum_{W \in \Sigma^n} \binom{\operatorname{occ}_P(W)}{j}$ is extracted from a polynomial $A_j(x) = x^L D_1(x)^{j-1}$ of degree $jL$ divided by **$(1 - \sigma x)^{j+1}$**:
+$$\boxed{B_j(n) = [x^n] \frac{x^L D_1(x)^{j-1}}{(1 - \sigma x)^{j+1}} = \sum_{d=L}^{\min(n,\, jL)} \bigl([x^d] x^L D_1(x)^{j-1}\bigr) \binom{n - d + j}{j} \sigma^{n - d},} \tag{24.15}$$
+and the $K$-th power moment $M_K(n)$ is recovered via Stirling numbers of the second kind $\left\{\begin{matrix} K \\ j \end{matrix}\right\}$ in **$O\bigl(KL \log(KL)\bigr)$ total time, completely independent of $n \le 10^{18}$**:
+$$\boxed{M_K(n) = \sum_{W \in \Sigma^n} \bigl(\operatorname{occ}_P(W)\bigr)^K = \sum_{j=0}^K \left\{\begin{matrix} K \\ j \end{matrix}\right\} j! \, B_j(n).} \tag{24.16}$$
+:::
+
+#### Proof of Theorem 24.3
+Set $u = t - 1$ in Equation (24.8):
+$$\begin{aligned}
+F(x, 1 + u)
+&= \frac{1 - u\bigl(C_P(x) - 1\bigr)}{(1 - \sigma x)\Bigl(1 - u\bigl(C_P(x) - 1\bigr)\Bigr) - u x^L}
+= \frac{1 - u\bigl(C_P(x) - 1\bigr)}{(1 - \sigma x) - u\Bigl((1 - \sigma x)\bigl(C_P(x) - 1\bigr) + x^L\Bigr)} \\
+&= \frac{1 - u\bigl(C_P(x) - 1\bigr)}{(1 - \sigma x) - u D_1(x)}
+= \frac{1}{1 - \sigma x} \cdot \frac{1 - u\bigl(C_P(x) - 1\bigr)}{1 - u \frac{D_1(x)}{1 - \sigma x}}.
+\end{aligned}$$
+Expanding $\bigl(1 - u \frac{D_1(x)}{1 - \sigma x}\bigr)^{-1} = \sum_{j \ge 0} u^j \frac{D_1(x)^j}{(1 - \sigma x)^j}$, the coefficient of $u^j$ for $j \ge 1$ is:
+$$[u^j] F(x, 1 + u) = \frac{D_1(x)^j - (1 - \sigma x)\bigl(C_P(x) - 1\bigr) D_1(x)^{j-1}}{(1 - \sigma x)^{j+1}} = \frac{\Bigl(D_1(x) - (1 - \sigma x)\bigl(C_P(x) - 1\bigr)\Bigr) D_1(x)^{j-1}}{(1 - \sigma x)^{j+1}} = \frac{x^L D_1(x)^{j-1}}{(1 - \sigma x)^{j+1}}.$$
+Why does this make combinatorially intuitive sense? Choosing $j \ge 1$ occurrences of $P$ in $W[1..n]$ places the first chosen copy of $P$ ($x^L$), then steps $(j - 1)$ times from one chosen copy of $P$ to the next—either overlapping along a proper border of $P$ without free intermediate characters ($(1 - \sigma x)(C_P(x) - 1)$ cancels one $(1 - \sigma x)$ gap!) or jumping across a gap of arbitrary free characters ($x^L$)—leaving $(j + 1)$ gaps of completely unrestricted characters $(1 - \sigma x)^{-(j+1)}$ before, between, and after the $j$ clusters! Since $[x^{n-d}](1 - \sigma x)^{-(j+1)} = \binom{n - d + j}{j} \sigma^{n - d}$, Equation (24.15) follows immediately, and using $m^K = \sum_{j=0}^K \left\{\begin{matrix} K \\ j \end{matrix}\right\} j! \binom{m}{j}$ yields (24.16). $\blacksquare$
+
+---
+
+## 4. Reverse-Engineering Scratchpad, Algorithmic Contracts & Boundary Pitfalls (`BP-22` / `BP-24-01`–`BP-24-03` / `BP-4A-01`–`BP-4A-03`)
+
+### 4.1 Hand-Checked Trace: Border Clustering Density (`aba` vs. `aaa`) & Exact $k = 1$ Occurrence
+
+Why does a pattern with **more** borders have **more** avoiding strings of length $n$? Let us trace Equation (24.5) by hand on $P_1 = \texttt{aba}$ vs. $P_2 = \texttt{aaa}$ ($L = 3, \sigma = 2$):
+
+| Pattern $P$ | $\operatorname{Borders}^+(P)$ | Autocorrelation $C_P(x)$ | Avoidance OGF $F_P(x) = \dfrac{C_P(x)}{(1 - 2x)C_P(x) + x^3}$ | Series Expansion $a_0 + a_1 x + a_2 x^2 + a_3 x^3 + a_4 x^4 + a_5 x^5$ |
+| :---: | :---: | :---: | :---: | :--- |
+| $\texttt{aba}$ | $\{3, 1\}$ | $1 + x^2$ | $\dfrac{1 + x^2}{1 - 2x + x^2 - x^3}$ | $1 + 2x + 4x^2 + 7x^3 + \mathbf{12}x^4 + \mathbf{21}x^5 + \cdots$ |
+| $\texttt{aaa}$ | $\{3, 2, 1\}$ | $1 + x + x^2$ | $\dfrac{1 + x + x^2}{1 - x - x^2 - x^3}$ | $1 + 2x + 4x^2 + 7x^3 + \mathbf{13}x^4 + \mathbf{24}x^5 + \cdots$ |
+
+- **At $n = 4$**: Because $\texttt{aaa}$ has a length-$2$ border ($x^1 \in C_{\texttt{aaa}}(x)$), the two copies of $\texttt{aaa}$ in $\texttt{aaaa}$ overlap at `[1..3]` and `[2..4]` (a size-$2$ cluster of weight $(-1)^2 x^4 = +x^4$!). Thus only $3$ words of length $4$ contain $\texttt{aaa}$ ($\texttt{aaaa}, \texttt{aaab}, \texttt{baaa}$), leaving $16 - 3 = 13$ avoiding words. By contrast, $\texttt{aba}$ has no length-$2$ border, so its $4$ bad words ($\texttt{abaa}, \texttt{abab}, \texttt{aaba}, \texttt{baba}$) are completely disjoint at $n = 4$, leaving $16 - 4 = 12$ avoiding words.
+- **Exact $k = 1$ Occurrence of $P = \texttt{aa}$ ($L = 2, \sigma = 2$) via Theorem 24.2**:
+  Here $C_{\texttt{aa}}(x) = 1 + x$, $D_0(x) = (1 - 2x)(1 + x) + x^2 = 1 - x - x^2$, and $D_1(x) = (1 - 2x)x + x^2 = x - x^2$ (note $d_{\min} = \operatorname{per}(\texttt{aa}) = 1$). By (24.10):
+  $$F_1(x) = \frac{x^2 D_1(x)^0}{D_0(x)^2} = \frac{x^2}{(1 - x - x^2)^2} = x^2 + 2x^3 + 5x^4 + 10x^5 + \cdots$$
+  At $n = 3$, $[x^3]F_1(x) = 2$ counts $\texttt{aab}, \texttt{baa}$ (excluding $\texttt{aaa}$, which has $2$ overlapping copies of $\texttt{aa}$!). At $n = 4$, $[x^4]F_1(x) = 5$ counts $\texttt{aaba}, \texttt{aabb}, \texttt{baab}, \texttt{abaa}, \texttt{bbaa}$.
+
+---
+
+### 4.2 Non-Standard Implementation Contract: Valuation-Shifted Exact-$k$ FPS & $t = 1 + u$ Moment Solver
+
+We omit standard NTT, `poly_inv`, `poly_ln`, and `poly_exp` templates (assumed in the reader's library) and isolate the two non-standard kernels: (1) the **$x^{d_{\min}}$ valuation shift** for $F_k(x) \bmod x^{N+1}$, and (2) the **$O(KL \log(KL))$ Binomial Moment Shift** for $n \le 10^{18}$.
+
+```cpp
+// Non-Standard Kernel 1: Exact k occurrences of P in length <= N via Theorem 24.2
+// Assumes Poly supports .inv(deg), .ln(deg), .exp(deg), and operator* (NTT).
+Poly exact_k_occurrences_ogf(const vector<int>& borders_plus, int L, int N, long long k, Mint sigma) {
+    Poly C_P(L + 1, 0);
+    for (int b : borders_plus) C_P[L - b] += 1; // b = L gives C_P[0] = 1
+    Poly one_minus_sx = {1, -sigma};
+    Poly D0 = (one_minus_sx * C_P).sliced(L + 1);
+    D0[L] += 1;
+    if (k == 0) return (C_P * D0.inv(N + 1)).sliced(N + 1);
+
+    Poly C_proper = C_P; C_proper[0] -= 1;
+    Poly D1 = (one_minus_sx * C_proper).sliced(L + 1);
+    D1[L] += 1;
+    // CRITICAL INVARIANT: D1[0] == 0; find d_min = per(P) >= 1 before poly_ln!
+    int d_min = 1;
+    while (d_min <= L && D1[d_min].v == 0) ++d_min;
+    if (k - 1 > (N - L) / d_min) return Poly(N + 1, 0); // degree exceeds N
+
+    int shift = L + (int)((k - 1) * d_min);
+    int rem = N - shift;
+    Poly D1_hat(rem + 1, 0);
+    for (int i = 0; i <= rem && i + d_min <= L; ++i) D1_hat[i] = D1[i + d_min];
+
+    // Compute D1_hat^{k-1} * D0^{-(k+1)} mod x^{rem+1} via single ln + exp
+    Poly log_num = (D1_hat.ln(rem + 1)) * Mint(k - 1);
+    Poly log_den = (D0.sliced(rem + 1).ln(rem + 1)) * Mint(k + 1);
+    Poly core = (log_num - log_den).exp(rem + 1);
+
+    Poly F_k(N + 1, 0);
+    for (int i = 0; i <= rem; ++i) F_k[i + shift] = core[i];
+    return F_k;
+}
+
+// Non-Standard Kernel 2: Sum_{W in Sigma^n} occ_P(W)^K for huge n <= 10^18 (Theorem 24.3)
+Mint kth_occurrence_moment_huge_n(const Poly& D1, int L, long long n, int K, Mint sigma) {
+    if (K == 0) return sigma.pow(n);
+    if (n < L) return 0;
+    vector<vector<Mint>> S2(K + 1, vector<Mint>(K + 1, 0));
+    S2[0][0] = 1;
+    for (int i = 1; i <= K; ++i)
+        for (int j = 1; j <= i; ++j)
+            S2[i][j] = S2[i - 1][j - 1] + Mint(j) * S2[i - 1][j];
+
+    Poly cur = {1}; // cur = D1(x)^{j-1}, degree (j-1)*L
+    Mint ans = 0, fact_j = 1, inv_sigma = sigma.inv();
+    for (int j = 1; j <= K; ++j) {
+        fact_j *= Mint(j);
+        if (j > 1) cur = cur * D1; // degree <= (K-1)*L
+        int max_d = (int)min<long long>(n, 1LL * j * L);
+        // Maintain binom(n - d + j, j) and sigma^{n - d} incrementally from d = L..max_d
+        Mint binom_val = 1;
+        for (int r = 1; r <= j; ++r)
+            binom_val = binom_val * Mint((n - L + r) % MOD) * Mint(r).inv();
+        Mint sig_pow = sigma.pow(n - L);
+        Mint B_j = 0;
+        for (int d = L; d <= max_d; ++d) {
+            Mint coeff = cur[d - L]; // [x^d] (x^L * D1(x)^{j-1})
+            if (coeff.v != 0) B_j += coeff * binom_val * sig_pow;
+            // Step d -> d + 1: binom(n - d - 1 + j, j) = binom(n - d + j, j) * (n - d) / (n - d + j)
+            binom_val = binom_val * Mint((n - d) % MOD) * Mint((n - d + j) % MOD).inv();
+            sig_pow *= inv_sigma;
+        }
+        ans += S2[K][j] * fact_j * B_j;
+    }
+    return ans;
+}
+```
+
+---
+
+### 4.3 Boundary Pitfalls & Broken-Invariant Counterexamples
+
+::: {.callout-warning title="Three Classic Goulden–Jackson Failure Modes (BP-22 / BP-24-01–BP-24-03 / BP-4A-01–BP-4A-03)"}
+1. **The Non-Antichain Ghost-Cluster Bug (`BP-22` / `BP-24-01` / `BP-4A-01`)**: Suppose $\mathcal{P} = \{P_1 = \texttt{ab},\; P_2 = \texttt{aabb}\}$ over $\Sigma = \{\texttt{a}, \texttt{b}\}$ ($\sigma = 2$), and you build the $2 \times 2$ avoidance system (24.3) **without** deleting $P_2 \supset P_1$. Because $P_1 = \texttt{ab}$ is strictly internal to $P_2 = \texttt{aabb}$ (`a[ab]b`), $\operatorname{Overlap}^+(P_1, P_2) = \emptyset$ and $\operatorname{Overlap}^+(P_2, P_1) = \emptyset$! Thus the unreduced matrix is $\mathbf{C}(x) = I_2$, giving $C_1(x) = -x^2, C_2(x) = -x^4$, and $F_{\text{bug}}(x) = (1 - 2x + x^2 + x^4)^{-1} = 1 + 2x + 3x^2 + 4x^3 + \mathbf{4}x^4 + \cdots$. At $n = 4$, the true number of $\texttt{ab}$-avoiding binary words is $5$ ($\texttt{aaaa}, \texttt{baaa}, \texttt{bbaa}, \texttt{bbba}, \texttt{bbbb}$), because on $W = \texttt{aabb}$ the pair $M = \{P_1, P_2\}$ cannot be formed by suffix-prefix overlaps, leaving $\texttt{aabb}$ with net weight $1 + (-1)_{P_1} + (-1)_{P_2} = -1 \ne 0$! **Rule**: Always filter $\mathcal{P}$ to an antichain (for $t_i = 0$) or apply Section 2.2's weight absorption (for $t_i \ne 0$).
+2. **The Off-Diagonal Polynomial Pivot Trap (`BP-24-02` / `BP-4A-02`)**: When solving $\sum_{i=1}^m C_i(x) C_{i,j}(x) = -x^{|P_j|}$ via Gaussian elimination over $\mathbb{F}_p[[x]] \bmod x^{N+1}$, never swap rows/columns to pivot on an off-diagonal entry $C_{i,j}(x)$ ($i \ne j$)! By Theorem 24.1(3), $C_{i,j}(0) = 0$ for all $i \ne j$ whereas $C_{j,j}(0) = 1$, so **only the diagonal entry $C_{j,j}(x)$ is invertible in $\mathbb{F}_p[[x]]$**.
+3. **The $D_1(0) = 0$ `poly_ln` Crash (`BP-24-03` / `BP-4A-03`)**: In Theorem 24.2, $D_0(0) = 1$ is immediately ready for `poly_ln`, but $D_1(0) = (1 - 0)(1 - 1) + 0 = 0$ **always** has zero constant term! Calling `D1.ln()` without shifting by $d_{\min} = \operatorname{per}(P) = L - \pi[L]$ divides by zero at index $0$.
+:::
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Ladder (8 Non-Template Problems)
+
+### Tier 1 — Stepping Stone (`W4A-01`, `W4A-04`)
+
+#### Problem 24.1 (`W4A-01`) — `CSES 1112 / [HNOI2008] GT考试 — Single-Pattern Avoidance OGF & Bostan–Mori Extraction`
+
+- **Mathematical Statement**: Given an alphabet of size $\sigma$, a target length $N$, and a single forbidden pattern $P[1..L]$ ($L \le 10^5$), compute the number of length-$N$ words $W \in \Sigma^N$ containing **at least one** occurrence of $P$ (or avoiding $P$) modulo $998244353$, under two regimes: (a) for all $1 \le n \le N \le 10^5$, and (b) for a single huge $N \le 10^{18}$ with $L \le 5 \times 10^4$.
+- **Constraints**: $1 \le L \le 10^5$, $N \le 10^5$ (Regime a) or $N \le 10^{18}$ (Regime b), time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+For $L = 10^5$, building a KMP transition matrix of size $L \times L$ or running $O(N L)$ KMP DP is far too slow. How does the single-pattern Guibas–Odlyzko formula (24.5) compress all $L$ prefix states into a single rational function of degree $L$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 24.1** and Equation (24.5), the OGF of $P$-avoiding words is $F(x) = \frac{C_P(x)}{(1 - \sigma x)C_P(x) + x^L}$, where $C_P(x) = 1 + \sum_{k \in \operatorname{Border}(P) \setminus \{0\}} x^{L - k}$. The number of words of length $n$ containing $P$ at least once is $\sigma^n - [x^n] F(x)$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Compute $\pi[1..L]$ via KMP in $O(L)$ time and walk $k = \pi[L], \pi[\pi[L]], \dots > 0$ to populate $C_P(x)$. In Regime (a), compute $C_P(x) \cdot D_0(x)^{-1} \bmod x^{N+1}$ via NTT polynomial inversion in $O(N \log N)$. In Regime (b), extract $[x^N] \frac{C_P(x)}{D_0(x)}$ in $O(L \log L \log N)$ via Bostan–Mori.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4A-01`)"}
+1. **Diagnostic Signal**: $O(N L)$ KMP DP and $O(L^3 \log N)$ matrix exponentiation both fail when $L \le 10^5$.
+2. **Combinatorial Word Invariant**:
+   - Let $a_n = [x^n] F(x)$ count $P$-avoiding words of length $n$. By complementation, $\#\{W \in \Sigma^n : P \subseteq W\} = \sigma^n - a_n$.
+   - Every cluster of marked copies of $P$ is a chain where each copy overlaps the previous copy at a proper border $k \in \operatorname{Border}(P) \setminus \{0\}$, extending the length by $p = L - k \in \operatorname{Per}(P)$. Thus $C_P(x) = 1 + \sum_{k \in \operatorname{Border}(P)\setminus\{0\}} x^{L-k}$, and Equation (24.5) gives:
+     $$F(x) = \frac{C_P(x)}{D_0(x)}, \qquad D_0(x) = (1 - \sigma x) C_P(x) + x^L.$$
+3. **Algorithmic Compilation**:
+   - Run $O(L)$ KMP on $P$ to extract all borders $k = L, \pi[L], \pi[\pi[L]], \dots > 0$ and set `[x^{L-k}] C_P(x) = 1`.
+   - Form $D_0(x) = (1 - \sigma x) C_P(x) + x^L$ of degree $L$ with $D_0(0) = 1$.
+   - For Regime (a) ($N \le 10^5$), call `C_P * D0.inv(N + 1)` in $O(N \log N)$ time.
+   - For Regime (b) ($N \le 10^{18}$), pass $(C_P(x), D_0(x), N)$ to `bostan_mori(C_P, D0, N)` in $O(L \log L \log N)$ time.
+4. **Broken-Invariant Counterexample**: When $L = 1$, $C_P(x) = 1$ and $D_0(x) = (1 - \sigma x) + x = 1 - (\sigma - 1)x$. Make sure the $+x^L$ addition uses `D0[L] += 1` rather than overwriting `D0[L] = 1`!
+:::
+
+---
+
+#### Problem 24.2 (`W4A-04`) — `QOJ / UCup — Multi-Pattern Antichain Avoidance via m × m Goulden–Jackson System`
+
+- **Mathematical Statement**: Given $m \le 15$ forbidden patterns $P_1, \dots, P_m \in \Sigma^+$ with each $|P_i| \le 5000$ and target length $N \le 5 \times 10^4$, compute the number of length-$n$ words avoiding all $P_i \in \mathcal{P}$ modulo $998244353$ for every $1 \le n \le N$.
+- **Constraints**: $1 \le m \le 15$, $|P_i| \le 5000$, $N \le 5 \times 10^4$, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+The Aho–Corasick automaton has up to $\sum |P_i| = 7.5 \times 10^4$ states, so $O(N \sum |P_i|)$ DP takes $\approx 3.75 \times 10^9$ operations. However, $m \le 15$ is tiny!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+First filter $\mathcal{P}$ into an antichain by deleting any $P_j$ that contains some $P_i$ ($i \ne j$) as a substring. Then by **Theorem 24.1**, the cluster generating functions $C_1(x), \dots, C_m(x)$ satisfy the $m \times m$ polynomial system $\sum_{i=1}^m C_i(x) C_{i,j}(x) = -x^{|P_j|}$ over $\mathbb{F}_p[[x]] \bmod x^{N+1}$, with $\mathbf{C}(0) = I_m$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+**Key Observation**: Do you need to run Gaussian elimination on degree-$N$ polynomials (costing $O(m^3 N \log N)$), or can you solve the $m \times m$ polynomial matrix system using polynomials of degree at most $L_{\max} = \max |P_i|$? Since $\deg C_{i,j}(x) \le |P_j| \le 5000$, running fraction-free or rational Gaussian elimination (or solving modulo $x^{N+1}$ via NTT) takes only $O(m^2 \sum |P_i| + m^3 N \log N)$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4A-04`)"}
+1. **Diagnostic Signal**: Large $\sum |P_i| \le 7.5 \times 10^4$ vs. tiny pattern count $m \le 15$.
+2. **Combinatorial Word Invariant**:
+   - **Step 1 (Antichain Filtering)**: Remove duplicate patterns, then check pairwise substring containment via KMP in $O(m^2 L)$ time and discard any $P_j$ containing another $P_i$.
+   - **Step 2 (Cross-Correlation Matrix)**: For each ordered pair $(i, j)$, run KMP on $P_j \# P_i$ to find all overlap lengths $k \in \operatorname{Overlap}^+(P_i, P_j)$ and build $C_{i,j}(x) = \sum_{k \in \operatorname{Overlap}^+(P_i, P_j)} x^{|P_j| - k}$.
+   - **Step 3 (Diagonal-Pivot Elimination)**: By Theorem 24.1(3), $C_{j,j}(0) = 1$ and $C_{i,j}(0) = 0$ ($i \ne j$). Solve $\mathbf{C}(x)^T \mathbf{c}(x) = -\mathbf{x}$ modulo $x^{N+1}$ by pivoting strictly on the $j$-th diagonal entry $C_{j,j}(x)$ via `C[j][j].inv(N + 1)`!
+3. **Algorithmic Compilation**:
+   - In the $j$-th step of Gaussian elimination ($1 \le j \le m$), compute $I_j(x) = C_{j,j}(x)^{-1} \bmod x^{N+1}$ once, normalize row $j$ of $\mathbf{C}^T$, and eliminate column $j$ from rows $r > j$ using NTT multiplication truncated to $x^{N+1}$.
+   - Finally, compute $F(x) = \bigl(1 - \sigma x - \sum_{i=1}^m C_i(x)\bigr)^{-1} \bmod x^{N+1}$. Total time: $O(m^2 L + m^3 N \log N)$.
+4. **Broken-Invariant Counterexample (`BP-4A-01` & `BP-4A-02`)**: Skipping Step 1 (antichain filtering) or pivoting on an off-diagonal entry $C_{i,j}(x)$ ($i \ne j$, which has $C_{i,j}(0) = 0$) breaks the solver.
+:::
+
+---
+
+### Tier 2 — Intermediate (`W4A-08`, `W4A-22`)
+
+#### Problem 24.3 (`W4A-08`) — `UOJ / QOJ — Counting Words of Length N with Exactly k Pattern Occurrences`
+
+- **Mathematical Statement**: Given alphabet size $\sigma$, pattern $P$ of length $L \le 5 \times 10^4$, maximum length $N \le 10^5$, and target count $k$ ($0 \le k \le N$), output for every $n \in [1, N]$ the number of words $W \in \Sigma^n$ containing **exactly $k$** (possibly overlapping) occurrences of $P$, modulo $998244353$.
+- **Constraints**: $1 \le L \le 5 \times 10^4$, $1 \le N \le 10^5$, $0 \le k \le N$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Tracking the number of occurrences $0 \dots k$ alongside the KMP state requires $O(N L k)$ time. Instead, we need the coefficient $[t^k] F(x, t)$ of the bivariate cluster generating function.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 24.2** (Equation 24.10), for $k \ge 1$, $F_k(x) = [t^k] F(x, t) = \frac{x^L D_1(x)^{k-1}}{D_0(x)^{k+1}}$, where $D_0(x) = (1 - \sigma x)C_P(x) + x^L$ and $D_1(x) = (1 - \sigma x)(C_P(x) - 1) + x^L$. Remember that $D_1(0) = 0$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Let $d_{\min} = \operatorname{per}(P) = L - \pi[L] \ge 1$ be the lowest degree with $[x^{d_{\min}}] D_1(x) = 1$. Factor $D_1(x) = x^{d_{\min}} \widehat{D}_1(x)$ so $\widehat{D}_1(0) = 1$. Then $F_k(x) = x^{L + (k-1)d_{\min}} \exp\bigl((k-1)\ln \widehat{D}_1(x) - (k+1)\ln D_0(x)\bigr) \bmod x^{N+1}$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4A-08`)"}
+1. **Diagnostic Signal**: 2D KMP DP over `(length, kmp_state, count)` is $O(N L k)$, whereas FPS $\ln/\exp$ computes all $n \le N$ in $O(N \log N)$ independent of $k$.
+2. **Combinatorial Word Invariant**:
+   - For $k = 0$, $F_0(x) = C_P(x) / D_0(x)$.
+   - For $k \ge 1$, Theorem 24.2 gives $F_k(x) = \frac{x^L D_1(x)^{k-1}}{D_0(x)^{k+1}}$. Since $\operatorname{val}_x(D_1) = d_{\min} = L - \pi[L] \ge 1$, the minimum length of a word with $k$ occurrences of $P$ is $s = L + (k - 1) d_{\min}$ (achieved by overlapping $k$ copies of $P$ at its longest proper border $\pi[L]$!).
+3. **Algorithmic Compilation**:
+   - Directly execute `exact_k_occurrences_ogf` from Section 4.2: if $L + (k - 1) d_{\min} > N$, return the zero polynomial; otherwise shift $D_1(x)$ down by $d_{\min}$, evaluate $(k-1)\ln \widehat{D}_1(x) - (k+1)\ln D_0(x) \bmod x^{N - s + 1}$, exponentiate once, and shift up by $x^s$. Time: $O(L + N \log N)$.
+4. **Broken-Invariant Counterexample (`BP-4A-03`)**: Calling `poly_ln` on $D_1(x)$ without shifting by $d_{\min}$ divides by $D_1(0) = 0$.
+:::
+
+---
+
+#### Problem 24.4 (`W4A-22`) — `QOJ / AtCoder Style — At-Least-k & Modulo-r Pattern Occurrence Counting`
+
+- **Mathematical Statement**: Given a pattern $P \in \Sigma^L$ ($L \le 5 \times 10^4$) and $N \le 10^5$:
+  - **Part A**: Compute for all $n \le N$ the number of words $W \in \Sigma^n$ containing **at least $k$** occurrences of $P$ ($k \ge 1$).
+  - **Part B**: Given a small modulus $r \ge 2$ dividing $998244353 - 1$ (e.g., $r = 2^m$), compute for all $n \le N$ the number of words $W \in \Sigma^n$ whose number of occurrences of $P$ satisfies $\operatorname{occ}_P(W) \equiv c \pmod r$.
+- **Constraints**: $L \le 5 \times 10^4$, $N \le 10^5$, $r \le 16$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Summing $F_k(x) + F_{k+1}(x) + \cdots$ term-by-term takes $O(N)$ polynomial operations. Can we sum the geometric tail $\sum_{m \ge k} F_m(x)$ in closed rational form for Part A, and apply a Roots-of-Unity Filter ([FPS Chapter 07](../../fps/chapters/ch07-roots-of-unity-cyclotomic-czt.qmd)) to $F(x, t)$ for Part B?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+For Part A, summing $F_m(x) = \frac{x^L D_1(x)^{m-1}}{D_0(x)^{m+1}}$ over all $m \ge k$ is a geometric series with ratio $q(x) = \frac{D_1(x)}{D_0(x)}$ and $1 - q(x) = \frac{D_0(x) - D_1(x)}{D_0(x)} = \frac{1 - \sigma x}{D_0(x)}$! For Part B, evaluating $F(x, \omega^j)$ at the $r$-th roots of unity $\omega = g^{(p-1)/r}$ projects onto $\operatorname{occ}_P(W) \equiv c \pmod r$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+**Key Simplification**: In Part A, simplifying $\sum_{m \ge k} \frac{x^L D_1(x)^{m-1}}{D_0(x)^{m+1}} = \frac{x^L D_1(x)^{k-1}}{D_0(x)^{k+1}} \cdot \frac{1}{1 - D_1(x)/D_0(x)}$ cancels one power of $D_0(x)$ and replaces it with $(1 - \sigma x)$! Check what happens at $k = 1$: $\frac{x^L}{(1 - \sigma x) D_0(x)}$, which is just $\frac{1}{1 - \sigma x} - \frac{C_P(x)}{D_0(x)}$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4A-22`)"}
+1. **Diagnostic Signal**: Explicit summation over $m \ge k$ is slow; geometric tail summation collapses at-least-$k$ to a single rational power.
+2. **Combinatorial Word Invariant**:
+   - **Part A (Closed-Form At-Least-$k$ OGF)**: Since $D_0(x) - D_1(x) = 1 - \sigma x$, summing (24.10) over $m \ge k$ gives:
+     $$\boxed{F_{\ge k}(x) = \sum_{m=k}^\infty \frac{x^L D_1(x)^{m-1}}{D_0(x)^{m+1}} = \frac{x^L D_1(x)^{k-1}}{D_0(x)^{k+1}\bigl(1 - \frac{D_1(x)}{D_0(x)}\bigr)} = \frac{x^L \, D_1(x)^{k-1}}{(1 - \sigma x) \, D_0(x)^k}!}$$
+     Notice the combinatorial meaning: a word with **at least $k$** occurrences of $P$ consists of the prefix up to the $1$-st occurrence ($\frac{x^L}{D_0(x)}$), followed by $k - 1$ inter-occurrence steps ($\frac{D_1(x)^{k-1}}{D_0(x)^{k-1}}$), followed by an **unrestricted suffix** ($\frac{1}{1 - \sigma x}$) after the $k$-th occurrence completes!
+   - **Part B (Roots-of-Unity Filter on $F(x, t)$)**: Let $\omega \in \mathbb{F}_p^\times$ be a primitive $r$-th root of unity. By orthogonality of roots of unity,
+     $$\sum_{\substack{W \in \Sigma^* \\ \operatorname{occ}_P(W) \equiv c \pmod r}} x^{|W|} = \frac{1}{r} \sum_{j=0}^{r-1} \omega^{-j c} F(x, \omega^j) = \frac{1}{r} \sum_{j=0}^{r-1} \omega^{-j c} \, \frac{C_P(x) - \omega^j\bigl(C_P(x) - 1\bigr)}{D_0(x) - \omega^j D_1(x)}.$$
+3. **Algorithmic Compilation**:
+   - Part A: Shift $D_1(x) = x^{d_{\min}} \widehat{D}_1(x)$, compute $\widehat{D}_1(x)^{k-1} D_0(x)^{-k} (1 - \sigma x)^{-1} \bmod x^{N+1}$ via one `ln`/`exp` in $O(N \log N)$.
+   - Part B: Perform $r$ polynomial inversions of $D_0(x) - \omega^j D_1(x) \bmod x^{N+1}$ in $O(r N \log N)$ time.
+4. **Broken-Invariant Counterexample**: In Part B at $j = 0$ ($\omega^0 = 1$), $D_0(x) - D_1(x) = 1 - \sigma x$, and $C_P(x) - (C_P(x) - 1) = 1$, so $F(x, 1) = \frac{1}{1 - \sigma x}$ (all words of length $n$).
+:::
+
+---
+
+### Tier 3 — Advanced (`W4A-28`, `W4A-34`)
+
+#### Problem 24.5 (`W4A-28`) — `THUPC / QOJ — Non-Antichain Weighted Multi-Pattern Cluster GF with Embedded Factors`
+
+- **Mathematical Statement**: Given $m \le 8$ patterns $P_1, \dots, P_m \in \Sigma^+$ ($|P_i| \le 2000$, where shorter patterns $P_a$ **may be contiguous substrings** of longer patterns $P_b$), occurrence weights $w_1, \dots, w_m \in \mathbb{F}_p \setminus \{0\}$, and length $N \le 5 \times 10^4$, compute for all $1 \le n \le N$:
+  $$Z_n = \sum_{W \in \Sigma^n} \prod_{i=1}^m w_i^{\operatorname{occ}_{P_i}(W)} \bmod 998244353.$$
+- **Constraints**: $1 \le m \le 8$, $|P_i| \le 2000$, $N \le 5 \times 10^4$, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Because $w_i \ne 0$, a word containing $P_b$ (which internally contains $P_a$) still contributes nonzero weight $w_b w_a^{\operatorname{occ}(P_a, P_b)}$, so we **cannot delete** $P_b$! Yet if we keep both $P_a$ and $P_b$ in a standard overlap matrix, internal occurrences of $P_a$ inside $P_b$ are missed whenever $P_a$ is neither a prefix nor a suffix of $P_b$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Apply Section 2.2's **Non-Antichain Embedded Substring Weight Absorption** (Equations 24.11–24.12)! Only allow maximal marked intervals in a cluster chain (so if $P_a$ lies strictly inside a marked $P_b$, $P_a$'s two choices $1 + (w_a - 1) = w_a$ are absorbed into $\widetilde{W}_b = (w_b - 1) \prod_{P_i \subsetneq P_b} w_i^{\operatorname{occ}(P_i, P_b)}$). What if two marked occurrences $P_a$ and $P_b$ overlap by $k$ characters without either containing the other?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+**Crucial Boundary Case**: What if $P_a$ is a suffix of $P_b$ (or prefix of $P_b$)? Any occurrence of $P_a$ aligned with the suffix/prefix of a marked $P_b$ is *also* contained inside $P_b$, so absorb **all** occurrences $P_i \subsetneq P_b$ (including boundary-aligned ones!) into $\widetilde{W}_b$, and allow an overlap transition $P_a \xrightarrow{k} P_b$ **only** when neither interval contains the other ($k < \min(|P_a|, |P_b|)$)! Then for each valid overlap $k$, multiply by $\prod_{P_i \text{ straddling}} w_i$ and divide by $\prod_{P_i \subseteq P_b[1..k]} w_i^{\operatorname{occ}(P_i, P_b[1..k])}$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4A-28`)"}
+1. **Diagnostic Signal**: Non-antichain pattern dictionary with nonzero weights $w_i \in \mathbb{F}_p^\times$.
+2. **Combinatorial Word Invariant**:
+   - Merge identical patterns by multiplying their weights $w_i$.
+   - In any marked word $(W, M)$, call an interval $e \in M$ *dominant* if no other interval $e' \in M$ contains $e$ as a sub-interval. Every non-dominant occurrence $e \subseteq e'$ of $P_i$ inside a dominant $P_j$ can independently be in $M$ (weight $w_i - 1$) or not in $M$ (weight $1$), summing to $w_i$.
+   - When dominant intervals $e_1 < e_2 < \dots < e_s$ form a cluster, no $e_q$ contains $e_{q+1}$ or vice versa, so $1 \le k = r_q - l_{q+1} + 1 < \min(|P_{i_q}|, |P_{i_{q+1}}|)$.
+   - Any occurrence of a pattern $P_r$ inside the union $e_1 \cup \dots \cup e_s$ that is **not** one of the dominant intervals $e_q$ itself is absorbed with weight $w_r$. By Inclusion–Exclusion on contiguous intervals of the chain (and assuming $\max |P_r|$ cannot span across three dominant intervals without being contained in two adjacent ones, or by keeping only maximal chains), for two overlapping patterns $P_a, P_b$ at overlap $1 \le k < \min(|P_a|, |P_b|)$:
+     $$\widetilde{W}_b = (w_b - 1) \prod_{P_i \subsetneq P_b} w_i^{\operatorname{occ}(P_i, P_b)}, \qquad T_{a, b}(x) = \sum_{k} \widetilde{W}_b \, x^{|P_b|-k} \frac{\prod_{P_i \text{ straddling } (P_a, P_b, k)} w_i}{\prod_{P_i \subseteq P_b[1..k]} w_i^{\operatorname{occ}(P_i, P_b[1..k])}}.$$
+3. **Algorithmic Compilation**:
+   - Precompute $\operatorname{occ}(P_i, U)$ on all pattern substrings via KMP in $O(m^2 L)$.
+   - Solve $\bigl(I_m - \mathbf{T}(x)^T\bigr)\mathbf{C}(x) = \bigl(\widetilde{W}_j x^{|P_j|}\bigr)_{j=1}^m$ modulo $x^{N+1}$ in $O(m^3 N \log N)$ and invert $1 - \sigma x - \sum_{j=1}^m C_j(x)$.
+4. **Broken-Invariant Counterexample**: Forgetting to divide by $\prod_{P_i \subseteq P_b[1..k]} w_i^{\operatorname{occ}(P_i, P_b[1..k])}$ counts a short pattern $P_i$ lying inside the overlap $P_b[1..k]$ twice (once in $\widetilde{W}_a$ and once in $\widetilde{W}_b$).
+:::
+
+---
+
+#### Problem 24.6 (`W4A-34`) — `AtCoder AGC 058 D — Yet Another ABC String (Multivariate Cyclic Cluster Cancellation)`
+
+- **Mathematical Statement**: Given $A, B, C \le 10^6$, count the number of strings over $\{\texttt{A}, \texttt{B}, \texttt{C}\}$ containing **exactly** $A$ copies of $\texttt{'A'}$, $B$ copies of $\texttt{'B'}$, and $C$ copies of $\texttt{'C'}$ that avoid all three cyclic substrings $\mathcal{P} = \{\texttt{ABC},\; \texttt{BCA},\; \texttt{CAB}\}$, modulo $998244353$.
+- **Constraints**: $1 \le A, B, C \le 10^6$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+We have a 3-variable exact character count $[x^A y^B z^C]$ with $A, B, C \le 10^6$. A 3D DP is $O(ABC) = 10^{18}$. What does a Goulden–Jackson cluster of $\mathcal{P} = \{\texttt{ABC}, \texttt{BCA}, \texttt{CAB}\}$ look like?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Two patterns in $\{\texttt{ABC}, \texttt{BCA}, \texttt{CAB}\}$ can overlap **only** if they continue the cyclic period $\texttt{ABCABC...}$! Thus every cluster is a cyclic substring of $\texttt{(ABC)}^\omega$ of length $L \ge 3$. By symmetry, in the univariate projection $x = y = z = t$, $C_{i,j}(t)$ sums to $\frac{1}{1 - t}$ across each column! What is the total univariate cluster GF $C(t) = C_1(t) + C_2(t) + C_3(t)$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+**Key Cancellation**: For any cluster of length $L \ge 3$, how many subset markings $M$ cover all $L$ positions of $\texttt{ABCABC...}[1..L]$? Adding $1$ character extends the cluster either by marking the new length-$3$ window ($-t$) or not, giving $C(t) = \frac{-3 t^3}{1 + t + t^2} = \sum_{k \ge 1} \bigl(3 (-1)^k t^{3k} - 3 (-1)^k t^{3k+1}\bigr)$! Every cluster of length $L \equiv 2 \pmod 3$ has net coefficient **$0$**, and every surviving cluster has length $3k$ (using $(x y z)^k$) or $3k + 1$ (using $(x y z)^k (x + y + z)$)!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4A-34`)"}
+1. **Diagnostic Signal**: 3-variable generating function $[x^A y^B z^C]$ where naive 3D multinomial expansion is impossible, but the forbidden set $\mathcal{P} = \{\texttt{ABC}, \texttt{BCA}, \texttt{CAB}\}$ is invariant under cyclic letter shifts.
+2. **Combinatorial Word Invariant (The $1 + t + t^2$ Cluster Cancellation)**:
+   - In the univariate projection ($x = y = z = t$), each pattern $P_i \in \mathcal{P}$ has length $3$. Because $\texttt{ABC}, \texttt{BCA}, \texttt{CAB}$ cyclic-shift into one another at every step, for any $i \in \{1, 2, 3\}$, summing the overlap polynomials across all three predecessor patterns $r \in \{1, 2, 3\}$ gives every shift length $3 - k \in \{0, 1, 2, \dots\}$:
+     $$\sum_{r=1}^3 C_{r, j}(t) = 1 + t + t^2. \quad (\text{from } k = 3, 2, 1\text{!})$$
+   - Summing the Goulden–Jackson system $\sum_{r=1}^3 C_r(t) C_{r,j}(t) = -t^3$ over $j \in \{1, 2, 3\}$ yields:
+     $$C(t) (1 + t + t^2) = -3 t^3 \implies \boxed{C(t) = \frac{-3 t^3}{1 + t + t^2} = \frac{-3 t^3 (1 - t)}{1 - t^3} = \sum_{k \ge 1} (-1)^k \bigl(3 t^{3k} - 3 t^{3k+1}\bigr)!}$$
+   - Now restore the 3 variables $(x, y, z)$! A cyclic substring of $\texttt{ABCABC...}$ of length $3k$ always contains **exactly $k$ $\texttt{A}$'s, $k$ $\texttt{B}$'s, and $k$ $\texttt{C}$'s** (monomial $(xyz)^k$), regardless of which of the 3 letters it starts with! And a cyclic substring of length $3k + 1$ starts and ends with the same letter, contributing $(xyz)^k(x + y + z)$. Meanwhile, all length-$(3k+2)$ clusters cancel to **$0$**!
+   - Therefore, the exact 3-variable cluster generating function is:
+     $$C(x, y, z) = \sum_{k \ge 1} (-1)^k (xyz)^k \bigl(3 - (x + y + z)\bigr) = \frac{-xyz\bigl(3 - (x + y + z)\bigr)}{1 + xyz}!$$
+   - Substituting $C(x, y, z)$ into $F(x, y, z) = \frac{1}{1 - (x + y + z) - C(x, y, z)}$ gives:
+     $$\boxed{F(x, y, z) = \frac{1 + xyz}{(1 + xyz)\bigl(1 - (x + y + z)\bigr) + xyz\bigl(3 - (x + y + z)\bigr)} = \frac{1 + xyz}{1 - (x + y + z) + 3xyz - 2xyz(x + y + z)}!}$$
+3. **Algorithmic Compilation**:
+   - Let $S = x + y + z$ and $P = xyz$. Write $F(x, y, z) = (1 + P) \sum_{k \ge 0} (-P)^k \bigl(3 - 2S\bigr)^k (1 - S)^{-(k+1)}$, or directly expand in powers of $P = xyz$:
+     $$[x^A y^B z^C] F(x, y, z) = [x^A y^B z^C] (1 + xyz) \sum_{k=0}^{\min(A,B,C)} (-xyz)^k \frac{(3 - 2S)^k}{(1 - S)^{k+1}}.$$
+   - Since $[x^{A-k} y^{B-k} z^{C-k}] S^N = \frac{N!}{(A-k)!(B-k)!(C-k)!}$ where $N = (A + B + C) - 3k$, and $[S^N] \frac{(3 - 2S)^k}{(1 - S)^{k+1}} = [S^N] \frac{(1 + 2(1 - S))^k}{(1 - S)^{k+1}} = \sum_{r=0}^k \binom{k}{r} 2^{k-r} \binom{N + r}{r}$ (which simplifies via a $1$-step recurrence in $k$), the entire coefficient $[x^A y^B z^C] F(x, y, z)$ is computed in **$O\bigl(\min(A, B, C)\bigr)$** time!
+4. **Broken-Invariant Counterexample**: Trying to solve `AGC 058 D` without noticing that $[t^{3k+2}] C(t) = 0$ leaves $xy + yz + zx$ terms that cannot be factored into powers of $P = xyz$ and $S = x + y + z$.
+:::
+
+---
+
+### Tier 4 — Mastery (`W4A-39`, `W4A-41`)
+
+#### Problem 24.7 (`W4A-39`) — `Universal Cup / QOJ — Expected K-th Power of Pattern Occurrences for n ≤ 10^{18} via t = 1 + u Shift`
+
+- **Mathematical Statement**: Given alphabet size $\sigma$, a pattern $P \in \Sigma^L$ of length $L \le 10^5$, a small integer $K \le 20$, and a huge word length $n \le 10^{18}$, compute the expected $K$-th power of the number of occurrences of $P$ in a uniformly random word $W \in \Sigma^n$:
+  $$\mathbb{E}\bigl[\operatorname{occ}_P(W)^K\bigr] = \sigma^{-n} \sum_{W \in \Sigma^n} \bigl(\operatorname{occ}_P(W)\bigr)^K \bmod 998244353.$$
+- **Constraints**: $1 \le L \le 10^5$, $1 \le K \le 20$, $1 \le n \le 10^{18}$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At $L = 10^5, K = 20, n = 10^{18}$, running Bostan–Mori on a denominator $D_0(x)^{K+1}$ of degree $2.1 \times 10^6$ takes $O(KL \log(KL) \log n)$ ($\approx 60$ polynomial multiplications of size $4 \times 10^6$), which TLEs. How can we eliminate the $\log n$ Bostan–Mori loop completely?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Invoke **Theorem 24.3 (The $t = 1 + u$ Binomial Moment Shift)**! By expanding $F(x, 1 + u)$ in powers of $u = t - 1$, the $j$-th binomial moment $B_j(n) = \sum_{W \in \Sigma^n} \binom{\operatorname{occ}_P(W)}{j}$ is the coefficient of $x^n$ in $\frac{x^L D_1(x)^{j-1}}{(1 - \sigma x)^{j+1}}$, whose denominator is simply **$(1 - \sigma x)^{j+1}$**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Since $x^L D_1(x)^{j-1}$ is a polynomial of degree $j L \le K L \le 2 \times 10^6$, we never need polynomial division or Bostan–Mori! Simply compute $D_1(x)^{j-1}$ for $j = 1 \dots K$ via NTT, extract $B_j(n) = \sum_{d=L}^{\min(n, jL)} ([x^{d-L}] D_1(x)^{j-1}) \binom{n - d + j}{j} \sigma^{n - d}$, and combine with Stirling numbers $\left\{\begin{matrix} K \\ j \end{matrix}\right\} j!$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4A-39`)"}
+1. **Diagnostic Signal**: Huge $n \le 10^{18}$ and long pattern $L \le 10^5$, but low moment order $K \le 20$.
+2. **Combinatorial Word Invariant**:
+   - By Theorem 24.3 (Equations 24.14–24.16), setting $t = 1 + u$ collapses the denominator at $u = 0$ from $D_0(x)^{j+1}$ to $(1 - \sigma x)^{j+1}$:
+     $$B_j(n) = [x^n u^j] F(x, 1 + u) = [x^n] \frac{x^L D_1(x)^{j-1}}{(1 - \sigma x)^{j+1}}, \qquad D_1(x) = (1 - \sigma x)\bigl(C_P(x) - 1\bigr) + x^L.$$
+   - Dividing $B_j(n)$ by $\sigma^n$ normalizes the binomial moment directly to expectation:
+     $$\mathbb{E}\left[\binom{\operatorname{occ}_P(W)}{j}\right] = \sum_{d=L}^{\min(n,\, jL)} \bigl([x^{d-L}] D_1(x)^{j-1}\bigr) \binom{n - d + j}{j} \sigma^{-d}.$$
+   - Sanity check at $j = 1$: $D_1(x)^0 = 1$, so the only term is $d = L$, giving $\mathbb{E}[\operatorname{occ}_P(W)] = \binom{n - L + 1}{1} \sigma^{-L} = (n - L + 1)\sigma^{-L}$ (linearity of expectation over the $n - L + 1$ window positions!).
+3. **Algorithmic Compilation**:
+   - Build $C_P(x)$ via KMP in $O(L)$ and form $D_1(x)$.
+   - Run `kth_occurrence_moment_huge_n` from Section 4.2, multiplying the final sum by $\sigma^{-n \bmod (p-1)} \bmod p$. Total time: $O\bigl(K L \log(K L)\bigr)$, with **zero** dependence on $\log n$!
+4. **Broken-Invariant Counterexample**: When $n \ge p = 998244353$ (e.g. $n = 10^{18}$) and $n - d$ crosses a multiple of $p$, stepping $\binom{n - d + j}{j}$ via division by $(n - d + j) \bmod p$ can divide by zero if $(n - d + j) \equiv 0 \pmod p$! Whenever $n \ge p$, either compute $\binom{n - d + j}{j} = \frac{1}{j!}\prod_{r=1}^j ((n - d + r) \bmod p)$ via prefix/suffix products on blocks of size $j$, or maintain the numerator product with a sliding window of size $j$ in $O(1)$ amortized multiplications without division!
+:::
+
+---
+
+#### Problem 24.8 (`W4A-41`) — `UCup / QOJ — Bivariate Multi-Pattern Moment Shift & Cross-Covariance at n ≤ 10^{18}`
+
+- **Mathematical Statement**: Given two distinct patterns $P_1, P_2 \in \Sigma^+$ ($|P_1|, |P_2| \le 10^5$, neither a substring of the other) and $n \le 10^{18}$, compute the exact **covariance** $\operatorname{Cov}\bigl(\operatorname{occ}_{P_1}(W),\, \operatorname{occ}_{P_2}(W)\bigr) = \mathbb{E}[\operatorname{occ}_{P_1}(W)\operatorname{occ}_{P_2}(W)] - \mathbb{E}[\operatorname{occ}_{P_1}(W)]\mathbb{E}[\operatorname{occ}_{P_2}(W)]$ (and more generally $[x^n u_1^{k_1} u_2^{k_2}] F(x; 1 + u_1, 1 + u_2)$ for $k_1 + k_2 \le K$) modulo $998244353$.
+- **Constraints**: $|P_1|, |P_2| \le 10^5$, $n \le 10^{18}$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+What is the 2-pattern analogue of the $t = 1 + u$ Binomial Moment Shift when we substitute $t_1 = 1 + u_1$ and $t_2 = 1 + u_2$ into the $2 \times 2$ Weighted Goulden–Jackson System (24.7)?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In Equation (24.7), setting $t_j = 1 + u_j$ gives $\sum_{i=1}^m C_i(x; \mathbf{1}+\mathbf{u}) \bigl(\delta_{i,j} - u_j \widetilde{C}_{i,j}(x)\bigr) = u_j x^{|P_j|}$! In matrix form, let $U = \operatorname{diag}(u_1, \dots, u_m)$ and $\widetilde{\mathbf{C}}(x) = [\widetilde{C}_{i,j}(x)]$. Then the total cluster GF is $C(x; \mathbf{1}+\mathbf{u}) = \mathbf{x}^T U \bigl(I_m - \widetilde{\mathbf{C}}(x) U\bigr)^{-1} \mathbf{1} = \sum_{s \ge 1} \mathbf{x}^T U \bigl(\widetilde{\mathbf{C}}(x) U\bigr)^{s-1} \mathbf{1}$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+**Key Observation**: Because every factor of $U$ multiplies by $u_1$ or $u_2$, expanding $F(x; \mathbf{1}+\mathbf{u}) = \frac{1}{1 - \sigma x - C(x; \mathbf{1}+\mathbf{u})}$ to degree $K$ in $(u_1, u_2)$ **still** has only powers of $(1 - \sigma x)$ in the denominator! Specifically, for the cross-moment $[u_1^1 u_2^1] F(x; 1+u_1, 1+u_2)$, extract the coefficient of $u_1 u_2$ from $\frac{C_1 u_1 + C_2 u_2 + C_{1,2} u_1 u_2}{1 - \sigma x} + \frac{(C_1 u_1 + C_2 u_2)^2}{(1 - \sigma x)^3}$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4A-41`)"}
+1. **Diagnostic Signal**: Cross-covariance and mixed moments of multiple long patterns ($|P_i| \le 10^5$) at $n \le 10^{18}$.
+2. **Combinatorial Word Invariant (Multi-Pattern $t_i = 1 + u_i$ Neumann Expansion)**:
+   - Let $U = \operatorname{diag}(u_1, \dots, u_m)$. Rewriting (24.7) with $t_j - 1 = u_j$ gives:
+     $$C(x; \mathbf{1} + \mathbf{u}) = \sum_{s \ge 1} \mathbf{x}^T U \bigl(\widetilde{\mathbf{C}}(x) U\bigr)^{s-1} \mathbf{1}.$$
+   - Look at the coefficient $[u_1^1 u_2^1]$ (one designated copy of $P_1$ and one designated copy of $P_2$):
+     - Either the two designated copies form **two separate clusters** (ordered $(P_1, P_2)$ or $(P_2, P_1)$ separated by free characters), contributing $\frac{2 x^{|P_1| + |P_2|}}{(1 - \sigma x)^3}$,
+     - Or they overlap inside a **single 2-pattern cluster** ($s = 2$: $P_1$ overlapping $P_2$ or $P_2$ overlapping $P_1$), contributing $\frac{x^{|P_1|}\widetilde{C}_{1,2}(x) + x^{|P_2|}\widetilde{C}_{2,1}(x)}{(1 - \sigma x)^2}$!
+   - Combining both terms over $(1 - \sigma x)^3$ yields the exact cross-moment OGF:
+     $$\boxed{[u_1^1 u_2^1] F(x; 1+u_1, 1+u_2) = \frac{2 x^{|P_1|+|P_2|} + (1 - \sigma x)\Bigl(x^{|P_1|}\widetilde{C}_{1,2}(x) + x^{|P_2|}\widetilde{C}_{2,1}(x)\Bigr)}{(1 - \sigma x)^3}!}$$
+3. **Algorithmic Compilation**:
+   - Compute $\widetilde{C}_{1,2}(x)$ and $\widetilde{C}_{2,1}(x)$ via KMP in $O(|P_1| + |P_2|)$ time! Notice we don't even need NTT for the covariance ($k_1 = k_2 = 1$), because $\widetilde{C}_{1,2}(x)$ has at most $\min(|P_1|, |P_2|)$ terms:
+     $$\mathbb{E}\bigl[\operatorname{occ}_{P_1}(W)\operatorname{occ}_{P_2}(W)\bigr] = 2 \binom{n - |P_1| - |P_2| + 2}{2} \sigma^{-(|P_1|+|P_2|)} + \sum_{k \in \operatorname{Overlap}(P_1, P_2)} (n - |P_1| - |P_2| + k + 1)_+ \, \sigma^{-(|P_1|+|P_2|-k)} + \sum_{k \in \operatorname{Overlap}(P_2, P_1)} (n - |P_1| - |P_2| + k + 1)_+ \, \sigma^{-(|P_1|+|P_2|-k)}!$$
+   - Subtracting $\mathbb{E}[\operatorname{occ}_{P_1}]\mathbb{E}[\operatorname{occ}_{P_2}] = (n - |P_1| + 1)(n - |P_2| + 1)\sigma^{-(|P_1|+|P_2|)}$ computes the exact covariance for $n \le 10^{18}$ in **$O(|P_1| + |P_2|)$ linear time**!
+4. **Broken-Invariant Counterexample**: If $P_1 = P_2 = P$, $\operatorname{Var}(\operatorname{occ}_P(W)) = \mathbb{E}[\operatorname{occ}_P(W)] + 2 B_2(n)\sigma^{-n} - \mathbb{E}[\operatorname{occ}_P(W)]^2$ includes the extra linear term $+\mathbb{E}[\operatorname{occ}_P(W)]$ because $m^2 = 2\binom{m}{2} + m$, whereas for $P_1 \ne P_2$, $m_1 m_2 = \binom{m_1}{1}\binom{m_2}{1}$ has no linear correction term.
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Decision Checklist: When to Apply Chapter 24 Machinery
+
+| Contest Signal / Query Regime | Invariant / Formula to Invoke | Time Complexity |
+| :--- | :--- | :--- |
+| Avoid single pattern $P$ ($L \le 10^5$), all $n \le N \le 10^5$ | $F(x) = \frac{C_P(x)}{(1-\sigma x)C_P(x) + x^L}$ + NTT inversion (Eq. 24.5) | $O(L + N \log N)$ |
+| Avoid single pattern $P$ ($L \le 5\cdot 10^4$), huge $n \le 10^{18}$ | $F(x) = \frac{C_P(x)}{D_0(x)}$ + Bostan–Mori | $O(L \log L \log n)$ |
+| Avoid antichain $\mathcal{P} = \{P_1, \dots, P_m\}$ ($m \le 15, L \le 5000$) | $m \times m$ system $\sum_{i=1}^m C_i(x) C_{i,j}(x) = -x^{|P_j|}$, diagonal pivot (**Theorem 24.1**) | $O(m^2 L + m^3 N \log N)$ |
+| **Exactly $k$** occurrences of $P$ ($L, N \le 10^5$) | $F_k(x) = \frac{x^L D_1(x)^{k-1}}{D_0(x)^{k+1}}$ with $x^{d_{\min}}$ shift $d_{\min} = \operatorname{per}(P)$ (**Theorem 24.2**) | $O(L + N \log N)$ |
+| **At least $k$** occurrences of $P$ ($L, N \le 10^5$) | $F_{\ge k}(x) = \frac{x^L D_1(x)^{k-1}}{(1 - \sigma x) D_0(x)^k}$ (`W4A-22`) | $O(L + N \log N)$ |
+| Non-antichain weighted patterns ($P_a \subsetneq P_b, w_a \ne 0$) | Embedded weight absorption $\widetilde{W}_b$ & overlap correction (Eqs. 24.11–24.12) | $O(m^2 L + m^3 N \log N)$ |
+| Cyclic / Necklace avoidance ($n \ge \max |P_i|$) | Logarithmic derivative + seam trace $-x Q'(x) / Q(x)$ (Eq. 24.13) | $O(N \log N)$ |
+| $K$-th moment $\mathbb{E}[\operatorname{occ}_P(W)^K]$ at **huge $n \le 10^{18}$** ($K \le 20$) | **$t = 1 + u$ Binomial Moment Shift** $[u^j]F = \frac{x^L D_1(x)^{j-1}}{(1-\sigma x)^{j+1}}$ (**Theorem 24.3**) | $O(K L \log(K L))$ |
+
+### 6.2 What Comes Next in Part VI
+In Equation (24.4), we discovered the **Guibas–Odlyzko First-Hit End-Tagged System** $(1 - \sigma x)F(x) + \sum_{i=1}^m F_i(x) = 1$ and $\sum_{i=1}^m F_i(x) C_{i,j}(x) = F(x) x^{|P_j|}$. What happens when we substitute $x = z / \sigma$ (or weight each character $c$ by its probability $p_c$) and evaluate at $z = 1$? In **[Chapter 25: Conway's Casino Martingale PGFs, Pattern Races (`[SDOI2017]`), the 4-Stage `DP套DP` Compiler, and Dynamic AC](ch25-martingale-pgfs-automaton-dp-of-dp.qmd)**, we show that evaluating Guibas–Odlyzko at $z = 1$ is algebraically identical to **Doob's Optional Stopping Theorem on Conway's Casino Martingale**, and we pair it with the **4-Stage `DP套DP` Automaton Minimization Pipeline**.

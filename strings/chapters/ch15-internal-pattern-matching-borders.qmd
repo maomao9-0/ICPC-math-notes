@@ -1,0 +1,645 @@
+---
+title: "Kociumaka's Basic Substring Dictionary, Bounded-Ratio IPM, and the 6 Methods of Substring Borders ([BJWC2018])"
+subtitle: "Chapter 15 · Part IV: Internal Pattern Matching (IPM) & Advanced Palindromic Structures"
+---
+
+::: {.callout-important title="Prerequisites, Assumed Library & Learning Objectives"}
+
+- **Assumed Library Primitives**: $O(N)$ Suffix Array ($\operatorname{SA}[1..N]$, $\operatorname{rk}[1..N]$, Kasai's $\operatorname{height}[2..N]$) with $O(1)$ Sparse Table RMQ, Suffix Automaton ($\operatorname{SAM}$), Heavy-Light Decomposition ($\operatorname{HLD}$), and Persistent Segment Tree (`Chairman Tree`) / Wavelet Matrix. See [Notation & Conventions](../notation.qmd) for 1-based closed substring indexing $S[l..r]$.
+- **Strict Prerequisite Chapters**:
+  - [Chapter 02: Weak Periodicity Lemma & $O(\log N)$ Border Arithmetic Progressions](ch02-weak-periodicity-border-aps.qmd) (`T-1A-02`)
+  - [Chapter 08: The Runs Theorem, Three-Squares Lemma & 2D Run Sweeps](ch08-runs-theorem-squares-sweep.qmd) (`T-1B-05`)
+  - [Chapter 10: SAM + Persistent Segment Tree Merging on $\operatorname{endpos}$ & Substring Clipping](ch10-sam-endpos-segtree-merge.qmd) (`T-2A-03`)
+  - [Chapter 13: Zero-Tree Virtual Suffix Trees & $2N \log_2 N$ Dominant Pairs](ch13-virtual-suffix-trees-dominant-pairs.qmd) (`T-2B-02`, `T-2B-03`)
+- **Assigned Technique IDs**: `T-2B-04` (Kociumaka's Basic Substring Dictionary, Bounded-Ratio Internal Pattern Matching & 6-Method Substring Borders).
+- **Learning Objectives**:
+  1. Construct **Kociumaka's Basic Substring Dictionary** over a static string $S[1..N]$ to support $O(1)$ Longest Common Extension ($\operatorname{LCE}$), $O(k+m)$ multi-piece concatenation comparison, $O(\log N)$ or $O(1)$ global lexicographical `Rank(S[l..r])` / `Select(K)`, and 2D orthogonal range queries on $(\operatorname{SA}(S), \operatorname{SA}(S^R))$.
+  2. Prove **Kociumaka's Bounded-Ratio Internal Pattern Matching (`IPM`) Theorem** (Kociumaka, Radoszewski, Rytter, and Waleń, SODA 2015 / SIAM J. Comput. 2024): whenever $|U| \le |V| < 2|U|$, the set of starting indices $\operatorname{Occ}(U, V)$ forms **at most one arithmetic progression** with common difference $d = \operatorname{per}(U)$.
+  3. Derive **Dyadic Scale Coverage ($P_m \cap Q_m$)** for internal border queries on $W = S[l..r]$, and construct the explicit counterexample $W = \texttt{ababacababab}$ ($b = 6$) demonstrating why checking only the prefix block $P_m$ without intersecting the suffix block $Q_m$ fails.
+  4. Synthesize and compare all **Six Canonical Structural Methods** for **`[BJWC2018] Border 的四种求法` (Luogu P4482)**—(1) Dyadic $2^m$ IPM AP Intersection, (2) SAM Link-Tree HLD + Segment Tree Merging, (3) Link-Tree Centroid Decomposition, (4) Suffix Tree DSU-on-Tree Dominant Pairs, (5) $\sqrt{N}$ SA-Neighborhood + Period Bucketing, and (6) Runs Clipping—plus **$O(1)$ Internal Shortest Period Queries**.
+:::
+
+---
+
+## 1. Kociumaka's Basic Substring Dictionary (`T-2B-04`)
+
+### 1.1 The Diagnostic Signal: From Whole-String Queries to Internal Substring Algebra
+
+In Parts I–III, most suffix and border queries operated on a whole string $S[1..N]$, a prefix $S[1..r]$, or an explicit external pattern $P$. In grandmaster problem sets, however, the input string $S[1..N]$ is preprocessed once, and $Q$ online queries pass **internal substrings by their endpoint coordinates** $U = S[l_1..r_1]$ and $V = S[l_2..r_2]$:
+
+- Compare two virtual concatenations $U_1 U_2 \cdots U_k$ and $V_1 V_2 \cdots V_m$ (such as simple paths on a character-labeled tree in `CF 504E`);
+- Compute the global 1-based lexicographical rank $\operatorname{Rank}(S[l..r])$ among all $\binom{N+1}{2} - \sum_{k=2}^N \operatorname{height}[k]$ distinct substrings of $S$, or invert $\operatorname{Select}(K)$;
+- Count occurrences of $U = S[l_1..r_1]$ inside $V = S[l_2..r_2]$, or count split/1-mismatch matches $P_1 \cdot ? \cdot P_2$;
+- Find the longest proper border $\operatorname{bd}(S[l..r])$ or shortest period $\operatorname{per}(S[l..r])$ of a substring (`[BJWC2018] Border 的四种求法`).
+
+Materializing $S[l..r]$ takes $\Theta(r - l + 1)$ time per query. Following **Kociumaka, Radoszewski, Rytter, and Waleń (2015 / 2024)**, we compile $S[1..N]$ into a **Basic Substring Dictionary (`基本子串字典`)** that treats every substring $U = S[l..r]$ as an $O(1)$-size descriptor $(l, r)$.
+
+---
+
+### 1.2 Primitive 1–3: $O(1)$ LCE, Substring Order, and Multi-Piece Concatenation Comparison
+
+Let $\operatorname{SA}[1..N]$, $\operatorname{rk}[1..N]$, and $H[2..N] = \operatorname{height}[2..N]$ be the Suffix Array, inverse rank array, and adjacent LCP array of $S[1..N]$, and build the analogous arrays on the reversed string $S^R[1..N]$ (where index $i$ in $S$ corresponds to $N - i + 1$ in $S^R$).
+
+1. **$O(1)$ Forward and Backward Longest Common Extension ($\operatorname{LCE}$ & $\operatorname{LCSuf}$)**:
+   For any two positions $i, j \in \{1, \dots, N\}$, the length of the longest common prefix of $\operatorname{suf}(i)$ and $\operatorname{suf}(j)$ is
+   $$\operatorname{LCE}_S(i, j) = \begin{cases} N - i + 1, & \text{if } i = j, \\[4pt] \min\limits_{\min(\operatorname{rk}[i], \operatorname{rk}[j]) < k \le \max(\operatorname{rk}[i], \operatorname{rk}[j])} H[k], & \text{if } i \ne j, \end{cases}$$
+   and the length of the longest common suffix of $S[1..i]$ and $S[1..j]$ is $\operatorname{LCSuf}_S(i, j) = \operatorname{LCE}_{S^R}(N - i + 1,\, N - j + 1)$, both answered in $O(1)$ time via a Sparse Table (or $\pm 1$ RMQ) over $H$.
+
+2. **$O(1)$ Lexicographical Comparison of Two Substrings**:
+   Given $U = S[l_1..r_1]$ and $V = S[l_2..r_2]$, their longest common prefix inside $U$ and $V$ has length
+   $$d = \min\bigl(\operatorname{LCE}_S(l_1, l_2),\; |U|,\; |V|\bigr).$$
+   If $d = |U| = |V|$, then $U = V$. If $d = |U| < |V|$, then $U$ is a proper prefix of $V$ ($U <_{\text{lex}} V$). Otherwise $d < \min(|U|, |V|)$, and the first mismatch character decides the order in $O(1)$ time: $U <_{\text{lex}} V \iff S[l_1 + d] < S[l_2 + d]$.
+
+3. **$O(k + m)$ Multi-Piece Concatenation Comparison**:
+   Suppose $A = U_1 U_2 \cdots U_k$ and $B = V_1 V_2 \cdots V_m$ are concatenations of internal substrings $U_a = S[l_a..r_a]$ and $V_b = S[l'_b..r'_b]$. Instead of binary searching the LCP of $A$ and $B$ via rolling hashes (which costs $O((k + m)\log N)$), maintain two active piece pointers $(a, \text{off}_a)$ and $(b, \text{off}_b)$:
+
+   - Let $\text{rem}_a = |U_a| - \text{off}_a$ and $\text{rem}_b = |V_b| - \text{off}_b$ be the remaining lengths in the current pieces, and query $\ell = \operatorname{LCE}_S(l_a + \text{off}_a,\, l'_b + \text{off}_b)$ in $O(1)$ time.
+   - If $\ell < \min(\text{rem}_a, \text{rem}_b)$, a mismatch occurs *inside* the current pieces at offset $\ell$; return $\operatorname{LCP}(A, B)$ and compare the mismatch characters immediately.
+   - Otherwise, advance both pointers by $\Delta = \min(\text{rem}_a, \text{rem}_b)$, which **exhausts at least one piece** ($a \gets a + 1$ or $b \gets b + 1$). At most $k + m$ LCE queries are ever executed!
+
+---
+
+### 1.3 Primitive 4–5: Substring SA Intervals, Global `Rank(S[l..r])`, and `Select(K)`
+
+Every substring $U = S[l..r]$ of length $\ell = r - l + 1$ is a prefix of $\operatorname{suf}(l)$, which sits at Suffix Array position $x_0 = \operatorname{rk}[l]$. The set of all suffixes starting with $U$ forms a maximal contiguous interval $[L_{\text{SA}}(U),\, R_{\text{SA}}(U)]$ containing $x_0$:
+$$L_{\text{SA}}(l, r) = \min\bigl\{x \le \operatorname{rk}[l] : \operatorname{LCE}_S(\operatorname{SA}[x], l) \ge \ell\bigr\}, \qquad R_{\text{SA}}(l, r) = \max\bigl\{x \ge \operatorname{rk}[l] : \operatorname{LCE}_S(\operatorname{SA}[x], l) \ge \ell\bigr\}.$$
+By monotonicity of $\operatorname{RMQ}_H(x + 1, \operatorname{rk}[l])$ on the left and $\operatorname{RMQ}_H(\operatorname{rk}[l] + 1, x)$ on the right, $[L_{\text{SA}}(l, r), R_{\text{SA}}(l, r)]$ is found in $O(\log N)$ time by binary search over the Sparse Table (or in $O(1)$ time when $\ell = 2^m$ is a power of two by precomputing the $\operatorname{SA}$ bucket ID of every length-$2^m$ substring during prefix doubling).
+
+::: {.callout-note title="Theorem 15.1 (Global Substring Lexicographical Rank & Select Bijection)"}
+In the sorted Suffix Array $\operatorname{SA}[1..N]$ with $H[1] = 0$, the $k$-th suffix $\operatorname{SA}[k]$ introduces
+$$\Delta_k = \bigl(N - \operatorname{SA}[k] + 1\bigr) - H[k]$$
+new distinct substrings—namely the prefixes of $\operatorname{suf}(\operatorname{SA}[k])$ of lengths $H[k] + 1,\, H[k] + 2,\, \dots,\, N - \operatorname{SA}[k] + 1$—and listing these blocks for $k = 1, 2, \dots, N$ enumerates all distinct non-empty substrings of $S$ in **strictly increasing lexicographical order**. Let $\operatorname{pref}[k] = \sum_{t=1}^k \Delta_t$. Then:
+
+1. **`Rank(S[l..r])`**: For any substring $U = S[l..r]$ with leftmost SA index $k_0 = L_{\text{SA}}(l, r)$, its 1-based global lexicographical rank among all distinct substrings of $S$ is
+   $$\boxed{\operatorname{Rank}(S[l..r]) = \operatorname{pref}[k_0 - 1] + \bigl(r - l + 1 - H[k_0]\bigr).}$$
+
+2. **`Select(K)`**: Given $1 \le K \le \operatorname{pref}[N]$, let $k_0$ be the smallest index with $\operatorname{pref}[k_0] \ge K$ (found in $O(\log N)$ via binary search). Then the $K$-th distinct substring of $S$ has length $\ell = H[k_0] + (K - \operatorname{pref}[k_0 - 1])$ and endpoints $\bigl(\operatorname{SA}[k_0],\; \operatorname{SA}[k_0] + \ell - 1\bigr)$.
+:::
+
+#### Proof of Theorem 15.1
+Every distinct substring $U$ of $S$ occurs as a prefix of at least one suffix $\operatorname{suf}(\operatorname{SA}[k])$. Let $k_0 = L_{\text{SA}}(U)$ be the *first* (smallest) SA position where $U$ appears as a prefix of $\operatorname{suf}(\operatorname{SA}[k_0])$. By definition of $k_0$, $U$ does not appear as a prefix of $\operatorname{suf}(\operatorname{SA}[k_0 - 1])$, so $\operatorname{LCP}(\operatorname{suf}(\operatorname{SA}[k_0 - 1]), \operatorname{suf}(\operatorname{SA}[k_0])) = H[k_0] < |U|$. Conversely, every prefix of $\operatorname{suf}(\operatorname{SA}[k_0])$ of length $\le H[k_0]$ already appeared in $\operatorname{suf}(\operatorname{SA}[k_0 - 1])$. Thus each distinct substring $U$ has a unique canonical birth coordinate $(k_0, |U|)$ with $1 \le k_0 \le N$ and $H[k_0] < |U| \le N - \operatorname{SA}[k_0] + 1$. Furthermore, if $k_1 < k_2$, any new prefix $U_1$ born at $k_1$ has $|U_1| > H[k_1 + 1] \ge \operatorname{LCP}(\operatorname{SA}[k_1], \operatorname{SA}[k_2])$, so the first mismatch between $\operatorname{suf}(\operatorname{SA}[k_1])$ and $\operatorname{suf}(\operatorname{SA}[k_2])$ occurs at or before $|U_1|$, forcing $U_1 <_{\text{lex}} U_2$. Within the same suffix $k_0$, shorter prefixes precede longer prefixes. Summing sizes up to $k_0 - 1$ and adding $|U| - H[k_0]$ gives the exact rank. $\blacksquare$
+
+---
+
+### 1.4 Primitive 6: Bi-SA 2D Orthogonal Grids on $(\operatorname{SA}(S), \operatorname{SA}(S^R))$
+
+Many internal matching tasks ask for text positions $i \in [1..N]$ where a prefix condition ending at $i - 1$ (or $i$) and a suffix condition starting at $i + 1$ (or $i$) hold simultaneously:
+
+- **1-Mismatch / Wildcard Split Matching ($P_1 \cdot ? \cdot P_2$)**: Position $i$ is the wildcard center iff $S[1..i-1]$ ends with $P_1$ (so $\operatorname{rk}_{S^R}[N - (i - 1) + 1] \in [L^R(P_1^R), R^R(P_1^R)]$) **and** $S[i+1..N]$ starts with $P_2$ (so $\operatorname{rk}_S[i + 1] \in [L_{\text{SA}}(P_2), R_{\text{SA}}(P_2)]$).
+- **Prefix–Suffix Coupled Substring Queries**: Plotting the $N$ points $p_i = \bigl(\operatorname{rk}_{S^R}[N - i + 2],\, \operatorname{rk}_S[i + 1]\bigr) \in [1..N]^2$ inside a 2D Wavelet Matrix or Persistent Segment Tree turns every bidirectional split query into a single $O(\log N)$ 2D orthogonal range count!
+
+---
+
+## 2. Core Combinatorial Word Invariants: Kociumaka's Bounded-Ratio Internal Pattern Matching (`IPM`) Theorem (`T-2B-04`)
+
+### 2.1 Concrete Objects & The Bounded-Ratio Occurrence Question
+
+Given two internal substrings $U = S[l_1..r_1]$ and $V = S[l_2..r_2]$, define the **internal occurrence set** $\operatorname{Occ}(U, V)$ as the set of starting positions $x$ inside $S$ where an occurrence of $U$ lies completely inside $V$:
+$$\operatorname{Occ}(U, V) = \bigl\{\,x \in [l_2,\, r_2 - |U| + 1] \;\big|\; S[x .. x + |U| - 1] = U\,\bigr\} = \bigl\{\,x \in [l_2,\, r_2 - |U| + 1] \;\big|\; \operatorname{rk}_S[x] \in [L_{\text{SA}}(U), R_{\text{SA}}(U)]\,\bigr\}.$$
+When $|V|$ is arbitrarily larger than $|U|$, $|\operatorname{Occ}(U, V)|$ can have size $\Theta(|V|)$ with arbitrary spacing. What happens when we restrict the length ratio to the **bounded-ratio regime** $|U| \le |V| < 2|U|$?
+
+::: {.callout-important title="Theorem 15.2 (Kociumaka's Bounded-Ratio IPM Arithmetic Progression Theorem)"}
+Let $U$ and $V$ be strings satisfying $|U| \le |V| < 2|U|$, and let $\operatorname{Occ}(U, V) = \{x_1 < x_2 < \dots < x_k\}$ be the sorted starting positions of $U$ in $V$. Then:
+
+1. **Mutual Overlap**: If $k \ge 1$, the first occurrence $x_1$ and last occurrence $x_k$ satisfy $x_k - x_1 \le |V| - |U| < |U|$. Hence **all $k$ occurrences of $U$ in $V$ overlap on the non-empty core** $V[x_k .. x_1 + |U| - 1]$ of length $|U| - (x_k - x_1) \ge 2|U| - |V| \ge 1$.
+2. **Single Arithmetic Progression of Step $\operatorname{per}(U)$**: Whenever $k \ge 2$, the occurrences form a **single arithmetic progression**:
+   $$x_2 - x_1 = x_3 - x_2 = \dots = x_k - x_{k-1} = d,$$
+   and whenever $k \ge 3$, the common difference $d$ equals the **shortest period** $\operatorname{per}(U)$ of $U$. (When $k = 2$, $x_1, x_2$ trivially form a 2-term arithmetic progression of step $d = x_2 - x_1 \ge \operatorname{per}(U)$.)
+:::
+
+```
+Window V (|V| < 2|U|):
+  x_1: [================ U ================]
+  x_2:        [================ U ================]
+  x_k:               [================ U ================]
+                     |<--- Common Core --->|
+                     (length >= 2|U| - |V| >= 1)
+       |<-- d -->|
+```
+
+#### Proof of Theorem 15.2
+Assume $k \ge 3$ (for $k \le 2$, any $\le 2$ numbers trivially form a single arithmetic progression). Since $x_1 \ge l_2$ and $x_k + |U| - 1 \le r_2 = l_2 + |V| - 1$, the span between the first and last occurrence is
+$$x_k - x_1 \le |V| - |U| < |U|.$$
+Consider any two consecutive occurrences $x_j < x_{j+1}$ ($1 \le j < k$). Because $d_j := x_{j+1} - x_j \le x_k - x_1 < |U|$, the two occurrences of $U$ at $x_j$ and $x_{j+1}$ overlap by $|U| - d_j \ge 1$ characters, which means shifting $U$ by $d_j$ preserves all overlapping characters—so $d_j \in \operatorname{Per}(U)$ is a period of $U$, and in particular $d_j \ge \operatorname{per}(U)$.
+
+Conversely, let $p = \operatorname{per}(U)$ be the shortest period of $U$. Why must $d_j = p$ for every $1 \le j < k$ when $k \ge 3$?
+First, $x_1$ and $x_k$ both place copies of $U$ covering $[x_1, x_1 + |U| - 1]$ and $[x_k, x_k + |U| - 1]$, and the shift $D = x_k - x_1 < |U|$ is also a period of $U$. Since $k \ge 3$, there is an intermediate occurrence $x_2 \in (x_1, x_k)$, splitting $D = d_1 + (x_k - x_2)$ into two positive periods $d_1 = x_2 - x_1 \in \operatorname{Per}(U)$ and $d' = x_k - x_2 \in \operatorname{Per}(U)$ with $d_1 + d' = D < |U|$. By the **Weak Periodicity Lemma** (or Fine–Wilf Theorem 1.2 on $U$, since $|U| > d_1 + d' > p + d_1 - \gcd(p, d_1)$), $p = \operatorname{per}(U)$ divides every period $d_j$ that participates in the overlap, and the entire union $V[x_1 .. x_k + |U| - 1]$ of length $|U| + D$ continues the periodic pattern of period $p = \operatorname{per}(U)$! Because $V[x_1 .. x_k + |U| - 1]$ has period $p$, shifting the occurrence of $U$ at $x_j$ forward by $p$ positions produces another exact copy of $U$ starting at $x_j + p \le x_j + d_j = x_{j+1} \le x_k$. Since $x_{j+1}$ is the *very next* occurrence of $U$ after $x_j$, no occurrence can lie strictly between $x_j$ and $x_{j+1}$, forcing $x_j + p = x_{j+1}$, i.e., $d_j = p = \operatorname{per}(U)$ for all $1 \le j < k$. $\blacksquare$
+
+---
+
+### 2.2 Extracting the Arithmetic Progression of $\operatorname{Occ}(U, V)$ in $O(\log N)$ Time
+
+How do we compute the compact descriptor $(x_1, d, k)$ of $\operatorname{Occ}(U, V)$ for $|U| \le |V| < 2|U|$?
+By Theorem 15.2, the entire set $\operatorname{Occ}(U, V)$ is uniquely determined by at most **three elements**: its minimum $x_1$, its second minimum $x_2$ (if $k \ge 2$), and its maximum $x_k$:
+$$d = x_2 - x_1, \qquad k = \frac{x_k - x_1}{d} + 1.$$
+In the Suffix Array $\operatorname{SA}[1..N]$, occurrences of $U$ inside $V = S[l_2..r_2]$ correspond to points in the SA range $[L_{\text{SA}}(U), R_{\text{SA}}(U)]$ whose values $\operatorname{SA}[t]$ fall inside the index window $[l_2,\, r_2 - |U| + 1]$. Building a **Persistent Segment Tree (`Chairman Tree`)** or **Wavelet Matrix** over the sequence $\operatorname{SA}[1..N]$ allows us to query the minimum, second minimum, and maximum values in $[l_2,\, r_2 - |U| + 1]$ within the slice $[L_{\text{SA}}(U), R_{\text{SA}}(U)]$ in **$O(\log N)$ time**!
+
+---
+
+### 2.3 Dyadic Scale Coverage ($P_m \cap Q_m$) & The One-Sided Check Counterexample
+
+Suppose we want to find all proper borders $b \in [1, r - l]$ of a query substring $W = S[l..r]$ of length $n = r - l + 1$. Partition the candidate border lengths $b \in [1, n - 1]$ into $\lfloor \log_2(n - 1) \rfloor + 1$ **dyadic scales**
+$$b \in \bigl[2^m,\; \min(n - 1,\, 2^{m+1} - 1)\bigr], \qquad m = 0, 1, \dots, \lfloor \log_2(n - 1) \rfloor.$$
+Fix a scale $m$, and let $L_{\max} = \min(n - 1,\, 2^{m+1} - 1)$ be the maximum candidate border length in this scale. Define the **dyadic prefix anchor** $P_m$ and **dyadic suffix anchor** $Q_m$ of $W = S[l..r]$:
+$$P_m = S\bigl[l .. l + 2^m - 1\bigr], \qquad Q_m = S\bigl[r - 2^m + 1 .. r\bigr], \qquad |P_m| = |Q_m| = 2^m.$$
+Now consider any candidate border length $b \in [2^m, L_{\max}]$. Since $b < 2^{m+1} = 2 \cdot 2^m$, the length-$2^m$ prefix $P_m$ and the length-$2^m$ suffix $Q_m$ **overlap or touch inside any length-$b$ border** ($2^m + 2^m = 2^{m+1} > b$):
+
+```
+Candidate border length b in [2^m, 2^{m+1} - 1]:
+
+  Prefix S[l .. l + b - 1] (inside Head Window H_m = S[l .. l + L_max - 1]):
+  |---------- P_m (len 2^m) ----------|
+                |---------- Q_m (len 2^m) ----------|
+                ^                                   ^
+        y = l + b - 2^m                       l + b - 1
+
+  Suffix S[r - b + 1 .. r] (inside Tail Window T_m = S[r - L_max + 1 .. r]):
+  |---------- P_m (len 2^m) ----------|
+                |---------- Q_m (len 2^m) ----------|
+  ^                                                 ^
+  x = r - b + 1                                     r
+```
+
+::: {.callout-note title="Theorem 15.3 (Dyadic Prefix–Suffix AP Intersection for Substring Borders)"}
+For any dyadic scale $m$ and any candidate length $b \in [2^m,\, L_{\max}]$ where $L_{\max} = \min(r - l,\, 2^{m+1} - 1) \le 2^{m+1} - 1$, define the **Tail Window** $T_m = S[r - L_{\max} + 1 .. r]$ and **Head Window** $H_m = S[l .. l + L_{\max} - 1]$. Notice that $|T_m| = |H_m| = L_{\max} < 2 \cdot 2^m = 2|P_m| = 2|Q_m|$.
+Then $b \in [2^m, L_{\max}]$ is a valid proper border of $W = S[l..r]$ **if and only if**:
+
+1. $P_m = S[l .. l + 2^m - 1]$ occurs in $T_m$ at starting index $x = r - b + 1 \in \operatorname{Occ}(P_m, T_m)$, **and**
+2. $Q_m = S[r - 2^m + 1 .. r]$ occurs in $H_m$ at starting index $y = l + b - 2^m \in \operatorname{Occ}(Q_m, H_m)$.
+
+Equivalently, mapping each $x \in \operatorname{Occ}(P_m, T_m)$ to candidate border length $b = r - x + 1$ and each $y \in \operatorname{Occ}(Q_m, H_m)$ to $b = y - l + 2^m$, the set of valid borders of $S[l..r]$ in $[2^m, L_{\max}]$ is the **exact intersection of two arithmetic progressions**:
+$$\boxed{\operatorname{Border}(S[l..r]) \cap [2^m, L_{\max}] = \bigl\{r - x + 1 : x \in \operatorname{Occ}(P_m, T_m)\bigr\} \;\cap\; \bigl\{y - l + 2^m : y \in \operatorname{Occ}(Q_m, H_m)\bigr\}.}$$
+:::
+
+#### Proof of Theorem 15.3
+
+- **($\implies$ Necessity)**: If $b \in [2^m, L_{\max}]$ is a border of $S[l..r]$, then $S[l .. l + b - 1] = S[r - b + 1 .. r]$. Taking the first $2^m$ characters of both sides shows $P_m = S[l .. l + 2^m - 1] = S[r - b + 1 .. r - b + 2^m]$, which lies inside $T_m$ since $r - b + 1 \ge r - L_{\max} + 1$ and $r - b + 2^m \le r$. Taking the last $2^m$ characters of both sides shows $S[l + b - 2^m .. l + b - 1] = S[r - 2^m + 1 .. r] = Q_m$, which lies inside $H_m$ since $l + b - 1 \le l + L_{\max} - 1$.
+- **($\Longleftarrow$ Sufficiency)**: Conversely, suppose $x = r - b + 1 \in \operatorname{Occ}(P_m, T_m)$ and $y = l + b - 2^m \in \operatorname{Occ}(Q_m, H_m)$. The first condition guarantees that the first $2^m$ characters of $S[l .. l + b - 1]$ match the first $2^m$ characters of $S[r - b + 1 .. r]$:
+  $$S\bigl[l + t\bigr] = S\bigl[r - b + 1 + t\bigr] \qquad \text{for all } 0 \le t < 2^m.$$
+  The second condition guarantees that the last $2^m$ characters of $S[l .. l + b - 1]$ match the last $2^m$ characters of $S[r - b + 1 .. r]$:
+  $$S\bigl[l + t\bigr] = S\bigl[r - b + 1 + t\bigr] \qquad \text{for all } b - 2^m \le t < b.$$
+  Because $b \le 2^{m+1} - 1$, we have $b - 2^m < 2^m$, so the two index intervals $[0, 2^m - 1]$ and $[b - 2^m, b - 1]$ **cover all $t \in [0, b - 1]$ with zero gap**! Thus $S[l .. l + b - 1] = S[r - b + 1 .. r]$. Finally, since $|T_m| = |H_m| = L_{\max} < 2 \cdot 2^m$, Theorem 15.2 guarantees that both sets are single arithmetic progressions. $\blacksquare$
+
+::: {.callout-warning title="Broken-Invariant Counterexample: Why a One-Sided $P_m$ Check Fails (`W = ababacababab`)"}
+A tempting shortcut is to query **only** $\operatorname{Occ}(P_m, T_m)$ and assume that all shifts in that arithmetic progression extend to the end of $W = S[l..r]$. This is **false**!
+Consider $W = S[1..12] = \texttt{ababacababab}$ ($n = 12$) at dyadic scale $m = 2$ ($2^m = 4$, testing $b \in [4, 7]$):
+
+- Here $P_2 = W[1..4] = \texttt{abab}$, and the Tail Window for $b \in [4, 7]$ is $T_2 = W[6..12] = \texttt{cababab}$ (length $7 < 8$).
+- Where does $P_2 = \texttt{abab}$ occur inside $T_2 = W[6..12]$? It occurs at $x_1 = 7$ ($W[7..10] = \texttt{abab}$) and $x_2 = 9$ ($W[9..12] = \texttt{abab}$), corresponding to candidate border lengths $b = 12 - 7 + 1 = 6$ and $b = 12 - 9 + 1 = 4$.
+- However, **$b = 6$ is NOT a border of $W$**: the prefix of length $6$ is $W[1..6] = \texttt{ababac}$ (ending in `'c'`), whereas the suffix of length $6$ is $W[7..12] = \texttt{ababab}$ (ending in `'b'`)!
+- Why did $x_1 = 7$ ($b = 6$) pass the one-sided $P_2$ check? Because $P_2 = W[1..4]$ only verified the first $4$ characters $W[1..4] = W[7..10] = \texttt{abab}$, leaving characters $5$ and $6$ ($W[5..6] = \texttt{ac}$ vs. $W[11..12] = \texttt{ab}$) unverified!
+- When we also check $Q_2 = W[9..12] = \texttt{abab}$ in $H_2 = W[1..7] = \texttt{ababaca}$, notice that at $y = 3$, $W[3..6] = \texttt{abac} \ne \texttt{abab}$, so $\operatorname{Occ}(Q_2, H_2) = \{1\}$ (mapping to $b = 1 - 1 + 4 = 4$ only). Intersecting $\{4, 6\} \cap \{4\} = \{4\}$ immediately rejects the false candidate $b = 6$!
+:::
+
+---
+
+## 3. Reverse-Engineering Scratchpad: The Complete 6-Method Unification of `[BJWC2018] Border 的四种求法` (`T-2B-04`)
+
+In **`[BJWC2018] Border 的四种求法` (Luogu P4482)**, we are given $S[1..N]$ ($N \le 2 \times 10^5$) and $Q \le 2 \times 10^5$ queries $[l, r]$, asking for the maximum proper border length $b \in [1, r - l]$ of $S[l..r]$ (or $0$ if $S[l..r]$ is unbordered).
+
+Why does this problem sit at the crossroads of suffix structures and periodicity? Let $i = l + b - 1 \in [l, r - 1]$ be the right endpoint of the prefix border $S[l..i]$. Then $b = i - l + 1$ is a valid proper border of $S[l..r]$ if and only if
+$$\operatorname{LCSuf}_S(r, i) \ge i - l + 1 \quad \Longleftrightarrow \quad i - \operatorname{len}\bigl(\operatorname{LCA}_{\mathcal{T}_{\text{SAM}}}(u_r, u_i)\bigr) \le l - 1, \qquad i \in [l, r - 1].$$
+Notice the **dual-side coupling**: the unknown index $i \in [l, r - 1]$ appears both inside the tree LCA $\operatorname{LCA}(u_r, u_i)$ and in the linear offset $i - l + 1$. We can decouple this inequality in **six distinct ways**:
+
+| Method | Structural Paradigm | Preprocessing | Query Time | Space | Online? |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **Method 1** | **Dyadic $2^m$ IPM + AP Intersection** (Kociumaka / Jin Ce) | $O(N \log N)$ | $O(\log^2 N)$ or $O(\log N)$ | $O(N \log N)$ | **Yes** |
+| **Method 2** | **SAM Link-Tree HLD + Persistent SegTree Merge** | $O(N \log^2 N)$ | $O(\log^2 N)$ | $O(N \log N)$ | **Yes** |
+| **Method 3** | **SAM Link-Tree Centroid Decomposition (`点分治`)** | $O(N \log^2 N)$ | $O(\log^2 N)$ | $O(N \log N)$ | Offline / Pers. |
+| **Method 4** | **Suffix Tree / Link-Tree DSU-on-Tree (`启发式合并`)** | $O((N+Q)\log^2 N)$ | Amortized | $O(N + Q)$ | Offline |
+| **Method 5** | **$\sqrt{N}$ SA-Neighborhood + Short-Border Split** | $O(N\sqrt{N})$ | $O(\sqrt{N})$ | $O(N)$ | **Yes** |
+| **Method 6** | **Runs Clipping (`Ch 08`) + Short Fallback** | $O(N \log N)$ | $O(\log N)$ (for $b \ge n/2$) | $O(N)$ | Offline / Pers. |
+
+---
+
+### 3.1 Method 1: Dyadic $2^m$ IPM + $O(1)$ Arithmetic Progression Intersection
+
+Iterate $m = \lfloor \log_2(r - l) \rfloor$ down to $0$ (stopping at the highest scale $m$ that yields a valid border):
+
+1. Extract the AP of $\operatorname{Occ}(P_m, T_m)$ and the AP of $\operatorname{Occ}(Q_m, H_m)$ via the Persistent Segment Tree over $\operatorname{SA}$ (finding min, 2nd min, max occurrence in $O(\log N)$ time per scale).
+2. Convert both occurrence sets into candidate border progressions $A_1 = \{b_1 + t d_1\}_{t=0}^{k_1 - 1}$ and $A_2 = \{b_2 + s d_2\}_{s=0}^{k_2 - 1}$ inside $[2^m, L_{\max}]$.
+3. **Key Simplification for AP Intersection**:
+   - If $\min(k_1, k_2) \le 2$, simply test the $\le 2$ elements of the smaller set directly in $O(1)$ time using the exact border check $\operatorname{LCE}_S(l,\, r - b + 1) \ge b$!
+   - If $k_1 \ge 3$ and $k_2 \ge 3$, then by Theorem 15.2, $d_1 = \operatorname{per}(P_m)$ and $d_2 = \operatorname{per}(Q_m)$.
+     - **Case A ($d_1 = d_2 = d$)**: $A_1$ and $A_2$ have the **exact same step $d$**! Thus $A_1 \cap A_2 \ne \emptyset$ iff $b_1 \equiv b_2 \pmod d$ and $[\max(b_1, b_2),\, \min(b_1 + (k_1-1)d, b_2 + (k_2-1)d)]$ is non-empty, giving the maximum element $\min(b_1 + (k_1-1)d,\, b_2 + (k_2-1)d)$ in $O(1)$ arithmetic.
+     - **Case B ($d_1 \ne d_2$)**: Why can $A_1$ and $A_2$ only intersect at their extreme endpoints (`A1.first`, `A1.last`, `A2.first`, or `A2.last`) without needing Extended GCD? Suppose for contradiction that $b \in A_1 \cap A_2$ satisfies $b > b_{\min, 1}$ (so $b - b_{\min, 1} \ge d_1$) and $b < b_{\max, 2}$ (so $2^{m+1} - 1 \ge b_{\max, 2} \ge b + d_2$, giving $2^{m+1} - b_{\min, 2} > d_2$). Inside the length-$b$ border $B = S[l .. l + b - 1] = S[r - b + 1 .. r]$, the periodic union of $\operatorname{Occ}(P_m, T_m)$ covers the prefix $B[1 .. b - b_{\min, 1} + 2^m]$ with period $d_1$, while the periodic union of $\operatorname{Occ}(Q_m, H_m)$ covers the suffix $B[b_{\min, 2} - 2^m + 1 .. b]$ with period $d_2$. Their overlap inside $B$ has length $(2^{m+1} - b_{\min, 2}) + (b - b_{\min, 1}) > d_2 + d_1$, so by the **Fine–Wilf Periodicity Lemma ([Theorem 1.2](ch01-fine-wilf-periodicity-orbits.qmd))**, the overlap (and therefore both $P_m$ and $Q_m$) has period $\gcd(d_1, d_2) \le \min(d_1, d_2)$, forcing $d_1 = \gcd(d_1, d_2) = d_2$, a contradiction! Thus testing the $4$ extreme endpoints via $\operatorname{LCE}_S(l, r - b + 1) \ge b$ is 100% exact!
+
+---
+
+### 3.2 Method 2: SAM Link-Tree HLD + Persistent Segment Tree Merging
+
+Build $\operatorname{SAM}(S)$ and merge $\operatorname{endpos}$ Segment Trees bottom-up on the Link Tree $\mathcal{T}_{\text{link}}$ ([Chapter 10](ch10-sam-endpos-segtree-merge.qmd)). Decompose $\mathcal{T}_{\text{link}}$ via Heavy-Light Decomposition ($\operatorname{HLD}$).
+For a query $[l, r]$, walk the $O(\log N)$ heavy chains from $u_r = \text{pos}[r]$ up to the root. For any ancestor $w = \operatorname{LCA}(u_r, u_i)$ on this path, we need $i \in [l, r - 1]$ with $i \le l + \operatorname{len}(w) - 1$:
+
+- **Light-Subtree Contribution ($\operatorname{LCA}(u_r, u_i) = w$ fixed)**: At the bottom of each heavy chain segment (or by querying the merged $\operatorname{endpos}$ Segment Tree of $w$), $\operatorname{len}(w)$ is a known constant! Thus we query $\operatorname{endpos}(w)$ for the **largest index** $i \in \bigl[l,\; \min(r - 1,\, l + \operatorname{len}(w) - 1)\bigr]$ in $O(\log N)$ time.
+- **Heavy-Chain Contribution ($u_i$ enters the heavy chain at $w$)**: Along a heavy chain $[top, bot]$, attach each index $i \in [1..N]$ to the heavy-chain vertex $w_i$ where the path from $u_i$ to the root first hits the heavy chain, with key $\operatorname{val}(i) = i - \operatorname{len}(w_i)$. Build a Segment Tree over the heavy chain storing $\min \operatorname{val}(i)$ (or a 2D structure / Persistent Segment Tree over $i \in [l, r - 1]$) to find the largest $i \in [l, r - 1]$ on the heavy chain above $u_r$ satisfying $i - \operatorname{len}(w_i) \le l - 1$.
+
+---
+
+### 3.3 Method 3 & Method 4: Link-Tree Centroid Decomposition (`点分治`) & DSU-on-Tree (`启发式合并`)
+
+- **Method 3 (Centroid Decomposition on $\mathcal{T}_{\text{link}}$)**:
+  At centroid $c$ of the SAM Link Tree, compute for every node $u$ in $c$'s component the bottleneck LCA length $L(u) = \operatorname{len}(\operatorname{LCA}_{\mathcal{T}_{\text{link}}}(u, c))$ along the path to $c$. For any $u_r$ and $u_i$ in different subtrees of $c$, $\operatorname{len}(\operatorname{LCA}(u_r, u_i)) = \min(L(u_r), L(u_i))$. Split the condition $i - \min(L(u_r), L(u_i)) \le l - 1$ into two linear regimes:
+
+  1. **Regime A ($L(u_r) \le L(u_i)$)**: The condition becomes $i \le l + L(u_r) - 1$, so we query for the maximum $i \in [l,\, \min(r - 1, l + L(u_r) - 1)]$ among nodes with $L(u_i) \ge L(u_r)$.
+  2. **Regime B ($L(u_i) < L(u_r)$)**: The condition becomes $i - L(u_i) \le l - 1$, so we query for the maximum $i \in [l, r - 1]$ among nodes with $L(u_i) < L(u_r)$ and $i - L(u_i) \le l - 1$.
+  Both are 2D orthogonal range queries solved in $O((N + Q)\log^2 N)$ time!
+
+- **Method 4 (DSU-on-Tree / Dominant Pairs on $\mathcal{T}_{\text{link}}$)**:
+  Park each query $[l, r]$ at node $u_r$. Traverse $\mathcal{T}_{\text{link}}$ via DSU-on-Tree, maintaining the active set of indices $i$ in the subtree of $w$ and answering queries in the light subtrees against the fixed depth $\operatorname{len}(w)$.
+
+---
+
+### 3.4 Method 5 & Method 6: $\sqrt{N}$ SA-Neighborhood Split & Runs Clipping (`Ch 08`)
+
+- **Method 5 ($\sqrt{N}$ Dual-Regime Split)**:
+  Fix threshold $B = \lfloor \sqrt{N} \rfloor$. A border $b$ of $S[l..r]$ falls into one of two regimes:
+
+  1. **Short Borders ($b \le B$)**: Test all $b \in [1, \min(r - l, B)]$ in $O(B)$ time via $\operatorname{LCE}_S(l, r - b + 1) \ge b$.
+  2. **Long Borders ($b > B$)**: If the SA interval $[L_{\text{SA}}(l, l + b - 1), R_{\text{SA}}(l, l + b - 1)]$ has width $\le 2B$, then $\operatorname{rk}[r - b + 1]$ lies within $\pm 2B$ of $\operatorname{rk}[l]$ in the Suffix Array—test all $x \in [\operatorname{rk}[l] - 2B,\, \operatorname{rk}[l] + 2B]$ in $O(B)$ time! Otherwise, the prefix $S[l .. l + B - 1]$ occurs $> 2B$ times in $S$; there are at most $N / (2B) = O(\sqrt{N})$ such heavy equivalence classes of length $B$, which can be preprocessed in $O(N\sqrt{N})$ time.
+- **Method 6 (Runs Clipping for Long Borders $b \ge \lceil n/2 \rceil$)**:
+  Whenever $b \ge \lceil (r - l + 1)/2 \rceil$, the complementary period $p = (r - l + 1) - b \le \lfloor (r - l + 1)/2 \rfloor$ makes $S[l..r]$ periodic with period $p$, so $S[l..r]$ is contained inside a **unique maximal run** $R = [l_R, r_R, p]$ of period $p$ ([Chapter 08](ch08-runs-theorem-squares-sweep.qmd))! Thus finding the longest border $b \ge \lceil n/2 \rceil$ reduces to finding the minimum period $p \le n/2$ among all runs $[l_R, r_R, p]$ covering $[l, r]$ ($l_R \le l$ and $r_R \ge r$).
+
+::: {.callout-note title="Corollary 15.4 ($O(1)$ Internal Shortest Period Query via Bounded-Ratio IPM)"}
+After $O(N \log N)$ preprocessing of the $O(1)$-time $\operatorname{IPM}$ dictionary for powers of two $2^k$, we can compute whether $W = S[l..r]$ (length $n = r - l + 1$) is periodic ($\operatorname{per}(W) \le n / 2$) and return its exact shortest period $\operatorname{per}(W)$ in **$O(1)$ time**:
+Let $k = \lfloor \log_2(n / 2) \rfloor$, so $2^k \le n / 2 < 2^{k+1}$, and query $\operatorname{Occ}\bigl(S[l .. l + 2^k - 1],\; S[l .. l + 2^{k+1} - 1]\bigr)$.
+If $\operatorname{per}(W) \le n / 2$, then $p = \operatorname{per}(W) \le n / 2 < 2^{k+1} - 2^k + 1$, so the second occurrence $x_2$ of $S[l .. l + 2^k - 1]$ inside $S[l .. l + 2^{k+1} - 1]$ **must** occur at $x_2 = l + p$! Thus we simply check whether $x_2$ exists, $p = x_2 - l \le n / 2$, and $\operatorname{LCE}_S(l, l + p) \ge n - p$ in $O(1)$ time!
+:::
+
+---
+
+## 4. Algorithmic Implementation Contract & Boundary Pitfalls
+
+### 4.1 Implementation Contract: Dyadic IPM Border Solver (`Method 1`)
+
+```cpp
+// Assumes:
+// 1. lce(i, j) returns LCE_S(i, j) in O(1) via SA + Sparse Table RMQ on height[].
+// 2. sa_range(l, len) returns [L_SA, R_SA] for S[l .. l + len - 1] in O(log N) (or O(1) for len = 2^m).
+// 3. chair.first_two_and_last(L_SA, R_SA, val_L, val_R) returns {x_1, x_2, x_k} in [val_L, val_R].
+
+struct AP {
+    int first = -1, step = 0, cnt = 0; // Represents {first + t * step : 0 <= t < cnt}
+};
+
+AP get_border_ap_from_prefix(int l, int r, int m, int L_max) {
+    int len = 1 << m;
+    auto [L_sa, R_sa] = sa_range(l, len);
+    // Tail window T_m = S[r - L_max + 1 .. r]; occurrences of P_m start in [r - L_max + 1, r - len + 1]
+    auto [x1, x2, xk] = chair.first_two_and_last(L_sa, R_sa, r - L_max + 1, r - len + 1);
+    if (x1 == -1) return {};
+    if (x2 == -1) return {r - x1 + 1, 0, 1};
+    int d = x2 - x1, cnt = (xk - x1) / d + 1;
+    // Map starting index x -> border length b = r - x + 1 (increasing b from r - xk + 1 to r - x1 + 1)
+    return {r - xk + 1, d, cnt};
+}
+
+int query_max_proper_border(int l, int r) {
+    int n = r - l + 1;
+    if (n <= 1) return 0;
+    for (int m = std::__lg(n - 1); m >= 0; --m) {
+        int len = 1 << m, L_max = std::min(n - 1, (1 << (m + 1)) - 1);
+        AP A1 = get_border_ap_from_prefix(l, r, m, L_max);
+        if (A1.cnt == 0) continue;
+        // Also query Q_m = S[r - len + 1 .. r] in Head Window H_m = S[l .. l + L_max - 1]
+        auto [Lq, Rq] = sa_range(r - len + 1, len);
+        auto [y1, y2, yk] = chair.first_two_and_last(Lq, Rq, l, l + L_max - len);
+        if (y1 == -1) continue;
+        int best = 0;
+        auto check_b = [&](int b) {
+            if (b >= len && b <= L_max && lce(l, r - b + 1) >= b) best = std::max(best, b);
+        };
+        if (A1.cnt <= 2) {
+            for (int t = 0; t < A1.cnt; ++t) check_b(A1.first + t * A1.step);
+        } else if (y2 == -1) {
+            check_b(y1 - l + len);
+        } else {
+            int d2 = y2 - y1, cnt2 = (yk - y1) / d2 + 1;
+            AP A2 = {y1 - l + len, d2, cnt2};
+            if (A2.cnt <= 2) {
+                for (int t = 0; t < A2.cnt; ++t) check_b(A2.first + t * A2.step);
+            } else if (A1.step == A2.step) {
+                int d = A1.step;
+                if ((A1.first - A2.first) % d == 0) {
+                    int hi = std::min(A1.first + (A1.cnt - 1) * d, A2.first + (A2.cnt - 1) * d);
+                    int lo = std::max(A1.first, A2.first);
+                    if (hi >= lo) best = std::max(best, hi);
+                }
+            } else {
+                // Different minimal periods can overlap at most at extreme points
+                check_b(A1.first); check_b(A1.first + (A1.cnt - 1) * A1.step);
+                check_b(A2.first); check_b(A2.first + (A2.cnt - 1) * A2.step);
+            }
+        }
+        if (best > 0) return best;
+    }
+    return 0;
+}
+```
+
+### 4.2 Summary of Boundary Pitfalls (`BP-15` / `BP-15-01` to `BP-15-04`)
+
+1. **`BP-15` / `BP-15-01` / `BP-2B-09` (One-Sided $P_m$ Check Failure)**: Never omit the symmetric suffix anchor $Q_m$ in Method 1 (`W = ababacababab`, $b = 6$ counterexample in §2.3).
+2. **`BP-15-02` / `BP-2B-10` (Improper Border $b = r - l + 1$ at $i = r$)**: Always cap $L_{\max} = \min(r - l,\, 2^{m+1} - 1)$ in Method 1 and restrict $i \in [l, r - 1]$ in Methods 2–4 so the full string $S[l..r]$ is not returned as a proper border.
+3. **`BP-15-03` / `BP-2B-11` (Using $\operatorname{rk}[l]$ Instead of Leftmost $k_0 = L_{\text{SA}}(l, r)$ in `Rank(S[l..r])`)**: In Theorem 15.1, $S[l..r]$ is born at its *first* SA occurrence $k_0 = L_{\text{SA}}(l, r) \le \operatorname{rk}[l]$. Evaluating $\operatorname{pref}[\operatorname{rk}[l] - 1] + (\ell - H[\operatorname{rk}[l]])$ when $k_0 < \operatorname{rk}[l]$ produces an out-of-bounds negative offset $\ell - H[\operatorname{rk}[l]] \le 0$ and the wrong suffix bucket!
+4. **`BP-15-04` / `BP-2B-12` (Over-Counting Exact Matches in 1-Mismatch 2D Bi-SA Queries)**: When summing 2D rectangle counts over all $m = |P|$ mismatch positions $k \in [1..m]$, an **exact** occurrence of $P$ (0 mismatches) matches at *all* $m$ split positions! Always subtract $(m - 1) \cdot \operatorname{occ}_{\text{exact}}(P)$.
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Ladder (`Ch 15`)
+
+### Tier 1 — Stepping Stone (`W2B-13`, `W2B-25`)
+
+#### Problem 15.1 (`W2B-13`) — `CF 504E — Misha and LCP on Tree`
+
+- **Mathematical Statement**: Given a rooted tree $T$ of $N$ vertices where each vertex $v$ holds a lowercase letter $c_v \in \{\texttt{a}, \dots, \texttt{z}\}$, answer $Q$ queries $(u_1, v_1, u_2, v_2)$ asking for the length of the Longest Common Prefix of the string formed along the simple path $u_1 \leadsto v_1$ and the string formed along the simple path $u_2 \leadsto v_2$.
+- **Constraints**: $1 \le N \le 3 \times 10^5$, $1 \le Q \le 10^6$, time limit $8.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At $Q = 10^6$, binary searching the answer via rolling hashes on tree paths takes $O(Q \log^2 N)$ time ($\approx 4 \times 10^8$ hash queries) and risks TLE or hash collisions. How does Heavy-Light Decomposition ($\operatorname{HLD}$) represent a tree path as a small sequence of substrings?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Write the vertices of $T$ in HLD DFS order $\operatorname{dfn}[1..N]$ to form a string $M[1..N]$, and append its reversal $M^R$ to form $W = M \cdot M^R$ of length $2N$. Every upward or downward heavy-chain segment on $u \leadsto v$ is a contiguous substring of $W$, so each query path is a concatenation of $k \le 2 \lfloor \log_2 N \rfloor + 2$ substrings of $W$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Apply **Primitive 3 (§1.2, Multi-Piece Concatenation Comparison)**: build SA + $O(1)$ Sparse Table RMQ on $W = M \cdot M^R$, extract the $O(\log N)$ segments for both paths, and walk two pointers across the segments advancing by $\Delta = \min(\operatorname{LCE}_W, \text{rem}_1, \text{rem}_2)$ in $O(\log N)$ time per query.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-13`)"}
+
+1. **Diagnostic Signal**: $Q = 10^6$ requires removing the binary-search $\log N$ factor from tree-path LCP queries.
+2. **Combinatorial Word Invariant**:
+   - Decompose $T$ via HLD. Any simple path $u \leadsto v$ splits at $w = \operatorname{LCA}(u, v)$ into an upward path $u \leadsto w$ (excluding $w$) and a downward path $w \leadsto v$, consisting of $k \le 2 \log_2 N$ contiguous intervals in the HLD Euler tour array $M[1..N]$.
+   - Concatenating $W = M \cdot M^R$ makes every downward segment $[L, R]$ a forward substring $W[L..R]$ and every upward segment $R \to L$ a forward substring $W[2N - R + 1 .. 2N - L + 1]$.
+   - By §1.2 Primitive 3, given two segment lists $A_1 \cdots A_k$ and $B_1 \cdots B_m$, each $O(1)$ $\operatorname{LCE}_W$ query either finds the first mismatch inside the current segment pair or completely exhausts at least one segment.
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{SA}$, $\operatorname{rk}$, $\operatorname{height}$, and an $O(1)$ Sparse Table on $W$ of length $2N \le 6 \times 10^5$.
+   - For each query, collect the segments of $u_1 \leadsto v_1$ and $u_2 \leadsto v_2$ into stack-allocated buffers and run the two-pointer piece exhaustion loop. Total time: $O(N \log N + Q \log N)$.
+4. **Broken-Invariant Counterexample**: Do not include $\operatorname{LCA}(u, v)$ in *both* the upward segment list from $u$ and the downward segment list to $v$—doing so duplicates the character at the LCA!
+:::
+
+---
+
+#### Problem 15.2 (`W2B-25`) — `Global Substring Rank & K-th Lexicographical Substring Select` (Also `[TJOI2015] 弦论` Luogu P3975)
+
+- **Mathematical Statement**: Given a string $S[1..N]$, support $Q$ queries of two types:
+  - **Type 1 (`Rank(l, r)`)**: Output the 1-based lexicographical rank of $S[l..r]$ among all distinct non-empty substrings of $S$.
+  - **Type 2 (`Select(K, t)`)**: Given $K \le 10^{18}$, output the endpoints $(l, r)$ of the $K$-th lexicographically smallest substring of $S$ (counting distinct substrings when $t = 0$, or counting with multiplicity when $t = 1$).
+- **Constraints**: $1 \le N, Q \le 3 \times 10^5$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+There are up to $\binom{N+1}{2} \approx 4.5 \times 10^{10}$ distinct substrings, so we must group them into $N$ suffix blocks in $\operatorname{SA}$ order.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Invoke **Theorem 15.1**: for $t = 0$ (distinct substrings), suffix $\operatorname{SA}[k]$ introduces $\Delta_k = (N - \operatorname{SA}[k] + 1) - H[k]$ new distinct substrings in exact lexicographical order, and the canonical birth suffix of $S[l..r]$ is $k_0 = L_{\text{SA}}(l, r)$, the **leftmost** suffix in $\operatorname{SA}$ sharing prefix $S[l..r]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For Type 1, binary search RMQ on $H$ to find $k_0 = L_{\text{SA}}(l, r) \le \operatorname{rk}[l]$ and return $\operatorname{pref}[k_0 - 1] + (r - l + 1 - H[k_0])$. For Type 2 with $t = 1$ (with multiplicity), use the Min-Cartesian Tree of $H[2..N]$ ([Chapter 13](ch13-virtual-suffix-trees-dominant-pairs.qmd)), where node $u$ spanning $[L_u, R_u]$ represents $(h_u - h_{p(u)})(R_u - L_u + 1)$ substring occurrences in DFS order!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-25`)"}
+
+1. **Diagnostic Signal**: Mapping between substring coordinates $(l, r)$ and global rank $K \in [1, \binom{N+1}{2}]$ requires canonical deduplication of repeated substrings.
+2. **Combinatorial Word Invariant**:
+   - By **Theorem 15.1**, each distinct substring $U = S[l..r]$ of length $\ell = r - l + 1$ appears for the first time in $\operatorname{SA}$ order at $k_0 = L_{\text{SA}}(l, r) = \min\{x \le \operatorname{rk}[l] : \operatorname{LCE}_S(\operatorname{SA}[x], l) \ge \ell\}$, where it is the $(\ell - H[k_0])$-th new prefix of $\operatorname{suf}(\operatorname{SA}[k_0])$.
+   - For $t = 1$ (multiplicity mode), the contracted Min-Cartesian Tree of $H[2..N]$ (or the $\operatorname{SAM}(S)$ DAG) groups prefixes of length $\in (h_{p(u)}, h_u]$ that occur across all $R_u - L_u + 1$ suffixes in $[L_u, R_u]$.
+3. **Algorithmic Compilation**:
+   - Precompute $\operatorname{pref}[k] = \sum_{i=1}^k ((N - \operatorname{SA}[i] + 1) - H[i])$ in $64$-bit integers.
+   - `Rank(l, r)`: Binary search $x \in [1, \operatorname{rk}[l]]$ for the smallest $x$ with $\operatorname{RMQ}_H(x + 1, \operatorname{rk}[l]) \ge r - l + 1$, and return $\operatorname{pref}[x - 1] + (r - l + 1 - H[x])$.
+   - `Select(K, 0)`: `k0 = std::lower_bound(pref + 1, pref + N + 1, K) - pref`; length $\ell = H[k_0] + (K - \operatorname{pref}[k_0 - 1])$; return $(\operatorname{SA}[k_0], \operatorname{SA}[k_0] + \ell - 1)$. Time: $O(\log N)$ per query.
+4. **Broken-Invariant Counterexample (`BP-15-03`)**: On $S = \texttt{aba}$, query `Rank(3, 3)` for $S[3..3] = \texttt{"a"}$: here $\operatorname{SA} = [3, 1, 2]$ ($\texttt{"a"}, \texttt{"aba"}, \texttt{"ba"}$), $H = [0, 1, 0]$. For `Rank(1, 1)` ($S[1..1] = \texttt{"a"}$), $\operatorname{rk}[1] = 2$, where $H[2] = 1 = \ell$. Using $\operatorname{rk}[1] = 2$ instead of $k_0 = L_{\text{SA}}(1, 1) = 1$ gives $\operatorname{pref}[1] + (1 - 1) = 1$ only by luck of $\Delta_1 = 1$, and for $S = \texttt{ababa}$, `Rank(3, 4)` ($\texttt{"ab"}$) at $\operatorname{rk}[3] = 4$ gives a wrong rank $> 2$ unless $k_0 = L_{\text{SA}}(3, 4)$ is used!
+:::
+
+---
+
+### Tier 2 — Intermediate (`W2B-28`, `W2B-30`)
+
+#### Problem 15.3 (`W2B-28`) — `Bounded-Ratio Internal Pattern Matching & Minimal Substring Suffix ([ZJOI2017] 字符串 Luogu P3763)`
+
+- **Mathematical Statement**: Given $S[1..N]$, answer $Q$ online queries of two types:
+  - **Part A (`Bounded-Ratio IPM`)**: Given $U = S[l_1..r_1]$ and $V = S[l_2..r_2]$ with $|U| \le |V| < 2|U|$, output the compact arithmetic progression $(x_1, d, k)$ of all occurrences $\operatorname{Occ}(U, V)$.
+  - **Part B (`Minimal Suffix of S[l..r] via IPM Border Hopping`)**: Given $[l, r]$, find the starting index $i \in [l, r]$ that minimizes the truncated suffix $S[i..r]$ lexicographically (breaking ties by smaller $i$).
+- **Constraints**: $1 \le N, Q \le 2 \times 10^5$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+In Part B, let $i_0 = \arg\min_{i \in [l, r]} \operatorname{rk}[i]$ be the starting position in $[l, r]$ with the smallest **global** suffix rank $\operatorname{suf}(i_0)$. When can another position $j \in [l, r]$ satisfy $S[j..r] <_{\text{lex}} S[i_0..r]$ even though $\operatorname{suf}(i_0) <_{\text{lex}} \operatorname{suf}(j)$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Truncating $\operatorname{suf}(i_0)$ and $\operatorname{suf}(j)$ at right boundary $r$ can reverse their relative order **if and only if** no character mismatch occurs inside $[j, r]$—which means $S[j..r]$ is a **proper prefix (and therefore a proper border!)** of $S[i_0..r]$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+By [Chapter 02](ch02-weak-periodicity-border-aps.qmd) and **Theorem 15.2**, the proper borders of $S[i_0..r]$ partition into $O(\log N)$ arithmetic progressions, and within any border AP of period $d$ (which is a tandem repeat $w^k u'$ as proven in [Chapter 06](ch06-significant-suffixes-substrings.qmd)), only the **shortest** border in the AP can become the new lexicographical minimum!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-28`)"}
+
+1. **Diagnostic Signal**: Global suffix ranks $\operatorname{rk}[i]$ include characters past index $r$ that do not belong to $S[l..r]$.
+2. **Combinatorial Word Invariant**:
+   - **Part A**: By **Theorem 15.2**, since $|V| < 2|U|$, $\operatorname{Occ}(U, V)$ is completely determined by the minimum $x_1$, second minimum $x_2$, and maximum $x_k$ in $\operatorname{SA}[L_{\text{SA}}(U) .. R_{\text{SA}}(U)] \cap [l_2,\, r_2 - |U| + 1]$.
+   - **Part B**: Let $i_0 \in [l, r]$ minimize $\operatorname{rk}[i_0]$ (found in $O(1)$ via RMQ on $\operatorname{rk}[l..r]$). For any $j \ne i_0$ in $[l, r]$, $\operatorname{suf}(i_0) <_{\text{lex}} \operatorname{suf}(j)$. If $\operatorname{LCE}_S(i_0, j) < \min(r - i_0 + 1, r - j + 1)$, the mismatch occurs at or before $r$, so $S[i_0..r] <_{\text{lex}} S[j..r]$. Thus $S[j..r] <_{\text{lex}} S[i_0..r]$ requires $j > i_0$ and $\operatorname{LCE}_S(i_0, j) \ge r - j + 1$, meaning $S[j..r]$ is a **proper border** of $S[i_0..r]$!
+   - Jumping from $W = S[i_0..r]$ to its longest border $b_1 = \operatorname{bd}(W)$, and within $b_1$'s arithmetic progression jumping directly to $b_{\text{last}} = b_1 \bmod \operatorname{per}(W) + \operatorname{per}(W)$ (or $b_1 \bmod \operatorname{per}(W)$), reduces $|W|$ by at least $1/2$ per step!
+3. **Algorithmic Compilation**:
+   - Build SA + Sparse Table RMQ on $S$ and a Persistent Segment Tree over $\operatorname{SA}[1..N]$.
+   - Answer Part A in $O(\log N)$ via `first_two_and_last` on the Persistent Segment Tree.
+   - Answer Part B by finding $i_0 = \operatorname{SA}[\min_{k \in [l, r]} \operatorname{rk}[k]]$ and hopping through the $\le \log_2(r - l + 1)$ border APs of $S[i_0..r]$.
+4. **Broken-Invariant Counterexample**: On $S = \texttt{abad}$ and $[l, r] = [1, 3]$ ($S[1..3] = \texttt{aba}$), globally $\operatorname{suf}(1) = \texttt{abad} < \operatorname{suf}(3) = \texttt{ad}$, so $i_0 = 1$, yet inside $S[1..3]$, the border $S[3..3] = \texttt{a} < S[1..3] = \texttt{aba}$ wins!
+:::
+
+---
+
+#### Problem 15.4 (`W2B-30`) — `Substring Concatenation Periodicity & Longest Cyclic Border (POI 2012 — Prefixuffix / Prefiksufiks)`
+
+- **Mathematical Statement**: Given a string $S[1..N]$, two words $A, B$ are *cyclically equivalent* if there exist words $U, V$ such that $A = U V$ and $B = V U$. Find the maximum length $k \le \lfloor N / 2 \rfloor$ such that the length-$k$ prefix $S[1..k]$ and length-$k$ suffix $S[N - k + 1 .. N]$ are cyclically equivalent.
+- **Constraints**: $1 \le N \le 10^6$, time limit $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+If $S[1..k] = U V$ and $S[N - k + 1 .. N] = V U$, how do $U$ and $V$ sit inside the full string $S[1..N]$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Look at the alignment: $S[1..N] = \underbrace{U V}_{S[1..k]} \cdots \underbrace{V U}_{S[N-k+1..N]}$. This means $U$ is an **exact border of $S[1..N]$** ($|U| \in \operatorname{Border}(S) \cup \{0\}$), and $V$ is an **exact border of the stripped middle substring** $S\bigl[|U| + 1 .. N - |U|\bigr]$ with $|U| + |V| \le \lfloor N/2 \rfloor$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For each $i \in \{1, \dots, \lfloor N/2 \rfloor\}$, let $f(i)$ be the maximum border length $\ell \le \lfloor N/2 \rfloor - i + 1$ of the middle substring $S[i .. N - i + 1]$. Prove that $f(i) \le f(i + 1) + 2$, allowing all $f(1..\lfloor N/2 \rfloor)$ to be computed in $O(N)$ amortized time using $O(1)$ $\operatorname{LCE}$ checks!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-30`)"}
+
+1. **Diagnostic Signal**: $N = 10^6$ forbids $O(\log N)$ border queries at every center-stripped substring $S[i .. N - i + 1]$.
+2. **Combinatorial Word Invariant**:
+   - Any cyclic border split $S[1..k] = U V$, $S[N-k+1..N] = V U$ ($k = |U| + |V| \le N/2$) decomposes into an outer border $U = S[1..i-1] = S[N-i+2..N]$ of $S[1..N]$ (where $i = |U| + 1$) and an inner border $V$ of $S[i .. N - i + 1]$ of length $|V| \le \lfloor N/2 \rfloor - (i - 1)$.
+   - **Lipshitz Bound $f(i) \le f(i + 1) + 2$**: Suppose $V$ of length $\ell \ge 2$ is a border of $S[i .. N - i + 1]$, so $S[i .. i + \ell - 1] = S[N - i - \ell + 2 .. N - i + 1]$. Deleting the first character ($S[i] = S[N - i - \ell + 2]$) and the last character ($S[i + \ell - 1] = S[N - i + 1]$) leaves $S[i + 1 .. i + \ell - 2] = S[N - i - \ell + 3 .. N - i]$, which is a valid border of $S[i + 1 .. N - i]$ of length $\ell - 2$! Thus $f(i) - 2 \le f(i + 1) \implies f(i) \le f(i + 1) + 2$.
+3. **Algorithmic Compilation**:
+   - Build $O(N)$ SA-IS + $O(1)$ $\operatorname{LCE}$ (or two rolling hashes) on $S$.
+   - Sweep $i$ from $\lfloor N/2 \rfloor$ down to $1$: initialize $\ell = \min(\lfloor N/2 \rfloor - i + 1,\, f(i + 1) + 2)$ and decrement $\ell$ while $\ell > 0$ and $\operatorname{LCE}_S(i,\, N - i + 2 - \ell) < \ell$; set $f(i) = \ell$. Since $\ell$ increases by at most $+2$ per step, the `while` loop executes at most $N$ times total!
+   - Finally, take $\max_{|U| \in \operatorname{Border}(S) \cup \{0\}, |U| \le N/2} \bigl(|U| + f(|U| + 1)\bigr)$. Time: $O(N)$.
+4. **Broken-Invariant Counterexample**: Failing to cap $\ell \le \lfloor N/2 \rfloor - i + 1$ allows $V$ in the prefix and $V$ in the suffix to overlap across the midpoint of $S$, producing $k = |U| + |V| > N/2$.
+:::
+
+---
+
+### Tier 3 — Advanced (`W2B-33`, `W2B-34`)
+
+#### Problem 15.5 (`W2B-33`) — `[BJWC2018] Border 的四种求法` (Luogu P4482)
+
+- **Mathematical Statement**: Given a string $S[1..N]$ over `a`–`z` and $Q$ queries $[l, r]$, output for each query the maximum proper border length $b \in [1, r - l]$ of $S[l..r]$ (or $0$ if none exists).
+- **Constraints**: $1 \le N, Q \le 2 \times 10^5$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+This is the flagship benchmark of §3. Choose either **Method 1** (Dyadic $2^m$ IPM AP Intersection) or **Method 2** (SAM Link-Tree HLD + Persistent Segment Tree Merge).
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In **Method 1 (§3.1)**, for each scale $m = \lfloor \log_2(r - l) \rfloor$ down to $0$, any border $b \in [2^m, \min(r - l, 2^{m+1} - 1)]$ must place $P_m = S[l..l+2^m-1]$ in the Tail Window $T_m$ and $Q_m = S[r-2^m+1..r]$ in the Head Window $H_m$, and by **Theorem 15.2 & Theorem 15.3**, intersecting those two arithmetic progressions finds the exact maximum border in scale $m$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+In **Method 2 (§3.2)**, build $\operatorname{SAM}(S)$ with bottom-up Segment Tree Merging on $\operatorname{endpos}$ and HLD on $\mathcal{T}_{\text{link}}$. Walking the $O(\log N)$ heavy chains from $u_r$ to the root checks (1) light subtrees at $w$ via $\max(\operatorname{endpos}(w) \cap [l, \min(r-1, l+\operatorname{len}(w)-1)])$ and (2) heavy-chain ancestors via a Segment Tree over heavy-chain DFS order storing $\min(i - \operatorname{len}(w_i))$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-33`)"}
+
+1. **Diagnostic Signal**: $i \in [l, r - 1]$ is coupled across $i - \operatorname{len}(\operatorname{LCA}(u_r, u_i)) \le l - 1$.
+2. **Combinatorial Word Invariant**:
+   - **Method 1 (Dyadic IPM)**: By Theorem 15.3, $\operatorname{Border}(S[l..r]) \cap [2^m, L_{\max}] = \{r - x + 1 : x \in \operatorname{Occ}(P_m, T_m)\} \cap \{y - l + 2^m : y \in \operatorname{Occ}(Q_m, H_m)\}$, where $|T_m| = |H_m| = L_{\max} < 2 \cdot 2^m$, so both occurrence sets are single arithmetic progressions of step $\operatorname{per}(P_m)$ and $\operatorname{per}(Q_m)$.
+   - **Method 2 (SAM Link-Tree HLD + SegTree Merge)**: Along each heavy chain $[top, u]$, for any $u_i$ whose path to the root enters the heavy chain at $w \in [top, u)$ strictly above $u$, $\operatorname{LCA}(u_r, u_i) = w$ belongs to the heavy chain itself (so $\operatorname{len}(w) = \operatorname{len}(w_i)$ depends only on $i$), whereas for any $u_i$ in the subtree of $u$, $\operatorname{LCA}(u_r, u_i) = u$ is fixed (so $\operatorname{len}(u)$ depends only on $u_r$).
+3. **Algorithmic Compilation**:
+   - Directly execute `query_max_proper_border(l, r)` from §4.1 in $O(\log^2 N)$ time per query (or $O(\log N)$ if $2^m$-prefix SA intervals are pre-bucketed).
+4. **Broken-Invariant Counterexample (`BP-15-01` & `BP-15-02`)**: Always intersect $P_m$ and $Q_m$ (`W = ababacababab`), and cap $L_{\max} \le r - l$ so $b = r - l + 1$ is excluded.
+:::
+
+---
+
+#### Problem 15.6 (`W2B-34`) — `$O(1)$ Internal Shortest Period & Substring Border Count Queries`
+
+- **Mathematical Statement**: Given $S[1..N]$ and $Q$ online queries $[l, r]$:
+  1. Compute the **shortest period** $\operatorname{per}(S[l..r])$ of $W = S[l..r]$;
+  2. Compute the **total number of proper borders** $|\operatorname{Border}(S[l..r]) \setminus \{0\}|$ of $S[l..r]$.
+- **Constraints**: $1 \le N, Q \le 2 \times 10^5$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+By Theorem 1.1, $\operatorname{per}(S[l..r]) = (r - l + 1) - \max \operatorname{Border}(S[l..r])$. Moreover, in how many dyadic scales $m$ can $S[l..r]$ have borders?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In every dyadic scale $m \in \{0, 1, \dots, \lfloor \log_2(r - l) \rfloor\}$, Theorem 15.3 shows that $\operatorname{Border}(S[l..r]) \cap [2^m, L_{\max}]$ is the intersection of two arithmetic progressions! Even better: when both APs have $\ge 3$ terms and equal step $d = \operatorname{per}(P_m) = \operatorname{per}(Q_m)$, their intersection is a single contiguous sub-progression whose size is $\max(0, \lfloor(\text{hi} - \text{lo})/d\rfloor + 1)$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Sum the intersection sizes across all $O(\log(r - l))$ dyadic scales $m$ to obtain the exact border count $|\operatorname{Border}(S[l..r]) \setminus \{0\}|$, and record the maximum valid border $b_{\max}$ to output $\operatorname{per}(S[l..r]) = (r - l + 1) - b_{\max}$! (And if you only need whether $\operatorname{per}(W) \le |W|/2$, **Corollary 15.4** finds it in a single dyadic scale $k = \lfloor \log_2(|W|/2) \rfloor$.)
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-34`)"}
+
+1. **Diagnostic Signal**: Enumerating all borders of $S[l..r]$ one by one takes $\Theta(r - l)$ time on unary strings $S = \texttt{a}^N$.
+2. **Combinatorial Word Invariant**:
+   - Partitioning $[1, r - l]$ into disjoint dyadic intervals $I_m = [2^m,\, \min(r - l, 2^{m+1} - 1)]$ ensures that the borders in $I_m$ form at most one arithmetic progression $A_1 \cap A_2$.
+   - Because the intervals $I_m$ are pairwise disjoint and their union is $[1, r - l]$, the total number of non-empty proper borders of $S[l..r]$ is the sum of $|A_1 \cap A_2|$ over all $m = 0 \dots \lfloor \log_2(r - l) \rfloor$.
+3. **Algorithmic Compilation**:
+   - In the loop of `query_max_proper_border(l, r)` (§4.1), instead of breaking at the first valid scale $m$, accumulate `total_borders += intersection_count(A1, A2)` across all scales $m$, and track `b_max`.
+   - Output `per = (r - l + 1) - b_max` and `total_borders` in $O(\log^2 N)$ time per query.
+4. **Broken-Invariant Counterexample**: Make sure the scale intervals $I_m = [2^m, \min(r - l, 2^{m+1} - 1)]$ do not overlap at endpoints $2^{m+1}$, or border lengths equal to powers of two will be counted twice!
+:::
+
+---
+
+### Tier 4 — Mastery (`W2B-47`, `W2B-48`)
+
+#### Problem 15.7 (`W2B-47`) — `Internal Border-AP Weighted Sum & Sum-of-Internal-Z Queries (CF 1098F — Ж-function)`
+
+- **Mathematical Statement**: Given $S[1..N]$ and $Q$ queries $[l, r]$, compute:
+  1. **Part A**: The polynomial-weighted border sum $\sum_{b \in \operatorname{Border}(S[l..r])} b^2$ of $S[l..r]$;
+  2. **Part B (`CF 1098F — Ж-function`)**: The sum of the internal Z-array of $S[l..r]$, $\sum_{i=l}^r \operatorname{LCP}(S[l..r],\, S[i..r]) = \sum_{i=l}^r \min\bigl(\operatorname{LCE}_S(l, i),\; r - i + 1\bigr)$.
+- **Constraints**: $1 \le N, Q \le 2 \times 10^5$, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+In Part A, every dyadic scale $m$ returns the borders of $S[l..r]$ in $[2^m, L_{\max}]$ as a single arithmetic progression $\{b_0 + t d\}_{t=0}^{k-1}$. How fast can we sum $(b_0 + t d)^2$ over $0 \le t < k$? In $O(1)$ time using $\sum t$ and $\sum t^2$! What about Part B (`CF 1098F`)?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In Part B, $\operatorname{LCE}_S(l, i) = \operatorname{len}(\operatorname{LCA}_{\mathcal{T}_{\text{ST}}}(u_l, u_i))$ on the Suffix Tree $\mathcal{T}_{\text{ST}}(S)$ (which is the Link Tree of $\operatorname{SAM}(S^R)$). Apply **Method 2 (HLD)** or **Method 3 (Centroid Decomposition on $\mathcal{T}_{\text{ST}}$, §3.3)**: at centroid $c$, let $L(u) = \operatorname{len}(\operatorname{LCA}(u, c))$. Then $\min(\operatorname{LCE}_S(l, i), r - i + 1) = \min(L(u_l), L(u_i), r - i + 1)$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For Part B on HLD of $\mathcal{T}_{\text{ST}}(S)$: walking the $O(\log N)$ heavy chains from $u_l$ to the root attaches each $i \in [1..N]$ to its entry vertex $w$ on the heavy chain with known $L_w = \operatorname{len}(w)$. Then $\min(L_w, r - i + 1)$ equals $L_w$ when $i + L_w - 1 \le r$, and equals $r - i + 1$ when $i \le r < i + L_w - 1$—reducing to 2D Fenwick tree range sums!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-47`)"}
+
+1. **Diagnostic Signal**: Part A sums $b^2$ over potentially $\Theta(r - l)$ borders; Part B couples $\operatorname{LCE}_S(l, i)$ with $r - i + 1$ across all $i \in [l, r]$.
+2. **Combinatorial Word Invariant**:
+   - **Part A**: By Theorem 15.3, for each scale $m$, $\operatorname{Border}(S[l..r]) \cap [2^m, L_{\max}] = \{b_0 + t d\}_{t=0}^{k-1}$, whose square sum is
+     $$\sum_{t=0}^{k-1} (b_0 + t d)^2 = k b_0^2 + 2 b_0 d \frac{(k-1)k}{2} + d^2 \frac{(k-1)k(2k-1)}{6}.$$
+
+   - **Part B (`CF 1098F`)**: On $\mathcal{T}_{\text{ST}}(S)$ (built as the Link Tree of $\operatorname{SAM}(S^R)$), for any ancestor $w = \operatorname{LCA}(u_l, u_i)$ of depth $L = \operatorname{len}(w)$, the summand $\min(L, r - i + 1)$ splits into:
+     - **Unclipped Regime ($i \ge l$ and $i + L - 1 \le r$)**: Contributes $L$.
+     - **Clipped Regime ($i \ge l$, $i \le r$, and $i + L - 1 > r$)**: Contributes $(r + 1) - i$.
+3. **Algorithmic Compilation**:
+   - Decompose $\mathcal{T}_{\text{ST}}(S)$ via HLD (or Centroid Decomposition). Each index $i \in [1..N]$ generates $O(\log N)$ events $(w, i, L = \operatorname{len}(w))$ on the heavy chains above $u_i$, and each query $[l, r]$ generates $O(\log N)$ prefix/light-subtree range queries on the heavy chains above $u_l$.
+   - Sweep $r$ (or $i + L - 1$) offline with Fenwick trees maintaining $\sum L$, $\sum i$, and $\sum 1$ over $i \in [l, r]$. Total time: $O((N + Q)\log^2 N)$, space $O(N \log N)$.
+4. **Broken-Invariant Counterexample**: In HLD, when $u_i$ enters the heavy chain at $w$ *below* $u_l$, $\operatorname{LCA}(u_l, u_i) = u_l$ (not $w$), so $L = \operatorname{len}(u_l)$ is constant across the entire subtree of $u_l$! Handle the subtree of $u_l$ separately from ancestors $w$ strictly above $u_l$.
+:::
+
+---
+
+#### Problem 15.8 (`W2B-48`) — `2D Bi-SA Orthogonal Range Pattern Matching with 1-Mismatch & Wildcard Splits (Universal Cup / Gym 102900E / JOI 2018)`
+
+- **Mathematical Statement**: Given a text $S[1..N]$, answer $Q$ pattern queries of two forms ($\sum |P_q| \le 2 \times 10^5$):
+  - **Form A (`Wildcard Split`)**: Given $P_q = P_1 \cdot \texttt{?} \cdot P_2$ and a text window $S[l_q..r_q]$, count how many substrings of $S[l_q..r_q]$ match $P_1 \cdot \texttt{?} \cdot P_2$.
+  - **Form B (`1-Mismatch Matching`)**: Given $P_q[1..m]$, count how many substrings of $S[1..N]$ have Hamming distance $\le 1$ from $P_q$.
+- **Constraints**: $1 \le N \le 2 \times 10^5$, $\sum |P_q| \le 2 \times 10^5$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+For Form B, a substring $S[i - k + 1 .. i + m - k]$ matches $P_q[1..m]$ with at most 1 mismatch at relative offset $k \in [1..m]$ (corresponding to text index $i$) if and only if $S[i - k + 1 .. i - 1] = P_q[1 .. k - 1]$ **and** $S[i + 1 .. i + m - k] = P_q[k + 1 .. m]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Invoke **Primitive 6 (§1.4, Bi-SA 2D Orthogonal Grids)**: map every text position $i \in [1..N]$ to the 2D point $p_i = \bigl(\operatorname{rk}_{S^R}[N - (i - 1) + 1],\; \operatorname{rk}_S[i + 1]\bigr)$. Then $S[i - k + 1 .. i - 1] = P_q[1 .. k - 1]$ is a 1D interval $[L^R_k, R^R_k]$ on the first coordinate, and $S[i + 1 .. i + m - k] = P_q[k + 1 .. m]$ is a 1D interval $[L_k, R_k]$ on the second coordinate!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Find $[L_k, R_k]$ for all suffixes of $P_q$ in $\operatorname{SA}(S)$ (or walk $P_q$ on $\operatorname{SAM}(S^R)$) and $[L^R_k, R^R_k]$ for all reversed prefixes of $P_q$ in $\operatorname{SA}(S^R)$, query the 2D Wavelet Matrix / Chairman Tree for each $k \in [1..m]$, and subtract $(m - 1) \cdot \operatorname{occ}_{\text{exact}}(P_q)$ (`BP-15-04`)!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-48`)"}
+
+1. **Diagnostic Signal**: Enumerating all occurrences of $P_q[1..k-1]$ and $P_q[k+1..m]$ takes $\Theta(N \sum |P_q|)$ time.
+2. **Combinatorial Word Invariant**:
+   - In $\operatorname{SA}(S^R)$, all prefixes $S[1 .. i - 1]$ ending with $P_q[1 .. k - 1]$ correspond to the contiguous SA interval $[L^R_k, R^R_k]$ of $(P_q[1 .. k - 1])^R$.
+   - In $\operatorname{SA}(S)$, all suffixes $S[i + 1 .. N]$ starting with $P_q[k + 1 .. m]$ correspond to the contiguous SA interval $[L_k, R_k]$ of $P_q[k + 1 .. m]$.
+   - Therefore, text index $i$ is a valid mismatch pivot for split offset $k$ iff $p_i = (\operatorname{rk}_{S^R}[N - i + 2],\, \operatorname{rk}_S[i + 1]) \in [L^R_k, R^R_k] \times [L_k, R_k]$.
+   - For Form A on $S[l_q..r_q]$, if $P_1, P_2$ are internal substrings of $S$, we intersect the SA intervals or restrict $i \in [l_q + |P_1|,\, r_q - |P_2|]$ via a 3D/offline sweep (or when $l_q = 1, r_q = N$, a single 2D query).
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{SA}(S) + \operatorname{SAM}(S^R)$ and $\operatorname{SA}(S^R) + \operatorname{SAM}(S)$, and construct a 2D Wavelet Matrix (or Persistent Segment Tree) over the $N$ points $p_1, \dots, p_N$.
+   - For each pattern $P_q$ of length $m$, walk $P_q$ forward on $\operatorname{SAM}(S)$ to get $[L^R_k, R^R_k]$ (the DFS interval on the Link Tree $\mathcal{T}_{\text{link}}(\operatorname{SAM}(S)) \cong \mathcal{T}_{\text{ST}}(S^R)$!) and walk $P_q^R$ forward on $\operatorname{SAM}(S^R)$ to get $[L_k, R_k]$ in $O(m)$ time!
+   - Query the 2D rectangle $[L^R_k, R^R_k] \times [L_k, R_k]$ for $k = 1 \dots m$, sum the counts, and subtract $(m - 1) \cdot \operatorname{occ}_{\text{exact}}(P_q)$. Total time: $O((N + \sum |P_q|)\log N)$.
+4. **Broken-Invariant Counterexample (`BP-15-04`)**: If $P_q = \texttt{aba}$ occurs **exactly** in $S = \texttt{ababa}$ twice (at $S[1..3]$ and $S[3..5]$), summing the $m = 3$ split queries counts each exact occurrence $3$ times ($k = 1, 2, 3$); subtracting $(3 - 1) \times 2 = 4$ recovers the true count.
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Decision Checklist: When to Apply Chapter 15 Machinery
+
+| Contest Signal / Query Structure | Invariant & Engine to Invoke | Complexity |
+| :--- | :--- | :--- |
+| Compare $U_1 \cdots U_k$ vs. $V_1 \cdots V_m$ (e.g. tree paths `CF 504E`) | Two-pointer piece exhaustion via $O(1)$ $\operatorname{LCE}$ (§1.2 Primitive 3) | $O(k + m)$ per query |
+| Lexicographical `Rank(S[l..r])` or `Select(K)` (`[TJOI2015]`) | Canonical birth suffix $k_0 = L_{\text{SA}}(l, r)$ + prefix sums (**Theorem 15.1**) | $O(\log N)$ per query |
+| Internal occurrences $\operatorname{Occ}(U, V)$ with $|U| \le |V| < 2|U|$ | Single AP of step $\operatorname{per}(U)$ via min, 2nd min, max in Chairman Tree (**Theorem 15.2**) | $O(\log N)$ per query |
+| Longest proper border / border count of $S[l..r]$ (`[BJWC2018]`) | Method 1 (Dyadic $P_m \cap Q_m$ AP intersection, **Theorem 15.3**) or Method 2 (HLD + SegTree Merge) | $O(\log^2 N)$ per query |
+| Test if $S[l..r]$ is periodic ($\operatorname{per}(W) \le |W|/2$) | 2nd occurrence $x_2$ of $P_k$ in $S[l..l+2^{k+1}-1]$ + $O(1)$ $\operatorname{LCE}$ (**Corollary 15.4**) | $O(1)$ per query |
+| 1-Mismatch or wildcard split $P_1 \cdot \texttt{?} \cdot P_2$ matching | 2D orthogonal range count on $p_i = (\operatorname{rk}_{S^R}[N-i+2], \operatorname{rk}_S[i+1])$ (§1.4) | $O(|P| \log N)$ |
+
+### 6.2 What Comes Next in Part IV
+In Chapter 15, we mastered internal border and occurrence queries on arbitrary substrings $S[l..r]$. In the next two chapters, we turn to the second pillar of Part IV—**Advanced Palindromic Structures**:
+
+- **[Chapter 16: Unamortized Deterministic PAM (`quick_link` / `slink`-Skip), Persistent Tree PAM, and 4-Way Double-Ended Deque PAM (`双向 PAM`)](ch16-deterministic-tree-deque-pam.qmd)** proves the Uniform Preceding-Character Lemma and Non-Cascading Lazy Surface Push-Down to support worst-case $O(1)$ version-tree branching and 4-way deque `push`/`pop` operations.
+- **[Chapter 17: Substring Palindrome Range Queries ($O(1)$ Range LPS & `slink` Telescoping), Rich Words, and Palindrome Factorizations](ch17-range-palindromes-rich-words.qmd)** solves online Range LPS in true $O(1)$ time via Two-Boundary Unclipping and Range Distinct Palindromes via `[徐毅 2014]` `slink` periodic telescoping.

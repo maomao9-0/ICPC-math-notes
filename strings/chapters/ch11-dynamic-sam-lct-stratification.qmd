@@ -1,0 +1,623 @@
+---
+title: "Chapter 11: Dynamic SAM + Link-Cut Tree (`access` Color-Chain Sweeping) and Intra-State Length Stratification"
+subtitle: "Part III — Suffix Structures, Duality & Substring Data Structures"
+---
+
+::: {.callout-note}
+## Prerequisites & Learning Objectives
+
+**Strict Prerequisites**:
+
+- **[Chapter 09: Endpos Equivalence, Reversal Duality & Generalized SAM](ch09-sam-duality-gsam-trie-bfs.qmd)** ($\text{SAM}(S) \leftrightarrow \text{ST}(S^R)$ duality, contiguous length interval $[\operatorname{len}(\operatorname{link}(u))+1, \operatorname{len}(u)]$, and clone splitting).
+- **[Chapter 10: SAM + Persistent Segment Tree Merging on $\text{endpos}$](ch10-sam-endpos-segtree-merge.qmd)** (the substring containment clipping identity $e \in [l + L - 1, r]$ and Link-Tree binary lifting).
+- **Assumed Library Machinery**: Link-Cut Trees (`LCT` with `access`, `splay`, `link`, `cut`, and splay lazy propagation), Heavy-Light Decomposition (`HLD`), Fenwick/Segment Trees, and Tarjan's SCC / 2-SAT solver.
+
+**Learning Objectives**:
+
+1. Maintain occurrence counts $|\operatorname{endpos}_S(u)|$ under **online right-appends** (`[BZOJ 2555]`) by coupling SAM construction with a Link-Cut Tree and preventing the un-pushed clone lazy-tag corruption bug (`BP-2A-05`).
+2. Prove the **Solid-Chain Last-Occurrence Telescoping Theorem** (`树点涂色` paradigm) and compile it into an $O(N \log^2 N + Q \log N)$ offline sweep for range $[l, r]$ distinct substring counts (`Luogu P6292`), shifted polynomial length-sums (`[SDOI2017]`), and second-largest occurrence ($e_2(u, r)$) range repeat queries.
+3. Resolve intra-state prefix/suffix collisions on $\mathcal{T}_{\text{link}}(\text{SAM}(S^R))$ via **Intra-State Length Stratification** (`[十二省联考 2019] 字符串问题`, `[Code+#3] 白金元首与莫斯科`) and **Two-Regime Link-Tree HLD Sweeping** (`CF 1098F`).
+:::
+
+---
+
+## 1. Online Right-Append SAM + Link-Cut Tree (`[BZOJ 2555]`)
+
+### 1.1 The Diagnostic Signal: Why Static Link-Tree Subtrees Fail Under Online Appends
+
+In **[Chapter 09](ch09-sam-duality-gsam-trie-bfs.qmd)** and **[Chapter 10](ch10-sam-endpos-segtree-merge.qmd)**, string $S[1..N]$ was known in its entirety before any occurrence query was answered. Once the Suffix Link Tree $\mathcal{T}_{\text{link}}$ is static, the occurrence count $|\operatorname{endpos}_S(u)|$ of state $u$ is simply the number of prefix states $\operatorname{pos}[r]$ in $u$'s Link-Tree subtree, accumulated bottom-up in $O(N)$ time after all characters are inserted.
+
+Now consider an **online streaming regime** (`[BZOJ 2555] SubString`) where two operations arrive interleaved and encrypted by a running XOR mask:
+
+1. **`APPEND(c)`**: Append character $c$ to the right end of $S$ ($S \leftarrow Sc$, incrementing $N \leftarrow N + 1$).
+2. **`COUNT(P)`**: Given a pattern $P[1..m]$, report how many times $P$ currently occurs in $S$.
+
+Why does static Link-Tree maintenance break down here? Every call to `extend(c)` mutates $\mathcal{T}_{\text{link}}$ in two distinct ways:
+
+- **Structural Edge Splitting (`clone` insertion)**: When `extend(c)` splits an existing state $q$ into $q$ and $\text{clone}$, the old directed Link-Tree edge $q \to p_{\text{old}}$ (where $p_{\text{old}} = \operatorname{link}_{\text{old}}(q)$) is **deleted** and replaced by the two edges $q \to \text{clone}$ and $\text{clone} \to p_{\text{old}}$. Because the tree topology changes dynamically by edge insertions and subdivisions, no static Euler-tour interval $[\operatorname{dfn}[u], \operatorname{out}[u]]$ remains valid.
+- **Root-to-Leaf Path $+1$ Increment**: Appending $S[N] = c$ creates a new prefix state $\text{cur} = \operatorname{pos}[N]$. Every suffix of $S[1..N]$ gains **one new occurrence** ending at position $N$. On $\mathcal{T}_{\text{link}}$, the states whose equivalence classes consist of suffixes of $S[1..N]$ are **precisely the ancestors of $\text{cur}$ on the path from $\text{cur}$ to the root $1$**!
+
+### 1.2 The Combinatorial Word Invariant: Pre-Increment Clone Equivalence
+
+Let $\operatorname{occ}_r(u) = |\operatorname{endpos}_{S[1..r]}(u)|$ denote the occurrence count of every string $w \in E(u)$ after $r$ characters have been appended. Suppose we are executing step $r = N$ (`extend(c)`), creating leaf state $\text{cur} = \operatorname{pos}[N]$ and potentially splitting state $q$ into $q$ and $\text{clone}$. What is the exact occurrence count of $\text{clone}$ at the moment of splitting, **before** counting the new occurrence at index $N$?
+
+::: {.callout-important}
+## Lemma 1.1 (Pre-Increment Clone Endpos Identity)
+
+When `extend(c)` at step $N$ splits state $q$ (with $\operatorname{len}(q) > \operatorname{len}(p) + 1$) into $q$ and $\text{clone}$ (with $\operatorname{len}(\text{clone}) = \operatorname{len}(p) + 1$), the old interval $[\operatorname{len}(\operatorname{link}_{\text{old}}(q)) + 1, \operatorname{len}(q)]$ partitions into:
+$$E_{\text{new}}(\text{clone}) = [\operatorname{len}(\operatorname{link}_{\text{old}}(q)) + 1, \operatorname{len}(p) + 1], \qquad E_{\text{new}}(q) = [\operatorname{len}(p) + 2, \operatorname{len}(q)].$$
+Inside the **preceding prefix** $S[1..N-1]$, every string in $E_{\text{new}}(\text{clone})$ and $E_{\text{new}}(q)$ belonged to the single equivalence class $E_{\text{old}}(q)$ and therefore had the **exact same occurrence set** $\operatorname{endpos}_{S[1..N-1]}(q)$. Their occurrence sets diverge *only* at position $N$ (where $\text{clone}$ is a suffix of $S[1..N]$ and receives $+1$ when the path $\text{cur} \to \text{root}$ is incremented, whereas $q$ is not an ancestor of $\text{cur}$). Consequently, if the root-to-$\text{cur}$ path increment $+1$ is deferred until **after** `extend(c)` finishes wiring all Link-Tree edges:
+$$\boxed{\operatorname{occ}_{\text{init}}(\text{clone}) \;=\; \operatorname{occ}_{N-1}(q), \qquad \operatorname{occ}_{\text{init}}(\text{cur}) \;=\; 0.}$$
+:::
+
+*Proof*: Prior to position $N$, $q$ was a single state in $\text{SAM}(S[1..N-1])$, meaning all substrings of lengths in $[\operatorname{len}(\operatorname{link}_{\text{old}}(q)) + 1, \operatorname{len}(q)]$ shared identical right endpoints inside $\{1, \dots, N-1\}$. Deferring the $+1$ path update for position $N$ until after $\text{cur}$ and $\text{clone}$ are linked into $\mathcal{T}_{\text{link}}$ means $\operatorname{val}[q]$ currently stores $\operatorname{occ}_{N-1}(q)$. Initializing $\operatorname{val}[\text{clone}] \leftarrow \operatorname{val}[q]$ and $\operatorname{val}[\text{cur}] \leftarrow 0$, then adding $+1$ to every node on the path $\text{cur} \to \text{clone} \to \dots \to 1$, increments $\operatorname{val}[\text{cur}]$ to $1$ and $\operatorname{val}[\text{clone}]$ to $\operatorname{occ}_{N-1}(q) + 1 = \operatorname{occ}_N(\text{clone})$ while leaving $\operatorname{val}[q] = \operatorname{occ}_{N-1}(q) = \operatorname{occ}_N(q)$ untouched. $\blacksquare$
+
+### 1.3 Algorithmic Compilation: Root-Fixed LCT Wiring Without `makeroot`
+
+Because $\mathcal{T}_{\text{link}}$ is a **directed rooted tree** with fixed root $1$, we should **never** call `makeroot(x)` (which reverses splay child pointers and flips parent-child orientation). Instead, we maintain a **Root-Fixed Link-Cut Tree** where in every auxiliary splay tree, an in-order traversal visits nodes in strictly **increasing order of Link-Tree depth**:
+
+- **`link_directed(u, p)`** (attaching a newly created node $u$ with no solid children to its parent $p$): simply set `fa[u] = p` as a dashed edge in $O(1)$ time!
+- **`cut_directed(q, p_old)`** (severing the directed edge $q \to p_{\text{old}}$ when cloning): call `access(q); splay(q);` so the path $1 \leadsto p_{\text{old}} \to q$ forms a single solid splay rooted at $q$. Since $q$ is the deepest node on this solid path (`ch[q][1] == 0`), its left splay child `ch[q][0]` represents the entire ancestor path $1 \leadsto p_{\text{old}}$ (with $p_{\text{old}}$ as its rightmost node). Detach `ch[q][0]` by setting `fa[ch[q][0]] = 0; ch[q][0] = 0;`, which cleanly separates the solid path $1 \leadsto p_{\text{old}}$ from the isolated node $q$.
+- **`add_root_path(u, +1)`**: call `access(u); splay(u); apply_add(u, +1);`.
+- **`query_occ(u)`**: call `access(u); splay(u); return val[u];` (flushing all lazy $+1$ tags on $u$'s splay ancestors before reading `val[u]`).
+
+```
+   Clone Split in LCT-SAM (Deferred Path +1 Protocol):
+
+   Before Split:               1. Flush & Copy:            2. Cut & Re-link:           3. Path +1 from cur:
+       [ p_old ]               access(q); splay(q);            [ p_old ]                   [ p_old ] (+1)
+           ^                   val[clone] = val[q];                ^                           ^
+           |                   val[cur] = 0;                 [ clone ] (val[q])          [ clone ] (val[q]+1)
+         [ q ]                                                ^         ^                 ^         ^
+                                                              |         |                 |         |
+                                                            [ q ]     [ cur ] (0)       [ q ]     [ cur ] (+1)
+```
+
+---
+
+## 2. Offline Range Distinct & Weighted Substring Queries via LCT `access` Color-Chain Sweeping
+
+### 2.1 The Diagnostic Signal: Counting Over All Equivalence Classes in $S[l..r]$
+
+Suppose we are given a static string $S[1..N]$ and $Q$ range queries $(l_j, r_j)$ (`Luogu P6292 — 区间本质不同子串个数`, `[SDOI2017]` Weighted Range Distinct Substrings). Each query asks for the number of **distinct non-empty substrings** occurring inside $S[l..r]$ (or $\sum_{w \text{ distinct in } S[l..r]} f(|w|)$ for a weight function $f$).
+
+Why can't we use Chapter 10's Persistent Segment Tree Merge here? In Chapter 10, a query examined a *single* pattern $T$ by walking its prefixes on $\text{SAM}(S)$. Here, a query $(l, r)$ asks to aggregate over **all $\Theta(N)$ states $u \in \text{SAM}(S)$ simultaneously**. Iterating over all states per query takes $\Theta(NQ)$ time.
+
+To break the $\Theta(NQ)$ barrier, we sweep the right endpoint $r$ from $1$ to $N$ offline and maintain, for every starting position $s \in [1, r]$, how many distinct substrings of $S[1..r]$ have their **latest (rightmost) occurrence** starting at index $s$.
+
+### 2.2 The Combinatorial Word Invariant: Solid-Chain Last-Occurrence Telescoping
+
+Fix the sweep right endpoint $r \in \{1, \dots, N\}$. For any substring $w$ of $S[1..r]$, let $e_{\text{last}}(w, r) = \max(\operatorname{endpos}_{S[1..r]}(w))$ be the ending position of the **rightmost occurrence** of $w$ inside $S[1..r]$. Because $w$ occurs in $S[l..r]$ if and only if at least one occurrence of $w$ in $S[1..r]$ starts at or after $l$, this is equivalent to requiring that its *rightmost* occurrence starts at or after $l$:
+$$w \text{ occurs in } S[l..r] \;\Longleftrightarrow\; e_{\text{last}}(w, r) - |w| + 1 \ge l.$$
+Now group substrings $w$ by their SAM equivalence class $u \in \text{SAM}(S)$:
+
+1. **Shared Last Occurrence per State**: Every string $w \in E(u)$ has the exact same $\operatorname{endpos}_S(u)$ set, and therefore the **exact same latest ending position** in $S[1..r]$:
+   $$\operatorname{last}_r(u) \;=\; \max\bigl(\operatorname{endpos}_S(u) \cap [1, r]\bigr).$$
+
+2. **Contiguous Start-Position Interval per State**: As the length $\ell = |w|$ varies across $u$'s contiguous interval $[\operatorname{len}(\operatorname{link}(u)) + 1, \operatorname{len}(u)]$, the rightmost starting position $s(\ell) = \operatorname{last}_r(u) - \ell + 1$ sweeps across the contiguous integer interval:
+   $$I_r(u) \;=\; \bigl[\operatorname{last}_r(u) - \operatorname{len}(u) + 1, \;\; \operatorname{last}_r(u) - \operatorname{len}(\operatorname{link}(u))\bigr].$$
+
+3. **Why Solid Chains Telescope Without Gaps (`树点涂色` Paradigm)**: When we advance the sweep from $r-1$ to $r$, which states $u \in \text{SAM}(S)$ change their $\operatorname{last}_r(u)$ value? Only the states $u$ for which $r \in \operatorname{endpos}_S(u)$—namely, the **ancestors of $v_r = \operatorname{pos}[r]$ on the Link Tree $\mathcal{T}_{\text{link}}$**! For every node on the path $1 \leadsto v_r$, its new latest ending position becomes $\operatorname{last}_r(u) = r$.
+   This path-coloring operation (`paint path root..v_r with color r`) is identical to **`access(v_r)` in a Link-Cut Tree**! Each solid splay chain $C = (u_1 \to u_2 \to \dots \to u_k)$ (where $u_i = \operatorname{link}(u_{i+1})$) on $\mathcal{T}_{\text{link}}$ consists of a contiguous vertical path of states that received their latest occurrence during the *same* previous `access` call and therefore share the **exact same color** $p_{\text{old}} = \operatorname{last}_{r-1}(C)$.
+
+::: {.callout-important}
+## Theorem 2.1 (Solid-Chain Last-Occurrence Telescoping Theorem)
+
+Let $C = (u_1, u_2, \dots, u_k)$ be a vertical solid chain in $\mathcal{T}_{\text{link}}$ ($u_i = \operatorname{link}(u_{i+1})$ for $1 \le i < k$, $u_1 \ne 1$) such that all nodes in $C$ share the same latest ending position $\operatorname{last}_{r-1}(u_i) = p_{\text{old}}$. Because the length intervals of parent and child abut cleanly via $\operatorname{len}(\operatorname{link}(u_{i+1})) = \operatorname{len}(u_i)$, the union of their length intervals is a single gapless interval:
+$$\bigsqcup_{i=1}^k \bigl[\operatorname{len}(\operatorname{link}(u_i)) + 1, \, \operatorname{len}(u_i)\bigr] \;=\; \bigl[\operatorname{len}(\operatorname{link}(u_1)) + 1, \, \operatorname{len}(u_k)\bigr] \;=:\; [L_{\min}(C), \, L_{\max}(C)].$$
+Consequently, the union of their rightmost starting-position intervals $I_{r-1}(u_i)$ also tiles **without gaps or overlaps** into a single interval of starting indices:
+$$\boxed{\bigsqcup_{i=1}^k I_{r-1}(u_i) \;=\; \bigl[p_{\text{old}} - \operatorname{len}(u_k) + 1, \;\; p_{\text{old}} - \operatorname{len}(\operatorname{link}(u_1))\bigr] \;=\; \bigl[p_{\text{old}} - L_{\max}(C) + 1, \;\; p_{\text{old}} - L_{\min}(C) + 1\bigr].}$$
+Since `access(v_r)` visits $O(\log N)$ amortized solid chains across $r = 1 \dots N$, the entire sweep generates only $O(N \log N)$ interval updates on a 1D Fenwick or Segment Tree!
+:::
+
+*Proof*: For each $1 \le i < k$, the right endpoint of $I_{r-1}(u_{i+1})$ is $p_{\text{old}} - \operatorname{len}(\operatorname{link}(u_{i+1})) = p_{\text{old}} - \operatorname{len}(u_i)$, which is immediately followed by the left endpoint $p_{\text{old}} - \operatorname{len}(u_i) + 1$ of $I_{r-1}(u_i)$. By induction, the $k$ intervals concatenate into $[p_{\text{old}} - \operatorname{len}(u_k) + 1, p_{\text{old}} - \operatorname{len}(\operatorname{link}(u_1))]$. By Sleator–Tarjan splay potential analysis on static trees, the total number of dashed-to-solid edge conversions across $N$ calls to `access(v_r)` is $O(N \log N)$, and each conversion produces one range $-1$ update on the old color $p_{\text{old}}$, plus one final range $+1$ update on $[1, r]$ for the newly formed path $1 \leadsto v_r$. $\blacksquare$
+
+#### Hand-Checkable Trace on $S = \texttt{"aba"}$ ($N = 3$)
+
+Let us trace Theorem 2.1 on $S = \texttt{"aba"}$. Its $\text{SAM}(S)$ has $4$ states: root $1$ ($\epsilon, \operatorname{len}=0$), state $2$ ($\{\texttt{"a"}\}, [1, 1], \operatorname{link}=1$), state $3$ ($\{\texttt{"b"}, \texttt{"ab"}\}, [1, 2], \operatorname{link}=1$), and state $4$ ($\{\texttt{"ba"}, \texttt{"aba"}\}, [2, 3], \operatorname{link}=2$). The prefix states are $\operatorname{pos}[1] = 2$, $\operatorname{pos}[2] = 3$, $\operatorname{pos}[3] = 4$.
+
+| Sweep Step $r$ | `access(pos[r])` Path on $\mathcal{T}_{\text{link}}$ | Detached Old Solid Chains & Range $-1$ Updates | New Path Range $+1$ Update | Active Array $A[1..r]$ & Distinct Counts $\sum_{s=l}^r A[s]$ |
+| :---: | :--- | :--- | :--- | :--- |
+| **$r = 1$** (`"a"`) | $1 \leftarrow 2$ | None ($\operatorname{col}=0$) | $+1$ on $[1, 1]$ | $A = [1, 0, 0]$ $\implies [1,1]: 1$ |
+| **$r = 2$** (`"ab"`) | $1 \leftarrow 3$ | None ($\operatorname{col}[3]=0$) | $+1$ on $[1, 2]$ | $A = [2, 1, 0]$ $\implies [1,2]: 3, [2,2]: 1$ |
+| **$r = 3$** (`"aba"`) | $1 \leftarrow 2 \leftarrow 4$ | Chain $C=\{2\}$ has $p_{\text{old}}=1, [L_{\min}, L_{\max}]=[1,1]$ $\implies -1$ on $[1-1+1, 1-1+1]=[1,1]$ | $+1$ on $[1, 3]$ | $A = [2, 2, 1]$ $\implies [1,3]: 5, [2,3]: 3, [3,3]: 1$ |
+
+At $r = 3$, why did $A[1..3] = [2, 2, 1]$ give exact answers for all $l \in \{1, 2, 3\}$?
+
+- Start index $s = 1$ ($A[1] = 2$): latest occurrences of `"ab"` ($[1..2]$) and `"aba"` ($[1..3]$).
+- Start index $s = 2$ ($A[2] = 2$): latest occurrences of `"b"` ($[2..2]$) and `"ba"` ($[2..3]$).
+- Start index $s = 3$ ($A[3] = 1$): latest occurrence of `"a"` ($[3..3]$, shifted from $s=1$ to $s=3$ by the $-1/+1$ update!).
+
+### 2.3 Shifted Weight Generalization (`[SDOI2017]`) & Second-Largest Occurrence Sweeping ($e_2(u, r)$)
+
+1. **Shifted Length-Weight Queries (`[SDOI2017]`)**: Suppose each distinct substring of length $\ell$ in $S[l..r]$ contributes weight $w[\ell]$ (e.g., $\ell^k$ or an arbitrary array $w[1..N]$). On a monochrome solid chain $C$ with latest occurrence $p_{\text{old}}$ and length span $[L_{\min}, L_{\max}]$, the substring of length $\ell$ is placed at starting index $s = p_{\text{old}} - \ell + 1$, which satisfies the affine bijection:
+   $$\ell \;=\; p_{\text{old}} - s + 1 \qquad \text{for } s \in \bigl[p_{\text{old}} - L_{\max} + 1, \;\; p_{\text{old}} - L_{\min} + 1\bigr].$$
+   If $w[\ell] = \sum_{d=0}^K c_d \ell^d$ is a polynomial of degree $K$, expanding $(p_{\text{old}} + 1 - s)^d$ by the binomial theorem turns the update into $K+1$ scalar range additions on Fenwick trees maintaining $s^0, s^1, \dots, s^K$. For general arrays $w[1..N]$, a Segment Tree storing the reversed prefix sums of $w$ supports range addition of $\pm w[p_{\text{old}} + 1 - s]$ in $O(\log N)$ time per LCT splay step!
+
+2. **Second-Largest Occurrence Sweeping ($e_2(u, r)$) for Range Repeated Substrings**:
+   A substring $w \in E(u)$ occurs **at least twice** inside $S[l..r]$ if and only if its **second-largest** ending position $e_2(u, r)$ in $S[1..r]$ satisfies $e_2(u, r) - |w| + 1 \ge l$. When `access(v_r)` visits a solid chain $C$ whose previous latest occurrence was $p_{\text{old}} = e_1(C, r-1) < r$, advancing to $r$ promotes $r$ to the *new* largest occurrence $e_1(C, r) = r$ and promotes $p_{\text{old}}$ to the **new second-largest occurrence** $e_2(C, r) = p_{\text{old}}$!
+
+   - **Range Repeat Counting**: If we also store the *previous* second-largest color $p_{\text{old}, 2}$ on each solid chain, `access(v_r)` subtracts $1$ from $[p_{\text{old}, 2} - L_{\max}(C) + 1, p_{\text{old}, 2} - L_{\min}(C) + 1]$ and adds $+1$ to $[p_{\text{old}} - L_{\max}(C) + 1, p_{\text{old}} - L_{\min}(C) + 1]$, counting distinct **repeated** substrings in $S[l..r]$!
+   - **Range Longest Repeated Substring**: Even simpler, each chain $C$ popped during `access(v_r)` witnesses a common suffix of length $L_{\max}(C) = \operatorname{len}(\operatorname{bot}(C))$ between $p_{\text{old}}$ and $r$. Emitting the $O(N \log N)$ dominant pairs $(p_{\text{old}}, r, L_{\max}(C))$ captures all range longest repeated substring queries in $O(N \log^2 N + Q \log N)$ time!
+
+---
+
+## 3. Reversed-SAM Intra-Node Length Stratification & Link-Tree HLD
+
+### 3.1 Prefix–Suffix Dominance DAGs (`[十二省联考 2019] 字符串问题` / `Luogu P5284`)
+
+#### Step 1: The Diagnostic Signal
+
+We are given a string $S[1..N]$, $n_a$ substrings $A_i = S[l_{a,i}..r_{a,i}]$, $n_b$ substrings $B_j = S[l_{b,j}..r_{b,j}]$, and $m$ explicit directed edges $A_i \to B_j$. In addition, there is an **implicit directed edge $B_j \to A_i$ whenever $B_j$ is a prefix of $A_i$**. Each $A_i$ has vertex weight $|A_i|$ (and $B_j$ has weight $0$). We must find the maximum weight of a path in this directed graph, or output `-1` if a directed cycle exists.
+
+Explicitly adding edges $B_j \to A_i$ takes $\Theta(n_a n_b)$ edges. By **[Chapter 09 Theorem 9.2](ch09-sam-duality-gsam-trie-bfs.qmd)**, the Link Tree $\mathcal{T}_{\text{link}}(\text{SAM}(S^R))$ is canonically isomorphic to the Suffix Tree $\text{ST}(S)$: every substring $U = S[l..r]$ maps (via $O(\log N)$ binary lifting from $\operatorname{pos}_{S^R}[N - l + 1]$) to a unique state $u(U) \in \text{SAM}(S^R)$ covering right-extension lengths $[\operatorname{len}(\operatorname{link}(u)) + 1, \operatorname{len}(u)]$.
+
+Why can't we simply wire $B_j \to u(B_j)$, $u \to \text{children}(u)$, and $u(A_i) \to A_i$? Because **multiple $A_i$ and $B_j$ of different lengths can land inside the exact same state $u \in \text{SAM}(S^R)$**! If $|B_j| = 5$ and $|A_i| = 3$ both belong to state $u$ (which covers lengths $[2, 6]$), connecting $B_j \to u \to A_i$ falsely claims that the length-$5$ string $B_j$ is a prefix of the length-$3$ string $A_i$!
+
+#### Step 2: The Combinatorial Word Invariant (Intra-State Length Stratification)
+
+::: {.callout-important}
+## Theorem 3.1 (Reversed-SAM Prefix Dominance Characterization)
+
+Let $u(X) \in \text{SAM}(S^R)$ denote the unique state containing $X^R$ on $\mathcal{T}_{\text{link}}(\text{SAM}(S^R))$. Then for any two substrings $B_j$ and $A_i$ of $S$, $B_j$ is a prefix of $A_i$ **if and only if** one of the following two disjoint conditions holds:
+
+1. **Inter-State Strict Ancestor Dominance**: $u(B_j)$ is a **strict ancestor** of $u(A_i)$ on $\mathcal{T}_{\text{link}}(\text{SAM}(S^R))$ (which automatically implies $|B_j| \le \operatorname{len}(u(B_j)) < \operatorname{minlen}(u(A_i)) \le |A_i|$), **OR**
+2. **Intra-State Length Dominance**: $u(B_j) = u(A_i)$ **and** $|B_j| \le |A_i|$.
+:::
+
+*Proof*: In $\text{SAM}(S^R) \cong \text{ST}(S)$, all strings mapped to the subtree of $u(B_j)$ start with the common prefix of length $\operatorname{len}(u(B_j))$ (and hence start with $B_j$ of length $|B_j| \le \operatorname{len}(u(B_j))$). If $u(A_i)$ is in the strict subtree of $u(B_j)$, $A_i$ extends that prefix and satisfies $|A_i| > \operatorname{len}(u(B_j)) \ge |B_j|$. If $u(A_i) = u(B_j) = u$, both $B_j$ and $A_i$ are prefixes of the same canonical string of length $\operatorname{len}(u)$, so $B_j$ is a prefix of $A_i$ iff $|B_j| \le |A_i|$. $\blacksquare$
+
+#### Step 3: Algorithmic Compilation (Intra-Node Sorted Chain Wiring)
+
+For each state $u \in \text{SAM}(S^R)$, collect all substrings $X \in \{A_i\} \cup \{B_j\}$ mapped to $u$ into a list $\mathcal{L}(u)$. Sort $\mathcal{L}(u) = (X_1, X_2, \dots, X_k)$ by:
+
+1. **Primary key**: non-decreasing length $|X_1| \le |X_2| \le \dots \le |X_k|$;
+2. **Tie-breaker (`BP-2A-06`)**: when $|B_j| = |A_i|$, place **$B_j$ strictly before $A_i$** (because a string of length $L$ *is* a prefix of an identical string of length $L$, so $B_j \to A_i$ must be reachable!).
+
+Create $k+1$ auxiliary relay vertices $v_0, v_1, \dots, v_k$ for state $u$ (where $\operatorname{in}(u) := v_0$ and $\operatorname{out}(u) := v_k$), with $0$-weight directed edges:
+
+- **Intra-state spine**: $v_{t-1} \to v_t$ for $1 \le t \le k$;
+- **Entry & Exit**: if $X_t = B_j$, add $B_j \to v_t$; if $X_t = A_i$, add $v_t \to A_i$ (or assign weight $|A_i|$ to $A_i$);
+- **Inter-state Link-Tree spine**: for every $u > 1$, add $\operatorname{out}(\operatorname{link}(u)) \to \operatorname{in}(u)$.
+
+```
+   Intra-State Stratified Spine at State u in SAM(S^R):
+   Sorted L(u) by (length, B before A):  [ B_1(len 3),  A_1(len 3),  B_2(len 4),  A_2(len 5) ]
+
+   out(link(u)) ---> [v_0 = in(u)] ---> [ v_1 ] ---> [ v_2 ] ---> [ v_3 ] ---> [v_4 = out(u)] ---> in(child(u))
+                                           ^            |            ^                |
+                                           |            v            |                v
+                                         (B_1)        (A_1)        (B_2)            (A_2)
+```
+
+Total vertices and edges are $O(N + n_a + n_b + m)$, and Kahn's topological sort computes the longest path (or detects a cycle if visited nodes $< |V|$) in $O((N + n_a + n_b)\log N + m)$ time!
+
+### 3.2 Two-Regime Link-Tree HLD Sweeping (`CF 1098F — Ж-function`)
+
+In **`CF 1098F — Ж-function`**, we are given $Q$ queries $(l, r)$ asking for the sum of the internal Z-function of $S[l..r]$:
+$$\operatorname{Ans}(l, r) \;=\; \sum_{i=l}^r \operatorname{LCP}(S[i..r], S[l..r]) \;=\; \sum_{i=l}^r \min\bigl(r - i + 1, \; \operatorname{len}(\operatorname{LCA}(v_i, v_l))\bigr),$$
+where $v_i = \operatorname{pos}_{S^R}[N - i + 1]$ is the leaf for suffix $S[i..N]$ on $\mathcal{T}_{\text{link}}(\text{SAM}(S^R))$.
+
+Here the unknown index $i \in [l, r]$ couples the Link-Tree ancestor depth $\operatorname{len}(u)$ ($u = \operatorname{LCA}(v_i, v_l)$) with the right-boundary clipping cap $r - i + 1$. Decomposing $\mathcal{T}_{\text{link}}$ via **Heavy-Light Decomposition (HLD)** (or Centroid Decomposition), each ancestor $u = \operatorname{LCA}(v_i, v_l)$ has a fixed string depth $L_u = \operatorname{len}(u)$, which splits active indices $i \in [l, r]$ at the exact threshold $i + L_u - 1 \le r$:
+
+- **Regime 1 (Unclipped: $i \le r - L_u + 1$)**: $\min(r - i + 1, L_u) = L_u$.
+- **Regime 2 (Right-Clipped: $i > r - L_u + 1$)**: $\min(r - i + 1, L_u) = (r + 1) - i$.
+
+Maintaining two Fenwick trees (one indexed by $i$ and one indexed by $i + L_u - 1$) along HLD heavy chains resolves all $Q$ queries in $O((N + Q)\log^2 N)$ time.
+
+---
+
+## 4. Reverse-Engineering Scratchpad, Algorithmic Contracts & Boundary Pitfalls (`BP-11`, `BP-12` / `BP-2A-05`, `BP-2A-06`)
+
+### 4.1 Implementation Contract: Online LCT-SAM & Offline `access` Color-Chain Sweep
+
+```cpp
+// Contract 1: Online Right-Append SAM + Root-Fixed LCT ([BZOJ 2555])
+void extend_online_lct(int c) {
+    int cur = ++tot, p = last;
+    len[cur] = len[p] + 1; last = cur;
+    while (p && !ch[p][c]) { ch[p][c] = cur; p = link[p]; }
+    if (!p) {
+        link[cur] = 1;
+        lct_link_directed(cur, 1); // fa[cur] = 1 (dashed edge)
+    } else {
+        int q = ch[p][c];
+        if (len[q] == len[p] + 1) {
+            link[cur] = q;
+            lct_link_directed(cur, q);
+        } else {
+            int clone = ++tot, p_old = link[q];
+            len[clone] = len[p] + 1;
+            memcpy(ch[clone], ch[q], sizeof(ch[q]));
+            link[clone] = p_old;
+            // CRITICAL (BP-2A-05): Flush lazy +1 tags to q BEFORE copying val[q]!
+            lct_access(q); lct_splay(q);
+            val[clone] = val[q];
+            lct_cut_directed(q, p_old);
+            lct_link_directed(clone, p_old);
+            lct_link_directed(q, clone);
+            while (p && ch[p][c] == q) { ch[p][c] = clone; p = link[p]; }
+            link[q] = link[cur] = clone;
+            lct_link_directed(cur, clone);
+        }
+    }
+    // Deferred path +1 increment from cur to root 1:
+    lct_access(cur); lct_splay(cur); lct_apply_add(cur, +1);
+}
+
+// Contract 2: Offline LCT access(pos[r]) Solid-Chain Sweep (Luogu P6292)
+// Each node x>1 has self_min[x] = len[link[x]] + 1, self_max[x] = len[x];
+// Root 1 has self_min[1] = +INF, self_max[1] = -INF so root 1 is excluded!
+void access_color_sweep(int v_r, int r) {
+    int x = v_r, y = 0;
+    for (; x; y = x, x = fa[x]) {
+        splay(x);
+        ch[x][1] = 0; // Detach deeper solid chain; pushdown in splay(x) already colored it
+        pushup(x);    // Recompute sub_min[x], sub_max[x] for the upper chain only!
+        int p_old = col[x];
+        if (p_old > 0 && sub_min[x] <= sub_max[x]) {
+            bit_range_add(p_old - sub_max[x] + 1, p_old - sub_min[x] + 1, -1);
+        }
+        ch[x][1] = y;
+        pushup(x);
+    }
+    apply_color(y, r);
+    bit_range_add(1, r, +1);
+}
+```
+
+### 4.2 Broken-Invariant Counterexamples (`BP-11` / `BP-2A-05`, `BP-12` / `BP-2A-06`)
+
+::: {.callout-warning}
+## Broken Invariant 1 (`BP-11` / `BP-2A-05`): Cloning Without `access(q); splay(q);` Corrupts `val[clone]`
+
+- **The Buggy Shortcut**: During `extend_online_lct(c)`, setting `val[clone] = val[q]` directly from the array before calling `lct_access(q); lct_splay(q);`.
+- **Concrete Counterexample Trace on $S = \texttt{"abaab"}$**:
+  1. After inserting `"aba"` ($N = 3$), state $2$ (`"a"`, $\operatorname{len}=1$) and state $4$ (`"ba"/"aba"`, $\operatorname{len}=3, \operatorname{link}=2$) lie in a solid splay where a $+1$ lazy tag sits at the splay root above $q = 4$. Thus `val[4]` in memory is still `0` while `lazy_add` above $4$ is `+1`.
+  2. As `"ab"` is appended at positions $4$ and $5$, state $q = 4$ is split into $\text{clone}$. If we copy `val[clone] = val[4]` without splaying $4$ first, $\text{clone}$ copies the stale value `0` instead of the true count `1`. Worse, when `cut_directed(4, 2)` later pushes down the tag to $4$, $4$ becomes `1` while $\text{clone}$ remains permanently short by $1$!
+- **The Restoration**: Always call `lct_access(q); lct_splay(q);` **before** reading `val[q]`, ensuring all pending lazy path additions on $q$'s splay ancestors are pushed into `val[q]`.
+:::
+
+::: {.callout-warning}
+## Broken Invariant 2 (`BP-12` / `BP-2A-06`): Unstratified Same-State Wiring or Wrong Equal-Length Tie-Break
+
+- **The Buggy Shortcut**: (a) Connecting $B_j \to u \to A_i$ without sorting by length inside state $u$, or (b) sorting $\mathcal{L}(u)$ by length but placing $A_i$ before $B_j$ when $|A_i| = |B_j|$.
+- **Concrete Counterexample**:
+  - For (a): Let $S = \texttt{"abc"}$, $A_1 = \texttt{"ab"}$ (length $2$), $B_1 = \texttt{"abc"}$ (length $3$), and explicit edge $A_1 \to B_1$. Both $\texttt{"ba"}$ and $\texttt{"cba"}$ belong to the same state $u \in \text{SAM}(\texttt{"cba"})$ covering lengths $[1, 3]$. Unstratified wiring adds $B_1 \to u \to A_1$, creating a false cycle $A_1 \to B_1 \to u \to A_1$ and outputting `-1` instead of `2`!
+  - For (b): If $A_1 = \texttt{"ab"}$ and $B_1 = \texttt{"ab"}$ have equal length $2$ in state $u$, $B_1$ **is** a prefix of $A_1$. Placing $A_1$ before $B_1$ in $\mathcal{L}(u)$ puts $v(A_1)$ to the left of $v(B_1)$ on the spine, losing the valid edge $B_1 \to A_1$!
+- **The Restoration**: Sort $\mathcal{L}(u)$ by pair `(|X|, is_A(X))` where `is_A(B_j) = 0 < is_A(A_i) = 1`.
+:::
+
+---
+
+## 5. Curated 4-Tier Problem Ladder (`Ch 11` — 8 Non-Template Problems)
+
+### Tier 1: Stepping Stone (Online LCT-SAM & Acyclic Intra-State Prefix Chains)
+
+#### Problem 11.1 (`W2A-26`): `[BZOJ 2555] SubString`
+
+- **Self-Contained Mathematical Statement**: You are given an initial string $S_0$ of uppercase English letters ($|S_0| \le 6 \times 10^5$) and $Q \le 6 \times 10^5$ online operations of two types, decoded on-the-fly using a running `mask`:
+  1. `ADD T`: Append string $T$ to the right end of $S$ ($S \leftarrow S \cdot T$), where total final length $|S| \le 6 \times 10^5$.
+  2. `QUERY P`: Output the number of occurrences of $P$ as a contiguous substring of the current string $S$, where $\sum |P| \le 3 \times 10^6$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+What happens to $\mathcal{T}_{\text{link}}(\text{SAM}(S))$ when a single character $c$ is appended to $S$? Which states gain $+1$ in their $|\operatorname{endpos}|$ count, and what happens to the edge $q \to \operatorname{link}_{\text{old}}(q)$ when a clone state is created?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant)
+
+By Lemma 1.1, before the new leaf $\text{cur}$ adds $+1$ along its root path, the newly split node $\text{clone}$ has the exact same occurrence count in $S[1..N-1]$ as $q$. How do you ensure `val[q]` is up to date before copying `val[clone] = val[q]`?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+Maintain $\mathcal{T}_{\text{link}}$ as a Root-Fixed Link-Cut Tree without `makeroot`. Before splitting $q$, call `access(q); splay(q);` so lazy path-add tags are pushed into `val[q]`, then cut $(q, p_{\text{old}})$, link $(\text{clone}, p_{\text{old}})$ and $(q, \text{clone})$, and finally add $+1$ on the path $\text{cur} \to 1$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`[BZOJ 2555]`)
+
+1. **Diagnostic Signal**: Online encryption (`mask`) forbids offline Euler-tour subtree sums on $\mathcal{T}_{\text{link}}$. Each character append requires a dynamic root-path $+1$ addition and at most one directed edge subdivision $q \to \text{clone} \to p_{\text{old}}$.
+2. **Combinatorial Word Invariant**: By **Lemma 1.1**, if we defer the root-to-$\text{cur}$ path increment until after all Link-Tree edges for step $N$ are wired, $\text{clone}$ inherits $\operatorname{occ}_{N-1}(\text{clone}) = \operatorname{occ}_{N-1}(q)$ while $\operatorname{occ}_{N-1}(\text{cur}) = 0$.
+3. **Algorithmic Compilation**:
+   - Maintain a Root-Fixed LCT where `ch[x][0]` points toward root $1$ and `ch[x][1]` points deeper.
+   - In `extend_online_lct(c)` (`Contract 1` in `§4.1`), whenever `clone` splits $q$, call `lct_access(q); lct_splay(q);`, set `val[clone] = val[q]`, detach `ch[q][0]` (`p_old`), set `fa[clone] = p_old`, `fa[q] = clone`, and `fa[cur] = clone`.
+   - Finish `extend_online_lct(c)` with `lct_access(cur); lct_splay(cur); lct_apply_add(cur, +1);`.
+   - For `QUERY P`, walk $P$ on the SAM DAG from state $1$; if a transition is missing, return $0$; otherwise at final state $u$, call `lct_access(u); lct_splay(u); return val[u];`.
+   - **Complexity**: $O(|S| \log |S| + \sum |P| + Q \log |S|)$ time and $O(|S| |\Sigma|)$ space.
+4. **Broken-Invariant Counterexample**: Reading `val[q]` before `lct_access(q); lct_splay(q);` (`BP-2A-05`) leaves un-pushed lazy $+1$ tags on $q$'s splay ancestors, undercounting every query that lands on `clone` or its ancestors.
+:::
+
+---
+
+#### Problem 11.2 (`W2A-32`): Substring Prefix-Implication DAG without Cycles
+
+- **Self-Contained Mathematical Statement**: Given a string $S[1..N]$ ($N \le 2 \times 10^5$) and $M \le 2 \times 10^5$ query substrings $U_i = S[l_i..r_i]$ with positive profits $w_i \ge 1$, you want to select a sequence of substrings $U_{i_1}, U_{i_2}, \dots, U_{i_k}$ such that for every $1 \le t < k$, $U_{i_t}$ is a **strict prefix** of $U_{i_{t+1}}$ ($|U_{i_t}| < |U_{i_{t+1}}|$ and $U_{i_{t+1}}[1..|U_{i_t}|] = U_{i_t}$). Compute the maximum total profit $\sum_{t=1}^k w_{i_t}$ in $O((N + M)\log N)$ time.
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+How do you represent the relation "$U_a$ is a prefix of $U_b$" as an ancestor/descendant relation on a tree of size $O(N)$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant)
+
+Build $\text{SAM}(S^R)$ so that $\mathcal{T}_{\text{link}}(\text{SAM}(S^R)) \cong \text{ST}(S)$. Locate $u(U_i)$ by binary lifting from $\operatorname{pos}_{S^R}[N - l_i + 1]$. When two substrings $U_a, U_b$ land in the *same* state $u$, when is $U_a$ a strict prefix of $U_b$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+Group substrings landing in state $u$ by their exact length $\ell = |U_i|$: since all substrings of the same length in state $u$ are identical strings, only the single maximum profit $W(u, \ell) = \max_{|U_i|=\ell} w_i$ can be taken at length $\ell$ (strict prefix requires strictly increasing lengths!). Sum $W(u, \ell)$ across distinct lengths inside state $u$ and run a simple root-to-leaf tree DP on $\mathcal{T}_{\text{link}}$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`W2A-32`)
+
+1. **Diagnostic Signal**: Naive $O(M^2)$ prefix comparison via LCE TLEs. All transitions go strictly from shorter strings to longer strings that extend them on the right, so the implication graph is automatically a DAG aligned with $\text{ST}(S) \cong \mathcal{T}_{\text{link}}(\text{SAM}(S^R))$.
+2. **Combinatorial Word Invariant**: By **Theorem 3.1**, $U_a$ is a strict prefix of $U_b$ iff either $u(U_a)$ is a strict ancestor of $u(U_b)$ on $\mathcal{T}_{\text{link}}(\text{SAM}(S^R))$, OR $u(U_a) = u(U_b)$ and $|U_a| < |U_b|$. Furthermore, any chain of strict prefixes $U_{i_1} \sqsubset U_{i_2} \sqsubset \dots \sqsubset U_{i_k}$ lies along a **single root-to-leaf path** in $\mathcal{T}_{\text{link}}(\text{SAM}(S^R))$, and within any single state $u$, we can greedily pick *one* maximum-weight substring for each distinct length $\ell$ present in $u$!
+3. **Algorithmic Compilation**:
+   - Build $\text{SAM}(S^R)$ and binary-lifting table $\text{up}[k][u]$. Map each $U_i = S[l_i..r_i]$ (length $\ell_i = r_i - l_i + 1$) from $\operatorname{pos}_{S^R}[N - l_i + 1]$ to $u(U_i)$ in $O(\log N)$ time.
+   - At each state $u$, sort its assigned pairs $(\ell_i, w_i)$ by $\ell_i$. For each distinct length $\ell$, take the maximum $w_i$ and sum these maxima into $\operatorname{gain}[u]$.
+   - Compute $\operatorname{dp}[u] = \operatorname{dp}[\operatorname{link}(u)] + \operatorname{gain}[u]$ top-down on $\mathcal{T}_{\text{link}}$ and return $\max_u \operatorname{dp}[u]$ in $O((N + M)\log N)$ time.
+4. **Broken-Invariant Counterexample**: Summing $w_i$ for two substrings of the *same* length $\ell_a = \ell_b$ inside state $u$ violates the *strict* prefix condition $|U_a| < |U_b|$ (if non-strict prefixes were allowed, all equal-length copies in $u$ would be summed).
+:::
+
+---
+
+### Tier 2: Intermediate (LCT `access` Color-Chain Sweeping & Shifted Polynomial Weights)
+
+#### Problem 11.3 (`W2A-35`): `Luogu P6292 — 区间本质不同子串个数` (Range Distinct Substrings)
+
+- **Self-Contained Mathematical Statement**: Given a string $S[1..N]$ of lowercase letters ($N \le 10^5$) and $Q \le 2 \times 10^5$ queries $(l_j, r_j)$ ($1 \le l_j \le r_j \le N$), output for each query the number of distinct non-empty substrings of $S[l_j..r_j]$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+Sweep $r$ from $1$ to $N$. For each distinct substring $w$ of $S[1..r]$, put a weight of $+1$ at the starting index $s = e_{\text{last}}(w, r) - |w| + 1$ of its rightmost occurrence in $S[1..r]$. How does $\operatorname{Ans}(l, r)$ relate to the active weights in $[l, r]$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant)
+
+When $r$ advances from $r-1$ to $r$, all substrings ending at $r$ correspond to ancestors of $v_r = \operatorname{pos}[r]$ on $\mathcal{T}_{\text{link}}$. By Theorem 2.1, why does each solid LCT chain $C$ with old color $p_{\text{old}}$ correspond to a *single* contiguous interval of starting indices?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+Implement `access_color_sweep(pos[r], r)` (`Contract 2` in `§4.1`): for each split solid chain $x$ with $p_{\text{old}} = \operatorname{col}[x] > 0$, add $-1$ to $[p_{\text{old}} - \operatorname{sub\_max}[x] + 1, p_{\text{old}} - \operatorname{sub\_min}[x] + 1]$ on a Range-Add Range-Sum Fenwick Tree, then add $+1$ to $[1, r]$ and answer queries at $r$ via `bit_query_sum(l, r)`.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`Luogu P6292`)
+
+1. **Diagnostic Signal**: We must count distinct substrings inside $S[l..r]$ across $Q = 2 \times 10^5$ queries.
+2. **Combinatorial Word Invariant**: By **Theorem 2.1 (Solid-Chain Last-Occurrence Telescoping)**, during the offline sweep $r = 1 \dots N$, every solid chain $C$ encountered by `access(pos[r])` in $\mathcal{T}_{\text{link}}(\text{SAM}(S))$ shares a common previous latest ending position $p_{\text{old}} = \operatorname{col}[C]$ and spans lengths $[L_{\min}(C), L_{\max}(C)] = [\operatorname{len}(\operatorname{link}(\operatorname{top}(C))) + 1, \operatorname{len}(\operatorname{bot}(C))]$. Its rightmost start positions form the gapless interval $[p_{\text{old}} - L_{\max}(C) + 1, p_{\text{old}} - L_{\min}(C) + 1]$.
+3. **Algorithmic Compilation**:
+   - Build $\text{SAM}(S)$ offline and initialize the LCT with $\operatorname{fa}[u] = \operatorname{link}(u)$ ($u > 1$), $\operatorname{self\_min}[u] = \operatorname{len}(\operatorname{link}(u)) + 1$, $\operatorname{self\_max}[u] = \operatorname{len}(u)$, and $\operatorname{self\_min}[1] = +\infty, \operatorname{self\_max}[1] = -\infty$.
+   - Group queries by $r$. For $r = 1 \dots N$, run `access_color_sweep(pos[r], r)` (`Contract 2`), which executes $O(\log N)$ amortized range $-1$ updates and one $[1, r]$ range $+1$ update on a 2-Fenwick-tree range-add range-sum structure, then answer each query $(l, r)$ as `bit_query_sum(l, r)`.
+   - **Complexity**: $O(N \log^2 N + Q \log N)$ time and $O(N + Q)$ space.
+4. **Broken-Invariant Counterexample**: Failing to exclude root $1$ (`self_min[1] = 1, self_max[1] = 0` or `self_min[1] = +INF, self_max[1] = -INF`) includes the empty string $\epsilon$ of length $0$ in the chain interval and shifts indices out of $[1, r]$.
+:::
+
+---
+
+#### Problem 11.4 (`W2A-36`): `[SDOI2017]` / Polynomial Length-Sum of Range Distinct Substrings
+
+- **Self-Contained Mathematical Statement**: Given a string $S[1..N]$ ($N \le 10^5$), an array of length weights $w[1..N]$ (or polynomial degree $k \in \{1, 2\}$ where $w[\ell] = \ell^k$), and $Q \le 10^5$ queries $(l_j, r_j)$, compute for each query the weighted sum over all distinct substrings $U$ of $S[l_j..r_j]$:
+  $$\operatorname{Ans}(l_j, r_j) \;=\; \sum_{U \text{ distinct in } S[l_j..r_j]} w[|U|] \pmod{10^9 + 7}.$$
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+On a monochrome LCT solid chain $C$ with latest ending position $p$ and length interval $[L_{\min}, L_{\max}]$, a substring of length $\ell$ is placed at starting position $s = p - \ell + 1$. Express $\ell$ in terms of $p$ and $s$.
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant)
+
+Since $\ell = p - s + 1$, adding $\pm w[\ell]$ to starting index $s \in [p - L_{\max} + 1, p - L_{\min} + 1]$ adds $\pm w[(p + 1) - s]$ to position $s$! How do you maintain range sum queries on $A[1..N]$ under shifted range additions $A[s] \mathrel{+}= \operatorname{sgn} \cdot w[K - s]$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+For $w[\ell] = \ell^1 = (p + 1) - s$, maintain two Fenwick trees: one adding $\pm (p + 1)$ to $A_0[s]$ and one adding $\mp 1$ to $A_1[s]$ (which multiplies by $s$). For general $w[1..N]$, precompute prefix sums $W[x] = \sum_{t=1}^x w[t]$; a Segment Tree node spanning $[L, R]$ receiving shift tag $(K, \operatorname{sgn})$ adds $\operatorname{sgn} \cdot (W[K - L] - W[K - R - 1])$ to its sum!
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`W2A-36`)
+
+1. **Diagnostic Signal**: Generalizes `Luogu P6292` from unit count $w[\ell] = 1$ to length-dependent weights $w[\ell]$.
+2. **Combinatorial Word Invariant**: By `§2.3`, within a monochrome solid chain $C$ with latest end position $p$, the starting position $s = p - \ell + 1$ and length $\ell$ satisfy $\ell = (p + 1) - s$. Thus a range update on $s \in [s_L, s_R] = [p - L_{\max} + 1, p - L_{\min} + 1]$ adds $\operatorname{sgn} \cdot w[(p + 1) - s]$ to each $s \in [s_L, s_R]$.
+3. **Algorithmic Compilation**:
+   - **Case A (Polynomial $w[\ell] = \ell^k$)**: Expand $((p + 1) - s)^k = \sum_{j=0}^k \binom{k}{j} (-1)^j (p + 1)^{k-j} s^j$. Maintain $k+1$ Segment/Fenwick trees where the $j$-th tree has static base weight $s^j$ at index $s$ and receives scalar range addition $\operatorname{sgn} \cdot (-1)^j \binom{k}{j} (p + 1)^{k-j}$.
+   - **Case B (Arbitrary Array $w[1..N]$ when coefficients do not telescope)**: Notice that for $w[\ell] = \ell$, two tags $(p_1 + 1, -1)$ and $(p_2 + 1, +1)$ merge additively into $(\Delta C_0, \Delta C_1)$ because $(p + 1) - s$ is linear in $s$! For arbitrary $w[1..N]$, decompose $w[\ell]$ or push tags at the $O(\log N)$ visited Segment Tree nodes.
+   - **Complexity**: $O(N \log^2 N + Q \log N)$ time and $O(N)$ space.
+4. **Broken-Invariant Counterexample**: Using $\ell = s - p + 1$ instead of $\ell = p - s + 1$ reverses the weight assignment inside $[s_L, s_R]$, assigning $L_{\min}$ to $s_L$ and $L_{\max}$ to $s_R$.
+:::
+
+---
+
+### Tier 3: Advanced (Intra-State Stratification & $e_2(u, r)$ Range Repeats)
+
+#### Problem 11.5 (`W2A-37`): `[十二省联考 2019] 字符串问题` (`Luogu P5284` / `LOJ 3052`)
+
+- **Self-Contained Mathematical Statement**: Given a string $S[1..N]$ ($N \le 2 \times 10^5$), $n_a \le 2 \times 10^5$ substrings $A_i = S[l_{a,i}..r_{a,i}]$, $n_b \le 2 \times 10^5$ substrings $B_j = S[l_{b,j}..r_{b,j}]$, and $m \le 2 \times 10^5$ explicit directed edges $A_i \to B_j$. Furthermore, for every pair $(B_j, A_i)$ such that $B_j$ is a **prefix** of $A_i$, there is an implicit directed edge $B_j \to A_i$. The weight of vertex $A_i$ is $|A_i| = r_{a,i} - l_{a,i} + 1$, and the weight of $B_j$ is $0$. Find the maximum total vertex weight of a directed path in this graph, or output `-1` if the graph contains a directed cycle (allowing infinite weight). Multi-test with $\sum (N + n_a + n_b + m) \le 10^6$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+How do you map every substring $A_i$ and $B_j$ to its right-extension equivalence class in $O(\log N)$ time? Why must you build the SAM on $S^R$ rather than $S$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant)
+
+By Theorem 3.1, on $\mathcal{T}_{\text{link}}(\text{SAM}(S^R)) \cong \text{ST}(S)$, $B_j$ is a prefix of $A_i$ iff $u(B_j)$ is a strict ancestor of $u(A_i)$, OR $u(B_j) = u(A_i)$ and $|B_j| \le |A_i|$. How do you wire the items landing inside the *same* state $u$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+Sort the list $\mathcal{L}(u)$ of items at state $u$ by non-decreasing length, breaking ties $|B_j| = |A_i|$ by placing $B_j$ **before** $A_i$ (`BP-2A-06`). Wire the linear chain $\operatorname{in}(u) = v_0 \to v_1 \to \dots \to v_k = \operatorname{out}(u)$ with $\operatorname{out}(\operatorname{link}(u)) \to \operatorname{in}(u)$, $B_j \to v_t$, and $v_t \to A_i$, then run Kahn's topological sort DP.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`[十二省联考 2019] 字符串问题`)
+
+1. **Diagnostic Signal**: Explicit edges $A_i \to B_j$ combined with $\Theta(n_a n_b)$ implicit prefix edges $B_j \to A_i$ can create cycles and require a sparse $O(N + n_a + n_b + m)$ graph representation that preserves exact prefix dominance.
+2. **Combinatorial Word Invariant**: By **Theorem 3.1**, building $\text{SAM}(S^R)$ turns prefix containment on $S$ into suffix containment on $S^R$, which is governed by Link-Tree subtree dominance on $\mathcal{T}_{\text{link}}(\text{SAM}(S^R))$ between distinct states and length ordering $|B_j| \le |A_i|$ within the same state $u$.
+3. **Algorithmic Compilation**:
+   - Build $\text{SAM}(S^R)$ and binary-lifting table $\text{up}[19][u]$. Locate $u(A_i)$ from $\operatorname{pos}_{S^R}[N - l_{a,i} + 1]$ and $u(B_j)$ from $\operatorname{pos}_{S^R}[N - l_{b,j} + 1]$ in $O(\log N)$ per substring.
+   - At each state $u$, sort $\mathcal{L}(u)$ by `(|X|, is_A(X))` (`0` for $B_j$, `1` for $A_i$). Build the relay spine $v_0 \to v_1 \to \dots \to v_k$ (`§3.1`), connect $\operatorname{out}(\operatorname{link}(u)) \to \operatorname{in}(u)$, $B_j \to v_t$, $v_t \to A_i$, and the $m$ explicit edges $A_i \to B_j$.
+   - Run Kahn's algorithm (BFS topological sort): if the number of popped vertices is $< |V|$, a cycle exists $\implies$ return `-1`; otherwise propagate $\operatorname{dp}[y] \leftarrow \max(\operatorname{dp}[y], \operatorname{dp}[x] + \operatorname{weight}[y])$ and return $\max_x \operatorname{dp}[x]$.
+   - **Complexity**: $O((N + n_a + n_b)\log N + m)$ time and $O(N + n_a + n_b + m)$ space.
+4. **Broken-Invariant Counterexample**: See `BP-2A-06` in `§4.2`—if $|B_j| = |A_i|$ ties are broken with $A_i$ before $B_j$, identical strings $B_j = A_i$ fail to have a directed path $B_j \to A_i$.
+:::
+
+---
+
+#### Problem 11.6 (`W2A-42`): Range Longest Repeated Substring & Repeat Count via $e_2(u, r)$ LCT Sweep (`[JSOI2016] 独特的基因` / `[BZOJ 4556]`)
+
+- **Self-Contained Mathematical Statement**: Given a string $S[1..N]$ ($N \le 10^5$) and $Q \le 10^5$ queries $(l_j, r_j)$, compute for each query: (Part A) the maximum length of a substring that occurs **at least twice** inside $S[l_j..r_j]$ ($0$ if all characters are distinct), and (Part B) the number of distinct substrings that occur **at least twice** inside $S[l_j..r_j]$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+A substring $w \in E(u)$ occurs at least twice in $S[l..r]$ iff its **second-largest** ending position $e_2(u, r)$ in $S[1..r]$ satisfies $e_2(u, r) - |w| + 1 \ge l$.
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant)
+
+When `access(pos[r])` visits a solid chain $C$ whose previous latest ending position was $p_{\text{old}} = e_1(C, r-1) < r$, the new latest ending position becomes $r$ and the new **second-largest** ending position on $C$ becomes $e_2(C, r) = p_{\text{old}}$!
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+For Part A, each visited chain $C$ emits the dominant triple $(p_{\text{old}}, r, L_{\max}(C))$, contributing $\min(L_{\max}(C), p_{\text{old}} - l + 1)$ for $l \le p_{\text{old}}$. For Part B, maintain both $\operatorname{col}_1[x]$ (largest endpos) and $\operatorname{col}_2[x]$ (second-largest endpos) on each LCT solid chain: subtract $1$ on $[\operatorname{col}_2 - L_{\max} + 1, \operatorname{col}_2 - L_{\min} + 1]$ and add $+1$ on $[\operatorname{col}_1 - L_{\max} + 1, \operatorname{col}_1 - L_{\min} + 1]$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`W2A-42`)
+
+1. **Diagnostic Signal**: Requires range statistics over substrings with multiplicity $\ge 2$ inside $S[l..r]$.
+2. **Combinatorial Word Invariant**: By `§2.3`, a substring $w \in E(u)$ of length $\ell \in [\operatorname{len}(\operatorname{link}(u))+1, \operatorname{len}(u)]$ occurs $\ge 2$ times in $S[l..r]$ iff $l \le e_2(u, r) - \ell + 1$. During the LCT sweep $r = 1 \dots N$, every solid chain $C$ popped in `access(pos[r])` transitions from $(e_1, e_2) = (p_{\text{old}, 1}, p_{\text{old}, 2})$ to $(r, p_{\text{old}, 1})$.
+3. **Algorithmic Compilation**:
+   - **Part A (Longest Repeat)**: At each solid chain $C$ with $p = p_{\text{old}, 1} > 0$ and $L = \operatorname{sub\_max}[C]$, the pair $(p, r)$ achieves common suffix length $L$, giving length $\min(L, p - l + 1)$ for any query with $l \le p$. Split into $l \le p - L + 1$ (prefix-max Fenwick tree of $L$) and $p - L + 1 < l \le p$ (range-max Segment Tree of $p$, adding $-l + 1$ at query time).
+   - **Part B (Distinct Repeat Count)**: Store `(col1, col2)` on each LCT splay chain. When `access(pos[r])` visits $C$, if $\operatorname{col}_2[C] > 0$, add $-1$ to $[\operatorname{col}_2[C] - L_{\max} + 1, \operatorname{col}_2[C] - L_{\min} + 1]$; if $\operatorname{col}_1[C] > 0$, add $+1$ to $[\operatorname{col}_1[C] - L_{\max} + 1, \operatorname{col}_1[C] - L_{\min} + 1]$ and push $(\operatorname{col}_1, \operatorname{col}_2) \leftarrow (r, \operatorname{col}_1)$ onto $C$!
+   - **Complexity**: $O(N \log^2 N + Q \log N)$ time and $O(N + Q)$ space.
+4. **Broken-Invariant Counterexample**: In Part B, when pushing the new color $r$ onto the entire root-to-$v_r$ path after `access`, you cannot overwrite `col2` with a single constant across the whole path because different subchains had different `col1` values! Instead, update the Fenwick tree with $+1$ for `col1[x]` inside the `access` loop *per subchain $x$* and record each subchain's `col2[x] = col1[x]` before merging `y` into `ch[x][1]`.
+:::
+
+---
+
+### Tier 4: Mastery (Link-Tree HLD 2-SAT & Tarjan SCC on Stratified Substring Graphs)
+
+#### Problem 11.7 (`W2A-39`): `[Code+#3] 白金元首与莫斯科` (2-SAT with Prefix-Exclusion on Link-Tree HLD)
+
+- **Self-Contained Mathematical Statement**: Given a string $S[1..N]$ ($N \le 5 \times 10^4$) and $M \le 5 \times 10^4$ candidate substrings $U_i = S[l_i..r_i]$, each substring $U_i$ must be assigned a boolean value $x_i \in \{0, 1\}$ subject to two families of constraints: (1) $K \le 10^5$ explicit 2-SAT clauses $(x_a = \alpha) \lor (x_b = \beta)$, and (2) **Prefix Mutual Exclusion**: no two chosen substrings ($x_i = x_j = 1$, $i \ne j$) are allowed to have $U_i$ as a prefix of $U_j$ (i.e., if $U_i$ is a prefix of $U_j$, then $x_i = 1 \implies x_j = 0$ and $x_j = 1 \implies x_i = 0$). Determine whether a valid assignment exists and output one in $O((N + M)\log^2 N + K)$ time.
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+On $\mathcal{T}_{\text{link}}(\text{SAM}(S^R)) \cong \text{ST}(S)$, if $x_i = 1$ is chosen at state $u = u(U_i)$, which other substrings $U_j$ ($j \ne i$) are forbidden to be $1$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant)
+
+By Theorem 3.1, $U_i$ is comparable by prefix with $U_j$ iff $u(U_j)$ is a strict ancestor of $u(U_i)$, OR $u(U_j)$ is in the strict subtree of $u(U_i)$, OR $u(U_j) = u(U_i)$! Notice that inside the *same* state $u$, **any two substrings $U_i, U_j \in \mathcal{L}(u)$ has the shorter one as a prefix of the longer one**—so at most ONE substring in $\mathcal{L}(u)$ can ever be set to $1$!
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+Inside each state $u$, wire standard prefix/suffix 1-out-of-$k$ 2-SAT chains over $\mathcal{L}(u)$. Across distinct states on $\mathcal{T}_{\text{link}}$, wire a downward implication chain ($\operatorname{down}[u] \to \operatorname{down}[\text{child}(u)]$ and $\operatorname{down}[u] \to \neg x_j$ for $U_j \in \mathcal{L}(u)$) and an upward implication chain ($\operatorname{up}[u] \to \operatorname{up}[\operatorname{link}(u)]$ and $\operatorname{up}[u] \to \neg x_j$ for $U_j \in \mathcal{L}(u)$) in $O(N + M)$ vertices and edges—without even needing HLD if full ancestors/subtrees are forbidden, or using HLD + Segment Tree if restricted to an interval of lengths!
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`[Code+#3] 白金元首与莫斯科`)
+
+1. **Diagnostic Signal**: 2-SAT clauses $x_i \to \neg x_j$ must be added between every pair $(i, j)$ where $U_i$ is a prefix of $U_j$.
+2. **Combinatorial Word Invariant**: By **Theorem 3.1**, on $\mathcal{T}_{\text{link}}(\text{SAM}(S^R))$, $U_i$ is a prefix of $U_j$ iff $u(U_i)$ is an ancestor of $u(U_j)$ (with $|U_i| \le |U_j|$ when $u(U_i) = u(U_j)$). Since $x_i \to \neg x_j$ is equivalent to its contrapositive $x_j \to \neg x_i$, choosing $x_i = 1$ at state $u$ forbids **all** $U_j$ in proper ancestors of $u$, **all** $U_j$ in proper descendants of $u$, and **all** other $U_j \in \mathcal{L}(u) \setminus \{U_i\}$ (or, if only one-way implication $x_i \to \neg x_j$ for $|U_i| \le |U_j|$ is required, only items in $\mathcal{L}(u)$ and proper descendants/ancestors).
+3. **Algorithmic Compilation**:
+   - Build $\text{SAM}(S^R)$ and map each $U_i$ to $u(U_i)$ in $O(\log N)$ via binary lifting.
+   - Create two auxiliary 2-SAT boolean variables per SAM state $u$: $\operatorname{anc\_off}[u]$ ("all substrings at $u$ and its ancestors must be $0$") and $\operatorname{sub\_off}[u]$ ("all substrings at $u$ and its subtree must be $0$").
+   - Wire $\operatorname{anc\_off}[u] \to \operatorname{anc\_off}[\operatorname{link}(u)]$, $\operatorname{sub\_off}[u] \to \operatorname{sub\_off}[v]$ for every Link-Tree child $v$ of $u$, and for every $U_i \in \mathcal{L}(u)$: $\operatorname{anc\_off}[u] \to \neg x_i$, $\operatorname{sub\_off}[u] \to \neg x_i$, $x_i \to \operatorname{anc\_off}[\operatorname{link}(u)]$, and $x_i \to \operatorname{sub\_off}[v]$ for children $v$.
+   - Within $\mathcal{L}(u) = (U_{i_1}, \dots, U_{i_k})$, wire a prefix-exclusion chain $P_t \to P_{t-1}$, $P_t \to \neg x_{i_t}$, $x_{i_t} \to P_{t-1}$ and suffix chain $S_t \to S_{t+1}$, $S_t \to \neg x_{i_t}$, $x_{i_t} \to S_{t+1}$. (If queries only target an HLD path segment of ancestors, use a Segment Tree over the HLD DFS order).
+   - Run Tarjan's SCC in $O((N + M)\log N + K)$ time.
+4. **Broken-Invariant Counterexample**: Wiring $x_i \to \operatorname{anc\_off}[u]$ (instead of $\operatorname{anc\_off}[\operatorname{link}(u)]$) immediately adds $x_i \to \operatorname{anc\_off}[u] \to \neg x_i$, forcing $x_i = 0$ unconditionally for every substring!
+:::
+
+---
+
+#### Problem 11.8 (`W2A-43`): Weighted Substring Dominance DAG with Tarjan SCC + Intra-State Stratification
+
+- **Self-Contained Mathematical Statement**: Given a string $S[1..N]$ ($N \le 10^5$), $M \le 10^5$ substrings $U_i = S[l_i..r_i]$ with positive profits $c_i \ge 1$, and $E \le 10^5$ explicit directed transitions $U_a \to U_b$. Additionally, from any $U_i$, you may transition for free to any $U_j$ such that **$U_i$ is a suffix of $U_j$ AND $|U_j| \le |U_i| + D$** (where $D \ge 0$ is a given length-jump cap). You may traverse directed edges any number of times, collecting the profit $c_i$ of each distinct visited substring $U_i$ **at most once**. Find the maximum total profit of a walk in $O((N + M)\log N + E)$ time.
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+Because the implicit transition requires "$U_i$ is a **suffix** of $U_j$", should we use $\text{SAM}(S)$ or $\text{SAM}(S^R)$? And how does the length cap $|U_j| \le |U_i| + D$ restrict the reachable descendants of $u(U_i)$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant)
+
+On forward $\text{SAM}(S)$, $U_i$ is a suffix of $U_j$ iff $u(U_i)$ is an ancestor of $u(U_j)$ on $\mathcal{T}_{\text{link}}(\text{SAM}(S))$ (with $|U_i| \le |U_j|$ if $u(U_i) = u(U_j)$). Because we can step consecutively through intermediate $U_k$, wait—can we step through SAM states that do *not* contain an explicit $U_k$? No! A single implicit step goes directly from $U_i$ to any $U_j$ in $u(U_i)$'s subtree satisfying $|U_i| \le |U_j| \le |U_i| + D$!
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+Sort all substrings $U_j$ by Link-Tree DFS order (`dfn[u(U_j)]`) and length $|U_j|$, or use Persistent Segment Tree Merge / two-pointer intra-state chains + Link-Tree DSU-on-Tree / Segment Tree optimization to wire $U_i$ to all $U_j$ in $u(U_i)$'s Link-Tree subtree with $|U_j| \in [|U_i|, |U_i| + D]$. Then run Tarjan's SCC to contract cycles (summing $c_i$ of original $U_i$ nodes inside each SCC) and run DAG longest-path DP!
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`W2A-43`)
+
+1. **Diagnostic Signal**: Implicit suffix-extension edges $U_i \to U_j$ with length window $|U_j| \in [|U_i|, |U_i| + D]$ combine with explicit edges $U_a \to U_b$ to form a general directed graph with cycles, where each $U_i$'s profit $c_i$ can be collected once per SCC.
+2. **Combinatorial Word Invariant**: On $\mathcal{T}_{\text{link}}(\text{SAM}(S))$, $U_i$ is a suffix of $U_j$ iff $u(U_j)$ lies in the Link-Tree subtree of $u(U_i)$ and $|U_j| \ge |U_i|$. Thus $U_i$ connects to all $U_j$ satisfying:
+   $$\operatorname{dfn}[u(U_j)] \in \bigl[\operatorname{dfn}[u(U_i)], \, \operatorname{out}[u(U_i)]\bigr] \quad \text{and} \quad |U_j| \in \bigl[|U_i|, \, |U_i| + D\bigr].$$
+   Notice that for any $u(U_j)$ in the **strict** subtree of $u(U_i)$, $|U_j| > \operatorname{len}(u(U_i)) \ge |U_i|$ holds automatically! Only within the *same* state $u(U_j) = u(U_i)$ do we need to enforce $|U_j| \ge |U_i|$ explicitly.
+
+3. **Algorithmic Compilation**:
+   - Build $\text{SAM}(S)$ and locate $u(U_i)$ from $\operatorname{pos}_S[r_i]$ via binary lifting in $O(\log N)$.
+   - **Persistent Segment Tree Graph Optimization**: Insert each $U_j$ at index $\ell_j = |U_j|$ into the Segment Tree $\operatorname{rt}[u(U_j)]$ (creating a new leaf relay node connected to $U_j$). Merge $\operatorname{rt}[u]$ bottom-up on $\mathcal{T}_{\text{link}}(\text{SAM}(S))$ using persistent Segment Tree merging (where each internal Segment Tree node `z` has directed edges to `ls[z]` and `rs[z]`).
+   - For each $U_i$ at state $u = u(U_i)$:
+     1. **Strict subtree transitions**: For each Link-Tree child $v$ of $u$ (or on the merged tree of $u$'s children), query $\operatorname{rt}_{\text{children}}[u]$ on length range $[|U_i|, |U_i| + D]$ and add $O(\log N)$ edges from $U_i$ to the covering Segment Tree nodes.
+     2. **Intra-state transitions ($u(U_j) = u$)**: Sort $\mathcal{L}(u)$ by length $\ell$ and wire a sliding-window Segment Tree / prefix-block DAG from each $U_i \in \mathcal{L}(u)$ to the contiguous slice of $U_j \in \mathcal{L}(u)$ with $|U_j| \in [|U_i|, |U_i| + D]$ (placing source before target on equal lengths).
+   - Run **Tarjan's SCC algorithm** on the resulting $O((N + M)\log N + E)$-edge graph: sum $c_i$ for all $U_i$ in each SCC (auxiliary relay nodes have weight $0$), and compute the maximum-weight path on the condensation DAG.
+   - **Complexity**: $O((N + M)\log N + E)$ time and space.
+4. **Broken-Invariant Counterexample**: Querying $\operatorname{rt}[u]$ directly (instead of $\operatorname{rt}_{\text{children}}[u]$ + intra-state sorted slice) on $[|U_i|, |U_i| + D]$ when two distinct substrings $U_i \ne U_j$ in the same state $u$ have the *same* length $|U_i| = |U_j|$ creates a mutual cycle $U_i \leftrightarrow U_j$ via the shared Segment Tree leaf at $\ell = |U_i|$ (which is actually valid since $U_i = U_j$ are identical substrings of $S$, *unless* self-loops on $U_i$ corrupt a non-SCC solver!).
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Diagnostic Decision Matrix
+
+| Contest Problem Signal | Structural Trap to Avoid | Correct Chapter 11 Engine |
+| :--- | :--- | :--- |
+| Online right-appends `S += c` + pattern occurrence queries (`[BZOJ 2555]`) | Copying `val[clone] = val[q]` without `access(q); splay(q);` (`BP-2A-05`), or calling `makeroot` on directed $\mathcal{T}_{\text{link}}$ | Root-Fixed LCT + deferred root-to-$\text{cur}$ path $+1$ (`Contract 1`, `§1.3`) |
+| Offline range $[l, r]$ distinct substring count (`Luogu P6292`) | Walking all $\Theta(N)$ SAM states per query, or including root $1$ ($\operatorname{len}(1)=0$) in Fenwick updates | LCT `access(pos[r])` color-chain sweep + 1D Fenwick range add (`Theorem 2.1`, `Contract 2`) |
+| Offline range $[l, r]$ length-weighted distinct substring sum (`[SDOI2017]`) | Using $\ell = s - p + 1$ instead of $\ell = p - s + 1$ on solid chain $C$ | LCT `access(pos[r])` + shifted polynomial/prefix-sum Segment Tree (`§2.3`) |
+| Range $[l, r]$ longest repeated substring or distinct repeat count (`W2A-42`) | Tracking only the largest occurrence $e_1(u, r)$ instead of the second-largest $e_2(u, r)$ | LCT `access(pos[r])` emitting $(p_{\text{old}}, r, \operatorname{sub\_max}[C])$ or tracking $(\operatorname{col}_1, \operatorname{col}_2)$ (`§2.3`) |
+| Directed graph / 2-SAT over substring prefix/suffix relations (`[十二省联考 2019]`) | Connecting $B_j \to u \to A_i$ without intra-state length sorting, or placing $A_i$ before $B_j$ on ties (`BP-2A-06`) | Reversed SAM $\mathcal{T}_{\text{link}}(\text{SAM}(S^R))$ + intra-state sorted spine `(length, B before A)` (`Theorem 3.1`) |
+| Range sum of $\operatorname{LCP}(S[i..r], S[l..r])$ (`CF 1098F`) | Ignoring right-boundary clipping $\min(r - i + 1, \operatorname{len}(u))$ | Link-Tree HLD / Centroid Decomposition splitting at $i + \operatorname{len}(u) - 1 \le r$ (`§3.2`) |
+
+### 6.2 Key Invariants Summary
+
+1. **Pre-Increment Clone Equivalence (`Lemma 1.1`)**: When `extend(c)` splits $q \to \text{clone}$ at step $N$, $\operatorname{occ}_{N-1}(\text{clone}) = \operatorname{occ}_{N-1}(q)$ and $\operatorname{occ}_{N-1}(\text{cur}) = 0$, provided `access(q); splay(q);` flushes lazy tags to $q$ before copying and the $+1$ path update from $\text{cur}$ is performed last.
+2. **Solid-Chain Last-Occurrence Telescoping (`Theorem 2.1`)**: On a monochrome LCT solid chain $C = (u_1 \dots u_k)$ sharing $\operatorname{last}_{r-1}(C) = p_{\text{old}}$, the length intervals $[\operatorname{len}(\operatorname{link}(u_i))+1, \operatorname{len}(u_i)]$ abut via $\operatorname{len}(\operatorname{link}(u_{i+1})) = \operatorname{len}(u_i)$, so their rightmost starting-position intervals tile without gaps into $[p_{\text{old}} - \operatorname{len}(u_k) + 1, p_{\text{old}} - \operatorname{len}(\operatorname{link}(u_1))]$.
+3. **Intra-State Length Stratification (`Theorem 3.1`)**: On $\mathcal{T}_{\text{link}}(\text{SAM}(S^R)) \cong \text{ST}(S)$, $B_j$ is a prefix of $A_i$ iff $u(B_j)$ is a strict ancestor of $u(A_i)$, OR $u(B_j) = u(A_i)$ and $|B_j| \le |A_i|$ (with $B_j$ ordered strictly before $A_i$ on equal lengths).

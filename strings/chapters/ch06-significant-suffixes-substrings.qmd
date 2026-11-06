@@ -1,0 +1,689 @@
+---
+title: "Chapter 06 — The Significant Suffixes (显著后缀) Theorem, 1-Survivor Segment Tree Merging, and Dyadic SA-RMQ"
+subtitle: "Part II · Lyndon Theory, Significant Suffixes & The Runs Theorem (Technique ID: T-1B-03)"
+---
+
+::: {.callout-note}
+## Prerequisites & Learning Objectives
+
+- **Strict Prerequisites**: **[Chapter 02 — The Weak Periodicity Lemma & $O(\log N)$ Border APs](ch02-weak-periodicity-border-aps.qmd)** (border periodicity in the top half of a string) and **[Chapter 05 — Chen–Fox–Lyndon Factorization & Duval's Automaton](ch05-lyndon-factorization-duval-necklaces.qmd)** (strong lexicographical inequality $u \prec v$ vs. proper-prefix containment $u \sqsubset v$), plus assumed baseline **Z-Array ($Z$)** and **Suffix Array (`SA`, `rk`, `height` + $O(1)$ RMQ LCE)**.
+- **Learning Objectives**:
+  1. Diagnose why querying the minimum/maximum suffix or cyclic shift of a substring $S[l..r]$—or maintaining optimal suffixes under unknown future right-extensions $S[i..r] + T$—defeats both Duval's algorithm and raw Suffix Array ranks $\text{rk}[i]$.
+  2. Prove **Jin Ce's Significant Suffixes (`显著后缀`) Tandem-Annihilation & Doubling Theorem** (`[国家集训队论文 2019 — 金策]`; Kociumaka et al. 2014): whenever $u, v \in \text{Suf}(U)$ satisfy $|u| < |v| < 2|u|$ and $u \sqsubset v$, writing $u = w u'$ and $v = w^2 u'$ ($u' \in \text{Suf}(U)$) forces $\min(u'T, vT) < uT < \max(u'T, vT)$ for **every** finite right-extension $T \in \Sigma^*$, bounding $|\operatorname{Cand}_{\min/\max}(U)| \le \lfloor \log_2 |U| \rfloor + 1$.
+  3. Prove the **Segment Tree `pushup` 1-Survivor Theorem** (at most **one** candidate from `left_child` $[L, M]$ can survive in $\operatorname{Cand}([L, R])$, enabling an $O(N)$ Segment Tree build and the $O(Q \log^2 N + N\sqrt{N})$ solution to `[ZJOI2017] 字符串`).
+  4. Master **Segment-Tree-Free $O(\log N)$ Dyadic SA-Rank RMQ Band Extraction**, the **Static $T = \varepsilon$ Shortest-Border Reduction**, and the **Left-Truncation Counterexample ($S = \texttt{aaba}$)** explaining why $\operatorname{Cand}_{\min}(S[l..r]) \not\subseteq \operatorname{Cand}_{\min}(S[1..r])$.
+:::
+
+---
+
+## 1. The Diagnostic Signal: Why Substring & Right-Extension Queries Break Duval and Global SA Ranks (`T-1B-03`)
+
+### 1.1 Three Contest Scenarios Where Prefix CFL & Global $\text{rk}[i]$ Fail
+
+In **[Chapter 05](ch05-lyndon-factorization-duval-necklaces.qmd)**, we saw that the last CFL factor $w_k$ of $S[1..N]$ is the lexicographically smallest nonempty suffix of $S[1..N]$, and that Theorem 5.5 maintains the minimum suffix of every prefix $S[1..r]$ in $O(1)$ time per character. Why, then, do the following three flagship contest problems break Chapter 05's machinery?
+
+1. **Prefix Minimum Cyclic Shifts (`[JSOI2019] 节日庆典`, $N = 3 \times 10^6$)**:
+   For each prefix $S[1..r]$, we want $i \in [1, r]$ minimizing the cyclic shift $S[i..r] + S[1..i-1]$ (tie-breaking by smallest $i$). Notice that for any two candidate start positions $i_1, i_2 \in [1, r]$, comparing their cyclic shifts of length $r$ is order-equivalent to comparing the infinite periodic strings, or simply comparing:
+   $$S[i_1..r] + S[1..r] \quad \text{vs.} \quad S[i_2..r] + S[1..r]!$$
+   That is, we are minimizing $S[i..r] + T$ where the right-extension $T = S[1..r]$ is nonempty! The last CFL factor $w_k$ of $S[1..r]$ only minimizes $S[i..r]$ when $T = \varepsilon$.
+
+2. **Dynamic Range-Shift Substring Maximum Suffix (`[ZJOI2017] 字符串`, $N, Q \le 2 \times 10^5$)**:
+   Given an integer string $S[1..N]$ subject to range additions `S[l..r] += d`, query the starting position $i \in [l, r]$ of the **lexicographically largest suffix** of the substring $S[l..r]$. When a Segment Tree decomposes $[l, r]$ into $O(\log N)$ canonical intervals $I_1 \sqcup I_2 \sqcup \cdots \sqcup I_m$, a suffix $u$ of an earlier segment $I_t = [L_t, R_t]$ is followed by the right-extension $T_t = S[R_t + 1 .. r]$ inside $S[l..r]$!
+
+3. **Substring Minimum Cyclic Shift & Appended Pattern Queries (`UOJ #429` / Kociumaka et al.)**:
+   Given a static string $S[1..N]$ and $Q \le 2 \times 10^5$ queries $(l, r)$, find $i \in [l, r]$ minimizing $S[i..r] + S[l..i-1]$ (equivalent to minimizing $S[i..r] + T$ with $T = S[l..r]$) in $O(\log(r - l + 1))$ time per query.
+
+### 1.2 Isolating the Exact Right-Extension Ambiguity: $\prec$ vs. $\sqsubset$
+
+Fix a string $U = S[L..R]$, and consider any two distinct suffixes $u, v \in \text{Suf}(U)$ with $|u| < |v|$. When we append an unknown right-extension $T \in \Sigma^*$ to both $u$ and $v$, can the relative order between $uT$ and $vT$ depend on $T$?
+
+Apply the dichotomy between strong lexicographical inequality ($\prec$) and proper-prefix containment ($\sqsubset$) from Chapter 05 §1.2:
+
+- **Case 1 ($u$ is NOT a prefix of $v$: $u \not\sqsubset v$)**:
+  Because $|u| < |v|$ and $u \not\sqsubset v$, $u$ and $v$ have a character mismatch at some position $t \le |u|$. Therefore either $u \prec v$ or $v \prec u$. By Law 2 (right-extension stability of $\prec$):
+  $$u \prec v \implies \forall T \in \Sigma^*,\; uT \prec vT, \qquad v \prec u \implies \forall T \in \Sigma^*,\; vT \prec uT!$$
+  The loser is **permanently dominated for every possible $T \in \Sigma^*$** and can be discarded immediately!
+
+- **Case 2 ($u$ IS a proper prefix of $v$: $u \sqsubset v$)**:
+  Because $u$ is already a suffix of $v$ ($|u| < |v|$ and $u, v \in \text{Suf}(U)$) and now also a proper prefix of $v$, **$u$ is a nonempty proper border of $v$** ($u \in \text{Border}(v)$)! Here $T$ truly matters: for example, if $u = \texttt{a}$ and $v = \texttt{aba}$, then at $T = \varepsilon$ we have $u = \texttt{a} < \texttt{aba} = v$, whereas at $T = \texttt{c}$ we have $uT = \texttt{ac} > \texttt{abac} = vT$.
+
+Thus any family of suffixes of $U$ that remain pairwise incomparable across varying right-extensions $T \in \Sigma^*$ must form a **chain of nested borders** $u_1 \sqsubset u_2 \sqsubset \cdots \sqsubset u_k$. Can this border chain have size $\Theta(|U|)$ (as in $U = \texttt{a}^N$)? **No!** The next theorem proves that whenever two suffixes $u \sqsubset v$ in the chain have lengths within a factor of $2$ ($|u| < |v| < 2|u|$), the shorter suffix $u$ is **sandwiched and annihilated** for *every* $T \in \Sigma^*$!
+
+---
+
+## 2. Core Combinatorial Word Invariants: Jin Ce's Significant Suffixes (`显著后缀`) Theorem (`T-1B-03`)
+
+### 2.1 Definition of $\operatorname{Cand}_{\min}(U)$ and $\operatorname{Cand}_{\max}(U)$
+
+To make tie-breaking completely unambiguous when two suffixes $u \ne v$ satisfy $uT = vT$ (which happens only when $T$ is an infinite periodic continuation, Never for finite $T \in \Sigma^*$ because $|uT| = |u| + |T| < |v| + |T| = |vT|$ implies $uT \ne vT$ as finite strings!), we adopt the canonical definition from Jin Ce's 2019 National Training Team Paper (`[国家集训队论文 2019 — 金策，《字符串算法选讲》]`):
+
+::: {.callout-note}
+## Definition 6.1 (Minimal and Maximal Significant Suffix Sets $\operatorname{Cand}_{\min}(U)$ and $\operatorname{Cand}_{\max}(U)$)
+
+For any nonempty string $U \in \Sigma^+$, a nonempty suffix $u \in \text{Suf}(U)$ belongs to:
+
+- The **Minimal Significant Suffix Set** $\operatorname{Cand}_{\min}(U)$ if there exists at least one finite string $T \in \Sigma^*$ such that
+  $$uT = \min_{x \in \text{Suf}(U)} (xT) \qquad \text{(under standard lexicographical order } < \text{)}.$$
+
+- The **Maximal Significant Suffix Set** $\operatorname{Cand}_{\max}(U)$ if there exists at least one finite string $T \in \Sigma^*$ such that
+  $$uT = \max_{x \in \text{Suf}(U)} (xT) \qquad \text{(under standard lexicographical order } < \text{)}.$$
+*(Note: Because $|x_1 T| \ne |x_2 T|$ for any two distinct suffixes $x_1 \ne x_2 \in \text{Suf}(U)$ and any finite $T \in \Sigma^*$, the minimum and maximum of $xT$ over $x \in \text{Suf}(U)$ are **strictly unique** for every $T \in \Sigma^*$! In problems like `[JSOI2019] 节日庆典` where cyclic shifts $S[i..r] + S[1..i-1]$ all have the same length $r$ and ties are broken by smallest starting index $i$—i.e., longest suffix $v$—keeping only the longest copy in any tandem repeat automatically respects smallest-$i$ tie-breaking as well.)*
+:::
+
+### 2.2 Theorem 6.2: The Tandem-Annihilation & Doubling Theorem
+
+::: {.callout-important}
+## Theorem 6.2 (The Significant Suffixes Tandem-Annihilation & Doubling Theorem — Jin Ce 2019; Kociumaka et al. 2014)
+
+Let $u, v \in \text{Suf}(U)$ be two suffixes of $U$ satisfying
+$$|u| < |v| < 2|u| \qquad \text{and} \qquad u \sqsubset v.$$
+Then:
+
+1. **(Tandem Decomposition)**: Setting $p = |v| - |u| < |u|$ and $w = v[1..p]$, there exists a nonempty proper suffix $u' \in \text{Suf}(U)$ of length $|u'| = 2|u| - |v| \in [1, |u| - 1]$ such that
+   $$u' \in \text{Suf}(U), \qquad u = w u', \qquad v = w^2 u'.$$
+
+2. **(Two-Way Strict Sandwich Inequality)**: For **every** finite right-extension $T \in \Sigma^*$, the string $uT$ lies **strictly between** $u'T$ and $vT$:
+   $$\min(u'T,\; vT) \;<\; uT \;<\; \max(u'T,\; vT).$$
+
+3. **(Simultaneous Annihilation & Logarithmic Sparsity)**: The middle suffix $u$ can **never** belong to $\operatorname{Cand}_{\min}(U)$ and can **never** belong to $\operatorname{Cand}_{\max}(U)$! Consequently, ordering the elements of $\operatorname{Cand}_{\min}(U)$ (or $\operatorname{Cand}_{\max}(U)$) by increasing length $|u_1| < |u_2| < \cdots < |u_k|$ yields:
+   $$u_1 \sqsubset u_2 \sqsubset \cdots \sqsubset u_k, \qquad |u_{t+1}| \ge 2|u_t| \quad (1 \le t < k), \qquad k \le \lfloor \log_2 |U| \rfloor + 1.$$
+:::
+
+#### Complete Zero-Magic Proof
+
+**Step 1 (Deriving $u = w u'$ and $v = w^2 u'$)**:
+Because $u, v \in \text{Suf}(U)$ with $|u| < |v|$, $u$ is a proper suffix of $v$, so $v = w u$ where $w = v[1..p]$ has length $p = |v| - |u|$. Because we also have $u \sqsubset v$ and $|v| < 2|u|$, the period length $p = |v| - |u|$ satisfies $0 < p < |u|$. Thus $w = v[1..p] = u[1..p]$ is a **proper prefix** of $u$! Writing $u = w u'$ defines a nonempty string $u'$ of length $|u'| = |u| - p = 2|u| - |v| > 0$. Since $u'$ is a suffix of $u$ and $u$ is a suffix of $U$, we have $u' \in \text{Suf}(U)$, and substituting $u = w u'$ into $v = w u$ gives $v = w^2 u'$:
+
+```
+v  = [----- w -----][----- w -----][--- u' ---]   (length |v| = 2p + |u'|)
+u  =                [----- w -----][--- u' ---]   (length |u| =  p + |u'|)
+u' =                               [--- u' ---]   (length |u'| = 2|u| - |v| > 0)
+```
+
+**Step 2 (Proving $\min(u'T, vT) < uT < \max(u'T, vT)$ via Left-Cancellation)**:
+Fix any finite string $T \in \Sigma^*$. Because $|u'T| = |u'| + |T| < |u| + |T| = |uT|$, the finite strings $u'T$ and $uT$ have different lengths and therefore cannot be equal: either $u'T < uT$ or $u'T > uT$.
+
+- **Branch A ($u'T < uT$)**: Substitute $u = w u'$ into the right-hand side to write this inequality as
+  $$u'T < w u' T.$$
+  By **Law 1 (Left-Cancellation Invariance of Lexicographical Order)**, prepending the common prefix $w$ to both sides of $u'T < w u' T$ preserves the strict inequality:
+  $$w (u'T) < w (w u' T) \iff uT < vT!$$
+  Chaining the two strict inequalities yields $u'T < uT < vT$.
+
+- **Branch B ($u'T > uT$)**: Prepending the common prefix $w$ to both sides of $u'T > w u' T$ via Law 1 yields:
+  $$w (u'T) > w (w u' T) \iff uT > vT!$$
+  Chaining the two strict inequalities yields $vT < uT < u'T$.
+
+In both branches, $uT$ is strictly larger than $\min(u'T, vT)$ (so $u \notin \operatorname{Cand}_{\min}(U)$) and strictly smaller than $\max(u'T, vT)$ (so $u \notin \operatorname{Cand}_{\max}(U)$)!*(Even if $T$ were an infinite string or if we considered cyclic shifts of length $|U|$ where $u'T$ and $uT$ were truncated to the same length and tied, $u'T = uT \implies uT = vT$, where the longest suffix $v = w^2 u'$ has the smallest starting index $i_v < i_u$, so $u$ is still redundant!)*
+
+**Step 3 (Chain Structure & Length Doubling)**:
+For any two surviving candidates $u_t, u_{t+1}$ ($|u_t| < |u_{t+1}|$) in $\operatorname{Cand}_{\min}(U)$ (or $\operatorname{Cand}_{\max}(U)$), Section 1.2 Case 1 proved that $u_t \sqsubset u_{t+1}$ must hold (otherwise one strictly $\prec$-dominates the other for all $T$). By Step 2, if $|u_{t+1}| < 2|u_t|$, then $u_t$ is annihilated by $(u', u_{t+1})$. Hence $|u_{t+1}| \ge 2|u_t|$ for all $1 \le t < k$, which implies $|U| \ge |u_k| \ge 2^{k-1}|u_1| \ge 2^{k-1}$ and thus $k \le \lfloor \log_2 |U| \rfloor + 1$. $\blacksquare$
+
+::: {.callout-tip}
+## Hand-Checked Example of Tandem Annihilation on $U = \texttt{ababa}$
+
+Consider $U = \texttt{ababa}$ ($|U| = 5$), whose suffixes are $u_1 = \texttt{a}$ ($i=5$), $u_2 = \texttt{ba}$ ($i=4$), $u_3 = \texttt{aba}$ ($i=3$), $u_4 = \texttt{baba}$ ($i=2$), and $u_5 = \texttt{ababa}$ ($i=1$).
+
+1. **Permanent $\prec$-Elimination**: $u_1 = \texttt{a} \prec \texttt{ba} = u_2$ and $u_1 = \texttt{a} \prec \texttt{baba} = u_4$, so for $\operatorname{Cand}_{\min}(U)$ the suffixes starting with $\texttt{b}$ ($i=4, 2$) are eliminated immediately.
+2. **Remaining Border Chain**: The suffixes starting with $\texttt{a}$ form the nested border chain $u_1 = \texttt{a} \sqsubset u_3 = \texttt{aba} \sqsubset u_5 = \texttt{ababa}$ of lengths $1, 3, 5$.
+3. **Tandem Annihilation of $u_3 = \texttt{aba}$**: Compare $u = u_3 = \texttt{aba}$ ($|u| = 3$) and $v = u_5 = \texttt{ababa}$ ($|v| = 5$). Since $3 < 5 < 2 \cdot 3 = 6$ and $u \sqsubset v$, Theorem 6.2 decomposes them with period $w = \texttt{ab}$ ($p = 2$) and $u' = u_1 = \texttt{a}$:
+   $$u' = \texttt{a}, \qquad u = (\texttt{ab})\texttt{a} = \texttt{aba}, \qquad v = (\texttt{ab})^2\texttt{a} = \texttt{ababa}.$$
+
+   - If $T = \varepsilon$: $u'T = \texttt{a} < uT = \texttt{aba} < vT = \texttt{ababa}$ ($u'$ wins).
+   - If $T = \texttt{c}$: $u'T = \texttt{ac} > uT = \texttt{abac} > vT = \texttt{ababac}$ ($v$ wins).
+   - If $T = \texttt{a}$: $u'T = \texttt{aa} < uT = \texttt{abaa} < vT = \texttt{ababaa}$ ($u'$ wins).
+   No matter what $T \in \Sigma^*$ is appended, $u = \texttt{aba}$ ($i = 3$) is strictly sandwiched between $u' = \texttt{a}$ ($i = 5$) and $v = \texttt{ababa}$ ($i = 1$). Thus $\operatorname{Cand}_{\min}(\texttt{ababa}) = \{\texttt{a}(5),\; \texttt{ababa}(1)\}$!
+:::
+
+---
+
+## 3. Reverse-Engineering Scratchpad: Three Algorithmic Compilations of Significant Suffixes (`T-1B-03`)
+
+Depending on whether queries are online prefixes ($S[1..r]$), dynamic Segment Tree intervals ($S[l..r]$ under range updates), or static substrings ($T = \varepsilon$), Theorem 6.2 compiles into three distinct engines.
+
+### 3.1 Compilation A: $O(N \log N)$ Online Prefix Maintenance via Z-Array (`[JSOI2019] 节日庆典`)
+
+Suppose we scan $S[1..N]$ left-to-right ($N \le 3 \times 10^6$) and maintain the list of starting indices $I_r = \{i_1 > i_2 > \cdots > i_k\}$ corresponding to the surviving candidates of $\operatorname{Cand}_{\min}(S[1..r])$ in increasing order of suffix length $\ell_t = r - i_t + 1$.
+
+When advancing from $r - 1$ to $r$ by appending $c = S[r]$:
+
+1. Every survivor $u \in \operatorname{Cand}_{\min}(S[1..r-1])$ is extended to $u \cdot c$, and the new length-$1$ suffix $S[r..r] = c$ (starting at index $r$) enters at the front of the list:
+   $$\text{Raw list at step } r:\quad \{r\} \cup I_{r-1}.$$
+
+2. Remember that for any two candidates $i_{\text{short}} > i_{\text{long}}$ coming from $I_{r-1}$ (or $i_{\text{short}} = r$ after it survives), the shorter suffix before step $r$ was already a proper prefix of the longer suffix:
+   $$S[i_{\text{short}} .. r - 1] \;\sqsubset\; S[i_{\text{long}} .. r - 1]!$$
+   Therefore, when $S[r]$ is appended to both, their prefixes of length $(r - 1) - i_{\text{short}} + 1 = r - i_{\text{short}}$ **already match identically**! The only character position we need to check to test whether $S[i_{\text{short}}..r] \sqsubset S[i_{\text{long}}..r]$ still holds is the newly appended character $S[r]$ against the corresponding character in the longer suffix:
+   $$c_{\text{short}} = S[r] \qquad \text{vs.} \qquad c_{\text{long}} = S\bigl[i_{\text{long}} + (r - i_{\text{short}})\bigr]!$$
+
+3. **Single-Pass Filter**: Build the new survivor list $I_r$ by iterating $i \in \{r\} \cup I_{r-1}$ from shortest to longest (decreasing starting index $i$):
+   - Compare the current survivor $j = I_r.\text{back}()$ (shorter, $j > i$) against the incoming candidate $i$ (longer, $i < j$) via $c_{\text{short}} = S[r]$ and $c_{\text{long}} = S[i + r - j]$:
+     - **If $S[r] < S[i + r - j]$**: Then $S[j..r] \prec S[i..r]$ at offset $r - j + 1$. Candidate $i$ is permanently eliminated; skip $i$!
+     - **If $S[r] > S[i + r - j]$**: Then $S[i..r] \prec S[j..r]$. Candidate $j$ is permanently eliminated (`I_r.pop_back()`). Moreover, for any earlier survivor $j' > j$ still on $I_r$, its length is $\le r - j$, where $S[i..r]$ and $S[j..r]$ agreed completely! Thus $S[j'..r] \sqsubset S[j..r-1] \sqsubset S[i..r]$ already holds, so replacing $j$ by $i$ only requires checking the **doubling condition** against the new top $j' = I_r.\text{back}()$!
+     - **If $S[r] == S[i + r - j]$**: Now $S[j..r] \sqsubset S[i..r]$. Check the doubling ratio between $|u| = r - j + 1$ and $|v| = r - i + 1$:
+       - If $r - i + 1 < 2(r - j + 1)$, Theorem 6.2 eliminates the **middle** candidate $j$: pop $j$ (`I_r.pop_back()`) and push $i$!
+       - Otherwise ($r - i + 1 \ge 2(r - j + 1)$), keep $j$ and push $i$!
+
+Notice that this filter requires **zero string hashing and zero Z-array queries**—just a single character comparison $S[r]$ vs. $S[i + r - j]$ per candidate in $O(\log r)$ time! The Z-array $Z[1..N]$ of $S$ is then used in $O(1)$ per candidate to pick the winner for $T = S[1..r]$ (see Problem 6.2).
+
+### 3.2 Compilation B: The Segment Tree `pushup` 1-Survivor Theorem (`[ZJOI2017] 字符串`)
+
+Now suppose we build a Segment Tree over $S[1..N]$, where each node covering $[L, R]$ stores $\operatorname{Cand}([L, R]) = \operatorname{Cand}_{\min}(S[L..R])$ (or $\operatorname{Cand}_{\max}(S[L..R])$). When merging `left_child` $[L, M]$ and `right_child` $[M+1, R]$ ($M = \lfloor (L + R)/2 \rfloor$), how many candidates from `left_child` can possibly survive in $\operatorname{Cand}([L, R])$?
+
+::: {.callout-important}
+## Theorem 6.3 (The Segment Tree `pushup` 1-Survivor Theorem)
+
+Let $[L, R]$ be a Segment Tree interval split at midpoint $M = \lfloor (L + R)/2 \rfloor$ into $[L, M]$ and $[M+1, R]$.
+
+1. **Right-Child Restriction**: Any suffix of $S[L..R]$ starting at $i \in [M+1, R]$ is identically a suffix of $S[M+1..R]$; thus $\operatorname{Cand}([L, R]) \cap [M+1, R] \subseteq \operatorname{Cand}([M+1, R])$.
+2. **Left-Child Right-Extension**: Any suffix of $S[L..R]$ starting at $i \in [L, M]$ has the form $S[i..M] + S[M+1..R] + T$, which is the suffix $S[i..M]$ of `left_child` right-extended by $T' = S[M+1..R] + T$. Thus $\operatorname{Cand}([L, R]) \cap [L, M] \subseteq \operatorname{Cand}([L, M])$.
+3. **The 1-Survivor Collapse**: Inside the merged interval $[L, R]$, every suffix starting at $i \in [L, M]$ has length
+   $$\ell(i) = R - i + 1 \;\in\; \bigl[\,R - M + 1,\;\; R - L + 1\,\bigr].$$
+   Because $M = \lfloor (L + R)/2 \rfloor$ implies $R - L + 1 \le 2(R - M) + 1 < 2(R - M + 1)$, **every pair of distinct suffixes $i_1, i_2 \in [L, M]$ satisfies**:
+   $$\frac{\max(\ell(i_1), \ell(i_2))}{\min(\ell(i_1), \ell(i_2))} \;\le\; \frac{R - L + 1}{R - M + 1} \;<\; 2!$$
+   By Theorem 6.2(3), no two surviving candidates in $\operatorname{Cand}([L, R])$ can have length ratio $< 2$. Therefore, **at most ONE candidate $x^* \in \operatorname{Cand}([L, M])$ can survive into $\operatorname{Cand}([L, R])$**!
+:::
+
+#### Algorithmic Payoff of Theorem 6.3
+
+Theorem 6.3 makes Segment Tree maintenance of Significant Suffixes extraordinarily clean and fast:
+
+1. **Finding the Single Left-Child Tournament Winner $x^* \in \operatorname{Cand}([L, M])$**:
+   Initialize $x^*$ to the first candidate in $\operatorname{Cand}([L, M])$. For each subsequent candidate $x \in \operatorname{Cand}([L, M])$ (say with $x < x^*$, so $S[x..R]$ is longer than $S[x^*..R]$):
+
+   - Compare $S[x^*..R]$ (length $R - x^* + 1$) and $S[x..R]$ via an LCE query $\ell = \operatorname{LCP}(x^*, x)$.
+   - **If $\ell < R - x^* + 1$**: A character mismatch occurs at offset $\ell$ inside $[L, R]$! The winner of that mismatch ($S[x^* + \ell]$ vs. $S[x + \ell]$) permanently dominates the loser for all $T$; set $x^*$ to the winner.
+   - **If $\ell \ge R - x^* + 1$**: Then $S[x^*..R] \sqsubset S[x..R]$ with $|S[x..R]| < 2|S[x^*..R]|$! By Theorem 6.2, the shorter middle suffix $x^*$ is sandwiched between $x$ and $u' = x^* + (x^* - x) \in [M+1, R]$ for all $T$, so **the longer suffix $x$ always beats $x^*$** ($x^* \leftarrow x$)!
+2. **Merging $x^*$ with $\operatorname{Cand}([M+1, R])$**:
+   Start with $\operatorname{Cand}([L, R]) = \operatorname{Cand}([M+1, R])$. Compare the lone survivor $x^*$ against the longest candidate(s) at the back of $\operatorname{Cand}([M+1, R])$ via LCE up to $R$: if $x^*$ loses a character mismatch within $[L, R]$, discard $x^*$; if the back candidate $y \in \operatorname{Cand}([M+1, R])$ loses a character mismatch to $x^*$ or satisfies $S[y..R] \sqsubset S[x^*..R]$ with $R - x^* + 1 < 2(R - y + 1)$, pop $y$; finally push $x^*$.
+
+3. **$O(N)$ Total Build Time for Static Strings**:
+   With $O(1)$ SA-LCE, `pushup` at a node of length $L_{\text{node}} = R - L + 1$ performs at most $|\operatorname{Cand}([L, M])| + |\operatorname{Cand}([M+1, R])| = O(\log L_{\text{node}})$ LCE comparisons, summing across the Segment Tree to:
+   $$\sum_{h=1}^{\lceil \log_2 N \rceil} \frac{N}{2^h} \cdot O(h) \;=\; O(N) \text{ total build time!} $$
+
+### 3.3 Compilation C: Static Substring Minimum Suffix ($T = \varepsilon$) via Shortest Border of $\arg\min_{i \in [l, r]} \text{rk}[i]$
+
+What if $S[1..N]$ is static and a query $(l, r)$ asks only for the **lexicographically smallest suffix of $S[l..r]$** ($T = \varepsilon$, no right-extension)? Do we even need $\operatorname{Cand}_{\min}(S[l..r])$?
+
+::: {.callout-tip}
+## Theorem 6.4 (Static Substring Minimum Suffix via Shortest Border of `rk` Argmin)
+
+Let $i_0 = \arg\min_{i \in [l, r]} \text{rk}[i]$ be the index in $[l, r]$ with the minimum global Suffix Array rank, and let $W = S[i_0..r]$. Then the lexicographically smallest nonempty suffix of $S[l..r]$ is **the shortest nonempty border of $W = S[i_0..r]$** (or $W$ itself if $W$ is unbordered)!
+
+- **Proof**: Take any other suffix $S[j..r]$ ($j \in [l, r], j \ne i_0$). Because $\text{rk}[i_0] < \text{rk}[j]$, $S[i_0..N] < S[j..N]$ at their first global mismatch.
+  1. If $S[i_0..r]$ and $S[j..r]$ mismatch before or at index $r$ ($\operatorname{LCP}(i_0, j) < r - \max(i_0, j) + 1$), then $W = S[i_0..r] \prec S[j..r]$, so $j$ cannot be the minimum suffix of $S[l..r]$.
+  2. If they do *not* mismatch up to index $r$, then one of $W = S[i_0..r]$ and $S[j..r]$ is a proper prefix of the other. If $j < i_0$, $W \sqsubset S[j..r] \implies W < S[j..r]$, so $j$ loses to $W$. If $j > i_0$, then $S[j..r] \sqsubset W = S[i_0..r]$, which means **$S[j..r]$ is a nonempty proper border of $W$**! Moreover, since $j > i_0 \ge l$, **every** nonempty border of $W$ has starting index $j \in (i_0, r] \subseteq [l, r]$!
+  3. Because all borders of $W$ are prefixes of one another and shorter prefixes are smaller at $T = \varepsilon$, the global minimum suffix of $S[l..r]$ is the **shortest nonempty border of $W = S[i_0..r]$**! $\blacksquare$
+:::
+
+---
+
+## 4. Segment-Tree-Free Dyadic SA-RMQ Bands, Contracts & Counterexamples
+
+### 4.1 Segment-Tree-Free $O(\log N)$ Extraction of $\operatorname{Cand}_{\min}(S[l..r])$ via Dyadic SA-Rank RMQ Bands
+
+Suppose we want the full set $\operatorname{Cand}_{\min}(S[l..r])$ for $Q$ substring queries (e.g. for Substring Minimum Cyclic Shift `UOJ #429` where $T = S[l..r] \ne \varepsilon$), using **only $O(N)$ memory** (just the Suffix Array RMQ table, without storing $O(N \log N)$ vector entries in a Segment Tree!).
+
+Partition the possible suffix lengths $\ell \in [1, r - l + 1]$ into $K = \lfloor \log_2(r - l + 1) \rfloor + 1$ **dyadic length bands**:
+$$B_k = \bigl[\,2^k,\;\; \min(r - l + 1,\; 2^{k+1} - 1)\,\bigr] \quad (0 \le k < K),$$
+corresponding to starting-index intervals $I_k = \bigl[\,\max(l,\; r - 2^{k+1} + 2),\;\; r - 2^k + 1\,\bigr]$.
+
+1. By Theorem 6.2(3), $\operatorname{Cand}_{\min}(S[l..r])$ contains **at most one suffix in each band $I_k$**.
+2. In band $I_k$, query $i_k = \arg\min_{x \in I_k} \text{rk}[x]$ in $O(1)$ time via Sparse Table RMQ on `rk`.
+3. Could the true survivor $x^* \in \operatorname{Cand}_{\min}(S[l..r]) \cap I_k$ differ from $i_k$?
+   By the exact same logic as Theorem 6.4, any $x \in I_k$ that mismatches $S[i_k..r]$ within $[l, r]$ loses to $i_k$ via $S[i_k..r] \prec S[x..r]$ for all $T$. Thus $x^*$ can differ from $i_k$ **only if $x^* < i_k$ in $I_k$ and $S[i_k..r] \sqsubset S[x^*..r]$**!
+   In that case, both $u = S[i_k..r]$ and $v = S[x^*..r]$ lie in $B_k = [2^k, 2^{k+1})$, so $|u| < |v| < 2|u|$ and $u \sqsubset v$. By Theorem 6.2, $v = w^2 u'$ and $u = w u'$ share period $p = i_k - x^* < |u|$, and **only the longest periodic copy $x^*$ inside $I_k$ can survive**!
+   Notice that $v = w^2 u'$ has period $p \le |v|/2 < 2^k \le |u|$, so **$u = S[i_k..r]$ itself has shortest period $p \le |u|$**. Even simpler: in Theorem 6.3, a static Segment Tree over $[1..N]$ where we only store the **single left-child winner $x^*_{\text{left}}(v)$ at each internal node $v$** uses **exactly $2N$ integers of memory in total** (one integer per Segment Tree node!), and reconstructing $\operatorname{Cand}([L, R])$ or querying $[l, r]$ collects the $O(\log N)$ precomputed winners in $O(\log N)$ time and $O(N)$ space!
+
+### 4.2 Reference Algorithmic Contract: Significant Suffix `pushup` & Range Query
+
+```cpp
+// Compares suffixes starting at a and b (with a > b, so S[a..R] is shorter than S[b..R])
+// inside S[L..R] for Cand_min (or Cand_max by flipping the character comparison).
+// lce(x, y) returns LCP(S[x..N], S[y..N]).
+vector<int> merge_cand_min(const vector<int>& left_cand, const vector<int>& right_cand, int R) {
+    // Step 1: 1-Survivor tournament on left_cand (all have lengths in [R-M+1, R-L+1], ratio < 2)
+    int best_l = -1;
+    for (int x : left_cand) { // iterated from shortest (largest index) to longest (smallest index)
+        if (best_l == -1) { best_l = x; continue; }
+        int l = lce(best_l, x);
+        if (best_l + l <= R) {
+            if (S[x + l] < S[best_l + l]) best_l = x;
+        } else {
+            // S[best_l..R] is a proper prefix of S[x..R] with length ratio < 2 -> longer x wins!
+            best_l = x;
+        }
+    }
+    // Step 2: Append the single survivor best_l to right_cand
+    vector<int> res = right_cand;
+    if (best_l != -1) {
+        while (!res.empty()) {
+            int y = res.back(); // y > best_l (S[y..R] is shorter than S[best_l..R])
+            int l = lce(y, best_l);
+            if (y + l <= R) {
+                if (S[best_l + l] < S[y + l]) res.pop_back(); // best_l strictly beats y
+                else { best_l = -1; break; }                  // y strictly beats best_l
+            } else {
+                // S[y..R] is a proper prefix of S[best_l..R]
+                if (R - best_l + 1 < 2 * (R - y + 1)) res.pop_back(); // tandem annihilation of y
+                else break;                                           // both survive
+            }
+        }
+        if (best_l != -1) res.push_back(best_l);
+    }
+    return res;
+}
+```
+
+### 4.3 Broken-Invariant Counterexamples & Boundary Pitfalls (`BP-06` / `BP-06-01` & `BP-06-02`)
+
+::: {.callout-warning}
+## Two Critical Counterexamples in Significant Suffixes (`BP-06` / `BP-06-01` & `BP-06-02`)
+
+1. **Counterexample 1 (`BP-06` / `BP-06-01` / `BP-1B-04`: $S = \texttt{aaba}, [l, r] = [2, 4]$ — Why $\operatorname{Cand}_{\min}(S[l..r]) \not\subseteq \operatorname{Cand}_{\min}(S[1..r])$)**:
+   - A very tempting shortcut is to precompute $\operatorname{Cand}_{\min}(S[1..r])$ for each prefix $S[1..r]$ in $O(N \log N)$ time (Compilation A) and answer a substring query $[l, r]$ by simply keeping those $i \in \operatorname{Cand}_{\min}(S[1..r])$ that satisfy $i \ge l$. **This is FALSE!**
+   - Take $S = \texttt{aaba}$ ($N = 4$) and query $[l, r] = [2, 4]$, so $S[2..4] = \texttt{aba}$.
+   - In the full prefix $S[1..4] = \texttt{aaba}$, compare $i = 1$ ($\texttt{aaba}$) and $i = 2$ ($\texttt{aba}$): they mismatch at their 2nd character ($\texttt{aaba}[2] = \texttt{'a'} < \texttt{'b'} = \texttt{aba}[2]$), so $\texttt{aaba} \prec \texttt{aba}$! Thus $i = 1$ permanently kills $i = 2$ inside $S[1..4]$, leaving:
+     $$\operatorname{Cand}_{\min}(S[1..4]) = \{\texttt{a}(4),\; \texttt{aaba}(1)\}.$$
+
+   - Now truncate the left boundary to $l = 2$ ($S[2..4] = \texttt{aba}$). The killer suffix $i = 1$ ($\texttt{aaba}$) is now **out of bounds** ($1 < l = 2$), so $i = 2$ ($\texttt{aba}$) **revives**:
+     $$\operatorname{Cand}_{\min}(S[2..4]) = \{\texttt{a}(4),\; \texttt{aba}(2)\} \;\not\subseteq\; \operatorname{Cand}_{\min}(S[1..4])!$$
+     Indeed, for the right-extension $T = \texttt{c}$ (or for the cyclic shift of $S[2..4] = \texttt{aba}$), $i = 2$ gives $\texttt{abac} < \texttt{ac}$ (and cyclic shift $\texttt{aab} < \texttt{aba}$), which is missed if you filter $\operatorname{Cand}_{\min}(S[1..4]) \cap [2, 4] = \{4\}$!
+
+   - Even more starkly, on $S = \texttt{abbb}$ with $[l, r] = [2, 4]$, $\operatorname{Cand}_{\min}(S[1..4]) = \{1\}$ ($\texttt{abbb}$ kills $\texttt{b}, \texttt{bb}, \texttt{bbb}$), so $\operatorname{Cand}_{\min}(S[1..4]) \cap [2, 4] = \emptyset$!
+2. **Counterexample 2 (`BP-06-02` / `BP-1B-05`: The $+\infty$ Sentinel Trap for Substring Maximum Suffix at $T = \varepsilon$)**:
+   - In `[ZJOI2017] 字符串`, we maintain $\operatorname{Cand}_{\max}([L, R])$ (flipping character comparisons `<` to `>` in `merge_cand`) and at the end of a query $(l, r)$ we must pick the suffix $i \in [l, r]$ that maximizes $S[i..r]$ at $T = \varepsilon$.
+   - When comparing two surviving candidates $u \sqsubset v$ ($i_u > i_v$, so $u = S[i_u..r]$ is shorter than $v = S[i_v..r]$) at the query boundary $r$ ($T = \varepsilon$), remember that under standard lexicographical order, a longer string is **strictly larger** than its proper prefix:
+     $$u \sqsubset v \implies v > u!$$
+
+   - If you mistakenly imagine $T = +\infty$ at the end of $r$ to "maximize", then $u + (+\infty)$ puts $+\infty$ at offset $|u| + 1$ against $v[|u| + 1]$ and falsely claims $u > v$! At $T = \varepsilon$:
+     - For **Minimum Suffix** ($T = \varepsilon$), the **shorter** prefix $u$ wins ($u < v$).
+     - For **Maximum Suffix** ($T = \varepsilon$), the **longer** string $v$ wins ($v > u$)!
+:::
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Problem Ladder (`Ch 06`)
+
+Every problem below is self-contained and includes progressive hints (`Hint 1: Diagnostic Signal`, `Hint 2: Combinatorial Word Invariant`, `Hint 3: Algorithmic Assembly`) followed by a complete 4-Step derivation.
+
+---
+
+### Tier 1: Stepping Stone (2 Problems)
+
+#### Problem 6.1 (`W1B-08`) — Static Substring Minimum Suffix via $T = \varepsilon$ Shortest Border
+
+- **Mathematical Statement & Constraints**: Given a static string $S[1..N]$ ($1 \le N \le 2 \times 10^5$) and $Q \le 2 \times 10^5$ queries $(l, r)$, find for each query the 1-based starting index $i \in [l, r]$ of the **lexicographically smallest nonempty suffix** of the substring $S[l..r]$. Time limit $1.5\text{ s}$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+Does the index $i_0 = \arg\min_{i \in [l, r]} \text{rk}[i]$ (the suffix with the smallest global rank in $S[1..N]$) always minimize $S[i..r]$? What if another index $j \in (i_0, r]$ satisfies $S[j..r] \sqsubset S[i_0..r]$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+By **Theorem 6.4**, every index $j \in [l, r]$ that does not match a prefix of $W = S[i_0..r]$ up to $r$ loses to $W$ at a character mismatch inside $[l, r]$. Any $j > i_0$ that matches a prefix of $W$ up to $r$ is a **proper border** of $W = S[i_0..r]$ (and automatically lies in $(i_0, r] \subseteq [l, r]$!). Because shorter prefixes are smaller at $T = \varepsilon$, the optimal suffix is simply the **shortest nonempty border of $W = S[i_0..r]$**!
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+How can we find the shortest nonempty border of $W = S[i_0..r]$ (or Equivalently, the smallest suffix of $S[l..r]$) in $O(\log(r - l + 1))$ time? Either use the $O(N)$-built Significant Suffix Segment Tree (where at $T = \varepsilon$ the **shortest** candidate $u_1$ in $\operatorname{Cand}_{\min}(S[l..r])$ is automatically the answer!), or scan the dyadic bands $B_k = [2^k, 2^{k+1})$ from $k = 0$ upwards for the smallest $k$ whose band argmin $i_k = \arg\min_{x \in I_k} \text{rk}[x]$ satisfies $S[i_k..r] \sqsubset S[i_0..r]$!
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`Static Substring Minimum Suffix`)
+
+1. **Diagnostic Signal**: At $T = \varepsilon$, any proper prefix $u \sqsubset v$ beats $v$ ($u < v$). Global $\text{rk}[i]$ instead compares $S[i..r] + S[r+1..N]$, which can favor $v$ over $u$ if $S[r+1..N]$ starts with small characters.
+2. **Combinatorial Word Invariant**: Let $i_0 = \arg\min_{i \in [l, r]} \text{rk}[i]$ and $W = S[i_0..r]$. By Theorem 6.4, the minimum suffix of $S[l..r]$ is the shortest nonempty border of $W$. Moreover, look at $\operatorname{Cand}_{\min}(W)$: its candidates form a nested border chain $u_1 \sqsubset u_2 \sqsubset \cdots \sqsubset u_k = W$, where $u_1$ is literally the shortest nonempty border of $W$! Why? Could $W$ have a strictly shorter border $u_0 \sqsubset u_1$? If $u_0 \sqsubset u_1$, then at $T = \varepsilon$, $u_0$ is strictly smaller than every suffix of $W$, so $u_0$ **must** belong to $\operatorname{Cand}_{\min}(W)$, contradicting that $u_1$ is the shortest element of $\operatorname{Cand}_{\min}(W)$!
+3. **Algorithmic Compilation (Two $O(\log N)$ Methods)**:
+   - **Method A ($O(N)$-Built Significant Suffix Segment Tree)**: Build the Significant Suffix Segment Tree in $O(N)$ time via `merge_cand_min` (Section 4.2). To answer query $[l, r]$ at $T = \varepsilon$:
+     - Or directly find $i_0 = \arg\min_{x \in [l, r]} \text{rk}[x]$ in $O(1)$ time via SA-RMQ, reducing $[l, r]$ to the suffix $[i_0, r]$ where $W = S[i_0..r]$ is the longest candidate.
+     - Collect the $O(\log N)$ canonical Segment Tree nodes covering $[i_0, r]$. Since $T = \varepsilon$ at the right boundary $r$, merging from right to left (or keeping only the shortest suffix `st[0]` of $\operatorname{Cand}_{\min}(S[i_0..r])$) returns the exact shortest nonempty border $u_1$ of $W = S[i_0..r]$ in $O(\log(r - l + 1))$ time.
+   - **Method B (Unbordered Dyadic Band Property)**: Because the shortest nonempty border $u_1$ of $W = S[i_0..r]$ is necessarily **unbordered (border-free)**, no second border $v$ of $W$ can lie in the same dyadic length band $B_k = [2^k, 2^{k+1})$ as $u_1$ (otherwise $|u_1| < |v| < 2|u_1|$ and $u_1 \sqsubset v$ would force $u_1 = w u'$ by Theorem 6.2(1), giving $u_1$ a shorter nonempty border $u'$). Thus $u_1$ is the unique border of $W$ inside its dyadic band $B_k$.
+
+4. **Boundary Pitfalls**: Note why at $T = \varepsilon$ we do not even need to inspect all $O(\log N)$ candidates stored in a Segment Tree node $[L_t, R_t]$: inside $[l, r]$, the right-extension of node $[L_t, R_t]$ is $T_t = S[R_t + 1 .. r]$, which is fixed for the query, so scanning the $\le \log_2(R_t - L_t + 1) + 1$ candidates of each of the $O(\log N)$ nodes takes $O(\log^2 N)$ time (or $O(\log N)$ time with fractional cascading / 1-survivor tournament).
+:::
+
+---
+
+#### Problem 6.2 (`W1B-03`) — Online All-Prefix Minimum Cyclic Shift (`[JSOI2019] 节日庆典` / Luogu P5287 / LOJ 3051)
+
+- **Mathematical Statement & Constraints**: Given a string $S[1..N]$ ($1 \le N \le 3 \times 10^6$) over lowercase letters, for every prefix $S[1..r]$ ($1 \le r \le N$), find the 1-based starting index $i \in [1, r]$ of the lexicographically smallest cyclic shift $S[i..r] + S[1..i-1]$ of $S[1..r]$. If multiple $i$ produce the exact same minimum cyclic shift, output the **smallest** index $i$. Time limit $1.0\text{ s}$, memory $256\text{ MB}$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+With $N = 3 \times 10^6$ and a $1.0\text{ s}$ time limit, Suffix Arrays are too slow and memory-heavy. Why is minimizing the length-$r$ cyclic shift $S[i..r] + S[1..i-1]$ equivalent to minimizing $S[i..r] + T$ for the fixed right-extension $T = S[1..r]$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+For any two indices $i < j$ in $[1, r]$, $S[i..r] + S[1..i-1]$ is a prefix of $S[i..r] + S[1..r]$ of length $r$, and $S[j..r] + S[1..j-1]$ is a prefix of $S[j..r] + S[1..r]$ of length $r$. Thus the optimal $i \in [1, r]$ (breaking ties by smallest $i$, i.e., longest suffix $S[i..r]$) **must belong to $\operatorname{Cand}_{\min}(S[1..r])$**!
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+Maintain $\operatorname{Cand}_{\min}(S[1..r])$ online via Compilation A (Section 3.1) in $\le 22$ integers without any hashing. To compare two surviving candidates $j > i$ (so $u = S[j..r] \sqsubset v = S[i..r]$) under their cyclic shifts of length $r$:
+
+- Their first $|u| = r - j + 1$ characters already match!
+- Next, compare $S[1 .. j - i]$ (the start of $u$'s wrap-around $S[1..j-1]$) against $S[i + |u| .. r]$ (the remainder of $v$) using a single lookup in the precomputed Z-array $Z[i + r - j + 1]$!
+- If that also matches (length $j - i$), compare $S[j - i + 1 .. j - 1]$ against $S[1 .. i - 1]$ using a second lookup $Z[j - i + 1]$!
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`[JSOI2019] 节日庆典`)
+
+1. **Diagnostic Signal**: At each prefix $r$, we need the winner among all cyclic shifts $C_r(i) = S[i..r] + S[1..i-1]$ ($1 \le i \le r$).
+2. **Combinatorial Word Invariant**: By Theorem 6.2, if $u, v \in \text{Suf}(S[1..r])$ satisfy $|u| < |v| < 2|u|$ and $u \sqsubset v$, then $u = w u'$ and $v = w^2 u'$. Appending $T = S[1..r]$ and truncating to length $r$ (or comparing $C_r(i_u)$ vs. $C_r(i_v)$ and $C_r(i_{u'})$): if $C_r(i_{u'}) \ne C_r(i_u)$, then $C_r(i_u)$ lies strictly between $C_r(i_{u'})$ and $C_r(i_v)$; if $C_r(i_{u'}) = C_r(i_u)$, then $C_r(i_u) = C_r(i_v)$ is a tie, and since the problem asks for the **smallest starting index**, the longer suffix $v$ ($i_v < i_u$) beats $u$! Thus $u$ is **always** eliminated!
+3. **Algorithmic Compilation (Two-Lookup Z-Array Tournament)**:
+   Precompute $Z[1..N]$ of $S[1..N]$ in $O(N)$ time (where $Z[x] = \operatorname{LCP}(S[1..N], S[x..N])$). At step $r$:
+
+   - Update $I_r$ from $\{r\} \cup I_{r-1}$ via Compilation A (Section 3.1).
+   - Maintain the current best index `best = I_r[0]`. For each subsequent $i \in I_r$ (since $I_r$ is ordered by increasing length, $i < \text{best}$, so $u = S[\text{best}..r] \sqsubset v = S[i..r]$):
+     ```
+     C_r(best): [--- u (len r-best+1) ---][--- S[1 .. best-i] ---][-- S[best-i+1 .. best-1] --]
+     C_r(i)   : [--- u (len r-best+1) ---][-- S[i+r-best+1 .. r] -][------ S[1 .. i-1] -------]
+                |<--- Seg 1 (matches!) -->|<-- Seg 2 (len best-i) ->|<-- Seg 3 (len i-1) ----->|
+     ```
+
+     - **Seg 1 (length $r - \text{best} + 1$)**: Identical because $S[\text{best}..r] \sqsubset S[i..r]$.
+     - **Seg 2 (length $\text{best} - i$)**: Compare $S[1 .. \text{best} - i]$ vs. $S[i + r - \text{best} + 1 .. r]$. Their LCP is $\ell_2 = \min(\text{best} - i,\; Z[i + r - \text{best} + 1])$. If $\ell_2 < \text{best} - i$, compare $S[1 + \ell_2]$ vs. $S[i + r - \text{best} + 1 + \ell_2]$ and update `best` to the winner!
+     - **Seg 3 (length $i - 1$)**: Compare $S[\text{best} - i + 1 .. \text{best} - 1]$ vs. $S[1 .. i - 1]$. Their LCP is $\ell_3 = \min(i - 1,\; Z[\text{best} - i + 1])$. If $\ell_3 < i - 1$, compare $S[\text{best} - i + 1 + \ell_3]$ vs. $S[1 + \ell_3]$ and update `best` to the winner; on a full tie ($\ell_3 == i - 1$), $i < \text{best}$ wins (`best = i`)!
+   Total time: $O(N \log N)$ with tiny constant factor ($\le 22$ iterations per $r$), $O(N)$ space.
+
+4. **Boundary Pitfalls**: Notice how clean Seg 2 and Seg 3 are: both compare a substring of $S$ against a **prefix $S[1..]$ of $S$**, which is why the standard Z-array $Z[1..N]$ of $S$ suffices with zero Suffix Arrays or RMQ tables!
+:::
+
+---
+
+### Tier 2: Intermediate (2 Problems)
+
+#### Problem 6.3 (`W1B-20`) — Static Substring Maximum Suffix & Minimum Suffix via Dyadic SA-RMQ
+
+- **Mathematical Statement & Constraints**: Given a static string $S[1..N]$ ($1 \le N \le 5 \times 10^5$) and $Q \le 5 \times 10^5$ queries $(l, r)$, output for each query: (1) the starting index $i_{\max} \in [l, r]$ of the lexicographically **largest** nonempty suffix of $S[l..r]$ in **$O(1)$ time per query**, and (2) the starting index $i_{\min} \in [l, r]$ of the lexicographically **smallest** nonempty suffix of $S[l..r]$ in $O(\log(r - l + 1))$ time per query, using $O(N \log N)$ preprocessing and $O(N)$ (or $O(N \log N)$ RMQ) space.
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+How does the **Maximum Suffix** $i_{\max}$ of $S[l..r]$ ($T = \varepsilon$) behave when we examine $i_0 = \arg\max_{i \in [l, r]} \text{rk}_S[i]$ vs. $\operatorname{Cand}_{\max}(S[l..r])$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+Let $i_{\max} = \arg\max_{i \in [l, r]} \text{rk}[i]$ be the index in $[l, r]$ with the **largest** global Suffix Array rank, and let $W = S[i_{\max}..r]$.
+
+- If another suffix $S[j..r]$ ($j \in [l, r]$) mismatches $W$ within $[l, r]$, then $W \succ S[j..r]$ because $\text{rk}[i_{\max}] > \text{rk}[j]$.
+- If $S[j..r]$ does *not* mismatch $W$ within $[l, r]$ and $j > i_{\max}$, then $S[j..r] \sqsubset W$, so $W > S[j..r]$ still holds.
+- The only case where $j$ beats $i_{\max}$ inside $S[l..r]$ is when $j < i_{\max}$ and $W \sqsubset S[j..r]$ (which happens when $S[r+1..N] > S[j+|W|..N]$). In that case, $S[j..r]$ is the **longest** candidate in $\operatorname{Cand}_{\max}(S[l..r])$.
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+Using the $O(N)$-built Significant Suffix Segment Tree for $\operatorname{Cand}_{\min}$ and $\operatorname{Cand}_{\max}$, collect the $O(\log N)$ canonical nodes covering $[l, r]$. At right boundary $r$ ($T = \varepsilon$), only the 1-survivor tournament winner of each node can win: the shortest border wins for Minimum Suffix (`st_min[0]`) and the longest extension wins for Maximum Suffix (`st_max.back()`).
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`Substring Max Suffix vs Min Suffix`)
+
+1. **Diagnostic Signal**: At $T = \varepsilon$, Minimum Suffix prefers shorter prefixes ($u \sqsubset v \implies u < v$), whereas Maximum Suffix prefers longer strings ($u \sqsubset v \implies v > u$).
+2. **Combinatorial Word Invariant**:
+   - **Why $\arg\max_{i \in [l, r]} \text{rk}_S[i]$ Works in $O(1)$ for Maximum Suffix of $S[l..r]$**:
+     Let $i^* = \arg\max_{i \in [l, r]} \text{rk}_S[i]$ in the **standard Suffix Array of $S$**!
+     Take any other index $j \in [l, r]$ ($j \ne i^*$). Since $\text{rk}_S[i^*] > \text{rk}_S[j]$, we know $S[i^*..N] > S[j..N]$ in standard lexicographical order.
+
+     - **Case 1 ($\operatorname{LCP}(i^*, j) < \min(r - i^* + 1,\; r - j + 1)$)**: The first mismatch between $S[i^*..N]$ and $S[j..N]$ occurs **inside $[l, r]$**! Since $S[i^*..N] > S[j..N]$ at that mismatch, $S[i^*..r] \succ S[j..r]$ inside $S[l..r]$ too!
+     - **Case 2 ($j > i^*$ and $S[j..r] \sqsubset S[i^*..r]$)**: Here $S[j..r]$ is a proper prefix of $S[i^*..r]$. Because a longer string is strictly larger than its proper prefix at $T = \varepsilon$, **$S[i^*..r] > S[j..r]$ still holds**!
+     - **Case 3 ($j < i^*$ and $S[i^*..r] \sqsubset S[j..r]$)**: Can Case 3 happen? If $j < i^*$ and $S[i^*..r] \sqsubset S[j..r]$, then inside $S[l..r]$, the longer suffix $S[j..r]$ is strictly larger than $S[i^*..r]$! When can $\text{rk}_S[i^*] > \text{rk}_S[j]$ despite $S[i^*..r] \sqsubset S[j..r]$? Whenever the tail after $r$ satisfies $S[r + 1 .. N] > S[j + (r - i^* + 1) .. N]$!
+     In that case, $S[i^*..r]$ is a border of $S[j..r]$, and we want the **longest** suffix $j \in [l, r]$ that has $S[i^*..r]$ as a prefix and achieves the maximum in $S[l..r]$. By Theorem 6.2, the winner $j$ for Maximum Suffix belongs to $\operatorname{Cand}_{\max}(S[l..r])$—specifically, it is the **longest** candidate in $\operatorname{Cand}_{\max}(S[l..r])$!
+
+3. **Algorithmic Compilation**:
+   - Build the $O(N)$-time Significant Suffix Segment Tree (Theorem 6.3) storing $\operatorname{Cand}_{\min}([L, R])$ and $\operatorname{Cand}_{\max}([L, R])$ (or storing only the 1-survivor integer per node in $O(N)$ space).
+   - For query $(l, r)$, collect the $O(\log N)$ canonical nodes covering $[l, r]$. Since $T = \varepsilon$ at the right boundary $r$, we don't even need to build $\operatorname{Cand}_{\min}(S[l..r])$ for $i_{\min}$ from all candidates: going from right to left across the $O(\log N)$ nodes, only the **1-survivor tournament winner** of each node $[L_t, R_t]$ (evaluated at right boundary $r$) can win, finding both $i_{\min}$ and $i_{\max}$ in $O(\log(r - l + 1))$ time!
+4. **Boundary Pitfalls**: This derivation exposes a famous folkloric bug: $\arg\max_{i \in [l, r]} \text{rk}_S[i]$ is **not** always the maximum suffix of $S[l..r]$! Counterexample: take $S = \texttt{abaz}$ and $[l, r] = [1, 3]$ ($S[1..3] = \texttt{aba}$). The suffixes of $S$ starting in $[1, 3]$ are $i = 1$ ($\texttt{abaz}$), $i = 2$ ($\texttt{baz}$), $i = 3$ ($\texttt{az}$). What if $S = \texttt{aaz}$ and $[l, r] = [1, 2]$ ($S[1..2] = \texttt{aa}$)? Then $S[1..3] = \texttt{aaz} < \texttt{az} = S[2..3]$, so $\arg\max_{i \in [1, 2]} \text{rk}_S[i] = 2$ ($S[2..2] = \texttt{a}$), whereas the true maximum suffix of $S[1..2] = \texttt{aa}$ is $i = 1$ ($S[1..2] = \texttt{aa} > \texttt{a}$)! Theorem 6.3's $\operatorname{Cand}_{\max}$ handles this cleanly.
+:::
+
+---
+
+#### Problem 6.4 (`W1B-24`) — Substring Minimum Suffix with Appended Query Pattern $T = S[a..b]$
+
+- **Mathematical Statement & Constraints**: Given a string $S[1..N]$ ($1 \le N \le 2 \times 10^5$) and $Q \le 2 \times 10^5$ queries $(l, r, a, b)$, find for each query the starting index $i \in [l, r]$ that lexicographically minimizes the concatenated string $S[i..r] + S[a..b]$ (breaking ties by smallest $i$). Time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+Here the right-extension $T = S[a..b]$ changes on every query! Why does $\operatorname{Cand}_{\min}(S[l..r])$ depend **only on $(l, r)$** and not at all on $(a, b)$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+By **Theorem 6.2**, $\operatorname{Cand}_{\min}(S[l..r])$ is the universal set of $\le \lfloor \log_2(r - l + 1) \rfloor + 1$ candidate suffixes of $S[l..r]$ that can win for *any* right-extension $T \in \Sigma^*$! Once we extract $\operatorname{Cand}_{\min}(S[l..r])$, how many $O(1)$ LCE queries does it take to compare two candidates $i_1, i_2 \in \operatorname{Cand}_{\min}(S[l..r])$ under $+ S[a..b]$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+Using the $O(N)$-built Significant Suffix Segment Tree, decompose $[l, r]$ into $O(\log N)$ canonical nodes. We don't even need to merge their candidate sets first: for each canonical node $[L_t, R_t]$, at most **one** candidate from $[L_t, R_t]$ can survive up to $r$ (by the 1-Survivor argument applied to $[L_t, R_t]$ extended to $r$, or at most $O(\log N)$ candidates across the whole query $[l, r]$)! Comparing two candidates $i < j$ under $S[i..r] + S[a..b]$ vs. $S[j..r] + S[a..b]$ takes at most **two $O(1)$ LCE queries**!
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`Substring Minimum Suffix + Pattern`)
+
+1. **Diagnostic Signal**: Because $T = S[a..b]$ is arbitrary, any suffix in $\operatorname{Cand}_{\min}(S[l..r])$ can win.
+2. **Combinatorial Word Invariant**: Extract $\operatorname{Cand}_{\min}(S[l..r])$ of size $k \le \lfloor \log_2(r - l + 1) \rfloor + 1$ in $O(\log(r - l + 1))$ time (by merging the $O(\log N)$ canonical Segment Tree nodes from right to left using `merge_cand_min` with right endpoint $r$, or via Dyadic SA-RMQ bands).
+3. **Algorithmic Compilation (2-Step LCE Comparison Under $+ S[a..b]$)**:
+   For two surviving candidates $u = S[j..r]$ and $v = S[i..r]$ in $\operatorname{Cand}_{\min}(S[l..r])$ with $i < j$ (so $u \sqsubset v$ and $|v| \ge 2|u|$):
+   ```
+   u + T : [--- u (len r-j+1) ---][-------- T = S[a .. b] --------]
+   v + T : [--- u (len r-j+1) ---][-- S[i+r-j+1 .. r] --][--- T ---]
+           |<-- Seg 1 (matches) ->|<------- Seg 2 ------>|<-- Seg 3 ->
+   ```
+
+   - **Seg 1 (length $r - j + 1$)**: Matches identically because $u \sqsubset v$.
+   - **Seg 2 (length $L_2 = \min(b - a + 1,\; j - i)$)**: Compare $S[a .. a + L_2 - 1]$ vs. $S[i + r - j + 1 .. i + r - j + L_2]$ in $O(1)$ via $\ell_2 = \operatorname{LCP}(a, i + r - j + 1)$. If $\ell_2 < L_2$, return the character comparison at offset $\ell_2$.
+   - **Seg 3**:
+     - If $b - a + 1 \le j - i$ ($T$ finished inside $v$): $u + T$ has ended (length $r - j + 1 + b - a + 1 \le r - i + 1 < |v + T|$), so $u + T \sqsubset v + T \implies u + T < v + T$ ($j$ wins!).
+     - If $b - a + 1 > j - i$ ($v$ finished inside $T$, remaining length $L_3 = (b - a + 1) - (j - i)$): compare $S[a + j - i .. b]$ vs. $S[a .. a + L_3 - 1]$ in $O(1)$ via $\ell_3 = \operatorname{LCP}(a + j - i, a)$. If $\ell_3 < L_3$, return the character comparison at offset $\ell_3$; otherwise $u + T \sqsubset v + T$ ($j$ wins!).
+   Total time per query: $O(\log(r - l + 1))$.
+
+4. **Boundary Pitfalls**: Note the distinction between finite concatenation $S[i..r] + S[a..b]$ (where $|u + T| < |v + T|$ makes $u + T$ win when $u + T \sqsubset v + T$) and cyclic shift queries (where both shifts are truncated to the same length $r - l + 1$, making $i < j$ win on a tie!).
+:::
+
+---
+
+### Tier 3: Advanced (2 Problems)
+
+#### Problem 6.5 (`W1B-22`) — Dynamic Range-Shift Substring Maximum Suffix (`[ZJOI2017] 字符串` / LOJ 2257 / UOJ 296 / Luogu P3642)
+
+- **Mathematical Statement & Constraints**: Given an integer array (string) $S[1..N]$ ($1 \le N, Q \le 2 \times 10^5$, $|S[i]| \le 10^8$), support two operations online:
+  1. `1 l r d`: Add integer $d$ to $S[k]$ for all $k \in [l, r]$.
+  2. `2 l r`: Find the 1-based starting index $i \in [l, r]$ of the **lexicographically largest nonempty suffix** of $S[l..r]$.
+  Time limit $4.0\text{ s}$, memory $512\text{ MB}$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+Range additions `S[l..r] += d` change relative character comparisons across the boundary $l - 1 \mid l$ and $r \mid r + 1$. Why does `S[l..r] += d` leave the Significant Suffix set $\operatorname{Cand}_{\max}([L, R])$ of any Segment Tree node $[L, R] \subseteq [l, r]$ **100% invariant**?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+Inside a fully covered Segment Tree node $[L, R] \subseteq [l, r]$, adding $+d$ to every character shifts both $S[x + \ell]$ and $S[y + \ell]$ by the exact same $+d$, preserving all equalities ($==$) and strict inequalities ($<, >$) inside $[L, R]$! Thus lazy propagation on the Segment Tree requires **zero work** on $\operatorname{Cand}_{\max}([L, R])$, and only the $O(\log N)$ ancestor nodes intersecting $\{l, r\}$ need to re-run `pushup` (Theorem 6.3)!
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+To run `pushup` and queries dynamically, we need $\operatorname{LCP}(x, y)$ under range additions. If we use a Segment Tree for hashes, binary searching $\operatorname{LCP}$ takes $O(\log^2 N)$ time, making `pushup` $O(\log^3 N)$ and updates $O(\log^4 N)$ (too slow!). Instead, maintain a **$\sqrt{N}$-block decomposition** for character values and prefix polynomial hashes:
+
+- Range addition `1 l r d` updates $O(\sqrt{N})$ blocks in $O(\sqrt{N})$ time.
+- Any point lookup $S[x]$ or range hash query $\operatorname{Hash}(x, y)$ takes **$O(1)$ time**!
+- Binary searching $\operatorname{LCP}(x, y)$ then takes $O(\log N)$ time, so `pushup` takes $O(\log^2 N)$ time and each query/update takes $O(\sqrt{N} + \log^3 N)$ time!
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`[ZJOI2017] 字符串`)
+
+1. **Diagnostic Signal**: Dynamic range updates invalidate Suffix Arrays; naive Segment Tree hash queries add an extra $O(\log N)$ factor inside binary-search LCE.
+2. **Combinatorial Word Invariant**:
+   - By **Theorem 6.2 & Theorem 6.3**, each Segment Tree node $[L, R]$ stores $\operatorname{Cand}_{\max}([L, R])$ of size $\le \lfloor \log_2(R - L + 1) \rfloor + 1$, and `pushup` merges `left_child` and `right_child` using at most $|\operatorname{Cand}([L, M])| + |\operatorname{Cand}([M+1, R])|$ LCE calls.
+   - Because uniform shift $S[k] \leftarrow S[k] + d$ for all $k \in [L, R]$ is an order-isomorphism of the alphabet on $[L, R]$, $\operatorname{Cand}_{\max}([L, R])$ is invariant on fully covered Segment Tree nodes!
+3. **Algorithmic Compilation ($\sqrt{N}$-Block Hash + 1-Survivor Segment Tree)**:
+   - **Block Hash Engine ($B \approx \sqrt{N} \approx 450$)**: Partition $[1..N]$ into $\lceil N/B \rceil$ blocks. Maintain:
+     - `val[i]` + `blk_add[b]` for $O(1)$ point character access $S[i]$.
+     - Prefix hashes inside each block + block-boundary prefix hashes + precomputed geometric series $\sum_{t=0}^{L-1} P^t$ so that adding $+d$ to a full block updates block hashes in $O(N/B)$ time, partial block updates rebuild in $O(B)$ time, and **any substring hash $\operatorname{Hash}(l, r)$ is evaluated in $O(1)$ time**!
+   - **LCE Function (`O(log N)`)**: Binary search the match length $\ell \in [0, R - \max(x, y) + 1]$ using $O(1)$ $\operatorname{Hash}$ queries.
+   - **Update (`1 l r d`)**: Update the $\sqrt{N}$-block structure in $O(\sqrt{N})$ time, then traverse the Segment Tree for $[l, r]$: do **nothing** at fully covered nodes, and call `merge_cand_max` (`pushup`) at the $O(\log N)$ partially covered ancestor nodes in $O(\log^3 N)$ total time.
+   - **Query (`2 l r`)**: Collect the $O(\log N)$ canonical nodes covering $[l, r]$. Maintain a single current best index `best` initialized to the winner of the leftmost node, and scan every candidate $x$ across the canonical nodes: compare $S[\text{best}..r]$ and $S[x..r]$ via $\ell = \operatorname{LCP}(\text{best}, x)$ up to $r$:
+     - If $\max(\text{best}, x) + \ell \le r$, the larger character at offset $\ell$ wins.
+     - Otherwise one is a proper prefix of the other at $T = \varepsilon$: for **Maximum Suffix**, the **longer** suffix ($\min(\text{best}, x)$) wins!
+4. **Boundary Pitfalls**: Remember Counterexample 2 in Section 4.3: inside `merge_cand_max` (where future right-extensions $T$ are unknown), when $S[y..R] \sqsubset S[x..R]$ with $|S[x..R]| < 2|S[y..R]|$, the shorter middle suffix $y$ is eliminated and the longer suffix $x$ is kept; at the final query evaluation ($T = \varepsilon$), when $S[y..r] \sqsubset S[x..r]$ (even if $|S[x..r]| \ge 2|S[y..r]|$), the longer suffix $x$ ($x < y$) strictly beats $y$ because $S[x..r] > S[y..r]$!
+:::
+
+---
+
+#### Problem 6.6 (`W1B-25`) — Substring Minimum Cyclic Shift Queries in $O(\log N)$ Time (`UOJ #429` / Jin Ce 2019)
+
+- **Mathematical Statement & Constraints**: Given a static string $S[1..N]$ ($1 \le N \le 2 \times 10^5$) and $Q \le 2 \times 10^5$ queries $(l, r)$, find for each query the starting index $i \in [l, r]$ that minimizes the cyclic shift $S[i..r] + S[l..i-1]$ of the substring $S[l..r]$ (breaking ties by smallest $i$). Time limit $1.5\text{ s}$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+This problem combines Problem 6.2 (`[JSOI2019] 节日庆典`, where $l = 1$ was fixed) with substring queries $[l, r]$. Why can we not just filter $\operatorname{Cand}_{\min}(S[1..r]) \cap [l, r]$? (Recall Counterexample 1: $S = \texttt{aaba}, [l, r] = [2, 4]$!)
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+For a fixed query $[l, r]$, minimizing $S[i..r] + S[l..i-1]$ of length $r - l + 1$ is equivalent to minimizing $S[i..r] + T$ for the right-extension $T = S[l..r]$. By **Theorem 6.2 & Theorem 6.3**, the optimal $i \in [l, r]$ belongs to $\operatorname{Cand}_{\min}(S[l..r])$. Even better: if we decompose $[l, r]$ into $O(\log N)$ canonical Segment Tree nodes $[L_1, R_1], \dots, [L_m, R_m]$, how many candidates from node $[L_t, R_t]$ can survive when extended to $r$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+For any canonical Segment Tree node $[L_t, R_t]$ ($t < m$), all suffixes starting in $[L_t, R_t]$ have lengths in $[r - R_t + 1,\; r - L_t + 1]$ at right boundary $r$. Since $R_t - L_t + 1 \le r - R_t + 1$ is *not* always true (a left node can be wider than the remaining suffix to its right), run the right-to-left `merge_cand_min` across the $O(\log N)$ canonical nodes covering $[l, r]$ (or partition $[l, r]$ into $O(\log N)$ dyadic bands $I_k = [\max(l, r - 2^{k+1} + 2), r - 2^k + 1]$ where each band has length ratio $< 2$ at boundary $r$)! This yields $\operatorname{Cand}_{\min}(S[l..r])$ of size $\le \lfloor \log_2(r-l+1) \rfloor + 1$, on which the 2-step LCE cyclic-shift tournament from Problem 6.2 finds the optimum.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`Substring Minimum Cyclic Shift`)
+
+1. **Diagnostic Signal**: Left-truncation at $l$ revives suffixes killed by indices $< l$ (`S = aaba`). We must extract candidates specifically for $[l, r]$.
+2. **Combinatorial Word Invariant**: Prebuild the $O(N)$-time Significant Suffix Segment Tree over $S[1..N]$ (Section 3.2). For a query $[l, r]$, we can extract a small superset of $\operatorname{Cand}_{\min}(S[l..r])$ in two ways:
+   - **Way 1 ($O(\log^2 N)$ Node Merge)**: Merge the $\operatorname{Cand}_{\min}([L_t, R_t])$ vectors of the $O(\log N)$ canonical Segment Tree nodes from right to left at right boundary $r$ using `merge_cand_min`. This leaves at most $\lfloor \log_2(r - l + 1) \rfloor + 1$ candidates in $\operatorname{Cand}_{\min}(S[l..r])$.
+   - **Way 2 ($O(\log N)$ Dyadic Band Merge)**: Partition $[l, r]$ into $K = \lfloor \log_2(r - l + 1) \rfloor + 1$ dyadic bands $I_k = [\max(l, r - 2^{k+1} + 2),\; r - 2^k + 1]$. In each band $I_k$, every suffix has length in $[2^k, 2^{k+1})$ at right boundary $r$ (length ratio $< 2$!). Therefore, **each dyadic band $I_k$ has at most ONE survivor at right boundary $r$**, and if we decompose $I_k$ into $O(1)$ aligned power-of-2 blocks (exactly like a Sparse Table lookup on precomputed power-of-2 intervals $[x, x + 2^k - 1]$!), we get $O(1)$ candidates per band and **$O(\log(r - l + 1))$ total query time**!
+3. **Algorithmic Compilation**:
+   Once we have $\operatorname{Cand}_{\min}(S[l..r])$ (ordered by increasing length, i.e., decreasing starting index $i$), maintain `best = Cand[0]` and for each $i \in \text{Cand}$ ($i < \text{best}$), compare $S[\text{best}..r] + S[l..\text{best}-1]$ vs. $S[i..r] + S[l..i-1]$ in $O(1)$ via two SA-LCE queries:
+
+   - Seg 1 (length $r - \text{best} + 1$): Matches because $S[\text{best}..r] \sqsubset S[i..r]$.
+   - Seg 2 (length $\text{best} - i$): Compare $S[l .. l + \text{best} - i - 1]$ vs. $S[i + r - \text{best} + 1 .. r]$ via $\operatorname{LCP}(l, i + r - \text{best} + 1)$.
+   - Seg 3 (length $i - l$): Compare $S[l + \text{best} - i .. \text{best} - 1]$ vs. $S[l .. i - 1]$ via $\operatorname{LCP}(l + \text{best} - i, l)$; on a tie, $i < \text{best}$ wins!
+4. **Boundary Pitfalls**: Note the **Power-of-2 Sparse Table Trick** in Way 2 above: because a Segment Tree node of length $2^k$ has $\le k + 1$ candidates, whereas at right boundary $r$ any interval $I \subseteq [r - 2^{k+1} + 2,\; r - 2^k + 1]$ has all lengths in $[2^k, 2^{k+1})$ (ratio $< 2$), **any sub-interval inside band $B_k$ has at most 1 survivor at boundary $r$**!
+:::
+
+---
+
+### Tier 4: Mastery (2 Problems)
+
+#### Problem 6.7 (`W1B-37`) — Tree-Path Significant Suffixes & Minimum Suffix Queries via HLD (`Codeforces 1608G` / Universal Cup Variant)
+
+- **Mathematical Statement & Constraints**: Given a tree $T$ of $N \le 10^5$ vertices where each vertex $u$ holds a character $c_u \in \Sigma$, and $Q \le 10^5$ directed path queries $(u, v)$, let $P(u, v)$ be the string of length $L = \operatorname{dist}(u, v) + 1$ formed by concatenating the characters on the simple path from $u$ to $v$. For each query, find the $i$-th vertex on the path from $u$ to $v$ ($1 \le i \le L$) that minimizes the path suffix $P(u, v)[i..L]$ (and optionally the path cyclic shift $P(u, v)[i..L] + P(u, v)[1..i-1]$). Time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+Heavy-Light Decomposition (HLD) splits any directed simple path $u \to v$ into $O(\log N)$ contiguous intervals on the linearized HLD array $A[1..N]$ (moving down heavy chains) and its reversal $A^R[1..N]$ (moving up heavy chains). How can we compare two path suffixes and maintain Significant Suffixes across $O(\log N)$ HLD segments?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+Concatenate $H = A + A^R$ of length $2N$ and build its Suffix Array + $O(1)$ LCP RMQ in $O(N)$ time, as well as the $O(N)$-built Significant Suffix Segment Tree over $H[1..2N]$. Any directed tree path $u \to v$ decomposes into $m = O(\log N)$ contiguous substrings of $H$:
+$$P(u, v) = H[l_1..r_1] + H[l_2..r_2] + \cdots + H[l_m..r_m].$$
+And each HLD interval $[l_t, r_t]$ decomposes into $O(\log N)$ canonical Segment Tree nodes, giving $O(\log^2 N)$ canonical segments $J_1, J_2, \dots, J_s$ in total!
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+In each of the $m = O(\log N)$ HLD intervals $[l_t, r_t]$, any suffix starting in $[l_t, r_t]$ is right-extended by $T_t = H[l_{t+1}..r_{t+1}] + \cdots + H[l_m..r_m]$. Therefore, the optimal suffix starting inside $[l_t, r_t]$ **must belong to $\operatorname{Cand}_{\min}(H[l_t..r_t])$**! Folding from $t = m$ back to $t = 1$ maintains the $\le \lfloor \log_2 L \rfloor + 1$ global path Significant Suffixes using $O(\log^2 N)$ Path-LCE comparisons.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`Tree-Path Significant Suffixes`)
+
+1. **Diagnostic Signal**: A tree has $\Theta(N^2)$ directed paths, so we cannot build suffix structures per path; HLD reduces every path $u \to v$ to $m \le 2 \lceil \log_2 N \rceil$ contiguous intervals on $H = A + A^R$.
+2. **Combinatorial Word Invariant**:
+   - Let $P(u, v) = H[l_1..r_1] + H[l_2..r_2] + \cdots + H[l_m..r_m]$.
+   - For any segment $t \in \{1, \dots, m\}$, a path suffix starting at index $x \in [l_t, r_t]$ equals $H[x..r_t] + T_t$, where $T_t = H[l_{t+1}..r_{t+1}] + \cdots + H[l_m..r_m]$ is independent of $x \in [l_t, r_t]$!
+   - By **Theorem 6.2**, the best starting position inside $[l_t, r_t]$ is guaranteed to lie in $\operatorname{Cand}_{\min}(H[l_t..r_t])$!
+   - Even better: partition the entire path length $L = |P(u, v)|$ into $\le \lfloor \log_2 L \rfloor + 1$ **global dyadic length bands** $B_k = [2^k, 2^{k+1})$ (measured by distance to the path endpoint $v$). A band $B_k$ overlaps one or more HLD intervals $[l_t, r_t]$. Within each intersection $I_{k, t} = B_k \cap [l_t, r_t]$, all path suffixes have total length in $[2^k, 2^{k+1})$ (ratio $< 2$!) and also have local length in $[l_t, r_t]$ with ratio $< 2$!
+   - Or directly: inside each HLD interval $[l_t, r_t]$, extract $\operatorname{Cand}_{\min}(H[l_t..r_t])$ of size $\le \log_2(r_t - l_t + 1) + 1$ (or fold the canonical Segment Tree nodes of $[l_t, r_t]$ from right to left!).
+3. **Algorithmic Compilation**:
+   - **Path LCE in $O(\log N)$ (or $O(1)$ with Tree Hash Binary Lifting)**: Given two path offsets $p_1, p_2 \in [1, L]$, advance through the $m = O(\log N)$ HLD intervals using $O(1)$ SA-LCE on $H$ at each aligned segment boundary until a mismatch is found (or if we also store tree-depth polynomial hashes with binary lifting, find the mismatch depth in $O(\log N)$ and compare characters in $O(1)$!).
+   - **Tournament Across Path Candidates**: Folding from the last segment $t = m$ back to $t = 1$, maintain the $\le \lfloor \log_2(\text{len}) \rfloor + 1$ global path Significant Suffixes $\operatorname{Cand}_{\min}(P(u, v)[L_t..L])$. When prepending segment $[l_t, r_t]$, only the $\le \log_2(r_t - l_t + 1) + 1$ candidates of $\operatorname{Cand}_{\min}(H[l_t..r_t])$ need to be merged into the running $\le \log_2 L + 1$ path candidates! Thus the total number of Path-LCE comparisons is $O(\log^2 N)$, giving $O(\log^3 N)$ (or $O(\log^2 N)$) time per query!
+4. **Boundary Pitfalls**: When climbing from $u$ up to $\operatorname{LCA}(u, v)$, the HLD interval on $A[\text{dfn}[top] .. \text{dfn}[x]]$ is traversed **bottom-up** (decreasing `dfn`), which maps to the contiguous forward interval $[2N + 1 - \text{dfn}[x],\; 2N + 1 - \text{dfn}[top]]$ in the second half $A^R$ of $H = A + A^R$.
+:::
+
+---
+
+#### Problem 6.8 (`W1B-41`) — Dynamic Range Character Shift + Substring Minimum Suffix & Minimum Cyclic Shift Maintenance
+
+- **Mathematical Statement & Constraints**: Given an integer string $S[1..N]$ ($1 \le N, Q \le 10^5$), support three operations online:
+  1. `1 l r d`: Add integer $d$ to $S[k]$ for all $k \in [l, r]$.
+  2. `2 l r`: Output the starting index $i \in [l, r]$ of the **lexicographically smallest nonempty suffix** of $S[l..r]$.
+  3. `3 l r`: Output the starting index $i \in [l, r]$ of the **lexicographically smallest cyclic shift** $S[i..r] + S[l..i-1]$ of $S[l..r]$ (tie-breaking by smallest $i$).
+  Time limit $4.0\text{ s}$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+In `[ZJOI2017] 字符串` (Problem 6.5), we only needed the Maximum Suffix at $T = \varepsilon$, so at query time we could just pick the winner at $r$ across all candidates of the $O(\log N)$ canonical Segment Tree nodes. Why does Operation `3 l r` (Minimum Cyclic Shift, where $T = S[l..r] \ne \varepsilon$) require merging the $O(\log N)$ canonical nodes into the exact set $\operatorname{Cand}_{\min}(S[l..r])$ first?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+For a canonical node $[L_t, R_t]$ inside $[l, r]$, its candidates in $\operatorname{Cand}_{\min}([L_t, R_t])$ are followed by $S[R_t + 1 .. r]$ before reaching $r$, and then by $T = S[l..r]$! If we merge the $O(\log N)$ canonical nodes covering $[l, r]$ from right to left at right boundary $r$, notice that at each step we merge a left interval $[L_t, R_t]$ with the already-merged right suffix $[R_t + 1, r]$: how many candidates from $[L_t, R_t]$ can survive in $\operatorname{Cand}_{\min}([L_t, r])$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+Since $R_t - L_t + 1 \le r - R_t + 1$ is not guaranteed when merging arbitrary canonical nodes from right to left, run the standard stack filter (Compilation A / `merge_cand_min` Step 2) pushing each $x \in \operatorname{Cand}_{\min}([L_t, R_t])$ (from largest index to smallest index, i.e., shortest to longest at boundary $r$) onto the running candidate stack for $[l, r]$. Because every comparison either pops a candidate from the running stack or discards $x$, the total number of LCE comparisons across all $O(\log N)$ canonical nodes is **at most $2 \sum_{t} |\operatorname{Cand}_{\min}([L_t, R_t])| = O(\log^2 N)$**!
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`Dynamic Range Shift + Min Suffix & Cyclic Shift`)
+
+1. **Diagnostic Signal**: Unifies `[ZJOI2017] 字符串` (dynamic range additions + Segment Tree of Significant Suffixes) with `UOJ #429` (substring minimum cyclic shift via $T = S[l..r]$).
+2. **Combinatorial Word Invariant**:
+   - Maintain the Segment Tree of $\operatorname{Cand}_{\min}([L, R])$ and the $\sqrt{N}$-block rolling hash from Problem 6.5.
+   - To construct $\operatorname{Cand}_{\min}(S[l..r])$ for any query $[l, r]$ from the $m = O(\log N)$ canonical Segment Tree nodes $[L_1, R_1], \dots, [L_m, R_m]$ covering $[l, r]$:
+     Every candidate in $\operatorname{Cand}_{\min}(S[l..r])$ must belong to $\bigcup_{t=1}^m \operatorname{Cand}_{\min}([L_t, R_t])$, which has total size $S_{\text{tot}} \le \sum_{t=1}^m (\lfloor \log_2(R_t - L_t + 1) \rfloor + 1) = O(\log^2 N)$.
+
+   - **Amortized Stack Merge in $O(\log^2 N)$ LCE Calls**:
+     List all $S_{\text{tot}} = O(\log^2 N)$ candidates from $\bigcup_{t=1}^m \operatorname{Cand}_{\min}([L_t, R_t])$ in **decreasing order of starting index $x$** (which is **increasing order of suffix length $r - x + 1$** at right boundary $r$!).
+     Maintain a stack `st` of surviving candidates for $S[l..r]$: for each incoming candidate $x$ (longer than `st.back()`):
+
+     - While `st` is nonempty, let $y = \text{st.back()}$ ($y > x$, so $|S[y..r]| < |S[x..r]|$), and compute $\ell = \operatorname{LCP}(y, x)$ up to $r$:
+       1. If $y + \ell \le r$ and $S[x + \ell] > S[y + \ell]$: $y \prec x$ at boundary $r$, so $x$ is permanently eliminated (`x = -1; break`).
+       2. If $y + \ell \le r$ and $S[x + \ell] < S[y + \ell]$: $x \prec y$ at boundary $r$, so $y$ is permanently eliminated (`st.pop_back()`).
+       3. If $y + \ell > r$ ($S[y..r] \sqsubset S[x..r]$): if $r - x + 1 < 2(r - y + 1)$, Theorem 6.2 eliminates the middle candidate $y$ (`st.pop_back()`); otherwise ($r - x + 1 \ge 2(r - y + 1)$), both survive (`break`)!
+     - If $x \ne -1$, push $x$ onto `st`.
+     Because each LCE comparison either discards $x$, pops $y$ from `st`, or terminates the `while` loop for $x$, this stack filter performs **at most $2 S_{\text{tot}} = O(\log^2 N)$ LCE calls** and outputs the exact set $\text{st} = \operatorname{Cand}_{\min}(S[l..r])$ of size $\le \lfloor \log_2(r - l + 1) \rfloor + 1$!
+
+3. **Algorithmic Compilation**:
+   - Once $\text{st} = \operatorname{Cand}_{\min}(S[l..r])$ is built:
+     - For **Operation `2 l r` (Minimum Suffix, $T = \varepsilon$)**: Since `st` is a nested border chain $u_1 \sqsubset u_2 \sqsubset \cdots \sqsubset u_k$, the **very first (shortest) element `st[0]` is immediately the answer** in $O(1)$ additional time!
+     - For **Operation `3 l r` (Minimum Cyclic Shift, $T = S[l..r]$)**: Run the 2-step LCE tournament from Problem 6.6 across the $\le \log_2(r-l+1) + 1$ elements of `st` in $O(\log^2 N)$ time!
+4. **Boundary Pitfalls**: Look at how elegant Operation `2 l r` becomes once the stack `st` $=\operatorname{Cand}_{\min}(S[l..r])$ is built: because every surviving candidate on `st` is a proper prefix of the next ($u_1 \sqsubset u_2 \sqsubset \cdots \sqsubset u_k$), at $T = \varepsilon$ we always have $u_1 < u_2 < \cdots < u_k$, so `st[0]` is unconditionally the minimum suffix of $S[l..r]$!
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Decision Checklist: Which Significant Suffix Compilation Applies?
+
+- [ ] **Are you querying the minimum cyclic shift (or minimum suffix $+ T$) for *every prefix* $S[1..r]$ ($N \le 3 \times 10^6$)?**
+  $\to$ Use **Compilation A (Online Prefix Stack + Z-Array)** in $O(N \log N)$ time and $O(N)$ space (`[JSOI2019] 节日庆典`, Section 3.1 & Problem 6.2).
+
+- [ ] **Are you querying the minimum/maximum suffix or cyclic shift of a *substring* $S[l..r]$ on a static string?**
+  $\to$ Prebuild the **$O(N)$-Time Significant Suffix Segment Tree** via **Theorem 6.3 (`pushup` 1-Survivor Theorem)** or use **Dyadic SA-Rank RMQ Bands** (Section 3.2, Section 4.1, Problem 6.1, Problem 6.6).
+
+- [ ] **Is the string modified by *dynamic range additions* `S[l..r] += d` (`[ZJOI2017] 字符串`)?**
+  $\to$ Combine the **Significant Suffix Segment Tree** (where $\operatorname{Cand}([L, R])$ is 100% invariant on fully covered nodes!) with a **$\sqrt{N}$-Block Decomposition Rolling Hash** ($O(\sqrt{N})$ update, $O(1)$ hash query, $O(\log N)$ binary-search LCE; Section 3.2, Problem 6.5, Problem 6.8).
+
+- [ ] **Are queries asked on *directed tree paths* $u \to v$?**
+  $\to$ Linearize via **HLD** into $H = A + A^R$ and merge Significant Suffixes across the $O(\log N)$ path intervals (Problem 6.7).
+
+### 6.2 Summary of Core Invariants (`Ch 06`)
+
+| Theorem / Principle | Exact Mathematical Statement | Algorithmic Consequence |
+| :--- | :--- | :--- |
+| **Tandem-Annihilation & Doubling (`Theorem 6.2`)** | $u, v \in \text{Suf}(U),\; |u| < |v| < 2|u|,\; u \sqsubset v \implies u = w u',\; v = w^2 u'$ and $\forall T \in \Sigma^*,\; \min(u'T, vT) < uT < \max(u'T, vT)$. | Eliminates $u$ from both $\operatorname{Cand}_{\min}(U)$ and $\operatorname{Cand}_{\max}(U)$; surviving lengths double ($|\operatorname{Cand}(U)| \le \lfloor \log_2 |U| \rfloor + 1$). |
+| **Segment Tree `pushup` 1-Survivor (`Theorem 6.3`)** | In $[L, R] = [L, M] \sqcup [M+1, R]$, all suffixes starting in $[L, M]$ have lengths in $[R-M+1, R-L+1]$ with ratio $< 2$. | At most **one** candidate from `left_child` survives in $\operatorname{Cand}([L, R])$; static Segment Tree builds in $\sum \frac{N}{2^h} O(h) = O(N)$ time. |
+| **Static $T = \varepsilon$ Shortest Border (`Theorem 6.4`)** | For $i_0 = \arg\min_{i \in [l, r]} \text{rk}[i]$, the minimum suffix of $S[l..r]$ is the shortest nonempty border of $W = S[i_0..r]$ (= `Cand_min(S[l..r])[0]`). | Reduces static $T = \varepsilon$ minimum suffix to `st[0]` of $\operatorname{Cand}_{\min}(S[l..r])$. |
+| **Left-Truncation Non-Inclusion (`S = aaba`)** | $\operatorname{Cand}_{\min}(S[2..4]) = \{\texttt{a}(4), \texttt{aba}(2)\} \not\subseteq \operatorname{Cand}_{\min}(S[1..4]) = \{\texttt{a}(4), \texttt{aaba}(1)\}$. | Forbids filtering $\operatorname{Cand}_{\min}(S[1..r]) \cap [l, r]$; requires Segment Tree or Dyadic Band extraction on $[l, r]$. |

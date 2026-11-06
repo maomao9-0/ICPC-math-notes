@@ -44,6 +44,14 @@ BOOKS = {
         "entry": "flows/index.html",
         "dirs": ["flows"],
     },
+    "strings": {
+        "zip_name": "icpc-strings-offline.zip",
+        "folder_name": "icpc-strings-offline",
+        "title": "Textbook IV · Advanced Strings & Word Combinatorics (Ch 01–30)",
+        "short_title": "Advanced Strings & Word Combinatorics",
+        "entry": "strings/index.html",
+        "dirs": ["strings"],
+    },
     "math": {
         "zip_name": "icpc-math-offline.zip",
         "folder_name": "icpc-math-offline",
@@ -55,10 +63,10 @@ BOOKS = {
     "all": {
         "zip_name": "icpc-all-books-offline.zip",
         "folder_name": "icpc-all-books-offline",
-        "title": "ICPC Math Notes · All Three Textbooks Combined (FPS, Network Flows & CP Mathematics)",
-        "short_title": "All Three Textbooks",
+        "title": "ICPC Math Notes · All Four Textbooks Combined (FPS, Network Flows, Advanced Strings & CP Mathematics)",
+        "short_title": "All Four Textbooks",
         "entry": "index.html",
-        "dirs": ["fps", "flows", "math"],
+        "dirs": ["fps", "flows", "strings", "math"],
     },
 }
 
@@ -331,8 +339,8 @@ def build_bundle(
                 f"{folder}/index.html",
                 make_root_redirect_html(spec["title"], spec["entry"]).encode("utf-8"),
             )
-            # Also add friendly stubs for the other two books so navbar links never 404
-            for other_key in ("fps", "flows", "math"):
+            # Also add friendly stubs for the other books so navbar links never 404
+            for other_key in ("fps", "flows", "strings", "math"):
                 if other_key not in included_dirs:
                     other_title = BOOKS[other_key]["title"]
                     stub_html = make_other_book_stub_html(
@@ -382,7 +390,7 @@ def main() -> None:
     if not SITE_DIR.is_dir():
         return
 
-    # Only build bundles if all three book directories exist in _site
+    # Only build bundles if the core book directories exist in _site
     if not all((SITE_DIR / d).is_dir() for d in ("fps", "flows", "math")):
         return
 
@@ -400,6 +408,8 @@ def main() -> None:
             all_search_docs = []
 
     for key, spec in BOOKS.items():
+        if key != "all" and not all((SITE_DIR / d).is_dir() for d in spec["dirs"]):
+            continue
         zip_path = build_bundle(key, spec, common_files, all_search_docs)
         size_mb = zip_path.stat().st_size / (1024 * 1024)
         print(f"[offline-bundles] Built {zip_path.relative_to(ROOT_DIR)} ({size_mb:.2f} MB)")

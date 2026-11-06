@@ -1,0 +1,617 @@
+---
+title: "The Weak Periodicity Lemma, O(log N) Border Arithmetic Progressions, and Shortcut Link Duality (slink vs. anc)"
+subtitle: "Chapter 02 · Part I: Structural Periodicity, Border Algebra & Series-Link (slink) DP"
+---
+
+::: {.callout-important title="Prerequisites, Assumed Library & Learning Objectives"}
+
+- **Assumed Library Primitives**: $O(N)$ KMP prefix function ($\pi[1..N]$), $O(N)$ Z-function ($Z[1..N]$), and baseline single-ended Palindromic Tree (`PAM` / `Eertree` with `len[u]` and `fail[u]`). See [Notation & Conventions](../notation.qmd) for 1-based closed indexing $S[1..N]$.
+- **Strict Prerequisite Chapters**: [Chapter 01 (Period–Border Duality & Fine–Wilf Theorem)](ch01-fine-wilf-periodicity-orbits.qmd).
+- **Assigned Technique IDs**: `T-1A-02` (Weak Periodicity Lemma, $O(\log N)$ Half-Open Border AP Decomposition, and `slink` vs. `anc` Shortcut Link Duality).
+- **Learning Objectives**:
+  1. Prove the **Half-Length Single-AP Theorem**: all borders of $S[1..u]$ of length $\ge \lceil u/2 \rceil$ have period $p \le \lfloor u/2 \rfloor$ divisible by $\operatorname{per}(S[1..u]) = u - \pi[u]$, forming a single arithmetic progression with step $d = \operatorname{diff}[u] = u - \pi[u]$.
+  2. Prove both the **Dyadic Scale Bound** and the **Sharp $\frac{2}{3}$ and $\frac{1}{2}$ Length-Drop Inequalities** ($\pi[u] < \frac{2}{3}u$ and $\pi[\pi[u]] < \frac{1}{2}u$ whenever $\operatorname{diff}[\pi[u]] < \operatorname{diff}[u]$), bounding the number of `slink` jumps from any prefix $u$ by $\le \lceil \log_2 u \rceil$.
+  3. Prove the **Next-Character Equality & Coarsening Theorem** ($\operatorname{diff}[u] = \operatorname{diff}[\pi[u]] \implies S[\pi[\pi[u]] + 1] = S[\pi[u] + 1]$), unifying the period-difference link $\operatorname{slink}[u]$ (`CF 1721E`, `CF 1764G`) with the next-character mismatch link $\operatorname{anc}[u]$ (`CF 1286E`).
+  4. Enforce the **Half-Open Interval Partition Invariant $(\operatorname{slink}[u], u]$** (`BP-1A-03`) to avoid double-counting chain boundaries in counting and sum DPs.
+:::
+
+---
+
+## 1. Diagnostic Signal: Why Walking Raw $\pi$-Chains Takes $\Theta(N)$ Per Step
+
+### 1.1 Three Contest Scenarios Where Standard KMP Degrades to $\Theta(N^2)$
+
+In basic string matching, the KMP algorithm processes an entire string $S[1..N]$ in $O(N)$ amortized time because the failure pointer $u \leftarrow \pi[u]$ decreases $u$ by at least $1$ while each character append increases $u$ by at most $1$. That amortization **breaks completely** in three common competitive programming settings:
+
+1. **Enumerating All Borders of Every Prefix**: Suppose a DP or counting problem requires inspecting all proper borders $b \in \operatorname{Border}(S[1..u]) = \{\pi[u], \pi[\pi[u]], \dots, 0\}$ at every right endpoint $u = 1 \dots N$. On $S = \texttt{a}^N$, $\pi[u] = u - 1$, so $|\operatorname{Border}(S[1..u])| = u$ and walking the $\pi$-chain takes $\sum_{u=1}^N u = \Theta(N^2)$ time.
+2. **Online Short-Append Queries (`CF 1721E — Prefix Function Queries`)**: Suppose a base string $S[1..N]$ ($N \le 10^6$) is fixed, and $Q \le 10^5$ independent queries each temporarily append a short string $T_q$ ($|T_q| \le 10$), asking for $\pi[N + 1 .. N + |T_q|]$. Because each query resets $S$ back to length $N$, a single query on $S = \texttt{a}^N$ with $T_q = \texttt{b}$ walks $\pi[N] = N - 1 \to N - 2 \to \dots \to 0$ in $\Theta(N)$ time, giving $\Theta(Q N)$ total time! (And building a full $N \times |\Sigma|$ KMP automaton table uses $26 \times 4\text{ MB} = 104\text{ MB}$ or fails entirely over large alphabets.)
+3. **Online Weighted Border Maintenance (`CF 1286E — Fedya the Potter Strikes Back`)**: Suppose characters $S[i]$ and weights $W[i]$ arrive online, and we maintain a weight map over all active borders $b \in \operatorname{Border}(S[1..i])$. At step $i$, any border $u$ of $S[1..i-1]$ with $S[u + 1] = S[i]$ **survives** (extending to $u + 1$), while any border with $S[u + 1] \ne S[i]$ **dies permanently**. If we walk the raw $\pi$-chain from $\pi[i - 1]$ down to $0$, we can visit $\Theta(i)$ *surviving* borders at every step (e.g., on $S = \texttt{a}^N$), again degrading to $\Theta(N^2)$!
+
+Every one of these $\Theta(N)$ failure chains is long **only because its borders form long arithmetic progressions**. Once we compress each arithmetic progression into a single $O(1)$ jump via $\operatorname{slink}[u]$ or $\operatorname{anc}[u]$, the worst-case chain depth collapses from $\Theta(N)$ to $\le \lceil \log_2 N \rceil$.
+
+---
+
+## 2. Core Combinatorial Word Invariants: Half-Length APs & The $\frac{2}{3} / \frac{1}{2}$ Length Drop (`T-1A-02`)
+
+### 2.1 The Weak Periodicity Lemma & The Half-Length Single-AP Theorem
+
+Recall from [Chapter 01 (Theorem 1.2)](ch01-fine-wilf-periodicity-orbits.qmd) that if $p, q \in \operatorname{Per}(S[1..u])$ and $u \ge p + q - \gcd(p, q)$, then $\gcd(p, q) \in \operatorname{Per}(S[1..u])$. Even the slightly weaker bound $u \ge p + q$ (known as the **Weak Periodicity Lemma**) is sufficient whenever both periods are at most $u / 2$:
+$$p \le \frac{u}{2} \;\land\; q \le \frac{u}{2} \implies p + q \le u \implies \gcd(p, q) \in \operatorname{Per}(S[1..u]).$$
+
+What does this say about all borders of $S[1..u]$ whose lengths lie in the upper half $[\lceil u/2 \rceil, u - 1]$? By Period–Border Duality ([Theorem 1.1](ch01-fine-wilf-periodicity-orbits.qmd)), a border $b \in \operatorname{Border}(S[1..u])$ satisfies $b \ge \lceil u/2 \rceil$ if and only if its complementary period $p = u - b \in \operatorname{Per}(S[1..u])$ satisfies $p \le \lfloor u/2 \rfloor$.
+
+::: {.callout-important title="Theorem 2.1 (Half-Length Single-AP Theorem)"}
+Let $S[1..u]$ be a word of length $u \ge 1$ with shortest period $p_{\min} = \operatorname{per}(S[1..u]) = u - \pi[u]$.
+
+1. **Divisibility of Short Periods**: If $p_{\min} \le \lfloor u/2 \rfloor$, then **every** period $p \in \operatorname{Per}(S[1..u])$ with $p \le \lfloor u/2 \rfloor$ is an **exact integer multiple** of $p_{\min}$ ($p_{\min} \mid p$).
+2. **Single Arithmetic Progression of Long Borders**: Equivalently, all proper borders of $S[1..u]$ of length $\ge \lceil u/2 \rceil$ form a **single arithmetic progression** with common difference $d = p_{\min} = u - \pi[u]$:
+   $$\boxed{\operatorname{Border}(S[1..u]) \cap \bigl[\lceil u/2 \rceil,\, u - 1\bigr] = \bigl\{\,u - k \cdot p_{\min} \;\big|\; 1 \le k \le \lfloor u / (2 p_{\min}) \rfloor\,\bigr\}.}$$
+:::
+
+#### Proof of Theorem 2.1
+Suppose $p \in \operatorname{Per}(S[1..u])$ satisfies $p \le \lfloor u/2 \rfloor$. Since $p_{\min} = \min \operatorname{Per}(S[1..u]) \le p \le \lfloor u/2 \rfloor$, the sum of the two periods satisfies:
+$$p_{\min} + p \le \lfloor u/2 \rfloor + \lfloor u/2 \rfloor \le u.$$
+By the Weak Periodicity Lemma ([Theorem 1.2](ch01-fine-wilf-periodicity-orbits.qmd)), $g = \gcd(p_{\min}, p)$ is also a valid period in $\operatorname{Per}(S[1..u])$. Because $p_{\min}$ is the *minimum* positive period of $S[1..u]$ and $1 \le g \le p_{\min}$, we must have $g = p_{\min}$, which means $p_{\min} \mid p$. Conversely, any integer multiple $k \cdot p_{\min} < u$ ($k \ge 1$) is automatically a period of $S[1..u]$ because $S[i] = S[i + p_{\min}] = \dots = S[i + k \cdot p_{\min}]$ for all $1 \le i \le u - k \cdot p_{\min}$. Translating via $b = u - p$ yields the arithmetic progression $b_k = u - k \cdot p_{\min}$. $\blacksquare$
+
+---
+
+### 2.2 Defining `diff[u]` and `slink[u]` on KMP and PAM Fail Trees
+
+Theorem 2.1 motivates compressing every chain of consecutive borders (or palindromic suffixes) that share the same period step into a single pointer jump. Let $\operatorname{fail}[u]$ denote the parent of node $u$ in the failure tree:
+
+- **In KMP**: Node $u \in \{1, \dots, N\}$ represents prefix $S[1..u]$ of length $\operatorname{len}[u] = u$, and $\operatorname{fail}[u] = \pi[u]$.
+- **In PAM (Eertree)**: Node $u$ represents a distinct palindromic substring of length $\operatorname{len}[u]$, and $\operatorname{fail}[u]$ is its longest proper palindromic suffix.
+
+Why does PAM obey the exact same border algebra as KMP? Because for any palindrome $Q = Q[1..m]$, its reversal is $Q^R = Q$, so any proper suffix $Q[m - b + 1 .. m]$ of length $b < m$ is a palindrome **if and only if** it equals the prefix $Q[1..b]$!
+
+::: {.callout-note title="Lemma 2.2 (Palindromic Suffix ↔ Border Equivalence)"}
+For any palindrome $Q$ of length $m$, a proper suffix of $Q$ of length $b \in [0, m - 1]$ is a palindrome if and only if $b \in \operatorname{Border}(Q)$. Consequently, the PAM failure chain $u \to \operatorname{fail}[u] \to \operatorname{fail}[\operatorname{fail}[u]] \to \dots \to 0$ enumerates the exact border lengths of the palindrome $u$.
+:::
+
+For every node $u$ with $\operatorname{len}[u] \ge 1$ in either KMP or PAM, define its **local period step** $\operatorname{diff}[u]$ and **series link (`等差数列跳链`)** $\operatorname{slink}[u]$ by:
+$$\boxed{\operatorname{diff}[u] = \operatorname{len}[u] - \operatorname{len}[\operatorname{fail}[u]], \qquad \operatorname{slink}[u] = \begin{cases} \operatorname{slink}[\operatorname{fail}[u]] & \text{if } \operatorname{diff}[u] = \operatorname{diff}[\operatorname{fail}[u]], \\ \operatorname{fail}[u] & \text{if } \operatorname{diff}[u] \ne \operatorname{diff}[\operatorname{fail}[u]]. \end{cases}}$$
+
+```
+fail-chain:   u ----(-d)----> fail[u] ----(-d)----> ... ----(-d)----> v_c ----(-d)----> slink[u] = fail[v_c]
+diff values:  d                  d                                     d                   d' > d (or 0)
+              |<---------------------- Half-open AP chain (slink[u], u] ------------------>|
+```
+
+---
+
+### 2.3 Two Proofs of the $O(\log N)$ Depth Bound: Dyadic Scales & The Exact $\frac{2}{3} / \frac{1}{2}$ Drop
+
+How many `slink` jumps can occur along the path from $u$ down to $0$? We give two complementary proofs: a macro-scale dyadic argument and a sharp micro-scale inequality at every `diff` change.
+
+::: {.callout-important title="Theorem 2.3 (Exact $\frac{2}{3}$ and $\frac{1}{2}$ Length-Drop Inequalities & Half-Open AP Partition)"}
+Let $u$ be a state in the KMP or PAM fail tree with $v = \operatorname{fail}[u]$ and $w = \operatorname{fail}[v]$, and let $d_1 = \operatorname{diff}[u] = \operatorname{len}[u] - \operatorname{len}[v]$ and $d_2 = \operatorname{diff}[v] = \operatorname{len}[v] - \operatorname{len}[w]$.
+
+1. **Monotonicity of Period Steps ($d_2 \le d_1$)**: Because $v$ is a prefix of $u$, the minimum period $d_1 = \operatorname{per}(u)$ of $u$ is also a valid period of $v$. Therefore $d_2 = \operatorname{per}(v) \le d_1$.
+2. **Sharp $\frac{2}{3}$ and $\frac{1}{2}$ Length Drop When $d_2 < d_1$**: Whenever a series-link boundary occurs between $u$ and $v$ (i.e., $d_2 < d_1$, so $\operatorname{slink}[u] = v$), the overlap between the prefix copy of $v$ and suffix copy of $v$ inside $u$ has length $2\operatorname{len}[v] - \operatorname{len}[u] = \operatorname{len}[v] - d_1$, which **must** satisfy $\operatorname{len}[v] - d_1 < d_2$. Consequently:
+   $$\boxed{\operatorname{len}[v] < d_1 + d_2 < 2 d_1 \implies \operatorname{len}[\operatorname{fail}[u]] < \frac{2}{3}\operatorname{len}[u], \qquad \operatorname{len}[\operatorname{fail}[\operatorname{fail}[u]]] = \operatorname{len}[v] - d_2 < d_1 < \frac{1}{2}\operatorname{len}[u]!}$$
+   In particular, **every jump $u \leftarrow \operatorname{slink}[u]$ strictly shrinks $\operatorname{len}[u]$ by at least $\frac{1}{2}$**: if the chain $(\operatorname{slink}[u], u]$ has $\ge 2$ edges ($u \to v \to \dots \to \operatorname{slink}[u]$), then $\operatorname{len}[\operatorname{slink}[u]] \le \operatorname{len}[\operatorname{fail}[\operatorname{fail}[u]]] < \frac{1}{2}\operatorname{len}[u]$; and even on consecutive single-edge jumps, two jumps reduce the length to $< \frac{1}{2}\operatorname{len}[u]$.
+
+3. **Exact Disjoint Half-Open Partition $(\operatorname{slink}[u], u]$**: Let $v_c$ be the lowest ancestor of $u$ with $\operatorname{diff}[v_c] = \operatorname{diff}[u] = d$, so $\operatorname{slink}[u] = \operatorname{fail}[v_c]$. Because $\operatorname{len}[v_c] - \operatorname{len}[\operatorname{slink}[u]] = \operatorname{diff}[v_c] = d$, the half-open interval of ancestors $(\operatorname{slink}[u], u]$ has lengths forming the exact arithmetic progression:
+   $$\boxed{\mathcal{L}(u) = \bigl\{\,\operatorname{len}[\operatorname{slink}[u]] + d,\; \operatorname{len}[\operatorname{slink}[u]] + 2d,\; \dots,\; \operatorname{len}[u]\,\bigr\}.}$$
+   Iterating $u \leftarrow \operatorname{slink}[u]$ while $\operatorname{len}[u] > 0$ partitions all positive borders/palindromic suffixes into $\le \lceil \log_2 \operatorname{len}[u] \rceil$ disjoint half-open arithmetic progressions.
+:::
+
+```
+                     |<-------------------- len[u] -------------------->|
+u:                   [======================= u ========================]
+Prefix copy of v:    [=============== v ===============]                |
+                     |<-- d1 = len[u]-len[v] -->|      |                |
+Suffix copy of v:                               [=============== v ===============]
+                                                |<- overlap ->|
+                                                 len[v] - d1 < d2!
+```
+
+#### Proof of Theorem 2.3
+
+1. **Why $\operatorname{len}[v] - d_1 < d_2$ when $d_2 < d_1$**: Inside $u$, the prefix $u[1..\operatorname{len}[v]]$ equals $v$ and the suffix $u[d_1 + 1 .. \operatorname{len}[u]]$ also equals $v$. Both copies of $v$ have minimum period $d_2 = \operatorname{per}(v) < d_1$, and they overlap on the middle substring $M = u[d_1 + 1 .. \operatorname{len}[v]]$ of length $|M| = \operatorname{len}[v] - d_1$.
+   Suppose for contradiction that $|M| = \operatorname{len}[v] - d_1 \ge d_2$. Then for every index $i \in [1, \operatorname{len}[u] - d_2]$:
+
+   - If $i + d_2 \le \operatorname{len}[v]$, both $i$ and $i + d_2$ lie in the prefix copy of $v$, so $u[i] = u[i + d_2]$ by period $d_2$ of $v$.
+   - If $i + d_2 > \operatorname{len}[v]$, then since $|M| = \operatorname{len}[v] - d_1 \ge d_2$, we have $i > \operatorname{len}[v] - d_2 \ge d_1$, meaning $i \ge d_1 + 1$. Thus **both** $i$ and $i + d_2$ lie inside the suffix copy $u[d_1 + 1 .. \operatorname{len}[u]]$ of $v$, so again $u[i] = u[i + d_2]$ by period $d_2$ of $v$!
+   This implies that $d_2$ is a valid period of the **entire** word $u$, contradicting that $d_1 = \operatorname{per}(u) > d_2$ is the minimum period of $u$!
+
+2. **Deriving the $\frac{2}{3}$ and $\frac{1}{2}$ bounds**: Since $\operatorname{len}[v] - d_1 < d_2$, we have:
+   $$\operatorname{len}[v] < d_1 + d_2.$$
+
+   - Using $d_2 \le d_1 - 1 < d_1$ and $d_1 = \operatorname{len}[u] - \operatorname{len}[v]$:
+     $$\operatorname{len}[v] < 2 d_1 = 2(\operatorname{len}[u] - \operatorname{len}[v]) \implies 3\operatorname{len}[v] < 2\operatorname{len}[u] \implies \operatorname{len}[v] < \frac{2}{3}\operatorname{len}[u].$$
+
+   - For the grandchild $w = \operatorname{fail}[v]$, its length is $\operatorname{len}[w] = \operatorname{len}[v] - d_2$. Rearranging $\operatorname{len}[v] - d_1 < d_2$ gives:
+     $$\operatorname{len}[w] = \operatorname{len}[v] - d_2 < d_1 = \operatorname{len}[u] - \operatorname{len}[v] < \operatorname{len}[u] - \operatorname{len}[w] \implies 2\operatorname{len}[w] < \operatorname{len}[u] \implies \operatorname{len}[w] < \frac{1}{2}\operatorname{len}[u]!$$
+
+3. **Why $\operatorname{len}[\operatorname{slink}[u]]$ always drops by $> 2\times$ when $k \ge 2$ (and in every dyadic interval $[2^{j-1}, 2^j)$)**: By Theorem 2.1, all borders of $u$ in $[\lceil \operatorname{len}[u]/2 \rceil, \operatorname{len}[u] - 1]$ share step $d_1 = \operatorname{diff}[u]$, so $\operatorname{slink}[u]$ must have $\operatorname{len}[\operatorname{slink}[u]] < \lceil \operatorname{len}[u]/2 \rceil$, i.e., $\operatorname{len}[\operatorname{slink}[u]] \le \lfloor \operatorname{len}[u]/2 \rfloor$ on **every single jump**! $\blacksquare$
+
+---
+
+## 3. Reverse-Engineering Scratchpad: `slink[u]` vs. `anc[u]` & Online Border Deletion
+
+### 3.1 Unifying KMP Shortcut Links: `slink[u]` vs. `anc[u]`
+
+Across grandmaster KMP problems (`CF 1721E`, `CF 1286E`, `CF 1764G`), two seemingly different shortcut pointers on the KMP failure tree appear in the literature:
+
+1. **The Period-Difference Link ($\operatorname{slink}[u]$)**: Depends *only* on prefix $S[1..u]$:
+   $$\operatorname{slink}[u] = \begin{cases} \operatorname{slink}[\pi[u]] & \text{if } u - \pi[u] = \pi[u] - \pi[\pi[u]], \\ \pi[u] & \text{otherwise.} \end{cases}$$
+
+2. **The Next-Character Mismatch Link ($\operatorname{anc}[u]$)**: Depends on $S[1..u + 1]$ (including the character $S[u + 1]$ immediately following prefix $u$):
+   $$\operatorname{anc}[u] = \begin{cases} \operatorname{anc}[\pi[u]] & \text{if } S[\pi[u] + 1] = S[u + 1], \\ \pi[u] & \text{if } S[\pi[u] + 1] \ne S[u + 1]. \end{cases}$$
+
+How are $\operatorname{slink}[u]$ and $\operatorname{anc}[u]$ related? Why can $\operatorname{slink}[u]$ skip an entire arithmetic progression during a KMP character transition without even looking at $S[u + 1]$? The answer is a fundamental structural theorem:
+
+::: {.callout-important title="Theorem 2.4 (Next-Character Equality Inside a `slink` Chain & Coarsening Duality)"}
+Suppose $u \ge 1$ satisfies $\operatorname{diff}[u] = \operatorname{diff}[\pi[u]] = d$. Let $v = \pi[u] = u - d$ and $w = \pi[v] = u - 2d$. Then the characters immediately following prefixes $v$ and $w$ in $S[1..u]$ are **guaranteed to be identical**:
+$$\boxed{\operatorname{diff}[u] = \operatorname{diff}[\pi[u]] = d \implies S\bigl[\pi[u] + 1\bigr] = S\bigl[\pi[\pi[u]] + 1\bigr]!}$$
+Consequently:
+
+1. **Uniform Next Character Across Strict Ancestors in $(\operatorname{slink}[u], u)$**: For every node $x$ in the chain $\pi[u], \pi[\pi[u]], \dots, v_c$ above $\operatorname{slink}[u]$, the next character $S[x + 1]$ equals $S[\pi[u] + 1]$. Thus testing $S[\pi[u] + 1] == c$ once tests **all** borders in $[\operatorname{slink}[u], \pi[u]]$ simultaneously!
+2. **Coarsening Duality ($\operatorname{anc}[u]$ Coarsens $\operatorname{slink}[u]$)**: Whenever $\operatorname{diff}[v] = \operatorname{diff}[\pi[v]]$, Theorem 2.4 forces $S[\pi[v] + 1] = S[v + 1]$, so $\operatorname{anc}[v] = \operatorname{anc}[\pi[v]]$ automatically skips across every internal edge of a `slink` chain (plus any accidental matches $S[\pi[v]+1] = S[v+1]$ across different APs).
+:::
+
+#### Proof of Theorem 2.4
+Because $d = u - \pi[u]$ is a period of $S[1..u]$, every index $i \in [1, u - d]$ satisfies $S[i] = S[i + d]$. Now evaluate this period equality at the specific index $i = w + 1 = \pi[\pi[u]] + 1 = u - 2d + 1$:
+
+- **Lower bound ($i \ge 1$)**: Since $w = \pi[\pi[u]] \ge 0$, we have $i = w + 1 \ge 1$.
+- **Upper bound ($i + d \le u$)**: Since $\operatorname{diff}[v] = v - w = d \ge 1$, we have:
+  $$i + d = (u - 2d + 1) + d = u - d + 1 = \pi[u] + 1 = v + 1 \le v + d = u!$$
+
+- Because **both** indices $w + 1 = \pi[\pi[u]] + 1$ and $v + 1 = \pi[u] + 1$ lie strictly inside the already-known prefix $S[1..u]$, period $d \in \operatorname{Per}(S[1..u])$ forces:
+  $$S\bigl[\pi[\pi[u]] + 1\bigr] = S[w + 1] = S[w + 1 + d] = S[v + 1] = S\bigl[\pi[u] + 1\bigr]. \quad \blacksquare$$
+
+---
+
+### 3.2 Algorithmic Compilation: Three Production Contracts
+
+#### Contract 1: $O(N)$ Precomputation of `diff[u]` and `slink[u]`
+```cpp
+// Works identically on KMP (where len[u] = u, fail[u] = pi[u]) and PAM:
+diff[u] = len[u] - len[fail[u]];
+slink[u] = (diff[u] == diff[fail[u]]) ? slink[fail[u]] : fail[u];
+```
+
+#### Contract 2: $O(\log N)$ KMP Next-Character Transition via `slink` (`CF 1721E`, `CF 1764G`)
+Suppose we are at KMP state $u$ and want the longest border $v \in \operatorname{Border}(S[1..u]) \cup \{0\}$ that extends by character $c$ (i.e., $S[v + 1] == c$).
+
+- First check $v = u$: if $S[u + 1] == c$, return $u + 1$.
+- Otherwise, while $u > 0$:
+  - Check $v = \pi[u]$: if $S[\pi[u] + 1] == c$, then $\pi[u]$ is the **longest** matching border in $(\operatorname{slink}[u], u]$, so return $\pi[u] + 1$ immediately!
+  - If $S[\pi[u] + 1] \ne c$: by **Theorem 2.4**, *every* node in $[\operatorname{slink}[u], \pi[u]]$ has the exact same next character $S[\pi[u] + 1] \ne c$, so **none of them can match $c$**! We therefore jump directly to $u \leftarrow \operatorname{slink}[u]$ in $O(1)$ time!
+- Because $u \leftarrow \operatorname{slink}[u]$ halves $u$ at every step (Theorem 2.3), this loop executes at most $\lceil \log_2 u \rceil$ iterations in the worst case—requiring **zero** $|\Sigma|$-sized automaton tables!
+
+#### Contract 3: Amortized $O(N)$ Online Active-Border Deletion via `anc[u]` (`CF 1286E`)
+When appending $S[i]$ online at step $i$:
+
+1. Before advancing $\pi[i]$, we know $S[i]$, so we can finalize $\operatorname{anc}[i - 1]$:
+   $$\operatorname{anc}[i - 1] = \bigl(S[\pi[i - 1] + 1] == S[i]\bigr) \;\text{?}\; \operatorname{anc}[\pi[i - 1]] : \pi[i - 1].$$
+
+2. To find all borders $u \in \operatorname{Border}(S[1..i - 1])$ that **fail** to extend by $S[i]$ ($S[u + 1] \ne S[i]$) without touching surviving borders:
+   ```cpp
+   int u = pi[i - 1];
+   while (u > 0) {
+       if (S[u + 1] != S[i]) {
+           delete_border_from_active_set(u); // u dies permanently at step i!
+           u = pi[u];
+       } else {
+           u = anc[u]; // Skip ALL consecutive ancestors v with S[v+1] == S[u+1] == S[i]!
+       }
+   }
+   ```
+   **Why is this $O(N)$ total work across all $i = 1 \dots N$?** Every time the `if` branch runs, border $u$ is permanently deleted (at most $1$ border is inserted per step $i$, so the `if` branch runs $\le N$ times in total). And whenever the `else` branch runs ($u \leftarrow \operatorname{anc}[u]$), it lands directly on a node $u'$ with $S[u' + 1] \ne S[u + 1] = S[i]$ (or $0$), so the **very next iteration is guaranteed to take the `if` branch** (or terminate)! Thus the `else` branch also runs $\le N$ times in total!
+
+---
+
+## 4. Boundary Pitfalls & Sturmian Stress Cases (`BP-1A-03`, `BP-1A-08`)
+
+### 4.1 Hand-Checked Trace on the Sturmian Word $S = \texttt{abaababaaba}$ ($N = 11$)
+
+Why are Central Sturmian (Fibonacci) words the ultimate adversarial test case for border algorithms? Because on a periodic word like $\texttt{abababab}$ ($u = 8$), $\operatorname{diff}[8] = \operatorname{diff}[6] = \operatorname{diff}[4] = \operatorname{diff}[2] = 2$, so $\operatorname{slink}[8] = 0$ collapses the entire $\pi$-chain into **one** AP jump. By contrast, on the Fibonacci word $S = \texttt{abaababaaba}$ ($N = 11$), every prefix $u \in [1, 11]$ has $\operatorname{diff}[u] \ne \operatorname{diff}[\pi[u]]$, **maximizing the number of distinct AP blocks**:
+
+| $u$ | $S[1..u]$ | $\pi[u]$ | $\operatorname{diff}[u] = u - \pi[u]$ | $\operatorname{slink}[u]$ | Half-Open Chain $(\operatorname{slink}[u], u]$ | $S[u+1]$ | $S[\pi[u]+1]$ | $\operatorname{anc}[u]$ |
+| :-: | :--- | :-: | :-: | :-: | :--- | :-: | :-: | :-: |
+| $1$ | $\texttt{a}$ | $0$ | $1$ | $0$ | $\{1\}$ | $\texttt{b}$ | $\texttt{a}$ | $0$ |
+| $2$ | $\texttt{ab}$ | $0$ | $2$ | $0$ | $\{2\}$ | $\texttt{a}$ | $\texttt{a}$ | $0$ |
+| $3$ | $\texttt{aba}$ | $1$ | $2$ | $1$ | $\{3\}$ | $\texttt{a}$ | $\texttt{b}$ | $1$ |
+| $4$ | $\texttt{abaa}$ | $1$ | $3$ | $1$ | $\{4\}$ | $\texttt{b}$ | $\texttt{b}$ | $0$ |
+| $5$ | $\texttt{abaab}$ | $2$ | $3$ | $2$ | $\{5\}$ | $\texttt{a}$ | $\texttt{a}$ | $0$ |
+| $6$ | $\texttt{abaaba}$ | $3$ | $3$ | $3$ | $\{6\}$ | $\texttt{b}$ | $\texttt{a}$ | $3$ |
+| $7$ | $\texttt{abaabab}$ | $2$ | $5$ | $2$ | $\{7\}$ | $\texttt{a}$ | $\texttt{a}$ | $0$ |
+| $8$ | $\texttt{abaababa}$ | $3$ | $5$ | $3$ | $\{8\}$ | $\texttt{a}$ | $\texttt{a}$ | $1$ |
+| $9$ | $\texttt{abaababaa}$ | $4$ | $5$ | $4$ | $\{9\}$ | $\texttt{b}$ | $\texttt{b}$ | $0$ |
+| $10$ | $\texttt{abaababaab}$ | $5$ | $5$ | $5$ | $\{10\}$ | $\texttt{a}$ | $\texttt{a}$ | $0$ |
+| $11$ | $\texttt{abaababaaba}$ | $6$ | $5$ | $6$ | $\{11\}$ | — | $\texttt{b}$ | — |
+
+Observe two key facts in this table:
+
+- At $u = 11$, the $\pi$-chain $11 \xrightarrow{-5} 6 \xrightarrow{-3} 3 \xrightarrow{-2} 1 \xrightarrow{-1} 0$ has strictly decreasing Fibonacci differences $\operatorname{diff} = (5, 3, 2, 1)$, so every `slink` jump has size $1$, achieving the maximum possible `slink` depth $4 \le \lceil \log_2 11 \rceil$.
+- Compare $\operatorname{slink}[u]$ with $\operatorname{anc}[u]$ at $u = 8$ ($\texttt{abaababa}$ followed by $S[9] = \texttt{a}$): even though $\operatorname{diff}[8] = 5 \ne 2 = \operatorname{diff}[3]$ (so $\operatorname{slink}[8] = 3$), we have $S[\pi[8]+1] = S[4] = \texttt{a} = S[9] = S[8+1]$, so $\operatorname{anc}[8] = \operatorname{anc}[3] = 1$ skips directly past $3$ down to $1$! This illustrates **Theorem 2.4(2)**: $\operatorname{anc}[u]$ is strictly coarser than $\operatorname{slink}[u]$.
+
+---
+
+### 4.2 Boundary Pitfalls (`BP-02` / `BP-1A-03` & `BP-1A-08`)
+
+::: {.callout-warning title="Pitfall BP-02 (`BP-1A-03`): Closed-Interval $[slink[u], u]$ Double-Counting the Chain Boundary"}
+
+- **The Bug**: Treating the AP progression represented by a `slink` jump from $u$ to $\operatorname{slink}[u]$ as the **closed** interval of lengths $[\operatorname{len}[\operatorname{slink}[u]], \operatorname{len}[u]]$ with step $d = \operatorname{diff}[u]$.
+- **Why It Happens**: Let $v_c$ be the bottom node of $u$'s constant-`diff` chain, so $\operatorname{diff}[v_c] = d$ and $\operatorname{slink}[u] = \operatorname{fail}[v_c]$. Because $\operatorname{len}[v_c] - \operatorname{len}[\operatorname{slink}[u]] = \operatorname{diff}[v_c] = d$, node $\operatorname{slink}[u]$ **does** sit at distance $d$ below $v_c$! However, in the `slink` loop `for (int x = u; x > 0; x = slink[x])`, node $\operatorname{slink}[u]$ is ALSO the **top node of the very next iteration**!
+- **Exact Counterexample & Fix**: On $S = \texttt{abaaba}$ ($u = 6, \pi[6] = 3, \pi[3] = 1, \pi[1] = 0$), the non-empty borders of $u = 6$ are $\{3, 1\}$. Starting at $x = \pi[6] = 3$ ($\operatorname{diff}[3] = 2, \operatorname{slink}[3] = 1$), a closed interval $[\operatorname{len}[\operatorname{slink}[3]], \operatorname{len}[3]] = [1, 3]$ (step $2$) visits $\{3, 1\}$, and then the next iteration $x = \operatorname{slink}[3] = 1$ visits $\{1\}$ **a second time**!
+  - **In counting and sum DPs ([Chapter 04](ch04-series-link-dp-kmp-pam.qmd))**: You **must** use the **half-open** interval $(\operatorname{slink}[x], x]$, whose shortest member has length $\operatorname{len}[\operatorname{slink}[x]] + \operatorname{diff}[x]$ (so $x = 3$ visits only $\{1 + 2\} = \{3\}$, and $x = 1$ visits $\{0 + 1\} = \{1\}$).
+  - **In idempotent $\min / \max$ DPs ([Chapter 03](ch03-border-modulo-shortest-path.qmd))**: Including $\operatorname{slink}[x]$ in the closed progression $[\operatorname{len}[\operatorname{slink}[x]], \operatorname{len}[x]]$ is safe (and even convenient, as it packs one extra element into the AP) *solely* because $\min(a, a) = a$ is idempotent!
+:::
+
+::: {.callout-warning title="Pitfall BP-1A-08: Using `anc[N]` Before $S[N+1]$ Is Known, or Walking Raw $\pi[u]$ in `CF 1286E`"}
+
+- **The Bug**:
+  1. In online append queries (`CF 1721E`), trying to precompute $\operatorname{anc}[N]$ on the base string $S[1..N]$ before the query's first character $T_q[1] = S[N + 1]$ is known. Because $\operatorname{anc}[u]$ depends on $S[u + 1]$, $\operatorname{anc}[N]$ changes from query to query! Either use $\operatorname{slink}[u]$ (which depends only on $S[1..u]$) or compute $\operatorname{anc}[N]$ dynamically once $S[N + 1]$ arrives.
+  2. In `CF 1286E`, walking $u \leftarrow \pi[u]$ without jumping $u \leftarrow \operatorname{anc}[u]$ when $S[u + 1] == S[i]$ causes $\Theta(N^2)$ TLE on $S = \texttt{a}^N$. Furthermore, the sum of minimum border weights over all steps $i = 1 \dots N$ ($N = 6 \times 10^5, W[i] \le 2^{30}$) reaches $\frac{N(N+1)}{2} \cdot 2^{30} \approx 1.9 \times 10^{20} > 2^{64} - 1$, overflowing `unsigned long long`! You **must** accumulate the answer in `__int128`.
+:::
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Problem Ladder (`Ch 02`)
+
+Every problem below includes a self-contained mathematical statement, exact input constraints, three progressive hints, and a complete 4-step derivation.
+
+---
+
+### Tier 1 — Stepping Stone (`W1A-05`, `W1A-06`)
+
+#### Problem 2.1 (`W1A-05`) — `[POI XIII / 2006] OKR-Periods of Words` (`Okresy słów` / `Luogu P3435`)
+
+- **Mathematical Statement**: For a word $W[1..i]$, an integer $p \in [1, i - 1]$ is called a **proper period** of $W$ if $p \in \operatorname{Per}(W)$ and $2 p \ge i$ (equivalently, $W[1..p]$ has length $< i$ and $W$ is a prefix of $(W[1..p])^2$). Given a string $S[1..N]$, compute the sum over all prefixes $i = 1 \dots N$ of the **maximum** proper period $p_{\max}(i)$ of $S[1..i]$ (contributing $0$ if $S[1..i]$ has no proper period).
+- **Constraints**: $1 \le N \le 10^6$, $|\Sigma| = 26$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Walking the KMP failure chain $\pi[i] \to \pi[\pi[i]] \to \dots$ from each $i$ down to its smallest positive border takes $\Theta(N^2)$ total time on $S = \texttt{a}^N$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Period–Border Duality ([Theorem 1.1](ch01-fine-wilf-periodicity-orbits.qmd))**, $p = i - b$ is a proper period with $2 p \ge i \iff b \in \operatorname{Border}(S[1..i])$ with $1 \le b \le \lfloor i / 2 \rfloor$. Maximizing $p = i - b$ is equivalent to **minimizing** $b > 0$. Moreover, why does the **shortest positive border** $b_{\min}(i)$ of any prefix with $\pi[i] > 0$ *automatically* satisfy $b_{\min}(i) \le \lfloor i / 2 \rfloor$ without any range check?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+If a border $b$ had $b > i / 2$, then $\pi[b] > 0$ because the prefix $S[1..b]$ and suffix $S[i-b+1..i]$ overlap by $2b - i > 0$ characters! Thus the minimum positive border $b_{\min}(i)$ (where $\pi[b_{\min}] = 0$) is **always** $\le \lfloor i / 2 \rfloor$. Precompute `min_pos_border[u] = (pi[u] == 0 ? u : min_pos_border[pi[u]])` in $O(N)$ time via path compression!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W1A-05`)"}
+
+1. **Diagnostic Signal**: Walking $\pi^{(k)}[i]$ uncached costs $\Theta(N^2)$.
+2. **Combinatorial Word Invariant**:
+   - By Theorem 1.1, $p = i - b \in \operatorname{Per}(S[1..i])$ satisfies $p < i$ and $2p \ge i \iff 1 \le b \le \lfloor i / 2 \rfloor$.
+   - Let $b_{\min}(i)$ be the minimum positive ancestor of $i$ in the KMP fail tree (the unique ancestor $b > 0$ of $\pi[i]$ with $\pi[b] = 0$). Could $b_{\min}(i) > \lfloor i / 2 \rfloor$? No: if $b > \lfloor i / 2 \rfloor$, then $S[1..b]$ and $S[i - b + 1 .. i]$ overlap on $S[i - b + 1 .. b]$ of length $2b - i \ge 1$, which is a positive border of $S[1..b]$ ($\pi[b] \ge 2b - i \ge 1$), contradicting $\pi[b_{\min}] = 0$!
+   - Thus $b_{\min}(i) \le \lfloor i / 2 \rfloor$ holds unconditionally whenever $\pi[i] > 0$, and $p_{\max}(i) = i - b_{\min}(i)$.
+3. **Algorithmic Compilation**:
+   - Compute $\pi[1..N]$ in $O(N)$ time.
+   - Sweep $i = 1 \dots N$: if $\pi[i] == 0$, set `low[i] = i`; else set `low[i] = low[pi[i]]` and add `i - low[i]` to a 64-bit `long long` accumulator. Total time and space: $O(N)$.
+4. **Broken-Invariant Counterexample**: Using 32-bit `int` for the sum overflows on $S = \texttt{a}^{10^6}$, where $\sum_{i=2}^N (i - 1) \approx 5 \times 10^{11}$.
+:::
+
+---
+
+#### Problem 2.2 (`W1A-06`) — `CF 1721E — Prefix Function Queries`
+
+- **Mathematical Statement**: You are given a base string $S[1..N]$ ($N \le 10^6$) and $Q \le 10^5$ independent queries. In the $q$-th query, a short string $T_q$ ($1 \le |T_q| \le 10$) is temporarily appended to $S$ to form $S' = S + T_q$ of length $N + |T_q|$. Output the KMP prefix function values $\pi[N + 1], \pi[N + 2], \dots, \pi[N + |T_q|]$ for each query.
+- **Constraints**: $1 \le N \le 10^6$, $1 \le Q \le 10^5$, $1 \le |T_q| \le 10$, $|\Sigma| = 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Because each query starts from $u = \pi[N]$ and does not persist to the next query, the standard KMP amortized argument fails: on $S = \texttt{a}^{N-1}\texttt{b}\texttt{a}^{N-1}$ or $S = \texttt{a}^N$ and $T_q = \texttt{c}$, walking $u \leftarrow \pi[u]$ takes $\Theta(N)$ steps *per query*, or $\Theta(Q N)$ total!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 2.4 (Next-Character Equality Inside a `slink` Chain)**, whenever $\operatorname{diff}[u] = \operatorname{diff}[\pi[u]]$, we have $S[\pi[u] + 1] = S[\pi[\pi[u]] + 1]$. Thus if $S[\pi[u] + 1] \ne S'[i]$, **no** ancestor in $[\operatorname{slink}[u], \pi[u]]$ can match $S'[i]$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Precompute $\pi[1..N]$, $\operatorname{diff}[1..N]$, and $\operatorname{slink}[1..N]$ on $S$ in $O(N)$ time. For each query, compute $\pi[i]$, $\operatorname{diff}[i]$, and $\operatorname{slink}[i]$ for $i = N + 1 \dots N + |T_q|$ using **Contract 2** (§3.2): when extending state $u$ by $c = S'[i]$, if $S'[u + 1] == c$ take $u + 1$; otherwise loop while $u > 0$: if $S'[\pi[u] + 1] == c$ take $\pi[u] + 1$, else jump $u \leftarrow \operatorname{slink}[u]$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W1A-06`)"}
+
+1. **Diagnostic Signal**: Unamortized rollbacks at index $N + 1$ break standard KMP's $O(1)$ amortized bound; we need a **worst-case $O(\log N)$** transition per appended character without allocating a $26 N$-entry automaton table.
+2. **Combinatorial Word Invariant**: By Theorem 2.3 and Theorem 2.4, for any state $u \ge 1$, all strict ancestors in the half-open chain $[\operatorname{slink}[u], \pi[u]]$ share the exact same next character $S'[\pi[u] + 1]$. Therefore, a single comparison $S'[\pi[u] + 1] == c$ either succeeds at the longest ancestor $\pi[u]$ in the chain, or eliminates the entire chain down to $\operatorname{slink}[u]$ in $O(1)$ time!
+3. **Algorithmic Compilation**:
+   ```cpp
+   auto advance_kmp = [&](int u, char c) -> int {
+       if (S[u + 1] == c) return u + 1;
+       while (u > 0) {
+           if (S[pi[u] + 1] == c) return pi[u] + 1;
+           u = slink[u]; // Halves u at every step (Theorem 2.3)!
+       }
+       return 0;
+   };
+   ```
+   For each query $T_q$ of length $m \le 10$, write $T_q[1..m]$ into $S[N + 1 .. N + m]$ and for $i = N + 1 \dots N + m$:
+
+   - Set $\pi[i] = \text{advance\_kmp}(\pi[i - 1], S[i])$.
+   - Set $\operatorname{diff}[i] = i - \pi[i]$ and $\operatorname{slink}[i] = (\operatorname{diff}[i] == \operatorname{diff}[\pi[i]]) \text{ ? } \operatorname{slink}[\pi[i]] : \pi[i]$.
+   Total time: $O(N + Q |T_q| \log N)$ with $O(N)$ memory and zero alphabet overhead!
+
+4. **Broken-Invariant Counterexample (`BP-1A-08`)**: Notice why `advance_kmp` tests $S[u + 1] == c$ *before* entering the `while` loop and tests $S[\pi[u] + 1] == c$ *inside* the loop: $u + 1$ is outside $S[1..u]$, so $S[u + 1]$ can differ from $S[\pi[u] + 1]$, whereas $\pi[u] + 1 \le u$ is inside $S[1..u]$, so Theorem 2.4 guarantees $S[\pi[u] + 1] = S[v + 1]$ for all $v \in [\operatorname{slink}[u], \pi[u]]$.
+:::
+
+---
+
+### Tier 2 — Intermediate (`W1A-12`, `W1A-18`)
+
+#### Problem 2.3 (`W1A-12`) — `Luogu P5829 — Border Tree LCA & Period-Constrained Common Borders`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ ($N \le 10^6$) and $Q \le 10^5$ queries $(p_q, q_q)$ ($1 \le p_q, q_q \le N$), find for each query the longest string $W$ that is simultaneously a **proper border** of $S[1..p_q]$ and a **proper border** of $S[1..q_q]$, using $O(N)$ memory and $O(\log N)$ time per query via `slink` chain jumping (without $O(N \log N)$-space binary lifting tables!).
+- **Constraints**: $1 \le N \le 10^6$, $1 \le Q \le 10^5$, memory limit $64\text{ MB}$–$125\text{ MB}$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+A $20 \times 10^6$ binary lifting table `up[20][N]` uses $80\text{ MB}$ of memory and $O(N \log N)$ preprocessing. How can we compute the Lowest Common Ancestor (LCA) on the KMP failure tree in $O(\log N)$ time per query using **only** the three $O(N)$ arrays $\pi[u]$, $\operatorname{diff}[u]$, and $\operatorname{slink}[u]$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 2.3**, the path from any node $u$ to the root $0$ in the KMP failure tree is partitioned into at most $\lceil \log_2 u \rceil$ half-open arithmetic progressions $(\operatorname{slink}[x], x]$, acting exactly like a **zero-overhead Heavy-Light Decomposition (HLD)** where each "heavy chain" is a constant-`diff` arithmetic progression!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+First replace $(u, v) \leftarrow (\pi[p_q], \pi[q_q])$ because the common border must be *proper* for both $p_q$ and $q_q$. While $\operatorname{slink}[u] \ne \operatorname{slink}[v]$, jump the node with the deeper chain top ($\max(u, v)$ or larger $\operatorname{slink}$) via $x \leftarrow \operatorname{slink}[x]$. Once two nodes lie in the same AP chain (or when one is an ancestor of the other within the same AP chain of step $d = \operatorname{diff}[u]$ and $u \equiv v \pmod d$), their LCA is simply $\min(u, v)$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W1A-12`)"}
+
+1. **Diagnostic Signal**: Standard LCA binary lifting uses $O(N \log N)$ space; raw $\pi$-chain walking uses $O(N)$ time per query.
+2. **Combinatorial Word Invariant**:
+   - A string $S[1..b]$ is a proper border of both $S[1..p_q]$ and $S[1..q_q]$ iff $b$ is a common ancestor of $\pi[p_q]$ and $\pi[q_q]$ in the KMP fail tree.
+   - Suppose $u > v > 0$ are in the KMP fail tree. When is $v$ an ancestor of $u$ inside $u$'s current half-open AP chain $(\operatorname{slink}[u], u]$ of step $d = \operatorname{diff}[u]$? Precisely when:
+     $$v > \operatorname{slink}[u] \quad \land \quad (u - v) \bmod d == 0 \quad \land \quad \operatorname{slink}[v] == \operatorname{slink}[u] \;\text{(or } v == \operatorname{slink}[u]\text{)}!$$
+     Why? Because inside $S[1..u]$ of period $d$, every shift by a multiple of $d$ above $\operatorname{slink}[u]$ is a valid border of $u$!
+
+3. **Algorithmic Compilation ($O(N)$-Space `slink`-HLD LCA)**:
+   - Precompute $\pi[1..N]$, $\operatorname{diff}[1..N]$, and $\operatorname{slink}[1..N]$ in $O(N)$ time and $3 \times 4\text{ MB} = 12\text{ MB}$ space.
+   - To query $\operatorname{LCA}(u, v)$ (initialized to $u = \pi[p_q], v = \pi[q_q]$):
+     ```cpp
+     int border_lca(int u, int v) {
+         while (u != v) {
+             if (u < v) swap(u, v);
+             // Check if v lies directly inside u's AP chain [slink[u], u]:
+             int d = diff[u], s = slink[u];
+             if (v >= s && (u - v) % d == 0) {
+                 // Verify v is the actual chain ancestor of u:
+                 // Since u - d, u - 2d, ..., s are the exact ancestors of u down to s,
+                 // (u - v) % d == 0 with v >= s is BOTH necessary and sufficient!
+                 return v;
+             }
+             u = s; // Jump to the bottom of u's AP chain in O(1)!
+         }
+         return u;
+     }
+     ```
+
+   - **Verification of Arithmetic Membership**: Why is $v \ge \operatorname{slink}[u]$ and $(u - v) \bmod \operatorname{diff}[u] == 0$ (when $v$ is already reached from $q_q$) both necessary and sufficient? Because the ancestors of $u$ down to $s = \operatorname{slink}[u]$ are **literally the integers** $\{u, u - d, u - 2d, \dots, s\}$ inside $\{0, 1, \dots, N\}$! In KMP, node IDs **are** their lengths, so $v \in \{u, u - d, \dots, s\} \iff s \le v \le u$ and $(u - v) \bmod d == 0$.
+   - By Theorem 2.3, each jump $u \leftarrow \operatorname{slink}[u]$ halves $u$, so `border_lca` finishes in $\le 2 \lceil \log_2 N \rceil$ iterations!
+4. **Broken-Invariant Counterexample**: Starting `border_lca(p_q, q_q)` instead of `border_lca(pi[p_q], pi[q_q])` returns $p_q$ when $p_q$ is a border of $q_q$, violating the requirement that the border must be **proper** for *both* prefixes!
+:::
+
+---
+
+#### Problem 2.4 (`W1A-18`) — `CF 1286E — Fedya the Potter Strikes Back`
+
+- **Mathematical Statement**: An initially empty string $S$ and weight array $W$ are built online in $N$ steps ($N \le 6 \times 10^5$). At step $i$ ($1 \le i \le N$), you are given an encrypted character $S[i]$ and weight $W[i]$ (decrypted using the answer from step $i - 1$). Define the weight of a substring $S[l..r]$ as $\min_{l \le k \le r} W[k]$. If $S[l..r]$ equals the prefix $S[1 .. r - l + 1]$, call $S[l..r]$ a **prefix-matching suffix** of $S[1..r]$. After each step $i$, output the sum of weights of all prefix-matching suffixes $S[l..r]$ over all $1 \le l \le r \le i$.
+- **Constraints**: $1 \le N \le 6 \times 10^5$, $0 \le W[i] < 2^{30}$, online encrypted, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At step $i$, the newly added substrings ending at $r = i$ that match a prefix $S[1 .. i - l + 1]$ are precisely the improper border $b = i$ ($l = 1$) and all positive proper borders $b \in \operatorname{Border}(S[1..i])$ ($l = i - b + 1$). Walking raw $\pi$ links to update active borders takes $\Theta(N^2)$ time.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Every positive proper border $b$ of $S[1..i]$ is equal to $u + 1$ for some border $u \in \operatorname{Border}(S[1..i-1])$ that satisfies $S[u + 1] == S[i]$. Thus the set of active left endpoints $l = i - b + 1$ at step $i$ is the **exact same set of left endpoints** from step $i - 1$, minus those borders $u$ of $S[1..i-1]$ with $S[u + 1] \ne S[i]$, plus $l = i$ (if $S[i] == S[1]$) and $l = 1$! By **Theorem 2.4 (`Contract 3`)**, jumping via $\operatorname{anc}[u]$ visits *only* the dying borders in $O(N)$ total steps across the entire run!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Maintain a monotonic stack of $(index, W[index])$ for range minimum queries and a frequency map `std::map<int, int> cnt` of the current minimum weights $\min_{l \le k \le i} W[k]$ for all active proper border left endpoints $l$:
+
+1. Delete all dying borders $u$ ($S[u+1] \ne S[i]$) using `anc[u]` jumps, looking up each dying border's current weight via `lower_bound(i - u)` on the monotonic stack.
+2. Insert the new length-$1$ border if $S[i] == S[1]$.
+3. Clip all weights $> W[i]$ in `cnt` down to $W[i]$, update the running sum of active border weights, and add the accumulated total (in `__int128`) to the global answer!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W1A-18`)"}
+
+1. **Diagnostic Signal**: Online encryption forces step-by-step maintenance of $\sum_{b \in \operatorname{Border}(S[1..i]) \cup \{i\}} \min_{i-b+1 \le k \le i} W[k]$ in amortized $O(\log N)$ per step.
+2. **Combinatorial Word Invariant**:
+   - Track left endpoints $l = i - b + 1 \in [2, i]$ of all positive proper borders $b \in \operatorname{Border}(S[1..i])$. Notice that as $i$ increments to $i + 1$, a surviving border $b$ grows to $b + 1$, so its left endpoint $l = (i + 1) - (b + 1) + 1 = i - b + 1$ is **completely invariant**!
+   - Therefore, at step $i$:
+     1. Any border $u \in \operatorname{Border}(S[1..i-1])$ with $S[u + 1] \ne S[i]$ **dies**; its invariant left endpoint was $l = (i - 1) - u + 1 = i - u$, and its weight right before step $i$ was $\min_{i-u \le k \le i-1} W[k]$. Using $\operatorname{anc}[u]$ (**Contract 3**, §3.2), we enumerate every dying border $u$ in $O(1)$ amortized time per deletion!
+     2. If $S[i] == S[1]$, a new border of length $1$ (left endpoint $l = i$) is born.
+     3. Every surviving active border has its weight $\min_{l \le k \le i-1} W[k]$ updated to $\min(\dots, W[i])$.
+3. **Algorithmic Compilation**:
+   - Maintain:
+     - `pi[1..N]` and `anc[1..N]` (setting `anc[i-1] = (S[pi[i-1]+1] == S[i]) ? anc[pi[i-1]] : pi[i-1]` at the start of step $i$).
+     - A monotonic stack `stk` of indices with strictly increasing $W[k]$, so $\min_{l \le k \le i-1} W[k]$ is given by $W[\text{stk}[\text{lower\_bound}(l)]]$ in $O(\log N)$ time.
+     - `map<int, int> freq` and `long long cur_sum` storing the multiset of weights of all currently active proper borders.
+   - At step $i$:
+     1. Walk $u = \pi[i - 1]$ down to $0$ using `anc[u]` jumps whenever $S[u + 1] == S[i]$; for each dying $u$ ($S[u + 1] \ne S[i]$), find its old weight $w_{\text{old}} = \text{query\_stk}(i - u)$, decrement `freq[w_old]`, and subtract $w_{\text{old}}$ from `cur_sum`.
+     2. Push $W[i]$ onto `stk`, and in `freq`, merge all keys $w > W[i]$ into `freq[W[i]]`, subtracting $(w - W[i]) \cdot \text{count}$ from `cur_sum`.
+     3. If $i > 1$ and $S[i] == S[1]$, increment `freq[W[i]]` and add $W[i]$ to `cur_sum`.
+     4. Add `stk[0]`'s weight ($\min_{1 \le k \le i} W[k]$ for the full prefix $b = i$) plus `cur_sum` to the `__int128` global answer `total_ans`.
+   - Total time: $O(N \log N)$ (each of the $\le N$ borders is inserted once and deleted at most once).
+4. **Broken-Invariant Counterexample (`BP-1A-08`)**: Remember to query `w_old = query_stk(i - u)` **before** pushing $W[i]$ onto the monotonic stack `stk`, because the weight stored in `freq` for border $u$ at the start of step $i$ reflects $\min_{i-u \le k \le i-1} W[k]$, not including $W[i]$ yet!
+:::
+
+---
+
+### Tier 3 — Advanced (`W1A-28`, `W1A-22`)
+
+#### Problem 2.5 (`W1A-28`) — `[SDOI 2019] 连续子序列` (`Luogu P5328` / `P5346` / `LOJ 3113`)
+
+- **Mathematical Statement**: Recall the Thue–Morse infinite sequence $T[0..\infty)$ defined by $T[0] = 0$, $T[2k] = T[k]$, and $T[2k + 1] = 1 - T[k]$. Given a binary pattern $S[1..N]$ and a non-negative integer $K \le 10^{18}$, count modulo $10^9 + 7$ how many strings of length $K$ occur as a contiguous substring $T[i .. i + N + K - 1]$ immediately following an occurrence $T[i .. i + N - 1] = S[1..N]$ (or equivalently, count the valid $K$-extensions of $S$ inside $T$).
+- **Constraints**: $1 \le N \le 100$, $0 \le K \le 10^{18}$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Because $T[2m .. 2m+1] \in \{01, 10\}$ is completely determined by $T[m] \in \{0, 1\}$, any occurrence of $S[1..N]$ coupled with a length-$K$ extension either starts at an **even** index $2m$ or an **odd** index $2m + 1$ in $T$, decimating $(N, K)$ to $(\lceil N/2 \rceil, \lfloor K/2 \rfloor)$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+When we count **distinct** valid extensions $W \in \{0, 1\}^K$ such that $S W$ is a factor of $T$, could the **same** extension $W$ be produced by both an even-aligned occurrence of $S W$ and an odd-aligned occurrence of $S W$? Only when $S W$ has period $\le 2$, which by **Weak Periodicity** and the overlap-freeness of $T$ is impossible once $|S W| \ge 5$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Define a memoized recursive function `solve(S, K)` keyed on the pair $(S, K)$:
+
+- Base cases: if $|S| + K \le 4$, enumerate all factors of $T[0..15]$ of length $|S| + K$ starting with $S$ directly (so short factors like `0101` where both parities produce the same $W$ are deduplicated automatically).
+- Recursive step (for $|S| + K \ge 5$): split by alignment parity of index $1$ of $S$ (even vs. odd). For each alignment where adjacent pairs $(S[2j-1], S[2j])$ are complementary ($01 \mapsto 0, 10 \mapsto 1$), decimate $S \mapsto S'$ and $K \mapsto K'$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W1A-28`)"}
+
+1. **Diagnostic Signal**: $K \le 10^{18}$ requires $O(\log K)$ parity decimation, while short strings ($|S| + K \le 4$) can have identical extensions arising from both even and odd alignments in $T$.
+2. **Combinatorial Word Invariant**:
+   - The Thue–Morse word $T$ is generated by the morphism $\mu(0) = 01, \mu(1) = 10$ and is **overlap-free** (it contains no factor of the form $c U c U c$).
+   - By this periodicity rigidity (a direct consequence of the Weak Periodicity Lemma on $\mu$-blocks), any factor $U$ of $T$ of length $|U| \ge 5$ has a **unique** parity alignment (either every occurrence of $U$ starts at an even position in $T$, or every occurrence of $U$ starts at an odd position in $T$). Indeed, if $U$ occurred at both an even and an odd position, both alignments of $01/10$ pairs would hold simultaneously on $U$, forcing period $1$ or period $2$; since `01010` is an overlap $0(10)0(10)0$, $T$ contains no factor of length $5$ with period $\le 2$. Thus for $|S| + K \ge 5$, the even-aligned and odd-aligned extensions $W$ are **100% disjoint**!
+3. **Algorithmic Compilation**:
+   - If $|S| + K \le 4$: since $T$'s factors of length $\le 4$ all appear within the prefix $T[0..15]$, brute-force all valid $W \in \{0, 1\}^K$ such that $S W$ occurs in $T[0..15]$ and return the count of distinct $W$.
+   - If $|S| + K \ge 5$: sum over both alignments $p \in \{0, 1\}$:
+     - Check that every full pair in $S$ under alignment $p$ has $S[i] \ne S[i + 1]$, compressing each pair $01 \mapsto 0, 10 \mapsto 1$ (and forced boundary characters) into $S'$.
+     - If the last character of $S + W$ sits in the first half of a pair (i.e., $(|S| + K + p)$ is odd), it only constrains the pair's first bit, which is equivalent to $K' = \lceil (K - \text{tail}) / 2 \rceil$ unconstrained symbols of $S' W'$, so recurse on `solve(S', K')`.
+   - Memoize `map<pair<string, long long>, int>` to run in $O(N \log K)$ time.
+4. **Broken-Invariant Counterexample**: Applying disjoint parity summing at $|S| + K = 4$ double-counts `0101` and `1010`, which occur at both even alignment ($\mu(00) = 0101$) and odd alignment ($\mu(101)[2..5] = 0101$). Thus the base-case threshold **must** be $|S| + K \le 4$.
+:::
+
+---
+
+#### Problem 2.6 (`W1A-22`) — `CF 1764G / UCup — Inverse KMP & Border-Set Realizability via slink`
+
+- **Mathematical Statement**: Given a candidate prefix function array $p[1..N]$ ($0 \le p[i] < i$) and an alphabet size $\sigma = |\Sigma|$ (or partially filled characters of $S[1..N]$), determine whether $p[1..N]$ is the valid KMP $\pi$-array of at least one string $S \in \Sigma^N$, and count the number of such strings $S \in \Sigma^N$ modulo $998244353$.
+- **Constraints**: $1 \le N \le 5 \times 10^5$, $1 \le \sigma \le 10^9$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+For $p[i]$ to be the true KMP value $\pi[i]$ at step $i$, three things must hold: (1) $p[i] == 0$, or $p[i] - 1$ lies in the failure chain $\{p[i-1], p[p[i-1]], \dots, 0\}$ of $i - 1$; (2) if $p[i] > 0$, then $S[i] = S[p[i]]$; and (3) for every ancestor $v$ in the failure chain of $i - 1$ strictly above $p[i] - 1$, $S[i]$ is **forbidden** from equaling $S[v + 1]$! Walking the full failure chain of $i - 1$ to collect all forbidden characters $S[v + 1]$ takes $\Theta(N^2)$ time on $p[i] = i - 1$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 2.4 (Next-Character Equality Inside a `slink` Chain)**, on any prefix $S[1..i-1]$ whose KMP array $p[1..i-1]$ has already been validated, whenever $\operatorname{diff}[u] = \operatorname{diff}[p[u]]$, the next characters $S[p[u] + 1]$ and $S[p[p[u]] + 1]$ are **guaranteed to be equal**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Because all strict ancestors inside a `slink` chain share the exact same next character $S[p[u] + 1]$, jumping via $\operatorname{slink}[u]$ from $u = p[i - 1]$ down to $p[i] - 1$ collects the **entire set of distinct forbidden characters** in at most $O(\log i)$ steps!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W1A-22`)"}
+
+1. **Diagnostic Signal**: Naive Inverse KMP walks $u = p[i - 1] \to p[u] \to \dots \to p[i] - 1$ at step $i$, which takes $\Theta(N^2)$ on $p = [0, 1, 2, \dots, N-2, 0]$.
+2. **Combinatorial Word Invariant**: Suppose $p[1..i-1]$ is valid. By Theorem 2.4, for any state $u \le i - 1$ with $\operatorname{diff}[u] = \operatorname{diff}[p[u]]$, every node $v \in [\operatorname{slink}[u], p[u]]$ satisfies $S[v + 1] = S[p[u] + 1]$. Therefore, the set of forbidden characters $\{S[v + 1] : v \text{ is an ancestor of } p[i - 1] \text{ with } v > p[i] - 1\}$ has size **at most $\lceil \log_2 i \rceil + 1$** and can be collected by jumping `slink`!
+3. **Algorithmic Compilation**:
+   - Maintain a representative character ID `char_id[1..N]` (since $S[i] = S[p[i]]$ whenever $p[i] > 0$).
+   - At step $i = 1 \dots N$:
+     - Collect forbidden character IDs into a small vector `forb` by starting at $u = p[i - 1]$:
+       - While $u > p[i] - 1$:
+         - Record `char_id[u + 1]`.
+         - If $p[u] > p[i] - 1$, also record `char_id[p[u] + 1]` and jump $u \leftarrow \operatorname{slink}[u]$ (or if $\operatorname{slink}[u] \le p[i] - 1$, step directly to $p[i] - 1$ using the AP condition $(u - (p[i] - 1)) \bmod \operatorname{diff}[u] == 0$!).
+         - Else set $u \leftarrow p[u]$.
+     - Verify that $u == p[i] - 1$ (if $p[i] > 0$); if not, $p[1..N]$ is **unrealizable** (return `0`).
+     - If $p[i] > 0$: set `char_id[i] = char_id[p[i]]`, and verify `char_id[i]` is not in `forb` (if it is, return `0`).
+     - If $p[i] == 0$: deduplicate `forb` (let $k = |\text{unique}(\text{forb})|$), multiply the answer by $\max(0LL, \sigma - k) \bmod 998244353$, and assign `char_id[i]` a fresh ID $i$.
+     - Compute $\operatorname{diff}[i] = i - p[i]$ and $\operatorname{slink}[i]$ in $O(1)$.
+   - Total time: $O(N \log N)$.
+4. **Broken-Invariant Counterexample**: When $p[i] > 0$, do **not** assume $p[i] - 1$ must be a `slink` chain endpoint—$p[i] - 1$ can sit *inside* $u$'s AP chain $(\operatorname{slink}[u], u]$, which is why we test $(u - (p[i] - 1)) \bmod \operatorname{diff}[u] == 0$ when $\operatorname{slink}[u] \le p[i] - 1 < u$!
+:::
+
+---
+
+### Tier 4 — Mastery (`W1A-31`, `W1A-35`)
+
+#### Problem 2.7 (`W1A-31`) — `Dynamic Weighted Border Maintenance with Range Minima & Polynomial AP Queries`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ ($N \le 5 \times 10^5$), an array $A[1..N]$, and $Q \le 5 \times 10^5$ queries of the form $(u_q, m_q)$ ($1 \le u_q \le N, m_q \in \{0, 1, 2\}$), compute for each query the weighted border sum over all positive proper borders $b \in \operatorname{Border}(S[1..u_q])$:
+  $$F(u_q, m_q) = \sum_{b \in \operatorname{Border}(S[1..u_q]),\, b > 0} b^{m_q} \cdot A\bigl[u_q - b\bigr] \pmod{998244353}.$$
+
+- **Constraints**: $1 \le N, Q \le 5 \times 10^5$, $m_q \in \{0, 1, 2\}$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+For any fixed prefix $u$, as $b$ ranges over a half-open `slink` arithmetic progression $(\operatorname{slink}[x], x]$ of step $d = \operatorname{diff}[x]$, what set of indices does the complement $p = u - b$ trace inside $A[1..N]$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 2.3**, each half-open chain $(\operatorname{slink}[x], x]$ consists of lengths $b \in \{\ell_{\min}, \ell_{\min} + d, \dots, x\}$ where $\ell_{\min} = \operatorname{slink}[x] + d$. Therefore, the complementary period indices $p = u - b$ form a **contiguous slice of the residue class $u - x \pmod d$**:
+$$p \in \bigl\{\,u - x,\; u - x + d,\; \dots,\; u - \ell_{\min}\,\bigr\}.$$
+Moreover, because $(\operatorname{slink}[x], x]$ partitions $[1, \pi[u]]$, the total number of borders in chains with step $d > B$ telescopes to $\sum_{d > B} \frac{x - \operatorname{slink}[x]}{d} < \frac{\pi[u]}{B} \le \frac{N}{B}$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Set a square-root threshold $B = \sqrt{N}$:
+
+- For chains with $d = \operatorname{diff}[x] \le B$: prefix sums on residue classes modulo $d$ (for moments $p^0 A[p], p^1 A[p], p^2 A[p]$) answer any arithmetic progression query $\sum_{j=0}^{c-1} (u - p_j)^m A[p_j]$ in **$O(1)$ time**!
+- For chains with $d = \operatorname{diff}[x] > B$: iterate directly over the $c(x) = (x - \operatorname{slink}[x]) / d$ elements in $O(N / B)$ total time per query!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W1A-31`)"}
+
+1. **Diagnostic Signal**: In $F(u, m) = \sum_{b \in \operatorname{Border}(S[1..u])} b^m A[u - b]$, the array index $p = u - b$ depends on both the query prefix $u$ and the border $b$, so static subtree sums on the KMP fail tree cannot pre-aggregate $A[u - b]$.
+2. **Combinatorial Word Invariant**:
+   - By Theorem 2.3 (`BP-1A-03`), the positive borders of $S[1..u]$ partition into $K \le \lceil \log_2 u \rceil$ disjoint half-open arithmetic progressions $(\operatorname{slink}[x], x]$ generated by `for (int x = pi[u]; x > 0; x = slink[x])`.
+   - For a chain $x$ with step $d = \operatorname{diff}[x]$ and element count $c = (x - \operatorname{slink}[x]) / d$, as $b = x - j d$ ($0 \le j < c$), the complementary period $p = u - b = (u - x) + j d$ steps through an arithmetic progression of $c$ elements with common difference $d$.
+   - Crucially, the total number of borders in chains with $d > B$ is bounded by a telescoping sum! Because $(\operatorname{slink}[x], x]$ partitions $[1, \pi[u]]$:
+     $$\sum_{x : \operatorname{diff}[x] > B} c(x) = \sum_{x : \operatorname{diff}[x] > B} \frac{x - \operatorname{slink}[x]}{\operatorname{diff}[x]} < \frac{1}{B} \sum_{x} \bigl(x - \operatorname{slink}[x]\bigr) = \frac{\pi[u]}{B} \le \frac{N}{B}!$$
+
+3. **Algorithmic Compilation**:
+   - Expand $b^m = (u - p)^m = \sum_{t=0}^m \binom{m}{t} (-1)^t u^{m-t} p^t$ for $m \in \{0, 1, 2\}$.
+   - Choose threshold $B \approx \sqrt{N \log N}$ (or $B = 350$). For each step $d \in [1, B]$ and each moment $t \in \{0, 1, 2\}$, precompute prefix sums $P_{d, t}[i] = i^t A[i] + (i > d \text{ ? } P_{d, t}[i - d] : 0)$ in $O(N B)$ time and $O(N)$ rolling/offline space (by processing queries grouped by needed $d \le B$ in $O((N + Q)\sqrt{N})$ time and **$O(N)$ memory**!).
+   - For each query $(u, m)$, walk $x = \pi[u] \to \operatorname{slink}[x]$:
+     - If $d = \operatorname{diff}[x] \le B$ and $c = (x - \operatorname{slink}[x]) / d > 1$: answer the AP slice $p \in [u - x,\; u - \operatorname{slink}[x] - d]$ of step $d$ in $O(1)$ time from $P_{d, 0..2}$.
+     - Otherwise ($d > B$ or $c == 1$): iterate $b = x, x - d, \dots, \operatorname{slink}[x] + d$ directly in $O(c)$ time!
+   - By the telescoping bound $\sum_{d > B} c(x) \le N / B$, each query takes $O(\log N + N / B)$ time!
+4. **Broken-Invariant Counterexample (`BP-1A-03`)**: In the AP slice for chain $x$, the smallest border is $b_{\min} = \operatorname{slink}[x] + d$ (corresponding to $p_{\max} = u - \operatorname{slink}[x] - d$), **not** $b = \operatorname{slink}[x]$ ($p = u - \operatorname{slink}[x]$)! Including $\operatorname{slink}[x]$ double-counts that border in the next iteration of the `slink` loop.
+:::
+
+---
+
+#### Problem 2.8 (`W1A-35`) — `Extremal Border-AP Tree Construction & Sturmian Depth Analysis`
+
+- **Mathematical Statement**: For any string $S[1..N]$, define its **series-link depth** $D_{\text{slink}}(S)$ as the number of half-open arithmetic progressions in the `slink` decomposition of $S[1..N]$ (i.e., the number of jumps $u \leftarrow \operatorname{slink}[u]$ needed to reach $0$ starting from $u = \pi[N]$).
+  1. Given $N \le 10^6$, construct the lexicographically smallest binary string $S \in \{\texttt{a}, \texttt{b}\}^N$ that achieves the **maximum possible** `slink` depth $D_{\text{slink}}(S)$ among all strings of length $N$ over an arbitrary alphabet.
+  2. Prove the exact recurrence for the minimum length $L_{\min}(k)$ of a string $S$ with $D_{\text{slink}}(S) = k$.
+- **Constraints**: $1 \le N \le 10^6$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+By **Theorem 2.3**, whenever $\operatorname{diff}[v] < \operatorname{diff}[u]$, we have $v < d_1 + d_2$, i.e., $u = v + d_1 > 2 v - d_2 = 2 v - (v - w) = v + w$ where $v = \pi[u]$ and $w = \pi[\pi[u]]$! What is the minimum possible value of $u$ in terms of $v$ and $w$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Because $u - v = d_1$ and $v - w = d_2$, the overlap condition $v - d_1 < d_2$ from the proof of Theorem 2.3 rearranges to $v - (u - v) \le (v - w) - 1$, i.e., $u \ge v + w + 1$. Furthermore, on Central Sturmian (Fibonacci) words, the border lengths satisfy the exact recurrence $L_m = L_{m-1} + L_{m-2} + 2$ ($L_m = F_m - 2 \in \{1, 3, 6, 11, 19, 32, \dots\}$), where every single border changes `diff`!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+On the Fibonacci words $F_1 = \texttt{b}, F_2 = \texttt{a}, F_m = F_{m-1} F_{m-2}$, the central Sturmian prefix of length $L_m = |F_m| - 2$ has border chain $L_{m-1} \to L_{m-2} \to \dots \to 1 \to 0$ with strictly decreasing Fibonacci period steps $\operatorname{diff}[L_j] = |F_{j-2}|$. Embed the longest central Sturmian word of length $L_m < N$ as both prefix and suffix of $S[1..N]$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W1A-35`)"}
+
+1. **Diagnostic Signal**: Theorem 2.3 gave two inequalities at a `slink` boundary ($d_2 < d_1$): $\operatorname{len}[v] < d_1 + d_2$ and $d_1 \ge d_2 + 1$. We must determine the shortest possible border chain $0 < u_1 < u_2 < \dots < u_k = \pi[N]$ where every step is a distinct `slink` jump ($\operatorname{diff}[u_{r}] > \operatorname{diff}[u_{r-1}]$).
+2. **Combinatorial Word Invariant**:
+   - Let $0 = u_0 < u_1 < u_2 < \dots < u_k < u_{k+1} = N$ be the border chain of $S[1..N]$, with $d_r = u_r - u_{r-1}$.
+   - By Theorem 2.3, whenever $d_r > d_{r-1}$, the overlap $u_{r-1} - d_r$ between the prefix and suffix copies of $S[1..u_{r-1}]$ inside $S[1..u_r]$ must be strictly smaller than the minimum period $\operatorname{per}(S[1..u_{r-1}])$ of $S[1..u_{r-1}]$.
+   - On the **Fibonacci words** $F_1 = \texttt{b}, F_2 = \texttt{a}, F_m = F_{m-1} F_{m-2}$ ($|F_m| = 1, 1, 2, 3, 5, 8, 13, \dots$), the central Sturmian prefix of length $L_m = |F_m| - 2$ ($1, 3, 6, 11, 19, 32, \dots$) has minimum period $|F_{m-2}|$ and border chain:
+     $$L_m \xrightarrow{-|F_{m-2}|} L_{m-1} \xrightarrow{-|F_{m-3}|} L_{m-2} \xrightarrow{-|F_{m-4}|} \dots \xrightarrow{-2} 3 \xrightarrow{-2} 1 \xrightarrow{-1} 0.$$
+
+   - Because the Fibonacci differences $(|F_{m-2}|, |F_{m-3}|, \dots, 3, 2, 1)$ are strictly decreasing at every step, every border is its own `slink` jump, achieving `slink` depth $k$ at the minimal binary length $L_{\min}(k) = F_{k+4} - 2$ (e.g., $u_1 = 1 (\texttt{a}), u_2 = 3 (\texttt{aba}), u_3 = 6 (\texttt{abaaba}), u_4 = 11 (\texttt{abaababaaba})$)!
+3. **Algorithmic Compilation**:
+   - Generate the infinite Fibonacci word $F_\infty = \texttt{abaababaabaababaababa}\dots$ in $O(N)$ time via $F_m = F_{m-1} F_{m-2}$ until $|F_m| \ge N$.
+   - To achieve the maximum `slink` depth from $\pi[N]$ at length $N$: let $L_m = |F_m| - 2$ be the largest central Sturmian length $< N$. Place the central Sturmian word of length $L_m$ as a border of $S[1..N]$ (setting $S[1..L_m]$ and $S[N - L_m + 1 .. N]$ to that Sturmian word) in $O(N)$ time.
+4. **Broken-Invariant Counterexample**: Using the Zimin word $Z_k$ (`a`, `aba`, `abacaba`, length $2^k - 1$) requires $N = 2^{k+1} - 1$ for depth $k$ and uses $k + 1$ distinct letters, whereas the binary Central Sturmian word achieves depth $k$ at length $F_{k+4} - 2 \approx \phi^{k+4}/\sqrt{5} \ll 2^{k+1} - 1$ using **only 2 letters**!
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Decision Checklist: Choosing the Right Border / Shortcut Link
+
+| Contest Signal / Bottleneck | Structural Tool to Use | Worst-Case / Amortized Bound |
+| :--- | :--- | :--- |
+| Minimum positive border / maximum proper period (`[POI 2006]`) | Path-compressed `low[u] = (pi[u] == 0 ? u : low[pi[u]])` | $O(N)$ total ($O(1)$ per prefix) |
+| Online short-append KMP queries (`CF 1721E`) | `slink[u]` next-character skip (**Contract 2**, Theorem 2.4) | $O(\log N)$ **worst-case** per step |
+| $O(N)$-memory KMP Border Tree LCA (`Luogu P5829`) | `slink`-HLD jumping + modular test $(u - v) \bmod \operatorname{diff}[u] == 0$ | $O(\log N)$ per query, $O(N)$ space |
+| Online active-border deletion on KMP (`CF 1286E`) | `anc[u]` mismatch link (**Contract 3**, Theorem 2.4) + `__int128` | $O(N)$ **amortized** deletions total |
+| Inverse KMP realizability & counting (`CF 1764G`) | Collect $\le \lceil \log_2 i \rceil$ forbidden characters via `slink[u]` | $O(N \log N)$ total |
+| Counting / sum DP over all borders or palindromic suffixes | **Half-open** chain $(\operatorname{slink}[u], u]$ (`BP-1A-03`) | $\le \lceil \log_2 N \rceil$ APs per prefix |
+
+### 6.2 What Comes Next in Part I
+Now that we know how to compress all $\Theta(N)$ borders (and complementary periods $N - b$) of a string $S[1..N]$ into $\le \lceil \log_2 N \rceil$ arithmetic progressions:
+
+- In **[Chapter 03: Border-Group Modulo Shortest Path (`同余最短路`) and Residue-Cycle Monotonic Queues](ch03-border-modulo-shortest-path.qmd)**, we use these $O(\log N)$ period progressions to solve unbounded overlapping string concatenation up to length $W \le 10^{18}$ (`[WC2016] 论战捆竹竿`) in $O(N \log N)$ time.
+- In **[Chapter 04: Series-Link (`slink` / `diff`) DP Acceleration on KMP & PAM, Double-End Interleaving, and Binomial Moment Splitting](ch04-series-link-dp-kmp-pam.qmd)**, we prove the Shift-Overlap Invariant $\mathcal{I}(u, r) = \mathcal{I}(\operatorname{fail}[u], r - d) \sqcup \{r - \operatorname{len}[\operatorname{slink}[u]] - d\}$, turning quadratic palindrome and border partition DPs into $O(N \log N)$ linear scans.

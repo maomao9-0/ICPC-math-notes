@@ -1,0 +1,757 @@
+---
+title: "Chapter 05 — Chen–Fox–Lyndon Factorization, Duval's Automaton, All-Prefix State Sharing, and Necklace Bijections"
+subtitle: "Part II · Lyndon Theory, Significant Suffixes & The Runs Theorem (Technique IDs: T-1B-01, T-1B-02)"
+---
+
+::: {.callout-note}
+## Prerequisites & Learning Objectives
+
+- **Strict Prerequisites**: **[Chapter 01 — Period–Border Duality & the Fine–Wilf Theorem](ch01-fine-wilf-periodicity-orbits.qmd)** (primitive roots, weak vs. full periods, and period–border duality), plus assumed baseline library implementations of **KMP ($\pi$)**, **Z-Array ($Z$)**, and **Suffix Array (`SA`, `rk`, `height` + $O(1)$ RMQ LCE)**.
+- **Learning Objectives**:
+  1. Prove the **Four-Way Equivalence of Lyndon Words** ($w \in \mathcal{L} \iff \forall w = uv,\; uv < vu \iff w < v \iff w \prec v \iff w = uv$ with $u, v \in \mathcal{L}, u < v$) and extract the **Standard Factorization** ($w = uv$ where $v$ is the longest proper Lyndon suffix and smallest proper suffix).
+  2. Prove the **Chen–Fox–Lyndon (CFL) Uniqueness Theorem** ($S = w_1 w_2 \cdots w_k$ with $w_i \in \mathcal{L}$ and $w_1 \ge \cdots \ge w_k$) and derive **Duval's $O(N)$ Three-Pointer Automaton $(i, j, k)$** with its strict potential function $\Phi(i, k) = 2i + k$ and $< 2N$ comparison guarantee.
+  3. Master **All-Prefix CFL State Sharing (`r -> r - d*p`)** to compute the CFL factor count, minimum suffix, and right-endpoint sum for every prefix $S[1..r]$ in $O(1)$ per step, alongside **RLE Duval in $O(M)$ time**, **persistent right-spine binary lifting**, and **Witt's Necklace Formula / FKM De Bruijn Generation**.
+  4. Distinguish **Infinite-Periodic Concatenation Order** ($A \prec_\omega B \iff A^\omega < B^\omega$) from standard lexicographical order ($A < B$), and resolve the **Reversed-Alphabet ($>$) Maximum-Suffix Asymmetry** where Duval's active outer pointer $i$ directly locates the longest maximum suffix.
+:::
+
+---
+
+## 1. Equivalent Characterizations of Lyndon Words & Standard Factorization (`T-1B-01`)
+
+### 1.1 The Diagnostic Signal: Why Cyclic Shifts, Concatenation Greedies, and Prefix Suffixes Share One Decomposition
+
+Suppose a problem asks you to:
+
+- Find the lexicographically smallest cyclic shift of a string $S[1..N]$, or maintain the minimum and maximum suffixes of every prefix $S[1..r]$ in $O(N)$ time and $O(1)$ auxiliary space (`Luogu P6127`).
+- Concatenate a family of strings or suffixes in an order minimizing the final string (`ARC 050 D`), or partition $S[1..N]$ into at most $K$ blocks with optional reversals to minimize the result (`CF 594E` at $N = 5 \times 10^6$).
+- Factor a Run-Length Encoded string $S = c_1^{a_1} c_2^{a_2} \cdots c_M^{a_M}$ of total length $\sum a_t \le 10^{18}$ (`W1B-35`), or construct a sentinel-free bijection $\Sigma^N \leftrightarrow \Sigma^N$ (`Bijective BWT`) and the lexicographically smallest De Bruijn cycle of order $N$.
+
+Naive suffix sorting fails when $N = 5 \times 10^6$ with tight memory, fails completely when $\sum a_t = 10^{18}$, and gives the wrong order when two strings are prefixes of one another ($A \sqsubset B$). All of these problems collapse to a single algebraic object: decomposing a word into **unbordered, cyclically minimal building blocks** called **Lyndon words**.
+
+### 1.2 Strong Lexicographical Order ($\prec$) vs. Proper-Prefix Order ($\sqsubset$)
+
+Let $(\Sigma, <)$ be a totally ordered alphabet. For two finite words $X, Y \in \Sigma^*$, the standard lexicographical order $X < Y$ holds in two fundamentally different ways:
+
+1. **Proper-Prefix Containment ($X \sqsubset Y$)**: $X$ is a proper prefix of $Y$ ($|X| < |Y|$ and $Y[1..|X|] = X$).
+2. **Strong Lexicographical Inequality ($X \prec Y$)**: $X < Y$ and $X \not\sqsubset Y$, meaning there exists a mismatch index $t \le \min(|X|, |Y|)$ where $X[1..t-1] = Y[1..t-1]$ and $X[t] < Y[t]$.
+
+Before stating any theorem, we isolate the two algebraic laws that govern how $<$ and $\prec$ behave when strings are prepended or appended:
+
+- **Law 1 (Left-Cancellation Invariance)**: Prepending any common prefix $W \in \Sigma^*$ preserves both orders:
+  $$X < Y \iff WX < WY, \qquad X \prec Y \iff WX \prec WY.$$
+
+- **Law 2 (Right-Extension Stability of $\prec$, and Instability of $\sqsubset$)**: If $X \prec Y$, the mismatch at position $t \le \min(|X|, |Y|)$ is already locked in, so for **all** right-extensions $Z_1, Z_2 \in \Sigma^*$:
+  $$X \prec Y \implies X Z_1 \prec Y Z_2.$$
+  By contrast, if $X \sqsubset Y$ (say $X = \texttt{ab}$ and $Y = \texttt{aba}$), appending $Z_1 = Z_2 = \texttt{c}$ flips the inequality: $X \cdot \texttt{c} = \texttt{abc} > \texttt{abac} = Y \cdot \texttt{c}$!
+
+### 1.3 Theorem 5.1: Four-Way Equivalence of Lyndon Words & Standard Factorization
+
+A nonempty word $w \in \Sigma^+$ is called a **Lyndon word** (written $w \in \mathcal{L}$) if it satisfies any—and hence all—of the four equivalent conditions below.
+
+::: {.callout-important}
+## Theorem 5.1 (Four Equivalent Characterizations of a Lyndon Word & Standard Factorization)
+
+For a nonempty word $w \in \Sigma^+$, the following four statements are equivalent:
+
+1. **(Strict Minimal Cyclic Shift)**: $w$ is strictly smaller than all of its nontrivial cyclic rotations: for every split $w = uv$ with $u, v \in \Sigma^+$, $uv < vu$.
+2. **(Strict Minimal Proper Suffix)**: $w$ is strictly smaller than every nonempty proper suffix of $w$: for every split $w = uv$ with $u, v \in \Sigma^+$, $w < v$.
+3. **(Strong Inequality Against Proper Suffixes & Border-Freeness)**: Every nonempty proper suffix $v$ of $w$ satisfies $w \prec v$. In particular, $w$ is **unbordered** ($\text{Border}(w) = \emptyset$, $\pi[|w|] = 0$) and **primitive**.
+4. **(Recursive / Standard Factorization Characterization)**: Either $|w| = 1$, or $|w| \ge 2$ and there exist Lyndon words $u, v \in \mathcal{L}$ with $u < v$ such that $w = uv$ (and consequently $u < uv < v$). Moreover, choosing $v$ to be the **longest nonempty proper Lyndon suffix** of $w$ yields the canonical **Standard Factorization** $w = uv$, in which $v$ is simultaneously the **lexicographically smallest nonempty proper suffix** of $w$.
+:::
+
+#### Complete Proof ($1 \iff 2 \iff 3 \iff 4$)
+
+- **($2 \implies 3$)**: Let $v$ be any nonempty proper suffix of $w$. Because $|w| > |v|$, $w$ cannot be a prefix of $v$ ($w \not\sqsubset v$). Therefore $w < v$ immediately forces a character mismatch within the first $|v|$ positions, so $w \prec v$. If $w$ had a nonempty proper border $b$, then $b$ would be a proper prefix of $w$ ($b \sqsubset w \implies b < w$) and also a nonempty proper suffix of $w$ ($w < b$ by (2)), a contradiction. Similarly, if $w = z^k$ for $k \ge 2$, the suffix $v = z$ is a proper prefix of $w$, impossible.
+- **($3 \implies 1$)**: For any split $w = uv$ with $u, v \in \Sigma^+$, condition (3) gives $uv = w \prec v$. By Law 2 (right-extension stability of $\prec$ with $Z_1 = \varepsilon, Z_2 = u$), $uv \prec vu \implies uv < vu$.
+- **($1 \implies 2$)**: Assume $uv < vu$ for every nontrivial split $w = uv$, and suppose for contradiction that some nonempty proper suffix $v$ satisfies $v \le w$. Since $w$ is primitive by (1) (if $w = z^k$ with $k \ge 2$, splitting $u = z, v = z^{k-1}$ gives $uv = vu$), we cannot have $v = w$, so $v < w$. Choose the **longest** nonempty proper suffix $v$ of $w$ satisfying $v < w$, and write $w = uv$ ($u, v \in \Sigma^+$).
+  - Could $v \prec w$? If $v \prec uv$, then by Law 2 right-extending $v$ to $vu$ gives $vu \prec uv$, contradicting (1) ($uv < vu$).
+  - Hence $v$ must be a proper prefix of $w$: $v \sqsubset uv$, so $w = v y$ for some nonempty word $y$ of length $|y| = |w| - |v| = |u|$.
+  - Now compare $w = v y$ with its rotation $v u$: by (1), $w = u v < v u$, so $v y < v u$. By Law 1 (left-cancelling the common prefix $v$), we obtain $y < u \sqsubset w$, which means $y$ is a nonempty proper suffix of $w$ satisfying $y < w$!
+  - Even better, since $v \sqsubset w$, what if we prepend the last character $c$ of $u$ (writing $u = u' c$)? If $v$ was chosen as the **shortest** prefix-border suffix, or equivalently if we apply (1) to the split $w = y' v'$ where $v' = y$: because $v \sqsubset w = uv$, if $|v| < |u|$ then $u = v u''$, and (1) gives $(v u'') v < v (u'' v) \implies u'' v < u \sqsubset w$ (by left-cancelling $v$), producing a strictly **longer** proper suffix $u'' v$ ($|u'' v| = |w| - |v| > |v|$ when $|v| < |w|/2$) with $u'' v < w$! And if $|v| \ge |w|/2$, then $v \sqsubset w$ means $w$ has period $p = |u| = |w| - |v| \le |v|$, so $v = u v'$ and left-cancelling $u$ from $u (u v') = w < v u = u v' u$ gives $u v' < v' u$, which by induction on $|v|$ (or repeating the period cancellation $v = u^d v_0$) reduces to $|v_0| < |u|$ and yields a suffix of length $|w| - |v_0| > |v|$ strictly smaller than $w$, contradicting the maximality of $|v|$!
+- **($4 \implies 2$)**: Suppose $w = uv$ with $u, v \in \mathcal{L}$ and $u < v$. First we check $uv < v$:
+  - If $u \prec v$, Law 2 gives $uv \prec v \implies uv < v$.
+  - If $u \sqsubset v$, write $v = u v'$ for a nonempty proper suffix $v'$ of $v$. Since $v \in \mathcal{L}$, $v < v'$. Prepending $u$ via Law 1 yields $uv = u(u v') < u v' = v$.
+  Now let $s$ be any nonempty proper suffix of $w = uv$. There are three cases:
+
+  1. $s = v$: we just proved $w = uv < v = s$.
+  2. $s$ is a nonempty proper suffix of $v$: since $v \in \mathcal{L}$, $w = uv < v < s$.
+  3. $s = u' v$ for a nonempty proper suffix $u'$ of $u$: since $u \in \mathcal{L}$, $u \prec u'$ by ($2 \implies 3$). Right-extending both sides by $v$ (Law 2) gives $w = uv \prec u'v = s$.
+- **($2 \implies 4$)**: Let $|w| \ge 2$, and let $v$ be the **longest** nonempty proper suffix of $w$ that belongs to $\mathcal{L}$ (well-defined because the 1-character suffix $w[|w|]$ is always in $\mathcal{L}$). Write $w = uv$. Since $w \in \mathcal{L}$, $uv = w < v$, which forces $u < uv < v$ (as $u \sqsubset uv$). Suppose for contradiction that $u \notin \mathcal{L}$. Let $s$ be the lexicographically smallest nonempty proper suffix of $u$; by minimality of $s$ among suffixes of $u$, $s$ is strictly smaller than all of its own proper suffixes, so $s \in \mathcal{L}$ and $s < u < v$. Applying ($4 \implies 2$) to the pair $(s, v)$ shows that $sv \in \mathcal{L}$! Because $sv$ is a proper suffix of $w = uv$ strictly longer than $v$, this contradicts the choice of $v$ as the *longest* proper Lyndon suffix of $w$. Finally, since every proper suffix of $v$ is $> v$ and every longer proper suffix $u'v$ of $w$ has $u' \ge u_{\min} \implies u'v > v$ (as $v$ is the longest Lyndon suffix), $v$ is also the **lexicographically smallest nonempty proper suffix** of $w$. $\blacksquare$
+
+---
+
+## 2. Core Combinatorial Word Invariants: Chen–Fox–Lyndon (CFL) Uniqueness & Duval's $O(N)$ Automaton (`T-1B-01`)
+
+### 2.1 Theorem 5.2 (The Combinatorial Word Invariant): Chen–Fox–Lyndon (CFL) Factorization Uniqueness
+
+What happens when a string $S \in \Sigma^+$ is *not* a Lyndon word? Theorem 5.1(4) tells us that any adjacent pair of Lyndon words satisfying $w_i < w_{i+1}$ can be fused into a single larger Lyndon word $w_i w_{i+1} \in \mathcal{L}$. Performing these fusions until no adjacent pair satisfies $w_i < w_{i+1}$ leaves a non-increasing chain of Lyndon words $w_1 \ge w_2 \ge \cdots \ge w_k$. Remarkably, the result does not depend on the order of fusions!
+
+::: {.callout-important}
+## Theorem 5.2 (Chen–Fox–Lyndon Uniqueness Theorem, 1958)
+
+Every nonempty string $S \in \Sigma^+$ admits a **unique** factorization into Lyndon words
+$$S = w_1 w_2 \cdots w_k \qquad \text{such that } w_i \in \mathcal{L} \text{ for all } 1 \le i \le k \text{ and } w_1 \ge w_2 \ge \cdots \ge w_k.$$
+Moreover, this unique **CFL factorization** satisfies three canonical extremal properties:
+
+1. **Longest Lyndon Prefix ($w_1$)**: The first factor $w_1$ is the **longest prefix** of $S$ that belongs to $\mathcal{L}$.
+2. **Longest Lyndon Suffix & Smallest Nonempty Suffix ($w_k$)**: The last factor $w_k$ is both the **longest suffix** of $S$ in $\mathcal{L}$ and the **lexicographically smallest nonempty suffix** of $S$.
+3. **Minimal Cyclic Shift Localization**: In the CFL factorization of the doubled string $S + S = w_1 w_2 \cdots w_m$, the unique factor $w_r$ whose starting index satisfies $\text{start}(w_r) \le N$ and whose block (combining equal copies $w_r = w_{r+1} = \dots$) crosses or reaches $N + 1$ begins at the **lexicographically smallest cyclic shift** of $S$.
+:::
+
+#### Proof of Uniqueness & Extremal Corollaries
+
+- **Existence**: Start with the $N$ single-character Lyndon words $S[1], S[2], \dots, S[N] \in \mathcal{L}$. As long as there exists an index $i$ with $w_i < w_{i+1}$, replace $(w_i, w_{i+1})$ by the single Lyndon word $w_i w_{i+1} \in \mathcal{L}$ (Theorem 5.1(4)). Each merge reduces the number of factors by $1$, terminating in at most $N - 1$ merges with $w_1 \ge w_2 \ge \cdots \ge w_k$.
+- **Uniqueness**: Suppose $S = w_1 w_2 \cdots w_k = w'_1 w'_2 \cdots w'_{k'}$ are two valid CFL factorizations. By induction on $k$, it suffices to prove $w_1 = w'_1$. Without loss of generality, suppose $|w_1| > |w'_1|$. Then $w_1$ spans $w'_1$ and overlaps some number of subsequent factors:
+  $$w_1 = w'_1 w'_2 \cdots w'_{r-1} p,$$
+  where $r \ge 2$ and $p$ is a nonempty prefix of $w'_r$ ($p \sqsubseteq w'_r$). Because $p$ is a nonempty **proper suffix** of the Lyndon word $w_1$, Theorem 5.1(2) gives $w_1 < p$. On the other hand, since $p$ is a prefix of $w'_r$ and the second factorization is non-increasing, while $w'_1$ is a proper prefix of $w_1$, we have the chain:
+  $$w_1 < p \le w'_r \le w'_{r-1} \le \cdots \le w'_1 \sqsubset w_1 \implies w_1 < w_1,$$
+  an immediate contradiction! Hence $|w_1| = |w'_1|$, so $w_1 = w'_1$.
+
+- **Proof of Property 1 ($w_1$ is the longest Lyndon prefix)**: Any Lyndon prefix $u$ of $S$ is the first factor of the CFL factorization of $u$ followed by single-character Lyndon factors; the uniqueness proof above shows $|u| \le |w_1|$ (otherwise $u = w_1 \cdots w_{r-1} p$ yields $u < p \le w_r \le w_1 < u$).
+- **Proof of Property 2 ($w_k$ is the smallest nonempty suffix)**: Any nonempty suffix $s$ of $S$ starts inside some factor $w_r$ ($1 \le r \le k$), so $s = v w_{r+1} \cdots w_k$ where $v$ is a nonempty suffix of $w_r$. If $v$ is a *proper* suffix of $w_r$, Theorem 5.1(3) gives $w_r \prec v \implies w_r \prec s$, and thus $w_k \le w_r \prec s$. If $v = w_r$, then $s = w_r w_{r+1} \cdots w_k \ge w_r \ge w_k$. Hence $w_k \le s$ for all suffixes $s$, with equality only when $s = w_k$. $\blacksquare$
+
+### 2.2 Pre-Lyndon Words & Duval's Three-Pointer Automaton $(i, j, k)$
+
+How can we find the longest Lyndon prefix $w_1$ of $S[i..N]$ without backtracking over already-scanned characters when a long periodic candidate fails at the last moment? Consider $S = \texttt{ab}\texttt{ab}\texttt{ab}\texttt{a}\texttt{c}$ vs. $S = \texttt{ab}\texttt{ab}\texttt{ab}\texttt{a}\texttt{a}$. Both share the prefix $P = (\texttt{ab})^3 \texttt{a}$ of period $p = 2$:
+
+- If the next character is $\texttt{c} > \texttt{b}$, then $(\texttt{ab})^3 \texttt{ac} = \texttt{abababac}$ collapses into a **single Lyndon word** of length $8$!
+- If the next character is $\texttt{a} < \texttt{b}$, then $\texttt{abababaa}$ is **not** Lyndon (its suffix $\texttt{aa}$ is smaller than $\texttt{ab}$), and its CFL factorization freezes the three completed periods $\texttt{ab} \ge \texttt{ab} \ge \texttt{ab}$ followed by $\texttt{a} \ge \texttt{a}$.
+
+Duval (1983) formalized the intermediate prefixes $P = w^d w'$ that can still become Lyndon if followed by a large character:
+
+::: {.callout-note}
+## Definition 5.3 (Pre-Lyndon / Duval Word)
+
+A nonempty word $P \in \Sigma^+$ is called a **pre-Lyndon word** if it is a prefix of some Lyndon word. Every pre-Lyndon word has a unique canonical decomposition
+$$P = w^d w', \qquad \text{where } w \in \mathcal{L},\quad p = |w| \ge 1,\quad d \ge 1,\quad \text{and } w' \sqsubset w \;\; (0 \le |w'| < p).$$
+Here $p = |w|$ is the **fundamental Lyndon period** of $P$, $d = \lfloor |P|/p \rfloor$ is the number of completed copies of $w$, and $w'$ is the incomplete periodic prefix tail.
+:::
+
+#### The Three-Pointer State Machine $(i, j, k)$
+
+While factoring the remaining suffix $S[i..N]$, Duval's algorithm maintains three 1-based pointers $(i, j, k)$ satisfying the **Loop Invariant**:
+
+$$\text{The active window } S[i..k-1] = w^d w' \text{ is a pre-Lyndon word of fundamental period } p = k - j,$$
+where $i$ is the start of the active pre-Lyndon block, $k$ ($k > i$) is the next unread character index, and $j = k - p \in [i, k-1]$ points to the character exactly one period $p$ behind $k$ (so $S[j]$ is the unique character that **continues the period $p$**).
+
+```
+Index:   i          i+p        i+2p       j      k
+String:  [--- w ---][--- w ---][-- w' --][c_j]...[c_k]
+         |<-- p --->|<-- p --->|<--- p = k - j --->|
+```
+
+When inspecting $S[k]$ against $S[j]$, exactly one of three transitions occurs:
+
+1. **Case 1 ($S[k] == S[j]$ — Periodic Continuation)**:
+   Appending $S[k]$ extends the incomplete prefix $w'$ by one character along $w$ (or completes another copy of $w$, resetting $w' \gets \varepsilon$ and incrementing $d \gets d + 1$). The period $p = k - j$ is unchanged:
+   $$j \leftarrow j + 1, \qquad k \leftarrow k + 1.$$
+
+2. **Case 2 ($S[k] > S[j]$ — Collapse into a Single Lyndon Word)**:
+   Suppose $w = w' c_j u''$ where $c_j = S[j]$. Because $S[k] > c_j$, the modified tail $w' S[k]$ satisfies $w \prec w' S[k]$, and by Theorem 5.1(4), $w' S[k] \in \mathcal{L}$ with $w < w' S[k]$. Applying Theorem 5.1(4) $d$ times from right to left ($w < w' S[k] \implies w(w' S[k]) \in \mathcal{L} \implies \cdots \implies w^d w' S[k] \in \mathcal{L}$) proves that the **entire substring $S[i..k]$ is now a single Lyndon word** of length $p_{\text{new}} = k - i + 1$ with $d_{\text{new}} = 1$ and $w'_{\text{new}} = \varepsilon$! To set the new period $p_{\text{new}} = (k+1) - j_{\text{new}} = k - i + 1$, we reset $j$ to $i$:
+   $$j \leftarrow i, \qquad k \leftarrow k + 1.$$
+
+3. **Case 3 ($S[k] < S[j]$ — Periodic Rupture & CFL Emission)**:
+   Now $w' S[k] \prec w$. Any longer prefix $S[i..m]$ ($m \ge k$) contains a proper suffix starting with $w' S[k] \prec w \sqsubseteq S[i..m]$ and therefore can **never** be a Lyndon word. By Theorem 5.2(1), the longest Lyndon prefix of $S[i..N]$ is $w = S[i..i+p-1]$, and the next $d - 1$ copies of $w$ are also frozen as CFL factors! We emit $d = \lfloor (k - i)/p \rfloor$ copies of $w$:
+   $$\text{while } i \le j: \quad \text{emit } S[i .. i + p - 1], \quad i \leftarrow i + p,$$
+   and break out of the inner loop to restart a new outer phase at the updated $i_{\text{new}} = i_{\text{old}} + d \cdot p$ (the exact starting position of the incomplete remainder $w'$!).
+
+### 2.3 Two Self-Contained Proofs of the $< 2N$ Comparison Bound
+
+Why doesn't rewinding $k$ back to $i_{\text{new}} + 1$ after Case 3 cause quadratic blowup on strings like $S = (\texttt{ab})^{N/2}\texttt{a}$? Because $i$ advances by $\Delta i = d \cdot p$ across all $d$ emitted periods, while only the incomplete remainder $w'$ of length $|w'| < p \le \Delta i$ is ever re-scanned!
+
+::: {.callout-tip}
+## Theorem 5.4 (Duval's Linear-Time & $< 2N$ Comparison Guarantee)
+
+On any string $S[1..N]$, Duval's algorithm performs **at most $2N - 2$ character comparisons** and runs in $O(N)$ time and $O(1)$ auxiliary space.
+
+- **Proof 1 (Phase-Rewind Accounting)**: Partition the execution into outer phases indexed by $t = 1, \dots, T$. In phase $t$, let $\Delta i_t = d_t p_t \ge p_t \ge 1$ be the total length of the $d_t$ Lyndon factors emitted at the end of phase $t$. At the moment Case 3 fires (or $k = N + 1$), the active window $S[i..k-1] = w^{d_t} w'$ has length $k - i = d_t p_t + |w'|$, where the incomplete prefix $w' \sqsubset w$ satisfies $|w'| \le p_t - 1 < d_t p_t = \Delta i_t$. Since $k$ started at $i + 1$ and incremented once per comparison, the number of comparisons in phase $t$ is at most $(k - i) \le \Delta i_t + |w'| \le 2\Delta i_t - 1$ (if Case 3 fires at $k \le N$, that gives $+1$ failed comparison, so $\Delta i_t + |w'| + 1 \le 2\Delta i_t$). Summing over all phases gives:
+  $$\sum_{t=1}^T (\text{comparisons in phase } t) \;\le\; \sum_{t=1}^T 2\Delta i_t \;=\; 2N.$$
+
+- **Proof 2 (Strict Potential Function $\Phi(i, k) = 2i + k$)**: Define the potential of the state $(i, j, k)$ at the start of each inner-loop comparison to be $\Phi(i, k) = 2i + k$. Initially $(i, k) = (1, 2)$, so $\Phi = 4$; upon termination $i = N + 1$, so $\Phi \le 3N + 4$.
+  - In **Case 1** and **Case 2**, $i$ is unchanged and $k \gets k + 1$, so $\Delta \Phi = +1$.
+  - In **Case 3**, $i$ increases by $\Delta i = d \cdot p \ge p$, while $k$ is reset from $i_{\text{old}} + d \cdot p + |w'|$ to $k_{\text{new}} = i_{\text{new}} + 1 = i_{\text{old}} + d \cdot p + 1$, changing $k$ by $\Delta k = 1 - |w'|$. Since $|w'| \le p - 1 \le \Delta i - 1$, the potential change is:
+    $$\Delta \Phi = 2\Delta i + \Delta k = 2\Delta i + 1 - |w'| \ge \Delta i + 2 \ge 3 > 0.$$
+  Because every character comparison strictly increases $\Phi(i, k)$ by at least $+1$, the total number of steps is $O(N)$. $\blacksquare$
+:::
+
+---
+
+## 3. Reverse-Engineering Scratchpad: All-Prefix CFL State Sharing, $O(M)$ RLE Duval & Necklace Bijections (`T-1B-01`, `T-1B-02`)
+
+### 3.1 All-Prefix CFL Factorization via Inner-Loop State Sharing (`r -> r - d*p`)
+
+Suppose a problem (`Luogu P6127`, or Jin Ce's 2019 treatise) asks for the CFL factor count `cnt[r]`, the starting index of the lexicographically smallest suffix `min_suf[r]` (= last CFL factor), and the sum/XOR of CFL factor right-endpoints for **every prefix $S[1..r]$** ($1 \le r \le N$) in $O(N)$ total time.
+
+Running Duval's outer loop from scratch for each prefix $S[1..r]$ would take $\Theta(N^2)$ time because Case 3 is only triggered when a mismatch $S[k] < S[j]$ occurs in the future. However, inspect the state of Duval's single global pass at the exact moment the inner pointer $k$ has processed $S[r]$ (after Cases 1 or 2 have updated $j$ for index $r$, so the next unread index is $k = r + 1$):
+
+$$\text{Prefix } S[1..r] \;=\; \underbrace{w_1 w_2 \cdots w_m}_{\text{already emitted on } S[1..i-1]} \;\cdot\; \underbrace{w^d}_{\text{completed periods } S[i..i+dp-1]} \;\cdot\; \underbrace{w'}_{\text{remainder } S[i+dp..r]},$$
+where $p = (r + 1) - j$ is the current period of $S[i..r]$, $d = \lfloor (r - i + 1)/p \rfloor \ge 1$, and $|w'| = (r - i + 1) \bmod p < p$.
+
+::: {.callout-important}
+## Theorem 5.5 (All-Prefix CFL State-Sharing Invariant — `r -> r - d*p`)
+
+If the string terminated right now at index $r$, what would Duval's algorithm do with the unemitted suffix $S[i..r] = w^d w'$?
+
+1. It would first emit the $d$ completed copies of $w = S[i..i+p-1]$ (each of which is a valid Lyndon word $\le w_m$ and $\ge w'$).
+2. It would then restart at $i + dp$ to factor the remainder $w' = S[i+dp..r]$.
+3. **Crucial State-Sharing Identity**: Because $S[i..r] = w^d w'$ has period $p$, the remainder $w' = S[i+dp..r]$ is character-for-character identical to the prefix $S[i..r - dp]$! Moreover, because the current outer phase started at $i$ and scanned sequentially from $i$ to $r$, the prefix $S[1..r']$ at step
+   $$r' = r - d \cdot p \in [i,\; i + p - 2]$$
+   was visited during the **exact same outer phase** (with the exact same emitted prefix $S[1..i-1]$)!
+
+Consequently, for every $r \in [1, N]$, letting $p = r + 1 - j$ (after updating $j$ for $S[r]$) and $d = \lfloor (r - i + 1)/p \rfloor$:
+
+- **If $(r - i + 1) \bmod p == 0$** (the remainder $w'$ is empty, so $S[i..r] = w^d$):
+  $$\text{cnt}[r] = \text{cnt}[i - 1] + d, \qquad \text{min\_suf}[r] = r - p + 1.$$
+
+- **If $(r - i + 1) \bmod p > 0$** (nonempty remainder $w'$, mirrored at $r' = r - d \cdot p$):
+  $$\text{cnt}[r] = \text{cnt}[r - d \cdot p] + d, \qquad \text{min\_suf}[r] = \text{min\_suf}[r - d \cdot p] + d \cdot p.$$
+:::
+
+Let us hand-check Theorem 5.5 on $S = \texttt{ababa}$ at $i = 1$:
+
+- $r = 1$ ($S[1..1] = \texttt{a}$): $p = 1, d = 1, |w'| = 0 \implies \text{cnt}[1] = 1, \text{min\_suf}[1] = 1$ ($\texttt{a}$).
+- $r = 2$ ($S[1..2] = \texttt{ab}$): Case 2 sets $j = 1$, so $p = 2, d = 1, |w'| = 0 \implies \text{cnt}[2] = 1, \text{min\_suf}[2] = 1$ ($\texttt{ab}$).
+- $r = 3$ ($S[1..3] = \texttt{aba}$): Case 1 sets $j = 2$, so $p = 2, d = 1, |w'| = 1 > 0$. Here $r' = 3 - 1 \cdot 2 = 1$:
+  $$\text{cnt}[3] = \text{cnt}[1] + 1 = 2 \;\; (\texttt{ab} \mid \texttt{a}), \qquad \text{min\_suf}[3] = \text{min\_suf}[1] + 2 = 3 \;\; (\texttt{a}).$$
+
+- $r = 4$ ($S[1..4] = \texttt{abab}$): Case 1 sets $j = 3$, so $p = 2, d = 2, |w'| = 0 \implies \text{cnt}[4] = 2 \;\; (\texttt{ab} \mid \texttt{ab}), \text{min\_suf}[4] = 4 - 2 + 1 = 3 \;\; (\texttt{ab})$.
+- $r = 5$ ($S[1..5] = \texttt{ababa}$): Case 1 sets $j = 4$, so $p = 2, d = 2, |w'| = 1 > 0$. Here $r' = 5 - 2 \cdot 2 = 1$:
+  $$\text{cnt}[5] = \text{cnt}[1] + 2 = 3 \;\; (\texttt{ab} \mid \texttt{ab} \mid \texttt{a}), \qquad \text{min\_suf}[5] = \text{min\_suf}[1] + 4 = 5 \;\; (\texttt{a}).$$
+
+### 3.2 Run-Length Encoded (RLE) Duval in $O(M)$ Time (`T-1B-01`)
+
+Now suppose $S = c_1^{a_1} c_2^{a_2} \cdots c_M^{a_M}$ ($c_t \ne c_{t+1}$, $M \le 2 \times 10^5$, $\sum a_t \le 10^{18}$). Why can we factor $S$ in $O(M)$ time without unpacking the exponents $a_t$?
+
+::: {.callout-important}
+## Lemma 5.6 (RLE-Lyndon Block Boundary Invariant)
+
+In any compressed string $S = c_1^{a_1} c_2^{a_2} \cdots c_M^{a_M}$ with $c_t \ne c_{t+1}$ and $a_t \ge 1$:
+
+1. **No Interior Starts**: No Lyndon factor $w$ of length $|w| > 1$ in the CFL factorization of $S$ can start or end strictly in the interior of a unary block $c_t^{a_t}$. Why? If $w$ started at the second or later copy of $c_t$, then $c_t = w[1] = \min(w) < w$ (since $|w| > 1$ and $w \in \mathcal{L}$), so the preceding copy of $c_t$ would merge with $w$ via $c_t < w \implies c_t w \in \mathcal{L}$!
+2. **Exact RLE Block Comparison Rule**: Consequently, every non-unary Lyndon factor starts at the beginning of some block $c_i^{a_i}$ (whose character $c_i$ is the unique minimum character of that Lyndon word, appearing with multiplicity $a_i$ at its start) and ends at the end of some block $c_r^{a_r}$. When running Duval on the $M$ blocks $(c_t, a_t)$:
+   - **At the start of a period ($j = i$)**: If $c_k == c_i$ and $a_k > a_i$, then $c_i^{a_k}$ contains $a_i + 1$ consecutive copies of the minimum character $c_i$, which is strictly smaller than $c_i^{a_i} c_{i+1}\dots$ (**Case 3: Periodic Rupture**!). If $c_k == c_i$ and $a_k < a_i$, then after matching $a_k$ copies of $c_i$, the next character $c_{k+1}$ must satisfy $c_{k+1} > c_i$ (otherwise $c_{k+1} < c_i$ triggers Case 3 on $c_{k+1}$), which triggers **Case 2 (Collapse)** against the $(a_k+1)$-st copy of $c_i$ in block $i$!
+   - **Inside a period ($j > i$)**: Since $c_j > c_i$, any mismatch in exponent $a_k \ne a_j$ when $c_k = c_j$ simply resolves at the first character following the shorter block: after $\min(a_k, a_j)$ characters, we compare $c_{k+1}$ against $c_j$ (if $a_k < a_j$) or $c_k$ against $c_{j+1}$ (if $a_k > a_j$).
+:::
+
+Thus only **unary factors** $c_t^{a_t}$ (where $w = c_t$ of length $1$ is emitted $a_t$ times) split an RLE block into $a_t$ identical 1-character factors; every multi-block factor is a contiguous subsegment of RLE blocks $S_{\text{RLE}}[i..i+p_{\text{blk}}-1]$, computable in $O(M)$ time!
+
+### 3.3 Witt's Necklace Formula, FKM Generation & The Bijective BWT (`T-1B-02`)
+
+Every word $S \in \Sigma^N$ over an alphabet of size $\sigma = |\Sigma|$ can be written uniquely as $S = u^{N/d}$, where $u \in \Sigma^d$ ($d \mid N$) is its **primitive root**. Because $u$ is primitive, its $d$ cyclic shifts are all distinct, and by Theorem 5.1(1) **exactly one** of those $d$ shifts is a Lyndon word of length $d$! Grouping all $\sigma^N$ strings in $\Sigma^N$ by the length $d \mid N$ of their primitive root gives Witt's fundamental identity and Burnside's necklace count:
+
+$$\sigma^N = \sum_{d \mid N} d \cdot L_\sigma(d) \iff L_\sigma(N) = \frac{1}{N} \sum_{d \mid N} \mu\!\left(\frac{N}{d}\right) \sigma^d, \qquad N_\sigma(N) = \sum_{d \mid N} L_\sigma(d) = \frac{1}{N} \sum_{d \mid N} \varphi\!\left(\frac{N}{d}\right) \sigma^d,$$
+where $L_\sigma(d)$ is the number of Lyndon words of length $d$ and $N_\sigma(N)$ is the number of $N$-bead **necklaces** (cyclic equivalence classes of $\Sigma^N$).
+
+#### Duval's Next-Lyndon Word & The FKM De Bruijn Algorithm (1978 / 1988)
+
+How do we iterate through all Lyndon words of length $\le N$ in lexicographical order in $O(1)$ amortized time per word?
+
+1. **Next-Lyndon Transition**: Given the current Lyndon word $w \in \mathcal{L}$ ($|w| \le N$), form its length-$N$ periodic repetition $P[1..N] = (w^\omega)[1..N]$ (which is the lexicographically smallest pre-Lyndon word of length $N$ having prefix $w$). Strip all trailing occurrences of the largest alphabet symbol $z = \max \Sigma$ from $P$, and increment the last remaining character $P[m]$ to its successor in $\Sigma$. The resulting prefix $P[1..m]$ is the **exact lexicographically next Lyndon word of length $\le N$**!
+2. **Fredricksen–Kessler–Maiorana (FKM) De Bruijn Theorem**: If we start at $w = a_{\min}$ and repeatedly apply the Next-Lyndon transition for order $N$, outputting the word $w$ **if and only if $|w| \mid N$**, the concatenation of all emitted Lyndon words has total length $\sum_{d \mid N} d \cdot L_\sigma(d) = \sigma^N$ and forms the **lexicographically smallest De Bruijn cycle of order $N$** in $O(1)$ amortized time per character and $O(N)$ memory!
+
+#### The Bijective Burrows–Wheeler Transform (`BWTS` — Gil & Scott 2012; Kufleitner 2009)
+
+Standard BWT requires appending an artificial end-of-string sentinel $\$$ smaller than all characters of $\Sigma$ so that the string becomes primitive and has $N+1$ distinct rotations. Using the CFL factorization $S = w_1 w_2 \cdots w_k$ ($w_1 \ge w_2 \ge \cdots \ge w_k$), we obtain a **sentinel-free bijection** $\text{BWTS}: \Sigma^N \leftrightarrow \Sigma^N$:
+
+- **Forward Transform (`BWTS`)**: Factor $S = w_1 w_2 \cdots w_k$ via Duval. Generate all $|w_r|$ cyclic shifts of each factor $w_r$ ($1 \le r \le k$), sort all $N = \sum_{r=1}^k |w_r|$ shifts by the **infinite periodic order** $X^\omega \le Y^\omega$ (breaking ties between identical factors $w_r = w_s$ by $r < s$), and output the sequence $T[1..N]$ of **last characters** of the sorted shifts.
+- **Inverse Transform ($O(N)$ Disjoint-Cycle Reconstruction)**: Given any $T \in \Sigma^N$, let $F = \text{sort}(T)$ and construct the standard LF-permutation $\pi_{LF}(t)$ mapping the $r$-th occurrence of character $c$ in $T$ to the $r$-th occurrence of $c$ in $F$. Decompose $\pi_{LF}$ into its **disjoint cycles**: each cycle $C$ traverses a primitive necklace $u_C$ in reverse (or forward via $\pi_{FL} = \pi_{LF}^{-1}$), which rotates to a unique Lyndon word $w_C \in \mathcal{L}$. Sorting the resulting Lyndon words in non-increasing order $w_1 \ge w_2 \ge \cdots \ge w_k$ reconstructs $S = w_1 w_2 \cdots w_k$ uniquely in $O(N)$ time!
+
+---
+
+## 4. Infinite-Periodic Order ($\prec_\omega$), Algorithmic Contracts & Boundary Pitfalls (`BP-05-01`–`BP-05-03`)
+
+### 4.1 Infinite-Periodic Order ($\prec_\omega$) vs. Finite Lexicographical Order ($<$)
+
+When sorting cyclic shifts of strings of *different* lengths (as in `BWTS`), or choosing whether to place string $A$ before $B$ in a concatenation greedy (`ARC 050 D`, `AGC 023 F`), comparing $A < B$ fails on proper prefixes:
+
+- Take $A = \texttt{ab}$ and $B = \texttt{aba}$. Under finite lexicographical order, $A \sqsubset B \implies A < B$.
+- Yet $AB = \texttt{ababa} > \texttt{abaab} = BA$, and the infinite periodic words satisfy $A^\omega = \texttt{ababab}\dots > \texttt{abaaba}\dots = B^\omega$!
+
+The correct total preorder on nonempty strings is the **Infinite-Periodic Order** $\le_\omega$:
+$$A \le_\omega B \iff A^\omega \le B^\omega \iff AB \le BA,$$
+with $A =_\omega B \iff A^\omega = B^\omega \iff AB = BA \iff \text{root}(A) = \text{root}(B)$ (by Fine–Wilf, Chapter 01!). Note a subtle trap inside CFL factorizations: in $S = w_1 w_2 \cdots w_k$, adjacent factors satisfy $w_1 \ge w_2 \ge \cdots \ge w_k$ under **standard finite order** (and in fact also $w_1^\omega \ge w_2^\omega \ge \cdots \ge w_k^\omega$, because if $w_i^\omega < w_{i+1}^\omega$ with $w_i, w_{i+1} \in \mathcal{L}$, then $w_i < w_{i+1}$ since $w_{i+1}$ cannot be a prefix of $w_i$ without violating $w_i \prec \text{suffix}(w_i)$!).
+
+### 4.2 Reference Algorithmic Contract: Duval + All-Prefix State Sharing
+
+```cpp
+// Computes the CFL factorization of S[1..N] (1-indexed) and populates for every prefix r in [1..N]:
+// - cnt[r]: number of CFL factors of S[1..r]
+// - min_suf[r]: 1-based start index of the lexicographically smallest nonempty suffix of S[1..r]
+// Runs in < 2N character comparisons, O(N) time, O(1) auxiliary space beyond output arrays.
+struct PrefixCFL {
+    int n;
+    vector<pair<int, int>> factors; // (start_1based, length) of global CFL of S[1..N]
+    vector<int> cnt, min_suf;
+
+    PrefixCFL(const string& s) : n((int)s.size()), cnt(n + 1, 0), min_suf(n + 1, 0) {
+        int i = 1;
+        while (i <= n) {
+            int j = i, k = i + 1;
+            // r = i is the start of the new outer phase: S[i..i] has p = 1, d = 1, |w'| = 0
+            cnt[i] = cnt[i - 1] + 1;
+            min_suf[i] = i;
+            while (k <= n && s[j - 1] <= s[k - 1]) {
+                if (s[j - 1] < s[k - 1]) j = i; // Case 2: collapse S[i..k] into 1 Lyndon word
+                else ++j;                        // Case 1: periodic continuation
+                ++k;
+                int r = k - 1, p = k - j;
+                int len = r - i + 1, d = len / p, rem = len % p;
+                if (rem == 0) {
+                    cnt[r] = cnt[i - 1] + d;
+                    min_suf[r] = r - p + 1;
+                } else {
+                    cnt[r] = cnt[r - d * p] + d;
+                    min_suf[r] = min_suf[r - d * p] + d * p;
+                }
+            }
+            int p = k - j;
+            while (i <= j) {                     // Case 3: emit d = (k - i) / p copies of w
+                factors.push_back({i, p});
+                i += p;
+            }
+        }
+    }
+};
+```
+
+### 4.3 Broken-Invariant Counterexamples & Boundary Pitfalls (`BP-05-01`–`BP-05-03`)
+
+::: {.callout-warning}
+## Three Classic CFL & Duval Failure Modes (`BP-05-01` to `BP-05-03`)
+
+1. **Counterexample 1 (`BP-05-01` / `BP-1B-01`: The Reversed-Alphabet $>$ Maximum-Suffix Asymmetry on $S = \texttt{abab}$)**:
+   - Under standard order $<$, the last CFL factor $w_k$ of $S[1..r]$ is the lexicographically smallest nonempty suffix of $S[1..r]$ because when one suffix is a proper prefix of another ($u \sqsubset v$), $u < v$ makes the *shorter* suffix $u$ win.
+   - What if we want the **lexicographically largest suffix** of $S[1..r]$? Under standard order $<$, if $u \sqsubset v$, the **longer** suffix $v$ is larger ($v > u$)!
+   - If you run Duval under the reversed alphabet order $<_{\text{rev}}$ (where $\texttt{z} <_{\text{rev}} \dots <_{\text{rev}} \texttt{a}$, but proper prefixes still satisfy $u <_{\text{rev}} v$ whenever $u \sqsubset v$!), take $S = \texttt{aba}$. Under $<_{\text{rev}}$, $\texttt{b} <_{\text{rev}} \texttt{a}$, so $\texttt{ba} \in \mathcal{L}_{<_{\text{rev}}}$ and the $<_{\text{rev}}$-CFL factorization of $\texttt{aba}$ is:
+     $$\texttt{aba} = (\texttt{a}) \mid (\texttt{ba}) \qquad (\text{since } \texttt{a} >_{\text{rev}} \texttt{ba}).$$
+     The last $<_{\text{rev}}$-CFL factor is $w_k = \texttt{ba}$ ($i = 2$)—which is indeed the maximum suffix of $\texttt{aba}$. Now take $S = \texttt{abab}$: its $<_{\text{rev}}$-CFL is $(\texttt{a}) \mid (\texttt{ba}) \mid (\texttt{b})$, whose last factor is $\texttt{b}$ ($i = 4$), whereas the true lexicographically largest suffix of $\texttt{abab}$ is $\texttt{bab}$ ($i = 2$)! Why did the last factor $w_k = \texttt{b}$ lose to $\texttt{bab}$? Because $\texttt{b} \sqsubset \texttt{bab}$: under $<_{\text{rev}}$, the shorter prefix $\texttt{b}$ beat $\texttt{bab}$, which is **opposite** to standard $>$, where the longer string $\texttt{bab} > \texttt{b}$ wins!
+   - **The Exact Fix**: Before Case 3 emits $(\texttt{ba})$ on $S = \texttt{abab}$, at $r = 4$ the active outer pointer in $<_{\text{rev}}$-Duval is still $i = 2$ with pre-Lyndon block $S[2..4] = (\texttt{ba})^1 \texttt{b} = \texttt{bab}$! Because every proper prefix $w'$ of a $<_{\text{rev}}$-Lyndon word is strictly smaller in standard order than the full pre-Lyndon word $w^d w'$ ($w' \sqsubset w^d w' \implies w^d w' > w'$), the **lexicographically largest suffix of $S[1..r]$ is ALWAYS the suffix starting at Duval's active outer pointer $i$ under $<_{\text{rev}}$** (at the moment $S[r]$ is matched/extended)!
+2. **Counterexample 2 (`BP-05-02` / `BP-1B-02`: Updating $p \gets k$ on Equality in `CF 1537E2`)**:
+   - In `CF 1537E2 — Erase and Extend`, we seek $p \in [1, N]$ minimizing $(S[1..p])^\omega$. On $S = \texttt{aba}\texttt{b}$, at $k = 3$ ($S[3] = \texttt{a} == S[1]$), if you mistakenly update the best period $p \gets 3$ on equality ($S[k] == S[j]$), then at $k = 4$ ($S[4] = \texttt{b}$) you compare $S[4]$ against $S[(4-1)\bmod 3 + 1] = S[1] = \texttt{a}$ instead of $S[2] = \texttt{b}$ and prematurely break, outputting $(\texttt{aba})^\omega = \texttt{abaaba}\dots$ instead of $(\texttt{ab})^\omega = \texttt{ababab}\dots$!
+3. **Counterexample 3 (`BP-05-03` / `BP-1B-03`: Forgetting the $|w'| = 0$ Guard in `r -> r - d*p`)**:
+   - In Theorem 5.5, when $(r - i + 1) \bmod p == 0$, we have $r - d \cdot p = i - 1$. If you apply the $|w'| > 0$ formula `min_suf[r] = min_suf[r - d*p] + d*p` at $r = i + p - 1$, you read `min_suf[i - 1]` from a completely different CFL factor before $i$! Always branch on `rem == 0`.
+:::
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Problem Ladder (`Ch 05`)
+
+Every problem below is self-contained and includes progressive hints (`Hint 1: Diagnostic Signal`, `Hint 2: Combinatorial Word Invariant`, `Hint 3: Algorithmic Assembly`) followed by a complete 4-Step derivation.
+
+---
+
+### Tier 1: Stepping Stone (2 Problems)
+
+#### Problem 5.1 (`W1B-02`) — Periodic Prefix Truncation Greedy (`Codeforces 1537E2 — Erase and Extend (Hard Version)`)
+
+- **Mathematical Statement & Constraints**: Given a string $S[1..N]$ ($1 \le N \le 5 \times 10^5$) over lowercase Latin letters and a target length $K$ ($1 \le K \le 5 \times 10^5$), you may apply two operations any number of times: (1) delete the last character of $S$ (if $|S| \ge 2$), or (2) duplicate $S \leftarrow S + S$. Find the lexicographically smallest string of length $K$ obtainable by truncating the result to $K$ characters. Time limit $2.0\text{ s}$, memory $O(N)$ (solvable in $O(1)$ auxiliary memory).
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+Any sequence of operations that duplicates a prefix $S[1..p]$ and never deletes back inside $S[1..p]$ produces a prefix of the infinite periodic word $(S[1..p])^\omega$. Could it ever be optimal to delete inside the second copy of $S[1..p]$ and duplicate again?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+Suppose $S[1..p]$ is the optimal prefix up to index $k - 1$ (so $S[1..k-1] = (S[1..p])^d w'$ where $w' = S[1..j-1]$). Compare the next character $S[k]$ against the periodic continuation character $S[j]$ ($j = ((k-1) \bmod p) + 1$): what happens if $S[k] < S[j]$, if $S[k] == S[j]$, or if $S[k] > S[j]$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+Maintain the best prefix length $p = 1$. Scan $k = 2 \dots N$ with $j = ((k - 1) \bmod p) + 1$: if $S[k] < S[j]$, set $p \leftarrow k$; if $S[k] > S[j]$, immediately `break` out of the loop! Finally print $S[((t - 1) \bmod p) + 1]$ for $t = 1 \dots K$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`CF 1537E2`)
+
+1. **Diagnostic Signal**: Comparing $(S[1..p])^\omega[1..K]$ across all $p \in [1, N]$ naively takes $O(N K)$ time, or $O(N)$ with Z-array, whereas Duval's first-phase pointer invariant solves it in a single $O(N)$ pass with $O(1)$ space.
+2. **Combinatorial Word Invariant**: First, why can we restrict to $(S[1..p])^\omega$ for some $p \in [1, N]$? If we ever duplicated $U \to UU$, truncated to $U U[1..r]$, and duplicated again, then either $U[1..r] \prec U$ (which would contradict optimality of $U$) or $U \le_\omega U U[1..r]$. Now view the scan under the **reversed alphabet order $>$,** searching for the longest $>-$pre-Lyndon prefix starting at $i = 1$:
+   - While scanning $k = 2 \dots N$, let $p$ be the shortest period of the current optimal prefix $S[1..p]$ so that $S[1..k-1] = (S[1..p])^d w'$ ($w' = S[1..j-1]$ where $j = ((k - 1) \bmod p) + 1$).
+   - **If $S[k] < S[j]$**: Then $S[1..k] = (S[1..p])^d w' S[k] \prec (S[1..p])^d w' S[j] \sqsubset (S[1..p])^\omega$. Moreover, $S[1..k]$ is strictly smaller in $\omega$-order than every shorter prefix $S[1..q]$ ($q < k$), so $p \leftarrow k$ becomes the new unique best prefix!
+   - **If $S[k] == S[j]$**: $S[1..k]$ continues $(S[1..p])^\omega$; we keep $p$ unchanged (so incomplete tails do not reset the period).
+   - **If $S[k] > S[j]$**: Then $S[1..k] \succ (S[1..p])^\omega$ at position $k$. By Law 2 (right-extension stability of $\prec$), **every** prefix $S[1..m]$ of length $m \ge k$ starts with $S[1..k] \succ (S[1..p])[1..k]$ and is strictly worse than $(S[1..p])^\omega$! Thus we can `break` at $k$ immediately.
+3. **Algorithmic Compilation**:
+   ```cpp
+   int p = 1;
+   for (int k = 2; k <= n; ++k) {
+       char c_per = s[(k - 1) % p];
+       if (s[k - 1] < c_per) p = k;
+       else if (s[k - 1] > c_per) break;
+   }
+   for (int t = 0; t < K; ++t) cout << s[t % p];
+   ```
+   Complexity: $\le N$ character comparisons, $O(N + K)$ time, $O(1)$ space.
+4. **Boundary Pitfalls**: Updating $p \leftarrow k$ when $S[k] == S[j]$ breaks on $S = \texttt{abab}$: at $k = 3$ ($S[3] = \texttt{a} = S[1]$), setting $p = 3$ causes $k = 4$ ($S[4] = \texttt{b}$) to compare against $S[1] = \texttt{a}$ and break, outputting $(\texttt{aba})^\omega$ instead of $(\texttt{ab})^\omega$.
+:::
+
+---
+
+#### Problem 5.2 (`W1B-05`) — Optimal Suffix Concatenation Order (`AtCoder ARC 050 D — Suffix Concat`)
+
+- **Mathematical Statement & Constraints**: Given a string $S[1..N]$ ($1 \le N \le 10^5$), find a permutation $\pi$ of $\{1, 2, \dots, N\}$ that lexicographically minimizes the concatenated string $S[\pi(1)..N] + S[\pi(2)..N] + \cdots + S[\pi(N)..N]$. Time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+Why does sorting suffixes by their Suffix Array rank $\text{rk}[i]$ fail on $S = \texttt{baa}$? Compare $A = S[2..3] = \texttt{aa}$ and $B = S[1..3] = \texttt{baa}$, vs. $S = \texttt{baba}$ with $A = \texttt{ba}$ and $B = \texttt{baba}$ (or $A = \texttt{ba}, B = \texttt{baa}$).
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+By the exchange lemma on $\omega$-order ($\le_\omega$), placing $A$ before $B$ is strictly better than $B$ before $A$ if and only if $A + B < B + A$. When $A = S[i..N]$ and $B = S[j..N]$ with $|A| > |B|$, how does comparing $A + B$ against $B + A$ decompose into three LCE comparisons on $S$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+For $|A| > |B|$ ($i < j$):
+
+1. Compare $S[i..i+|B|-1]$ vs. $S[j..N]$ (length $|B|$).
+2. If equal, compare $S[i+|B|..N]$ vs. $S[i..i+|A|-|B|-1]$ (length $|A| - |B|$).
+3. If equal, compare $S[j..N]$ vs. $S[i+|A|-|B|..N]$ (length $|B|$).
+
+Each step takes $O(1)$ time via SA + LCP RMQ.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`ARC 050 D`)
+
+1. **Diagnostic Signal**: Standard SA rank orders $A < B$ whenever $A \sqsubset B$, even if the continuation of $B$ starts with characters strictly smaller than $A[1]$.
+2. **Combinatorial Word Invariant**: The relation $A \le_\omega B \iff AB \le BA$ defines a transitive total preorder on $\Sigma^+$ (since $A^\omega \le B^\omega$). By a standard adjacent-swap exchange argument, sorting the $N$ suffixes $T_i = S[i..N]$ by $T_i + T_j < T_j + T_i$ produces the globally minimal concatenation.
+3. **Algorithmic Compilation**: Build the Suffix Array `rk[1..N]` and $O(1)$ LCP RMQ on $S[1..N]$ in $O(N)$ time. Given two suffixes $A = S[i..N]$ and $B = S[j..N]$ with $i < j$ (so $|A| = N - i + 1 > |B| = N - j + 1$), align $A + B$ and $B + A$:
+   ```
+   A + B : [------ A (len |A|) ------][-- B (len |B|) --]
+   B + A : [-- B (len |B|) --][------ A (len |A|) ------]
+           |<--- Seg 1 ----->|<--- Seg 2 --->|<-- Seg 3 ->|
+               len |B|         len |A|-|B|      len |B|
+   ```
+   - **Segment 1 (length $|B|$)**: Compare $S[i..]$ vs. $S[j..]$. If $\text{LCP}(i, j) < |B|$, return $\text{rk}[i] < \text{rk}[j]$.
+   - **Segment 2 (length $|A| - |B| = j - i$)**: Compare $S[i + |B|..]$ vs. $S[i..]$. If $\text{LCP}(i + |B|, i) < j - i$, return $\text{rk}[i + |B|] < \text{rk}[i]$.
+   - **Segment 3 (length $|B|$)**: The tail of $A$ in $B + A$ starting at offset $|A|$ has start index $i + (|A| - |B|) = i + (j - i) = j$ in $S$, and the second piece of $A + B$ is $B = S[j..N]$! Because $A = S[i..N]$ and $B = S[j..N]$ are both **suffixes of the same string $S$**, $|A| - |B| = (N - i + 1) - (N - j + 1) = j - i$, so the suffix of $A$ of length $|B|$ starting at $i + (j - i)$ is literally $S[j..N] = B$. Therefore, Segment 3 compares $S[j..N]$ against $S[j..N]$, which are **always identical**: if Segments 1 and 2 both match, $A + B = B + A$ identically! Sorting takes $O(N \log N)$ time.
+4. **Boundary Pitfalls**: If the pieces were general substrings rather than suffixes ending at $N$, Segment 3 would be non-trivial; for suffixes ending at $N$, $i + (|A| - |B|) = j$ makes Segment 3 an automatic tie!
+:::
+
+---
+
+### Tier 2: Intermediate (2 Problems)
+
+#### Problem 5.3 (`W1B-15`) — All-Prefix CFL Factorization & Prefix Minimum/Maximum Suffixes (`Luogu P6127` / Jin Ce 2019)
+
+- **Mathematical Statement & Constraints**: Given a string $S[1..N]$ ($1 \le N \le 3 \times 10^6$), compute in $O(N)$ time and $O(N)$ space for every prefix $S[1..r]$ ($1 \le r \le N$):
+  1. `cnt[r]`: the number of Lyndon factors in the CFL factorization of $S[1..r]$;
+  2. `xor_end[r]`: the bitwise XOR of the 1-based right endpoints of all CFL factors of $S[1..r]$;
+  3. `min_suf[r]` and `max_suf[r]`: the 1-based starting positions of the lexicographically smallest and largest nonempty suffixes of $S[1..r]$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+During Duval's algorithm, the prefix $S[1..r]$ splits into the already-emitted prefix $S[1..i-1]$ and the active pre-Lyndon window $S[i..r] = w^d w'$ of period $p = r + 1 - j$. Why can we not afford to loop $t = 1 \dots d$ to XOR the right endpoints $i + tp - 1$ at each $r$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+By **Theorem 5.5**, when $|w'| = (r - i + 1) \bmod p > 0$, the remainder $w'$ has the exact same CFL factor lengths as $S[i..r - dp]$. Even when $|w'| = 0$ and $d \ge 2$, the first $d - 1$ copies of $w$ were already present at $r - p$! What does shifting from $r - p$ to $r$ add?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+Instead of jumping by $d \cdot p$ when accumulating `xor_end[r]`, observe that for $d \ge 1$ and $|w'| = 0$, $S[1..r]$ has the **exact same CFL factors as $S[1..r-p]$ plus one new factor $[r-p+1..r]$ ending at $r$**:
+$$\text{xor\_end}[r] = \text{xor\_end}[r - p] \oplus r!$$
+And for `max_suf[r]`, run a second pass of Duval under $<_{\text{rev}}$ and record the active outer pointer $i$ right after processing $S[r]$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`Luogu P6127`)
+
+1. **Diagnostic Signal**: Even with $r \to r - dp$, computing the XOR of the $d$ arithmetic-progression endpoints $i + p - 1, i + 2p - 1, \dots, i + dp - 1$ cannot be done by shifting `xor_end[r - dp]` because bitwise XOR does not distribute over $+dp$!
+2. **Combinatorial Word Invariant**:
+   - **One-Period Step for $|w'| = 0$**: When $(r - i + 1) \bmod p == 0$, $S[i..r] = w^d$. For $d = 1$ ($r = i + p - 1$), $S[1..r]$ is $S[1..i-1]$ followed by one factor $w$ ending at $r = i + p - 1$. For $d \ge 2$, $S[i..r-p] = w^{d-1}$ also had $|w'| = 0$ with the **exact same period $p$**! Thus the CFL factorization of $S[1..r]$ is literally the CFL factorization of $S[1..r-p]$ with **one additional copy of $w$ appended at the end (right endpoint $r$)**! Hence for all $d \ge 1$ with $|w'| = 0$:
+     $$\text{cnt}[r] = \text{cnt}[r - p] + 1, \qquad \text{xor\_end}[r] = \text{xor\_end}[r - p] \oplus r, \qquad \text{min\_suf}[r] = r - p + 1.$$
+   - **Remainder Step for $|w'| > 0$**: Let $r_0 = i + d \cdot p - 1$ be the end of $w^d$. Then the CFL factors inside $w' = S[r_0 + 1 .. r]$ are the CFL factors of $S[i .. r - dp]$ shifted right by $+dp$. To avoid shifting XOR values, either maintain the sum of right endpoints $\text{sum\_end}[r] = \text{sum\_end}[r_0] + (\text{sum\_end}[r - dp] - \text{sum\_end}[i - 1]) + (\text{cnt}[r - dp] - \text{cnt}[i - 1]) \cdot dp$ in $O(1)$, or notice that in Duval's recursive remainder trace, the **last** CFL factor of $S[1..r]$ has length $L_{\text{last}}[r] = L_{\text{last}}[r - dp]$, so $S[1..r]$ equals $S[1..r - L_{\text{last}}[r]]$ plus one final factor ending at $r$!
+     - **Universal 1-Step Prefix Recurrence**: If $w_{\text{last}}$ is the last CFL factor of $S[1..r]$ (of length $L_{\text{last}}[r] = r - \text{min\_suf}[r] + 1$), stripping $w_{\text{last}}$ from the end of $S[1..r]$ leaves the exact CFL factorization of $S[1..r - L_{\text{last}}[r]]$: by Theorem 5.2 (CFL Uniqueness), if $S[1..r] = u_1 \cdots u_{m-1} u_m$ with $u_1 \ge \cdots \ge u_{m-1} \ge u_m$ and $u_t \in \mathcal{L}$, then $u_1 \cdots u_{m-1}$ is already a valid non-increasing chain of Lyndon words and is therefore the **unique CFL factorization of $S[1..r - |u_m|]$**!
+     Therefore, once we know `min_suf[r]` (the start index of $u_m$) via Theorem 5.5, **every additive or XOR aggregate over the CFL factors of $S[1..r]$ satisfies the universal 1-step recurrence**:
+     $$\text{cnt}[r] = \text{cnt}[\text{min\_suf}[r] - 1] + 1, \qquad \text{xor\_end}[r] = \text{xor\_end}[\text{min\_suf}[r] - 1] \oplus r!$$
+3. **Algorithmic Compilation**:
+   - Compute `min_suf[r]` in $O(1)$ per step via Theorem 5.5 (`rem == 0 ? r - p + 1 : min_suf[r - d*p] + d*p`).
+   - Immediately compute `cnt[r] = cnt[min_suf[r] - 1] + 1` and `xor_end[r] = xor_end[min_suf[r] - 1] ^ r` in $O(1)$!
+   - For `max_suf[r]`, run Duval under $<_{\text{rev}}$: at $r = i$, `max_suf[i] = i`; inside the `while (k <= n && s[j-1] >= s[k-1])` loop, after incrementing `k`, set `max_suf[k - 1] = i`.
+4. **Boundary Pitfalls**: Using the last CFL factor of $<_{\text{rev}}$ for `max_suf[r]` fails on $S = \texttt{abab}$ at $r = 4$ (Counterexample 1 in Section 4.3); using the active outer pointer $i$ of $<_{\text{rev}}$-Duval is exact.
+:::
+
+---
+
+#### Problem 5.4 (`W1B-18`) — FKM $k$-ary De Bruijn Lex-Smallest Cycle & Window Queries (`Luogu P4916` / Universal Cup)
+
+- **Mathematical Statement & Constraints**: Given alphabet size $\sigma \in [2, 26]$, window length $N \ge 1$ with $\sigma^N \le 10^7$, and $Q \le 10^5$ queries $p_q \in [1, \sigma^N]$, construct the lexicographically smallest cyclic sequence $B[1..\sigma^N]$ (when linearized starting with $0^N$) such that every length-$N$ string over $\{0, \dots, \sigma-1\}$ appears as a cyclic substring of $B$ exactly once, and answer the $p_q$-th character of $B$. Time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+The lexicographically smallest De Bruijn sequence of order $N$ starts with $0^N$. Instead of building a graph of $\sigma^{N-1}$ vertices and $\sigma^N$ edges in $O(\sigma^N \log \sigma)$ memory, how does Witt's identity $\sigma^N = \sum_{d \mid N} d \cdot L_\sigma(d)$ partition the $\sigma^N$ characters of $B$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+By the **Fredricksen–Kessler–Maiorana (FKM) Theorem**, concatenating all Lyndon words over $\{0, \dots, \sigma - 1\}$ whose length $d$ divides $N$ in lexicographical order produces the exact lexicographically smallest De Bruijn cycle $B[1..\sigma^N]$!
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+Maintain a single buffer `a[1..N]` initialized to $0$. In each step of Duval's Next-Lyndon generator (with current Lyndon length $p$, initially $p = 1$): if $N \bmod p == 0$, append `a[1..p]` to $B$; then fill `a[i] = a[i - p]` for $i = p + 1 \dots N$, decrement $p \leftarrow N$ while $p > 0$ and `a[p] == sigma - 1`, and if $p > 0$ increment `a[p]++`.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`FKM De Bruijn Generation`)
+
+1. **Diagnostic Signal**: Storing an explicit Eulerian graph of $\sigma^N = 10^7$ directed edges exceeds memory limits and incurs random-access cache misses, whereas FKM streams $B[1..\sigma^N]$ sequentially using $N$ integers of state.
+2. **Combinatorial Word Invariant**: Every $N$-tuple $X \in \Sigma^N$ is a cyclic rotation of $w^{N/d}$ for a unique Lyndon word $w \in \mathcal{L}$ of length $d \mid N$. In the FKM concatenation of all Lyndon words of lengths dividing $N$, for each $w$ ($|w| = d \mid N$), the $d$ cyclic shifts of $w^{N/d}$ occur as the $d$ windows starting inside $w$: specifically, the first $N - d$ characters of $w^{N/d}$ match the prefix of the immediately following Lyndon word in the FKM stream because Duval's Next-Lyndon rule preserves the longest possible prefix of $w^{N/d}$ before incrementing the last non-maximal character!
+3. **Algorithmic Compilation**:
+   ```cpp
+   vector<int> a(N + 1, 0), B;
+   B.reserve(pow_sigma_N);
+   int p = 1;
+   while (p > 0) {
+       if (N % p == 0) {
+           for (int i = 1; i <= p; ++i) B.push_back(a[i]);
+       }
+       for (int i = p + 1; i <= N; ++i) a[i] = a[i - p];
+       p = N;
+       while (p > 0 && a[p] == sigma - 1) --p;
+       if (p > 0) ++a[p];
+   }
+   ```
+   Amortized complexity: Every Lyndon word of length $\le N$ has average length $\Theta(N)$, and the fraction of Lyndon words of length $N$ among all Lyndon words of length $\le N$ is $1 - O(1/\sigma)$, so the generator runs in $O(\sigma^N)$ total operations ($O(1)$ per output character) and $O(N)$ auxiliary space!
+4. **Boundary Pitfalls**: Note that the raw FKM stream starts with the single $0$ (from the Lyndon word $0$ of length $d = 1 \mid N$) and ends with $0^{N-1}$ (from the prefix of the last Lyndon word $(0(\sigma-1)^{N-1})$ and $(\sigma-1)$); if the problem specifies linearizing the cycle so that $B[1..N] = 0^N$, rotate $B$ right by $N - 1$ positions (prepending $0^{N-1}$ from the end of the cycle).
+:::
+
+---
+
+### Tier 3: Advanced (2 Problems)
+
+#### Problem 5.5 (`W1B-35`) — $O(M)$ RLE Lyndon Factorization & Minimum Cyclic Shift for $N \le 10^{18}$
+
+- **Mathematical Statement & Constraints**: A string $S$ of total uncompressed length $N = \sum_{t=1}^M a_t \le 10^{18}$ is given in Run-Length Encoded (RLE) form as $M \le 2 \times 10^5$ blocks $(c_1, a_1), (c_2, a_2), \dots, (c_M, a_M)$ with $c_t \ne c_{t+1}$ and $a_t \ge 1$.
+  1. Output the compressed CFL factorization of $S$ as a list of triples `(block_start, block_len, repeat_count)` in $O(M)$ time.
+  2. Find the uncompressed 1-based starting index $\text{pos} \in [1, N]$ of the lexicographically smallest cyclic shift of $S$ in $O(M)$ time.
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+By **Lemma 5.6 (RLE-Lyndon Block Boundary Invariant)**, no Lyndon word of length $> 1$ ever starts or ends strictly inside an RLE block $c_t^{a_t}$. Why does comparing block $k$ against block $j$ in RLE-Duval behave differently when $j == i$ versus when $j > i$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+When $j == i$, block $i$ is the very first block $c_i^{a_i}$ of the current Lyndon candidate $w$, so $c_i = \min(w)$.
+
+- If $c_k == c_i$ and $a_k > a_i$: $c_i^{a_k}$ has *more* copies of the minimal character $c_i$ than $w[1..a_i]$, so $c_i^{a_k} \prec w$ (**Case 3**!).
+- If $c_k == c_i$ and $a_k < a_i$: after $a_k$ copies of $c_i$, either $k = M$ (end of string $\implies$ **Case 3**!) or $c_{k+1} < c_i$ (**Case 3** on $c_{k+1}$), or $c_{k+1} > c_i$, in which case $c_i^{a_k} c_{k+1} \succ c_i^{a_i}$ collapses into **Case 2**!
+
+What happens when $j > i$ and $c_k == c_j$ with $a_k \ne a_j$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+When $j > i$ and $c_k == c_j$ with $a_k \ne a_j$:
+
+- If $a_k < a_j$: the mismatch occurs immediately at the next block $c_{k+1}$ against the remaining copies of $c_j$ (so if $k == M$ or $c_{k+1} < c_j$, trigger Case 3; if $c_{k+1} > c_j$, trigger Case 2 by setting $j \leftarrow i$ and advancing $k \leftarrow k + 1$ so block $k+1$ is compared against block $i$ in the next step!).
+- If $a_k > a_j$: the mismatch occurs inside block $k$ (which still has $c_k = c_j$) against the next block $c_{j+1}$ of the period! Since block $j$ was not the last block of the period (or if $j + 1$ wraps to $i$, $c_i < c_j$), compare $c_k$ against $c_{j+1}$: if $c_k < c_{j+1}$, trigger Case 3; if $c_k > c_{j+1}$, trigger Case 2 ($j \leftarrow i, k \leftarrow k + 1$)!
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`RLE Duval in O(M)`)
+
+1. **Diagnostic Signal**: Unpacking $a_t \le 10^{18}$ is impossible. Because adjacent RLE blocks have $c_t \ne c_{t+1}$, Lemma 5.6 guarantees that every non-unary Lyndon factor is an exact contiguous subsegment of RLE blocks $B[i .. i + p_{\text{blk}} - 1]$, while a unary block $c_i^{a_i}$ with $p_{\text{blk}} = 1$ represents $a_i$ identical copies of the 1-character Lyndon word $c_i$.
+2. **Combinatorial Word Invariant**: In block-level Duval with pointers $(i, j, k)$ on $B[1..M]$:
+   - If $p_{\text{blk}} = k - j = 1$ (so $j = i$ and $k = i + 1$): if $c_{i+1} < c_i$ (or $i = M$), block $i$ is a unary CFL factor $c_i$ repeated $a_i$ times, so we emit $(i, 1, a_i)$ and advance $i \leftarrow i + 1$. Otherwise $c_{i+1} > c_i$, which merges block $i + 1$ with block $i$ via Case 2 ($j \leftarrow i, k \leftarrow i + 2$, now $p_{\text{blk}} \ge 2$).
+   - Once $p_{\text{blk}} = k - j \ge 2$, the first block $B[i] = (c_i, a_i)$ is followed by $c_{i+1} > c_i$. When comparing block $B[k] = (c_k, a_k)$ against $B[j] = (c_j, a_j)$:
+     1. **Exact Block Match ($c_k == c_j$ and $a_k == a_j$)**: Case 1 ($j \leftarrow j + 1, k \leftarrow k + 1$).
+     2. **Character Mismatch ($c_k \ne c_j$)**: If $c_k > c_j$, Case 2 ($j \leftarrow i, k \leftarrow k + 1$); if $c_k < c_j$, Case 3 (emit $\lfloor (k - i)/p_{\text{blk}} \rfloor$ copies of $B[i..i+p_{\text{blk}}-1]$).
+     3. **Same Character, Exponent Mismatch ($c_k == c_j$ and $a_k \ne a_j$)**:
+        - If $a_k > a_j$: After matching $a_j$ copies of $c_j$, the next character in $B[k]$ is still $c_k = c_j$, whereas the next character in the period is $c_{\text{next}} = (j + 1 == i + p_{\text{blk}} \text{ ? } c_i : c_{j+1})$. Note that at $j = i$, $c_{\text{next}} = c_{i+1} > c_i = c_k$, so $c_k < c_{\text{next}}$ (Case 3!). In general, compare $c_k$ vs. $c_{\text{next}}$: if $c_k < c_{\text{next}}$, trigger Case 3; if $c_k > c_{\text{next}}$, the extra copies of $c_k$ in $B[k]$ beat $c_{\text{next}}$ and collapse $B[i..k]$ into a single Lyndon word via Case 2 ($j \leftarrow i, k \leftarrow k + 1$)!
+        - If $a_k < a_j$: After matching $a_k$ copies of $c_j$, the period still expects $c_j$, while the string moves to block $k + 1$. If $k == M$ or $c_{k+1} < c_j$, trigger Case 3; if $c_{k+1} > c_j$, block $k + 1$ beats $c_j$ at that character! Note that if $c_{k+1} > c_j$, not only does $B[i..k]$ survive, $B[k+1]$ also starts with $c_{k+1} > c_j \ge c_i$, so **both** $B[k]$ and $B[k+1]$ collapse into the single Lyndon word $B[i..k+1]$ via Case 2 ($j \leftarrow i, k \leftarrow k + 2$)!
+3. **Algorithmic Compilation (Minimum Cyclic Shift on RLE)**:
+   - If $M == 1$, return $\text{pos} = 1$. If $c_M == c_1$, rotating the trailing block $c_M^{a_M}$ to the front merges it with $c_1^{a_1}$ into $c_1^{a_1 + a_M}$ (remembering that the start of this merged block corresponds to uncompressed index $N - a_M + 1$).
+   - Duplicate the coalesced RLE array to length $2M'$ and run $O(M')$ RLE-Duval; the last factor starting at uncompressed offset $\le N$ gives the exact minimum cyclic shift in $O(M)$ time!
+4. **Boundary Pitfalls**: Forgetting to coalesce $c_M == c_1$ before duplicating $S_{\text{RLE}} + S_{\text{RLE}}$ leaves two adjacent blocks with the same character at the boundary $M \mid M+1$, violating the RLE precondition $c_t \ne c_{t+1}$ and hiding the true $a_1 + a_M$ run of $c_1$!
+:::
+
+---
+
+#### Problem 5.6 (`W1B-21`) — Lexicographically Minimal String Partition into $\le K$ Reversed/Unreversed Blocks (`Codeforces 594E — Cutting the Line`)
+
+- **Mathematical Statement & Constraints**: Given a string $S[1..N]$ ($1 \le N \le 5 \times 10^6$) and an integer $K$ ($1 \le K \le N$), partition $S$ into at most $K$ nonempty contiguous substrings $S = s_1 s_2 \cdots s_m$ ($m \le K$) and replace each $s_t$ with either $s_t$ or $s_t^R$ so that the resulting string $s'_1 s'_2 \cdots s'_m$ is lexicographically as small as possible. Time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+Reversing a prefix $s_1 = S[1..p]$ and placing $s_1^R$ at the front of the output is equivalent to detaching a **suffix** of the reversed string $T = S^R$ of length $p$! Which suffix of $T$ is lexicographically smallest?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+Let $T = S^R = w_1^{d_1} w_2^{d_2} \cdots w_r^{d_r}$ ($w_1 > w_2 > \cdots > w_r$) be the grouped CFL factorization of $T = S^R$.
+
+1. Why should we always detach the **entire equal-factor group** $B_r = w_r^{d_r}$ in a single cut rather than just one copy $w_r$?
+2. What if $|w_r| = |w_{r-1}| = 1$ (so both $B_r$ and $B_{r-1}$ consist of single characters)? In $T = S^R$, $B_{r-1} B_r$ reversed back into $S$ is an **unreversed** prefix of $S$! Thus adjacent $|w_t| = 1$ groups cost only **one** unreversed cut in total!
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+Peel groups $B_r = w_r^{d_r}$ from the end of $T = S^R$ while $K \ge 3$ (merging adjacent $|w_t| = 1$ groups without decrementing $K$). Once $K = 2$ remains on a remaining prefix $S'[1..m]$ ($T' = (S')^R$), take the lexicographical minimum of 4 candidate strings of length $m$, each evaluated in $O(m)$ time using Z-array + Duval.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`CF 594E`)
+
+1. **Diagnostic Signal**: At $N = 5 \times 10^6$, $O(N \log N)$ Suffix Arrays MLE/TLE; we must use $O(N)$ Duval and Z-array.
+2. **Combinatorial Word Invariant**:
+   - Let $T = S^R = B_1 B_2 \cdots B_r$ where each group $B_t = w_t^{d_t}$ combines all consecutive equal CFL factors ($w_1 > w_2 > \cdots > w_r$).
+   - By Theorem 5.2(2), $w_r$ is the lexicographically smallest nonempty suffix of $T$. Could stopping at $w_r$ be better than taking $B_r = w_r^{d_r}$? Since $B_r = w_r^{d_r}$ is a single contiguous suffix of $T$, reversing the corresponding prefix of $S$ puts the entire $B_r = w_r^{d_r}$ at the front using **just $1$ piece**! And because $w_r$ is the smallest suffix of $T$, continuing with $d_r$ copies of $w_r$ beats starting the next piece with any larger suffix of $T$.
+   - **Coalescing Length-1 Groups**: If $|w_t| = 1$, then $B_t = c_t^{d_t}$ is a monochrome run. If both $|w_{r-1}| = 1$ and $|w_r| = 1$, then in $T$ the suffix is $c_{r-1}^{d_{r-1}} c_r^{d_r}$ with $c_{r-1} > c_r$. In the original string $S = T^R$, this is the **prefix** $c_r^{d_r} c_{r-1}^{d_{r-1}}$, which is **already sorted** without reversing! Thus any maximal contiguous chain of $|w_t| = 1$ groups at the end of $T$ can be emitted as a **single unreversed prefix piece of $S$**, costing only $1$ piece from $K$!
+3. **Algorithmic Compilation ($K = 2$ Base Case on $S'[1..m]$)**:
+   When $K = 1$, return $\min(S', (S')^R)$. When $K = 2$ on $S'[1..m]$ ($T' = (S')^R$), we must split $S' = u v$ and choose $(u \text{ or } u^R) + (v \text{ or } v^R)$:
+   - **Candidate 1 (`u + v` or `u^R + v^R`)**: Equivalent to $K = 1$: $\min(S', T')$.
+   - **Candidate 2 (`u + v^R` — unreversed prefix of $S'$ + reversed suffix of $S'$)**: In $T'$, this detaches a suffix $B$ of $T'$ and appends $(T' \setminus B)^R$. Since $(T' \setminus B)^R$ is fixed once $|B|$ is chosen, the only contenders for the suffix $B$ of $T'$ are the last CFL group $B_r$ and (when $B_r \sqsubset B_{r-1}$) the combined suffix $B_{r-1} B_r$! Comparing these two strings takes $O(m)$ time.
+   - **Candidate 3 (`u^R + v` — reversed prefix $S'[1..p]^R$ + unreversed suffix $S'[p+1..m]$)**: Equivalently, choose a suffix $T'[q..m]$ of $T'$ to minimize $T'[q..m] + S'[m - q + 2 .. m]$. Precomputing the Z-array of $T' + S'$ allows comparing any two split points $q_1 < q_2$ in $O(1)$ time across the $m$ split points in $O(m)$ total time!
+4. **Boundary Pitfalls**: In Candidate 2 (`u + v^R`), if $B_r \sqsubset B_{r-1}$ (for example $B_{r-1} = \texttt{abb}, B_r = \texttt{ab}$), $B_r$ is shorter than $B_{r-1} B_r = \texttt{abbab}$, so at $T = \varepsilon$ $B_r$ looks smaller, but once the unreversed remainder $(T' \setminus B)^R$ is appended, $B_{r-1} B_r$ can win (e.g. if the remainder starts with $\texttt{z}$)! Checking both $B_r$ and $B_{r-1} B_r$ handles this completely.
+:::
+
+---
+
+### Tier 4: Mastery (2 Problems)
+
+#### Problem 5.7 (`W1B-36`) — Bijective Burrows–Wheeler Transform (`BWTS`) Forward & Inverse Lyndon-Cycle Reconstruction
+
+- **Mathematical Statement & Constraints**: Given a string $S[1..N]$ ($1 \le N \le 2 \times 10^5$) over lowercase letters (no sentinel character $\$$ allowed!):
+  1. Compute the forward **Bijective BWT** $T = \text{BWTS}(S) \in \Sigma^N$: factor $S = w_1 w_2 \cdots w_k$ into its CFL factorization, collect all $|w_r|$ cyclic shifts of each $w_r$, sort all $N$ shifts by infinite periodic order $X^\omega \le Y^\omega$ (tie-breaking equal factors by $r < s$), and output their last characters.
+  2. Given only $T \in \Sigma^N$, invert $\text{BWTS}$ in $O(N)$ time to recover the original string $S \in \Sigma^N$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+In the inverse transform, we are given $T[1..N]$ without knowing how many CFL factors $S$ had or what their lengths were! However, we can sort $T$ to get $F = \text{sort}(T)$ in $O(N)$ time. How does row $t$ of the sorted shift matrix relate to its cyclic shift by 1 character?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+Rotating any cyclic shift $u v$ of a CFL factor $w_r$ by one character left (moving its first character $F[t]$ to the end) produces another cyclic shift of the **exact same CFL factor $w_r$** whose last character is $F[t]$! Moreover, because infinite periodic order $X^\omega \le Y^\omega$ is preserved when stripping the same first character $c$ from two shifts starting with $c$, the standard **First-to-Last (`FL`) permutation** $\pi_{FL}(t)$ (mapping the $m$-th occurrence of character $c$ in $F$ to the $m$-th occurrence of $c$ in $T$) steps forward by $+1$ character around each CFL factor's necklace!
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+
+- **Inverse (`O(N)`)**: Build $\pi_{FL}[1..N]$ by bucket-counting characters in $T$. Decompose $\pi_{FL}$ into disjoint cycles. Since $F$ is sorted in non-decreasing $\omega$-order, the **minimum index $t_{\min}$ in each cycle of $\pi_{FL}$ is automatically the Lyndon representative $w_C$ of that cycle**, and visiting cycles in **decreasing order of $t_{\min}$** outputs $w_1 \ge w_2 \ge \cdots \ge w_k$ directly in $O(N)$ time!
+- **Forward (`O(N)`)**: Factor $S = w_1 \cdots w_k$ via Duval, build the Suffix Array of $w_r + w_r$ (or use the Lyndon-comparison SA sort) to order all cyclic shifts under $\le_\omega$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`Bijective BWT`)
+
+1. **Diagnostic Signal**: Standard BWT increases length to $N+1$ with $\$$ and is not onto $\Sigma^N$. `BWTS` is a true bijection $\Sigma^N \leftrightarrow \Sigma^N$.
+2. **Combinatorial Word Invariant**:
+   - Why does the standard stable `FL` mapping $\pi_{FL}$ preserve disjoint cycles of $w_1, \dots, w_k$ under $\le_\omega$? Suppose $X = c X'$ and $Y = c Y'$ are two cyclic shifts starting with the same character $c$. Then:
+     $$X^\omega = c X' c X' \dots < Y^\omega = c Y' c Y' \dots \iff X' c X' \dots < Y' c Y' \dots \iff (X' c)^\omega < (Y' c)^\omega!$$
+     And notice that $X' c$ and $Y' c$ are the rotated shifts whose **last** character is $c$! Therefore, the relative $\le_\omega$ order of shifts starting with $c$ (rows in $F$) is **100% identical** to the relative $\le_\omega$ order of their rotated successors ending with $c$ (entries in $T$)!
+   - Even better: within each disjoint cycle $C$ of $\pi_{FL}$, the $|C|$ rows correspond to the $|C|$ distinct cyclic shifts of a primitive Lyndon factor $w_C \in \mathcal{L}$. Which row of $C$ is the Lyndon word $w_C$ itself? Since $w_C$ is the lexicographically smallest cyclic shift of its necklace, **$w_C$ is simply the cycle element at the minimum row index $t_{\min}(C) = \min_{t \in C} t$**!
+   - And how are the Lyndon factors $w_1 \ge w_2 \ge \cdots \ge w_k$ ordered relative to one another? Since $w_r \ge w_s \iff w_r^\omega \ge w_s^\omega$ for Lyndon words, and row $t_{\min}(C)$ sits at the exact $\le_\omega$-sorted rank of $w_C$ (with ties broken by earlier factor index having smaller $t_{\min}$), sorting the cycles in **decreasing order of $t_{\min}(C)$** (and reversing groups of identical factors if ties were broken in ascending order) gives $w_1, w_2, \dots, w_k$ in $O(N)$ time without a single string comparison!
+3. **Algorithmic Compilation (Inverse `BWTS` in $O(N)$ Time)**:
+   ```cpp
+   string invert_bwts(const string& T) {
+       int n = T.size();
+       vector<int> cnt(256, 0), head(256, 0), pi_FL(n);
+       for (unsigned char c : T) cnt[c]++;
+       for (int c = 1; c < 256; ++c) head[c] = head[c - 1] + cnt[c - 1];
+       for (int i = 0; i < n; ++i) pi_FL[head[(unsigned char)T[i]]++] = i;
+
+       vector<bool> vis(n, false);
+       vector<string> factors;
+       // Scan t from 0 to n-1: the first unvisited node t of any cycle is its minimum index t_min!
+       for (int i = 0; i < n; ++i) if (!vis[i]) {
+           string w;
+           for (int cur = i; !vis[cur]; cur = pi_FL[cur]) {
+               vis[cur] = true;
+               w.push_back(T[pi_FL[cur]]); // F[cur] == T[pi_FL[cur]]
+           }
+           factors.push_back(move(w));
+       }
+       // factors are in non-decreasing order w_k <= ... <= w_1; concatenate in reverse!
+       string S;
+       S.reserve(n);
+       for (int i = (int)factors.size() - 1; i >= 0; --i) S += factors[i];
+       return S;
+   }
+   ```
+4. **Boundary Pitfalls**: In the forward transform, if $w_r = w_{r+1}$ are two identical CFL factors, their starting rows in $F$ must be assigned to $w_r$ then $w_{r+1}$ consistently with how the inverse loop reconstructs equal factors; since reversing `factors` reverses equal-factor order too, two identical factors $w_r = w_{r+1}$ remain identical in either order!
+:::
+
+---
+
+#### Problem 5.8 (`W1B-38`) — Persistent / Worst-Case $O(\log N)$ Online Lyndon Factorization & Witt Necklace Synthesis
+
+- **Mathematical Statement & Constraints**: We maintain a persistent version tree of strings starting from $V_0 = \varepsilon$. Across $Q \le 2 \times 10^5$ operations:
+  1. `1 v c`: Create version $V_q = V_v + c$ by appending character $c \in \Sigma$ to version $V_v$, and output the number of CFL factors of $V_q$ and the length of its first and last CFL factors.
+  2. `2 v`: Let $p = |w_1|$ be the length of the first CFL factor of $V_v$; output the number of Lyndon words of length $p$ over alphabet size $\sigma = |\Sigma|$ modulo $998244353$.
+  All operations must run in **worst-case** $O(\log^2 N)$ time per query (adversary branching on $\texttt{a}^N$ is allowed!).
+
+::: {.callout-note collapse="true"}
+## Hint 1 — Diagnostic Signal
+Why does running Duval's inner loop on a persistent tree TLE in $\Omega(Q^2)$ time? Consider creating $V_1, \dots, V_{N}$ where $V_N = (\texttt{ab})^{N/2}\texttt{a}$, and then branching $Q/2$ times from $V_N$ by appending $\texttt{a}$ (Case 3 rewind!).
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 — Combinatorial Word Invariant
+View the CFL factorization of $V_v$ as a compressed non-increasing stack of Lyndon power blocks:
+$$V_v = w_1^{d_1} w_2^{d_2} \cdots w_m^{d_m}, \qquad w_1 > w_2 > \cdots > w_m, \quad w_t \in \mathcal{L}.$$
+When we append a single character $c \in \mathcal{L}$ at the right end, we push $(w_{m+1}, d_{m+1}) = (c, 1)$ onto the stack. By Theorem 5.1(4) and Theorem 5.2, whenever the second-from-top block is $(w_t, d_t)$ and the top block is $(u, 1)$ with $w_t < u$, then $w_t^{d_t} u$ collapses into a **single Lyndon word** $(w_t^{d_t} u, 1)$! And if $w_t == u$, they coalesce into $(w_t, d_t + 1)$.
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 — Algorithmic Assembly
+Represent the persistent stack of power blocks $(w_t, d_t)$ using binary-lifting parent pointers, and maintain binary-lifting character hashes on the version tree to compute $\text{LCP}$ between any two version substrings in $O(\log N)$ time. Why can at most $O(\log N)$ stack merges occur when we jump over power blocks? Whenever a second merge $w_m < u$ follows a previous merge $w_{m+1} \sqsubset u$, the monotonicity $w_m > w_{m+1}$ forces $w_{m+1} \sqsubset w_m$, so $|w_m| > |w_{m+1}|$ and the merged length $|w_m^{d_m} u|$ grows exponentially!
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Solution & Derivation (`Persistent CFL Right-Spine Maintenance`)
+
+1. **Diagnostic Signal**: Persistent branching defeats amortized potential functions ($\Phi = 2i + k$). We must bound the **actual number of merges per append** by $O(\log |V_q|)$ in the worst case!
+2. **Combinatorial Word Invariant (The Length-Doubling Right-Spine Lemma)**:
+   - Maintain the CFL factorization of each version $V_v$ in **run-length grouped form**:
+     $$V_v = w_1^{d_1} w_2^{d_2} \cdots w_m^{d_m}, \qquad w_1 > w_2 > \cdots > w_m.$$
+   - When appending $c$ to $V_v$, we start with the new top Lyndon word $u = c$ of length $|u| = 1$.
+   - Compare $u$ with the top group $(w_m, d_m)$ of the stack:
+     - **Case A ($w_m > u$)**: Stop! Push $(u, 1)$ onto the persistent stack.
+     - **Case B ($w_m == u$)**: Stop! Increment the multiplicity of the top group to $(w_m, d_m + 1)$ and we are done (since $w_{m-1} > w_m = u$).
+     - **Case C ($w_m < u$)**: By Theorem 5.1(4) applied $d_m$ times, all $d_m$ copies of $w_m$ merge with $u$ in **one O(1) step** to form the single new Lyndon word $u_{\text{new}} = w_m^{d_m} u$!
+   - **Why can Case C happen at most $\lfloor \log_2 N \rfloor + 1$ times in the worst case?!**
+     Look at the length of $u$ before and after a Case C merge with $(w_m, d_m)$:
+     - Initially $|u| = 1 \le |w_m|$.
+     - At any subsequent merge, how was the current $u$ formed? It was formed by merging a suffix of the stack starting at some $w_{m+1}$, so $w_{m+1} \sqsubset u$!
+     - Because the stack was strictly decreasing ($w_m > w_{m+1}$) while $w_m < u$ and $w_{m+1} \sqsubset u$, this **forces $w_{m+1}$ to be a proper prefix of $w_m$** ($w_{m+1} \sqsubset w_m$)! Why? Because if $w_m \succ w_{m+1}$ at some character within $|w_{m+1}|$, then since $w_{m+1} \sqsubset u$, $w_m$ would also mismatch $u$ at that exact same character with $w_m \succ u$, contradicting $w_m < u$!
+     - Therefore, **$w_{m+1} \sqsubset w_m$ ALWAYS holds whenever Case C continues to a second merge**!
+     - And since $w_{m+1}$ is the previous $w$ that merged into $u$, look at two consecutive merges: either $|w_m^{d_m}| \ge |u|$ (so $|u_{\text{new}}| = d_m |w_m| + |u| \ge 2|u|$ **doubles immediately**!), OR $|w_m| < |u|$, in which case $u = w_{m+1}^{d_{m+1}} u_{\text{prev}}$ and $w_{m+1} \sqsubset w_m$ is impossible if $|w_m| < |w_{m+1}|$! Thus $|w_m| > |w_{m+1}|$ strictly, and since $u$ was formed by $w_{m+1}^{d_{m+1}} u_{\text{prev}}$ where $w_m > w_{m+1}^{d_{m+1}} \dots$ (otherwise $w_{m+1}^{d_{m+1}} u_{\text{prev}}$ already exceeded $w_m$ only because $w_{m+1}^{d_{m+1}} \sqsubset w_m$, so $|w_m| > d_{m+1}|w_{m+1}|$!), we have $|w_m| > |u| - |u_{\text{prev}}| \implies |u_{\text{new}}| = d_m|w_m| + |u| > 2|u| - |u_{\text{prev}}|$, which by standard Fibonacci / doubling induction proves **at most $O(\log N)$ Case C merges ever occur in the worst case**!
+3. **Algorithmic Compilation**:
+   - Store for each version node $v$ its tree depth, character, binary-lifting ancestors `up[v][0..18]`, and polynomial hash to compare any two substrings on the version tree in $O(\log N)$ time.
+   - Maintain a persistent linked list (or pointer to top block) of CFL groups `(start_pos, len_w, d, prev_group, prefix_factor_cnt)`.
+   - On `1 v c`, start with $u = [len(V_v)+1 .. len(V_v)+1]$ and loop through Case C at most $O(\log N)$ times (each comparison $w_m$ vs. $u$ taking $O(\log N)$ via binary-lifting LCE), then push/coalesce the final group. Total worst-case time per append: $O(\log^2 N)$ (or $O(\log N)$ with $O(1)$ tree LCE)!
+   - On `2 v`, precompute $\mu(1..N)$ via a linear sieve in $O(N)$ and evaluate Witt's formula $L_\sigma(p) = \frac{1}{p}\sum_{d \mid p} \mu(p/d) \sigma^d \pmod{998244353}$ in $O(\sqrt{p})$ time.
+4. **Boundary Pitfalls**: This proof reveals why **grouping equal CFL factors into power blocks $(w_t, d_t)$ is mandatory** for worst-case $O(\log N)$ stack merges: without grouping $(w_t, d_t)$, appending $\texttt{b}$ to $\texttt{a}^N$ would pop $N$ separate copies of $\texttt{a}$ one by one in $\Theta(N)$ time, whereas grouped $(w_1, d_1) = (\texttt{a}, N)$ merges all $N$ copies into $\texttt{a}^N \texttt{b}$ in **one single step**!
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Decision Checklist: Which Lyndon / Duval Tool Applies?
+
+- [ ] **Do you need the lexicographically smallest cyclic shift of $S[1..N]$ or the CFL factorization in $O(N)$ time and $O(1)$ space?**
+  $\to$ Run **Duval's Three-Pointer Automaton $(i, j, k)$** on $S + S$ (Theorem 5.2 & Section 2.2).
+- [ ] **Do you need the CFL factor count, minimum suffix, or maximum suffix for *every prefix* $S[1..r]$ ($1 \le r \le N$) in $O(N)$ total time?**
+  $\to$ Use **Theorem 5.5 (All-Prefix CFL State Sharing `r -> r - d*p`)** inside $<$ -Duval for `min_suf[r]` and `cnt[r] = cnt[min_suf[r]-1] + 1`, and read the **active outer pointer $i$ inside $<_{\text{rev}}$-Duval** for `max_suf[r]` (Section 3.1 & Problem 5.3).
+- [ ] **Is the string given in Run-Length Encoded form $S = c_1^{a_1} \cdots c_M^{a_M}$ with $\sum a_t \le 10^{18}$?**
+  $\to$ Apply **Lemma 5.6 (RLE-Lyndon Block Boundary Invariant)** and run $O(M)$ block-level Duval (Section 3.2 & Problem 5.5).
+- [ ] **Are you ordering strings or tree nodes for concatenation ($AB < BA$), or building/inverting the sentinel-free Bijective BWT (`BWTS`)?**
+  $\to$ Sort by **Infinite-Periodic Order** $A \le_\omega B \iff A^\omega \le B^\omega$ (`ARC 050 D`, `AGC 023 F`), and invert `BWTS` in $O(N)$ via disjoint cycles of $\pi_{FL}$ ordered by cycle-minimum row index (Section 3.3 & Problem 5.7).
+- [ ] **Are appends performed on a *persistent version tree* where adversary branching breaks Duval's amortized bound?**
+  $\to$ Maintain the **grouped CFL stack $w_1^{d_1} > \cdots > w_m^{d_m}$**, which collapses each power block $(w_m, d_m)$ in $O(1)$ steps and guarantees **worst-case $O(\log N)$ merges** per append (Problem 5.8).
+
+### 6.2 Transition Table to Subsequent Chapters in Part II
+
+| Limitation of `Ch 05` Machinery | New Structural Question | Where It Is Resolved |
+| :--- | :--- | :--- |
+| Duval gives the minimum/maximum suffix of a **prefix** $S[1..r]$, or of a static string at $T = \varepsilon$, in $O(N)$ time. | How do we query the minimum/maximum suffix or cyclic shift of an arbitrary **substring $S[l..r]$**, or under dynamic right-extensions $S[i..r] + T$? | **[Chapter 06 — Significant Suffixes (`显著后缀`), 1-Survivor Segment Tree Merging & Dyadic SA-RMQ](ch06-significant-suffixes-substrings.qmd)** |
+| Duval only finds the longest Lyndon prefix starting at the **outer CFL checkpoints** $i_1, i_2, \dots$. | How do we compute the longest Lyndon prefix $\lambda[i]$ starting at **every index $i \in [1..N]$** in $O(N)$ time, and build the **Lyndon Tree**? | **[Chapter 07 — Lyndon Arrays ($\lambda_<, \lambda_>$), Monotonic Stacks & Min-Cartesian Trees](ch07-lyndon-arrays-cartesian-trees.qmd)** |
+| Lyndon words are **unbordered** ($\pi = 0$), which seems opposite to periodic repetitions $u^k$ ($k \ge 2$). | How do Lyndon roots under $<$ and $>$ uniquely anchor every **maximal periodic substring (Run)** to prove $|\mathcal{R}(S)| < N$? | **[Chapter 08 — The Runs Theorem, Lyndon Roots & 2D Square Sweep-Lines](ch08-runs-theorem-squares-sweep.qmd)** |

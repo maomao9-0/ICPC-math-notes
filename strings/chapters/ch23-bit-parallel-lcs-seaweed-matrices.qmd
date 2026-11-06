@@ -1,0 +1,616 @@
+---
+title: "Bit-Parallel Alignment (Allison–Dix & Myers), Tiskin's Seaweed Matrices, and O(N log² N) Range LIS"
+subtitle: "Chapter 23 · Part VI: Subsequence Algebra, Tiskin's Seaweed Matrices, Cluster Generating Functions & DP套DP"
+---
+
+::: {.callout-important title="Prerequisites, Assumed Library & Learning Objectives"}
+- **Assumed Library Primitives**: 64-bit word operations (`__builtin_popcountll`, unsigned subtraction borrows), Persistent Segment Trees (Chairman Trees) / 2D Fenwick Trees for orthogonal range counting. See [Notation & Conventions](../notation.qmd) for 1-based closed indexing $S[1..N]$.
+- **Strict Prerequisite Chapters**: [Chapter 22: Subsequence Automata (DASG), Arch Factorization, Simon's Congruence, and Invertible Subsequence Matrices](ch22-dasg-arch-simon-invertible-matrices.qmd).
+- **Assigned Technique IDs**: `T-4B-05` (Allison–Dix 4-Instruction Bit-Parallel LCS, Myers' 15-Instruction Bit-Parallel Edit Distance & Hirschberg Bitset Reconstruction), `T-4B-04` (Tiskin's Seaweed Matrices `海草矩阵`, Unified Three-Family Semi-Local LCS Dominance, $O(K \log K)$ Unit-Monge $\boxdot$ Staircase Merge & $O(N \log^2 N)$ Range LIS).
+- **Learning Objectives**:
+  1. Prove the **Allison–Dix / Crochemore–Hyyrö 4-Instruction Hardware Borrow Identity** $V' = X \mathbin{\&} \sim(X - Y)$ ($X = V \mathbin{|} M_{A[i]}, Y = (V \ll 1) \mathbin{|} 1$), showing how unsigned subtraction absorbs borrows at the earliest match inside each interval $I_r = (j_{r-1}, j_r]$ with zero cross-interval leakage.
+  2. Derive **Myers' 15-Instruction Bit-Parallel Levenshtein Automaton** over difference vectors $(VP, VN, HP, HN)$, distinguish global ($b_0 = 1$) from semi-local substring ($b_0 = 0$) boundary bits, and couple bit-parallel alignment with **Hirschberg's $O(M+N)$-Space Divide-and-Conquer**.
+  3. Prove **Tiskin's Planar Alignment Uncrossing Theorem**: why the second cross-difference of semi-local LCS scores is a $0$-$1$ permutation matrix (**Seaweed Matrix** $W[1..N]$) evolved by the 3-line comb rule `if (A[i] == B[j] || u > W[j]) swap(u, W[j])`, and derive the **Unified Three-Family LCS Dominance Formulas**.
+  4. Master the **$O(K \log K)$ Monotone-Staircase Merge** for Unit-Monge distance multiplication $P = P_1 \boxdot P_2$ (`[国家集训队论文 2021]`) and reduce **Range Longest Increasing Subsequence (`区间 LIS`)** $\operatorname{LIS}(B[l..r])$ to a sparse 1-match-per-row Seaweed product in **$O(N \log^2 N)$ time**.
+:::
+
+---
+
+## 1. Monotonic DP Differences & The Allison–Dix 4-Instruction Borrow Identity (`T-4B-05`)
+
+### 1.1 The Diagnostic Signal: Why Scalar $O(MN)$ LCS Fails at $N = 10^5$
+
+In the standard Longest Common Subsequence (LCS) dynamic programming table $dp[i][j] = \operatorname{LCS}(A[1..i], B[1..j])$ for strings $A[1..M]$ and $B[1..N]$, the Bellman recurrence
+$$dp[i][j] = \begin{cases} dp[i-1][j-1] + 1 & \text{if } A[i] = B[j], \\ \max\bigl(dp[i-1][j],\, dp[i][j-1]\bigr) & \text{if } A[i] \ne B[j] \end{cases}$$
+requires $M \times N$ scalar comparisons. When $M, N = 65{,}536$ or $10^5$, $M N \approx 10^{10}$ scalar operations exceed a $1.0\text{ s}$ time limit by two orders of magnitude. Yet adjacent entries along any row $i$ differ by **at most $1$**:
+$$\Delta_i[j] := dp[i][j] - dp[i][j-1] \in \{0, 1\} \qquad (1 \le j \le N).$$
+Because the entire row $dp[i][1..N]$ is uniquely encoded by the $N$-bit binary vector $V_i = (\Delta_i[1], \dots, \Delta_i[N]) \in \{0, 1\}^N$ (with $\operatorname{LCS}(A[1..i], B[1..j]) = \sum_{k=1}^j \Delta_i[k] = \operatorname{popcount}(V_i[1..j])$), can we advance from row $V_{i-1}$ to row $V_i$ across $w = 64$ columns simultaneously using hardware arithmetic?
+
+---
+
+### 1.2 The Combinatorial Word Invariant: Interval-Local Borrow Absorption & Proof of Theorem 23.1
+
+#### Concrete Objects: Step-Up Columns and Partition Intervals
+
+Fix row $i - 1$, and let $1 \le j_1 < j_2 < \dots < j_k \le N$ be the exact columns where $\Delta_{i-1}[j] = 1$ (so $dp[i-1][j]$ steps up from $r - 1$ to $r$ at column $j = j_r$). These $k$ step-up columns partition $\{1, 2, \dots, N\}$ into $k$ half-open intervals $I_r = [j_{r-1} + 1,\, j_r]$ ($1 \le r \le k$, with $j_0 = 0$) plus a trailing interval $I_{k+1} = [j_k + 1,\, N]$.
+Within interval $I_r$, every column $j \in [j_{r-1}+1, j_r - 1]$ has $dp[i-1][j] = r - 1$, while $dp[i-1][j_r] = r$.
+
+Now transition to row $i$ upon reading character $c = A[i]$:
+
+- Since $dp[i][j] \ge dp[i-1][j]$ and $dp[i][j]$ can increase by at most $+1$ over $dp[i-1][j-1]$ when $B[j] = c$, the $r$-th step-up point $j'_r$ in row $i$ cannot move right of $j_r$, nor can it cross left of $j_{r-1} + 1$.
+- Instead, inside each interval $I_r = [j_{r-1} + 1,\, j_r]$, the step-up from $r - 1$ to $r$ shifts left from $j_r$ to the **earliest column $p \in I_r$ where $B[p] = A[i]$** (or stays at $j_r$ if $A[i]$ does not occur in $B[j_{r-1}+1 .. j_r]$):
+  $$j'_r = \min\Bigl(\bigl\{\, p \in [j_{r-1} + 1,\, j_r] \;\big|\; B[p] = A[i] \,\bigr\} \cup \{j_r\}\Bigr).$$
+  In the trailing interval $I_{k+1} = [j_k + 1,\, N]$, a new $(k+1)$-st step-up bit appears at $j'_{k+1} = \min\{p \in [j_k + 1, N] : B[p] = A[i]\}$ if and only if $A[i]$ occurs in $I_{k+1}$.
+
+How can a single unsigned integer subtraction find the **minimum** set bit inside *every* interval $I_r$ in parallel without borrows leaking from $I_r$ into $I_{r+1}$?
+
+::: {.callout-note title="Theorem 23.1 (Allison–Dix 1986 / Crochemore–Hyyrö 4-Instruction Bit-Parallel LCS Identity)"}
+Pack the horizontal row differences $\Delta_{i-1}[1..N]$ into an $N$-bit unsigned integer $V$ (where bit $j - 1$ stores $\Delta_{i-1}[j]$), and for each character $c \in \Sigma$, precompute the $N$-bit match mask $M[c]$ where bit $j - 1$ is $1 \iff B[j] = c$. For row $i$ with character $c = A[i]$, define:
+$$X = V \mathbin{|} M\bigl[A[i]\bigr], \qquad Y = (V \ll 1) \mathbin{|} 1.$$
+Then the updated horizontal difference bitmask $V'$ for row $i$ is given by the **4-instruction bitwise identity**:
+$$\boxed{V' = X \mathbin{\&} \sim(X - Y).}$$
+:::
+
+```
+Interval I_r = [j_{r-1}+1 .. j_r] (LSB on the left, MSB on the right):
+Index:    j_{r-1}+1   ...   j'_r - 1    j'_r (first match)   ...    j_r (old step-up)
+  V :         0       ...      0          0                  ...     1
+  X :         0       ...      0          1                  ...     1   (X = V | M[c])
+- Y :         1       ...      0          0                  ...     0   (Y = (V << 1) | 1)
+---------------------------------------------------------------------------------------
+X - Y:        1       ...      1          0 (borrow stops!)  ...     1   (unchanged!)
+X & ~(X-Y):   0       ...      0          1 (isolated!)      ...     0
+```
+
+#### Proof of Theorem 23.1 (Interval-Local Borrow Absorption)
+Examine the bits of $X$ and $Y$ restricted to each interval $I_r = [j_{r-1} + 1,\, j_r]$ ($1 \le r \le k$) and $I_{k+1} = [j_k + 1,\, N]$:
+
+1. **Bottom-of-Interval Trigger ($Y$)**: Because $V$ has $1$-bits at $j_1, j_2, \dots, j_k$, shifting $V$ left by $1$ and setting bit $0$ ($j = 1$) places a **single $1$-bit at the lowest index $j_{r-1} + 1$ of every interval $I_r$** ($1 \le r \le k + 1$), and $0$-bits everywhere else in $I_r$.
+2. **In-Interval Match & Top-of-Interval Barrier ($X$)**: Inside $I_r$ ($1 \le r \le k$), $X = V \mathbin{|} M[c]$ has $1$-bits at all match positions $p \in I_r$ with $B[p] = c$, **and** a guaranteed $1$-bit at the top endpoint $j_r$ (since $V$ has a $1$-bit at $j_r$). Thus the set of $1$-bits of $X$ inside $I_r$ is non-empty, and its minimum element is precisely $j'_r = \min(\{p \in I_r : B[p] = c\} \cup \{j_r\})$.
+3. **Why No Borrow Ever Crosses $j_r$**: When subtracting $Y$ from $X$ in binary, the single $1$-bit of $Y$ at $j_{r-1} + 1$ initiates a subtraction at the bottom of $I_r$. As long as $X$ has $0$-bits at $j_{r-1} + 1, \dots, j'_r - 1$, the borrow propagates upward, turning those $0$-bits into $1$-bits. The moment the borrow reaches $j'_r \le j_r$ (the first $1$-bit of $X$ in $I_r$), it flips bit $j'_r$ of $X - Y$ from $1 \to 0$ and **is completely absorbed**! All higher bits in $[j'_r + 1,\, j_r]$ remain identical in $X$ and $X - Y$, and **zero borrow ever escapes past $j_r$ into $I_{r+1}$**!
+4. **Bit Isolation**: Inside $I_r$, positions $< j'_r$ have $X = 0, X - Y = 1$; position $j'_r$ has $X = 1, X - Y = 0$; and positions $> j'_r$ have $X - Y = X$. Therefore, $X \mathbin{\&} \sim(X - Y)$ evaluates to $1$ **exclusively at $j'_r$**! Finally, in the tail $I_{k+1}$, if $X|_{I_{k+1}}$ has a match, the borrow stops at $j'_{k+1}$; if $X|_{I_{k+1}} = 0$, the subtraction wraps to all $1$s across $I_{k+1}$, where $X = 0$ masks $X \mathbin{\&} \sim(X - Y)$ to $0$. $\blacksquare$
+
+#### Hand-Checkable 6-Bit Trace on $B = \texttt{abacba}$, $V = \texttt{010010}_2$, $A[i] = \texttt{a}$
+Write bit $0$ ($j = 1$) on the **left** and bit $5$ ($j = 6$) on the **right** so string indices align visually left-to-right:
+
+- $B[1..6] = \texttt{a b a c b a} \implies M[\texttt{a}] = [1, 0, 1, 0, 0, 1]$.
+- Suppose $V = [0, 1, 0, 0, 1, 0]$ (step-ups at $j_1 = 2, j_2 = 5$, partitioning $[1..6]$ into $I_1 = [1..2]$, $I_2 = [3..5]$, $I_3 = [6..6]$).
+- $X = V \mathbin{|} M[\texttt{a}] = [1, 1, 1, 0, 1, 1]$.
+- $Y = (V \ll 1) \mathbin{|} 1 = [1, 0, 1, 0, 0, 1]$ ($1$-bits at interval starts $j = 1, 3, 6$).
+- In $I_1 = [1..2]$: $X|_{I_1} = [1, 1], Y|_{I_1} = [1, 0] \implies (X - Y)|_{I_1} = [0, 1] \implies V'|_{I_1} = [1, 0]$ ($j'_1 = 1$).
+- In $I_2 = [3..5]$: $X|_{I_2} = [1, 0, 1], Y|_{I_2} = [1, 0, 0] \implies (X - Y)|_{I_2} = [0, 0, 1] \implies V'|_{I_2} = [1, 0, 0]$ ($j'_2 = 3$).
+- In $I_3 = [6..6]$: $X|_{I_3} = [1], Y|_{I_3} = [1] \implies (X - Y)|_{I_3} = [0] \implies V'|_{I_3} = [1]$ ($j'_3 = 6$).
+- Thus $V' = [1, 0, 1, 0, 0, 1]$, increasing $\operatorname{popcount}(V)$ from $2$ to $3$ in 4 CPU instructions!
+
+#### Multi-Word `uint64_t` Array Implementation ($N > 64$)
+When $N > 64$, pack $V$ into $W = \lceil N / 64 \rceil$ 64-bit words `v[0..W-1]`. Across word $b \in [0, W-1]$:
+
+- `y = (v[b] << 1) | carry_shift`, with `carry_shift = v[b] >> 63` passed to $b + 1$ (and initial `carry_shift = 1` at $b = 0$).
+- Subtract `y + borrow` from `x = v[b] | M[c][b]`:
+  ```cpp
+  uint64_t x = v[b] | M[c][b];
+  uint64_t y = (v[b] << 1) | shift_carry;
+  shift_carry = v[b] >> 63;
+  uint64_t sub = x - y - sub_borrow;
+  sub_borrow = (x < y) || (sub_borrow && x == y);
+  v[b] = x & ~sub;
+  ```
+  After the last word $W - 1$, mask out unused high bits via `v[W - 1] &= last_mask`.
+
+---
+
+## 2. Myers' Bit-Parallel Edit Distance & Hirschberg $O(M+N)$-Space Bitset Alignment (`T-4B-05`)
+
+### 2.1 Myers' 15-Instruction Levenshtein Difference Automaton
+
+In unit-cost Levenshtein Edit Distance $E[i][j] = \operatorname{ed}(A[1..i], B[1..j])$, adjacent vertical and horizontal cells satisfy:
+$$\Delta V[i][j] = E[i][j] - E[i-1][j] \in \{-1, 0, +1\}, \qquad \Delta H[i][j] = E[i][j] - E[i][j-1] \in \{-1, 0, +1\}.$$
+Myers (1999) represented each column $j$'s vertical differences $\Delta V[1..M][j]$ by two $M$-bit masks:
+$$VP[i-1] = \mathbf{1}\bigl[\Delta V[i][j] = +1\bigr], \qquad VN[i-1] = \mathbf{1}\bigl[\Delta V[i][j] = -1\bigr],$$
+and similarly represented the horizontal differences $\Delta H[0..M][j]$ by $HP$ and $HN$, plus the diagonal zero-change mask $D0[i-1] = \mathbf{1}\bigl[E[i][j] = E[i-1][j-1]\bigr]$.
+
+::: {.callout-note title="Theorem 23.2 (Myers' 15-Instruction Bit-Parallel Edit Distance Step)"}
+Initially at column $j = 0$, $E[i][0] = i$, so $VP = 1^M$ (all $1$s) and $VN = 0$. When advancing from column $j - 1$ to column $j$ on text character $B[j]$ (with pattern match mask $M_A[B[j]]$), the intermediate masks $D0, HP, HN$ and updated masks $VP', VN'$ are given by:
+$$\begin{aligned}
+X &= M_A\bigl[B[j]\bigr] \mathbin{|} VN, & D0 &= \bigl(((X \mathbin{\&} VP) + VP) \oplus VP\bigr) \mathbin{|} X, \\
+HP &= VN \mathbin{|} \sim(D0 \mathbin{|} VP), & HN &= VP \mathbin{\&} D0, \\
+X' &= (HP \ll 1) \mathbin{|} b_0, & VP' &= (HN \ll 1) \mathbin{|} \sim(D0 \mathbin{|} X'), \qquad VN' = X' \mathbin{\&} D0,
+\end{aligned}$$
+where the row-$0$ horizontal boundary bit $b_0 = \Delta H[0][j] = E[0][j] - E[0][j-1] \in \{0, 1\}$ is:
+
+- **$b_0 = 1$ for Global Edit Distance** ($E[0][j] = j \implies \Delta H[0][j] = +1$);
+- **$b_0 = 0$ for Semi-Local Substring Edit Distance** ($\min_{1 \le l \le j} \operatorname{ed}(A, B[l..j]) \implies E[0][j] = 0 \implies \Delta H[0][j] = 0$).
+
+The bottom-row edit distance $E[M][j]$ updates in $O(1)$ via $E[M][j] = E[M][j-1] + ((HP \gg (M-1)) \mathbin{\&} 1) - ((HN \gg (M-1)) \mathbin{\&} 1)$.
+:::
+
+#### Why $((X \mathbin{\&} VP) + VP) \oplus VP$ Propagates Diagonal Zero-Difference Runs
+In Myers' transition, a diagonal step $D0[i] = 1$ triggers whenever $A[i] = B[j]$ or $VN[i] = 1$ ($X[i] = 1$), **and** propagates downward along contiguous runs of $VP = 1$! Adding $VP$ to $(X \mathbin{\&} VP)$ initiates a hardware carry at every position where both $X$ and $VP$ are $1$, propagating the carry through contiguous $1$-bits of $VP$; XORing with $VP$ isolates every bit flipped by that carry in 3 instructions.
+
+---
+
+### 2.2 Hirschberg $O(M+N)$-Space Bitset LCS Reconstruction & `DP套DP` Coupling
+
+1. **Hirschberg + Bit-Parallel LCS Reconstruction in $O(MN / w)$ Time and $O(M + N)$ Space**:
+   - At $M, N = 50{,}000$, storing all $M$ bitvectors $V_1, \dots, V_M$ takes $50{,}000 \times \frac{50{,}000}{8} \approx 312\text{ MB}$.
+   - Instead, in `solve(l_A, r_A, l_B, r_B)`, let $\text{mid} = \lfloor (l_A + r_A) / 2 \rfloor$. Run Theorem 23.1 forward on $A[l_A .. \text{mid}]$ against $B[l_B .. r_B]$ to obtain the final bitmask $V_{\text{fwd}}$, and backward on $A[\text{mid}+1 .. r_A]^R$ against $B[l_B .. r_B]^R$ to obtain $V_{\text{bwd}}$.
+   - Unpack $V_{\text{fwd}}$ and $V_{\text{bwd}}$ by summing their bits to find the split column $j^* \in [l_B - 1, r_B]$ maximizing $\operatorname{LCS}_{\text{fwd}}(j^* - l_B + 1) + \operatorname{LCS}_{\text{bwd}}(r_B - j^*)$, then recurse on $(l_A, \text{mid}, l_B, j^*)$ and $(\text{mid}+1, r_A, j^*+1, r_B)$.
+   - **Active-Window Slicing Invariant**: Inside `solve(l_A, r_A, l_B, r_B)`, you **must** build pattern masks $M[c]$ of width $W_{\text{sub}} = r_B - l_B + 1$ (touching only characters present in $A[l_A .. r_A]$), so the work at depth $d$ sums to $\sum O(\Delta M_q \cdot \Delta N_q / w) = O(MN / (2^d w))$ and total time is $\sum_{d \ge 0} O(MN / (2^d w)) = O(MN / w)$!
+2. **Direct Coupling to `DP套DP` Outer Automaton Precomputation ([`Ch 25`](ch25-martingale-pgfs-automaton-dp-of-dp.qmd))**:
+   - When counting outer strings $B \in \Sigma^N$ by $\operatorname{LCS}(A, B)$ for $|A| = K \le 20$, each inner DP state is a $K$-bit mask $V \in [0, 2^K)$. Theorem 23.1 computes the entire DFA transition table `trans[V][c]` in $O(2^K \sigma)$ time using 4 bitwise operations per entry—zero array unpacking required!
+
+---
+
+## 3. Tiskin's Seaweed Matrices (`海草矩阵`) & All-Pairs Interval LCS (`区间 LCS`, `T-4B-04`)
+
+### 3.1 The Diagnostic Signal: All-Pairs Semi-Local LCS Queries
+
+In `[THUPC 2021] 区间 LCS` (`Luogu P7456` / `LOJ 3399` / `[国家集训队论文 2021]`), we are given strings $A[1..M]$ and $B[1..N]$ ($M \le 5000, N \le 10^5$, or $M, N \le 10^5$) and $Q \le 10^6$ queries $(l, r)$, each asking for the **substring LCS**:
+$$\operatorname{Query}(l, r) = \operatorname{LCS}\bigl(A[1..M],\, B[l..r]\bigr) \qquad (1 \le l \le r \le N).$$
+Running a fresh LCS DP from each start position $l \in \{1, \dots, N\}$ takes $O(MN^2)$ time. How can all $\binom{N+1}{2}$ interval LCS answers be compressed into a **single 1D permutation array $W[1..N]$ of $N$ integers**?
+
+---
+
+### 3.2 Planar Alignment Uncrossing, the 3-Line Seaweed Comb & Unified Three-Family Dominance
+
+#### Concrete Objects: Semi-Local Alignment Grid & Second Cross-Differences
+
+In the $(M+1) \times (N+1)$ alignment DAG of $A[1..M]$ and $B[1..N]$ (horizontal and vertical edges of weight $0$, diagonal match edges $(x-1, y-1) \to (x, y)$ of weight $1$ when $A[x] = B[y]$), let $L(l, r) := \operatorname{LCS}(A[1..M], B[l+1 .. r])$ be the maximum weight of a path from top-wall vertex $(0, l)$ to bottom-wall vertex $(M, r)$ for $0 \le l \le r \le N$.
+
+::: {.callout-note title="Theorem 23.3 (Planar Alignment Uncrossing & Unit-Monge Cross-Difference Permutation)"}
+1. **Anti-Monge Quadrangle Inequality**: For any $0 \le l < l' \le r < r' \le N$, any optimal path $P_1 : (0, l) \leadsto (M, r')$ and any optimal path $P_2 : (0, l') \leadsto (M, r)$ must intersect at some grid vertex $(x^*, y^*)$ by planarity. Swapping their suffixes after $(x^*, y^*)$ produces valid paths $(0, l) \leadsto (M, r)$ and $(0, l') \leadsto (M, r')$ with the same total weight, proving:
+   $$L(l, r) + L(l', r') \ge L(l, r') + L(l', r).$$
+2. **Unit Cross-Difference Matrix**: For $1 \le i \le j \le N$, define the second cross-difference
+   $$\Delta(i, j) := \bigl(L(i-1, j) - L(i, j)\bigr) - \bigl(L(i-1, j-1) - L(i, j-1)\bigr).$$
+   By the quadrangle inequality, $\Delta(i, j) \ge 0$. Summing $\Delta(i, j)$ across row $i$ telescopes to $\sum_{j=i}^N \Delta(i, j) = L(i-1, N) - L(i, N) \in \{0, 1\}$, and summing down column $j$ telescopes to $\sum_{i=1}^j \Delta(i, j) = L(0, j) - L(0, j-1) \in \{0, 1\}$. Therefore, **every $\Delta(i, j) \in \{0, 1\}$, with at most one $1$ in each row $i$ and at most one $1$ in each column $j$**!
+:::
+
+#### Tracing Seaweeds: The 3-Line Comb Kernel & Dual Conventions ($W[1..N]$ vs. $p[1..N]$)
+
+To complete $\Delta(i, j)$ into a full $(M+N) \times (M+N)$ permutation bijection between the top-left entrance perimeter and the bottom-right exit perimeter, trace $M + N$ **seaweeds (wires)**:
+
+- **$M$ Left-Wall Row Entrances**: Wire entering row $x \in \{1, \dots, M\}$ from the left wall receives initial rank **$u_x = -x \in \{-M, \dots, -1\}$**.
+- **$N$ Top-Wall Column Entrances**: Wire entering column $y \in \{1, \dots, N\}$ from the top wall receives initial rank **$v_y = y \in \{1, \dots, N\}$**.
+
+Observe that walking clockwise along the entrance perimeter from bottom-left $(M, 0)$ up to $(0, 0)$ and right to $(0, N)$ visits initial wire ranks in **strictly increasing order**:
+$$-M < -(M-1) < \dots < -1 < 1 < 2 < \dots < N.$$
+
+At each cell $(x, y)$ ($x = 1 \dots M, y = 1 \dots N$), a wire of rank $u$ enters from the **left** edge and a wire of rank $W[y]$ enters from the **top** edge:
+
+- **The Local Seaweed Comb Rule**:
+  $$\boxed{\text{If } A[x] = B[y] \;\text{ OR }\; u > W[y]: \quad \text{wires BOUNCE (do not cross): } \texttt{swap}(u, W[y]).}$$
+  $$\text{If } A[x] \ne B[y] \;\text{ AND }\; u < W[y]: \quad \text{wires CROSS straight through (no swap).}$$
+- **Why $u > W[y]$ Means "Already Crossed" (The 0-Hecke Sticky Braid Law $s_i^2 = s_i$)**: Because all wires enter in strictly increasing clockwise order ($u < W[y]$ initially), two wires arrive at cell $(x, y)$ with $u > W[y]$ **if and only if they have already crossed each other at an earlier mismatch cell**! Forbidding a second crossing ensures every pair of wires crosses at most once.
+
+After sweeping all $M \times N$ cells, let:
+
+- **$W[k] \in \{-M, \dots, -1\} \cup \{1, \dots, N\}$ (`Bottom-Exit Array`)**: the initial entrance rank of the wire exiting the **bottom wall at column $k \in \{1, \dots, N\}$**.
+- **$R[x] \in \{-M, \dots, -1\} \cup \{1, \dots, N\}$ (`Right-Exit Array`)**: the initial entrance rank of the wire exiting the **right wall at row $x \in \{1, \dots, M\}$**.
+- **$p[i] \in \{1, \dots, N\} \cup \{\infty\}$ (`Top-Entrance Map`)**: the bottom exit column of top wire $i \in \{1, \dots, N\}$ (or $\infty$ if it exited on the right wall), satisfying the exact duality **$W[k] = i \iff p[i] = k$** for all $i, k \in [1, N]$.
+
+::: {.callout-note title="Theorem 23.4 (Unified Three-Family Semi-Local LCS Dominance from $(W, R)$)"}
+A single $O(MN)$ Seaweed Comb on $A[1..M] \times B[1..N]$ producing $(W[1..N], R[1..M])$ (and intermediate row snapshots $W^{(i)}[1..N]$ after row $i$) answers all semi-local LCS families via 2D dominance point counting:
+
+1. **Family 1 — Whole $A$ (or Prefix $A[1..i]$) vs. Substring $B[l..r]$ (`区间 LCS`)**:
+   $$\boxed{\operatorname{LCS}\bigl(A[1..M],\, B[l..r]\bigr) = \#\bigl\{\, k \in [l, r] \;\big|\; W[k] < l \,\bigr\} = \#\bigl\{\, j \in [l, r] \;\big|\; p[j] > r \,\bigr\},}$$
+   and more generally, using row-$i$ snapshot $W^{(i)}[1..N]$ (or on a subset of rows), $\operatorname{LCS}(A[1..i], B[l..r]) = \#\{k \in [l, r] : W^{(i)}[k] < l\}$.
+2. **Family 2 — Suffix $A[i..M]$ vs. Prefix $B[1..j]$ (`后缀-前缀 LCS` — Zero Row Snapshots Needed!)**:
+   $$\boxed{\operatorname{LCS}\bigl(A[i..M],\, B[1..j]\bigr) = \#\bigl\{\, k \in [1, j] \;\big|\; W[k] \le -i \,\bigr\}.}$$
+3. **Family 3 — Prefix $A[1..i]$ vs. Suffix $B[l..N]$ (`前缀-后缀 LCS`)**:
+   $$\boxed{\operatorname{LCS}\bigl(A[1..i],\, B[l..N]\bigr) = \#\bigl\{\, x \in [1, i] \;\big|\; R[x] \ge l \,\bigr\} + \#\bigl\{\, k \in [l, N] \;\big|\; -i \le W[k] \le -1 \,\bigr\}.}$$
+:::
+
+#### Proof of Theorem 23.4
+
+1. **Family 1**: By Theorem 23.3, $\Delta(i, k) = 1 \iff p[i] = k \iff W[k] = i$. Summing $\Delta(i, k)$ over $1 \le i \le l \le k \le r$ telescopes to $L(0, r) - L(l, r)$, while summing over $l < i \le k \le r$ counts top wires $i \in [l, r]$ that exit inside $[l, r]$ ($W[k] \ge l$). Since each of the $r - l + 1$ columns in $[l, r]$ either increments $L(l - 1, \cdot)$ by $+1$ (when its wire originated before column $l$, i.e., $W[k] < l$) or by $0$ (when $W[k] \ge l$), $L(l - 1, r) = \operatorname{LCS}(A[1..M], B[l..r]) = \#\{k \in [l, r] : W[k] < l\}$. By the bijection $W[k] = j \iff p[j] = k$, $(r - l + 1) - \#\{k \in [l, r] : W[k] \ge l\} = (r - l + 1) - \#\{j \in [l, r] : p[j] \le r\} = \#\{j \in [l, r] : p[j] > r\}$.
+2. **Family 2**: Wires entering rows $1 \dots i - 1$ and top columns $1 \dots N$ all have initial ranks $> -i$, whereas wires entering rows $i \dots M$ have initial ranks $\{-M, \dots, -i\} \le -i$. Because the Seaweed Comb Rule depends only on the **relative order** of wire ranks, rows $1 \dots i - 1$ merely permute wires of rank $> -i$ among themselves before row $i$ is reached! Thus, thresholding $W[k] \le -i$ at the bottom of row $M$ is identical to starting fresh at row $i$ and counting wires with rank $< 1$, which by Family 1 equals $\operatorname{LCS}(A[i..M], B[1..j])$.
+3. **Family 3**: In subgrid $A[1..i] \times B[l..N]$, the top wires entering at columns $j \in [l, N]$ that are deflected right before row $i + 1$ exit the right wall of $A[1..i] \times B[1..N]$ at some row $x \in [1, i]$ with $R[x] \ge l$, whereas top wires $\ge l$ that reach the bottom of row $i$ remain unmatched in $A[1..i] \times B[l..N]$. Counting wires entering at $[-i, -1]$ that exit after bottom-right corner $(i, N)$ yields $\#\{k \in [l, N] \mid -i \le W[k] < 0\} + \#\{x \in [i+1, M] \mid -i \le R[x] < 0\}$. $\blacksquare$
+
+#### Hand-Checkable Trace of the Seaweed Comb on $A = \texttt{abac}, B = \texttt{baca}$ ($M = N = 4$)
+
+Initialize $W[1..4] = [1, 2, 3, 4]$:
+
+| Row $i$ ($A[i]$) | Initial $u = -i$ | Col $1$ ($B[1]=\texttt{b}$) | Col $2$ ($B[2]=\texttt{a}$) | Col $3$ ($B[3]=\texttt{c}$) | Col $4$ ($B[4]=\texttt{a}$) | Right Exit $R[i]$ | Snapshot $W^{(i)}[1..4]$ |
+| :---: | :---: | :--- | :--- | :--- | :--- | :---: | :--- |
+| $i=1$ ($\texttt{a}$) | $-1$ | $\ne, -1<1 \Rightarrow$ cross | $= \Rightarrow$ swap($-1, 2$) | $\ne, 2<3 \Rightarrow$ cross | $= \Rightarrow$ swap($2, 4$) | $4$ | $[1, -1, 3, 2]$ |
+| $i=2$ ($\texttt{b}$) | $-2$ | $= \Rightarrow$ swap($-2, 1$) | $\ne, 1>-1 \Rightarrow$ swap($1, -1$) | $\ne, -1<3 \Rightarrow$ cross | $\ne, -1<2 \Rightarrow$ cross | $-1$ | $[-2, 1, 3, 2]$ |
+| $i=3$ ($\texttt{a}$) | $-3$ | $\ne, -3<-2 \Rightarrow$ cross | $= \Rightarrow$ swap($-3, 1$) | $\ne, 1<3 \Rightarrow$ cross | $= \Rightarrow$ swap($1, 2$) | $2$ | $[-2, -3, 3, 1]$ |
+| $i=4$ ($\texttt{c}$) | $-4$ | $\ne, -4<-2 \Rightarrow$ cross | $\ne, -4<-3 \Rightarrow$ cross | $= \Rightarrow$ swap($-4, 3$) | $\ne, 3>1 \Rightarrow$ swap($3, 1$) | $1$ | **$[-2, -3, -4, 3]$** |
+
+Let us check three queries from the final bottom array $W[1..4] = [-2, -3, -4, 3]$:
+
+- $\operatorname{LCS}(\texttt{abac}, B[2..4] = \texttt{aca})$ ($l = 2, r = 4$): $\#\{k \in [2, 4] : W[k] < 2\} = \#\{-3, -4\} = 2$ ($\texttt{ac}$). $\checkmark$
+- $\operatorname{LCS}(A[3..4] = \texttt{ac}, B[1..3] = \texttt{bac})$ ($i = 3, j = 3$): $\#\{k \in [1, 3] : W[k] \le -3\} = \#\{-3, -4\} = 2$ ($\texttt{ac}$). $\checkmark$
+- $\operatorname{LCS}(A[1..2] = \texttt{ab}, B[2..4] = \texttt{aca})$ from $W^{(2)} = [-2, 1, 3, 2]$: $\#\{k \in [2, 4] : W^{(2)}[k] < 2\} = \#\{1\} = 1$ ($\texttt{a}$). $\checkmark$
+
+---
+
+## 4. $O(K \log K)$ Unit-Monge $\boxdot$ Staircase Multiplication & $O(N \log^2 N)$ Sparse Range LIS (`T-4B-04`)
+
+### 4.1 The $2K$-Step Monotone-Staircase Merge for $P = P_1 \boxdot P_2$ (`[国家集训队论文 2021]`)
+
+When $M, N \le 10^5$, the $O(MN)$ grid comb is too slow. Because horizontal strips of the Seaweed grid compose via **Unit-Monge Distance Multiplication ($\boxdot$)**, we can multiply two $K \times K$ permutation matrices $P_1, P_2$ in **$O(K \log K)$ time**:
+
+For any 0-indexed $K \times K$ permutation $P[0..K-1]$, define its $(K+1) \times (K+1)$ **distribution matrix**:
+$$D_P^\Sigma(i, j) := \#\bigl\{\, x \in [i, K - 1] \;\big|\; P[x] < j \,\bigr\} \qquad (0 \le i, j \le K).$$
+The Unit-Monge distance product $D_P^\Sigma = D_{P_1}^\Sigma \boxdot D_{P_2}^\Sigma$ is defined by the $(\min, +)$ matrix product
+$$D_P^\Sigma(i, k) = \min_{0 \le j \le K} \bigl(D_{P_1}^\Sigma(i, j) + D_{P_2}^\Sigma(j, k)\bigr),$$
+whose cross-difference $\mathbf{1}[P[i] = k] = D_P^\Sigma(i, k+1) - D_P^\Sigma(i+1, k+1) - D_P^\Sigma(i, k) + D_P^\Sigma(i+1, k)$ is a unique $K \times K$ permutation $P = P_1 \boxdot P_2$.
+
+::: {.callout-note title="Theorem 23.5 (Tiskin's $O(K \log K)$ Monotone-Staircase Merge for $P_1 \boxdot P_2$)"}
+Split the intermediate index $j \in [0, K]$ at midpoint $M = \lfloor K / 2 \rfloor$:
+
+1. **Divide & Compress**: Partition $P_1$ into $P_{1, L}$ (the $M$ rows $i$ with $P_1[i] < M$) and $P_{1, R}$ (the $K - M$ rows $i$ with $P_1[i] \ge M$, shifted by $-M$). Partition $P_2$ into $P_{2, L}$ (first $M$ rows of $P_2$, column-compressed to $[0, M-1]$) and $P_{2, R}$ (last $K - M$ rows of $P_2$, column-compressed to $[0, K-M-1]$).
+2. **Recurse**: Compute $Q_L = P_{1, L} \boxdot P_{2, L}$ (size $M$) and $Q_R = P_{1, R} \boxdot P_{2, R}$ (size $K - M$), and map their indices back to $[0, K-1]$.
+3. **$O(K)$ Monotone-Staircase Merge**: Let $F_L(i, k) = \min_{0 \le j \le M}(D_{P_1}^\Sigma(i, j) + D_{P_2}^\Sigma(j, k))$ and $F_R(i, k) = \min_{M \le j \le K}(D_{P_1}^\Sigma(i, j) + D_{P_2}^\Sigma(j, k))$. Define the **advantage function**:
+   $$\delta(i, k) := F_R(i, k) - F_L(i, k) \qquad (0 \le i, k \le K).$$
+   By the Monge quadrangle inequality across $j_L \le M \le j_R$, $\delta(i, k)$ is **monotonically non-decreasing in $i$** and **monotonically non-decreasing in $k$**, and advancing $i \to i \pm 1$ or $k \to k \pm 1$ updates $\delta(i, k)$ in **$O(1)$ time** using $Q_L$ and $Q_R$! Therefore, the boundary separating $\delta(i, k) < 0$ ($F_R < F_L$) from $\delta(i, k) \ge 0$ ($F_L \le F_R$) is a **single monotone staircase from $(0, K)$ to $(K, 0)$ of at most $2K$ steps**, assembling $P = P_1 \boxdot P_2$ in $O(K)$ merge time and $T(K) = 2T(K/2) + O(K) = O(K \log K)$ total time!
+:::
+
+---
+
+### 4.2 $O(N \log^2 N)$ Sparse Range LIS (`区间最长上升子序列`) via Seaweed Reduction
+
+Given a permutation $B[1..N]$ of $\{1, \dots, N\}$ and $Q$ range queries $[l, r]$, how do we compute the Longest Increasing Subsequence $\operatorname{LIS}(B[l..r])$ in $O(\log N)$ time per query?
+
+1. **Identity-Permutation LCS Reduction**: A subsequence of $B[l..r]$ is strictly increasing if and only if it is a common subsequence of the sorted identity permutation $A = (1, 2, \dots, N)$ and $B[l..r]$:
+   $$\boxed{\operatorname{LIS}\bigl(B[l..r]\bigr) = \operatorname{LCS}\bigl((1, 2, \dots, N),\, B[l..r]\bigr) = \#\bigl\{\, k \in [l, r] \;\big|\; W[k] < l \,\bigr\}!}$$
+2. **Why the Grid Is Sparse (1 Match Per Row)**: In the $N \times N$ Seaweed grid of $A = (1, \dots, N)$ against $B[1..N]$, row $x \in \{1, \dots, N\}$ matches **only ONE column** of $B$, namely $y = \operatorname{pos}_B[x]$ where $B[y] = x$!
+3. **$O(N \log^2 N)$ Divide-and-Conquer Construction**:
+   - In a recursive subproblem over value range $x \in [L, R]$ of height $K = R - L + 1$, only the $K$ columns of $B$ holding values in $[L, R]$ contain matches; the other $N - K$ columns of $B$ have zero matches in rows $[L, R]$ and act as trivial mismatch pass-through wires!
+   - Restrict to those $K$ active columns, recursively compute the Seaweed permutations for $[L, M]$ and $[M+1, R]$ (each of size $K/2$), embed both into the $2K \times 2K$ perimeter of the $K \times K$ active subgrid, and multiply them via **Theorem 23.5 ($O(K \log K)$ Unit-Monge $\boxdot$)**.
+   - The recurrence $T(K) = 2T(K/2) + O(K \log K) = O(K \log^2 K)$ constructs the full Seaweed array $W[1..N]$ in **$O(N \log^2 N)$ time**, after which a Chairman Tree answers every Range LIS query $[l, r]$ in **$O(\log N)$ time**!
+
+---
+
+### 4.3 Reverse-Engineering Scratchpad, Algorithmic Contracts & Boundary Pitfalls (`BP-23-01`–`BP-23-04` / `BP-4B-05`–`BP-4B-08`)
+
+#### Implementation Contract: 8-Line Seaweed Comb + Chairman Tree for All-Pairs Interval LCS
+
+```cpp
+// Computes the Seaweed bottom-exit array W[1..N] and right-exit array R[1..M]
+// in O(M * N) time and O(M + N) space.
+pair<vector<int>, vector<int>> seaweed_comb(const string& A, const string& B) {
+    int M = (int)A.size(), N = (int)B.size();
+    vector<int> W(N + 1), R(M + 1);
+    for (int j = 1; j <= N; ++j) W[j] = j;
+    for (int i = 1; i <= M; ++i) {
+        int u = -i; // Left-wall entrance rank for row i
+        for (int j = 1; j <= N; ++j) {
+            if (A[i - 1] == B[j - 1] || u > W[j]) {
+                std::swap(u, W[j]);
+            }
+        }
+        R[i] = u;   // Right-wall exit rank for row i
+    }
+    return {W, R};
+}
+```
+
+#### Four Structural Boundary Pitfalls (`BP-23-01`–`BP-23-04` / `BP-4B-05`–`BP-4B-08`)
+
+1. **`BP-23-01` (`BP-4B-05`) — Confusing $W[k]$ (`Bottom-to-Top`) with $p[i]$ (`Top-to-Bottom`) on Negative Rowports**:
+   - In `W[k] < l`, negative values $W[k] \in \{-M, \dots, -1\}$ (wires that entered from the left wall) are **automatically $< l$** since $l \ge 1$, so they are properly counted! If you instead use $p[i] > r$, remember that $p[i]$ is indexed by **top column entrances $i \in [l, r]$** (where a top wire exiting the right wall has $p[i] = \infty > r$). Mixing the two arrays (e.g., counting $\#\{k \in [l, r] : W[k] > r\}$) fails completely.
+2. **`BP-23-02` (`BP-4B-06`) — Unsliced Pattern Masks Inside Hirschberg Bitset Recursion (`O(N^2)` Blowup)**:
+   - In Hirschberg bit-parallel LCS (`§2.2`), if recursive calls on $(A[l_A..r_A], B[l_B..r_B])$ iterate over the full $N / 64$ words or rebuild $M[c]$ for all 26 letters over $1..N$, the recursion tree has $O(M)$ nodes each doing $O(N/64)$ work, degrading to $O(MN / 64)$ per level $\times M$ levels $= O(M^2 N / 64)$! Always slice bitmasks to the active width $r_B - l_B + 1$.
+3. **`BP-23-03` (`BP-4B-07`) — Global vs. Semi-Local Bit $0$ in Myers' Edit Distance (`X' = (HP << 1) | b_0`)**:
+   - Using `X' = (HP << 1) | 1` ($b_0 = 1$) forces $E[0][j] = j$ (global edit distance from $B[1..j]$). For semi-local substring matching (where a match of $A$ may start at any index $l$ in $B$ at cost $E[0][l-1] = 0$), you **must** set $b_0 = 0$ (`X' = HP << 1` in word $0$).
+4. **`BP-23-04` (`BP-4B-08`) — Reversed Comparison `v > R[i]` on `append_B(c)`**:
+   - When appending a column $N + 1$ with character $c$ to $B$, wire $R[i]$ enters cell $(i, N + 1)$ from the **left** and wire $v$ (initialized to $N + 1$) enters from the **top**. Thus the local comb condition is `if (A[i] == c || R[i] > v) swap(R[i], v);`—writing `v > R[i]` inverts the crossing test!
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Ladder (8 Non-Template Problems)
+
+### Tier 1 — Stepping Stone (`W4B-19`, `W4B-26`)
+
+#### Problem 23.1 (`W4B-19`) — `Allison–Dix Bit-Parallel LCS + Hirschberg O(M+N)-Space Alignment Reconstruction`
+
+- **Mathematical Statement**: Given two strings $A[1..M]$ and $B[1..N]$ over $\Sigma = \{\texttt{'a'}, \dots, \texttt{'z'}\}$, output the **actual Longest Common Subsequence string** (not just its length) within a tight $64\text{ MB}$ memory limit.
+- **Constraints**: $1 \le M, N \le 50{,}000$, $\sigma = 26$, time limit $2.0\text{ s}$, memory limit $64\text{ MB}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At $M, N = 50{,}000$, scalar $O(MN)$ DP takes $2.5 \times 10^9$ steps (TLE) and storing $M$ bitsets of length $N$ takes $312.5\text{ MB}$ (MLE). We must combine **Theorem 23.1** (Allison–Dix 4-instruction bit-parallel LCS) with **Hirschberg's midpoint divide-and-conquer** (`§2.2`).
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In subproblem $(l_A, r_A, l_B, r_B)$ with $\text{mid} = \lfloor (l_A + r_A)/2 \rfloor$, running Allison–Dix forward on $A[l_A .. \text{mid}] \times B[l_B .. r_B]$ produces the row-difference bitvector $V_{\text{fwd}}$ of length $W_{\text{sub}} = r_B - l_B + 1$, where the prefix popcount $\sum_{k=1}^t V_{\text{fwd}}[k]$ equals $\operatorname{LCS}(A[l_A .. \text{mid}], B[l_B .. l_B + t - 1])$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Similarly, running Allison–Dix on the reversed strings $A[\text{mid}+1 .. r_A]^R \times B[l_B .. r_B]^R$ produces $V_{\text{bwd}}$. Unpack both bitvectors into prefix sums to find $j^* \in [l_B - 1, r_B]$ maximizing $\text{fwd}[j^* - l_B + 1] + \text{bwd}[r_B - j^*]$. Slice the pattern masks $M[c]$ strictly to width $W_{\text{sub}} = r_B - l_B + 1$ at each node!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-19`)"}
+1. **Diagnostic Signal**: Combining $O(MN/w)$ time with $O(M+N)$ space requires recomputing bit-parallel LCS on recursive subgrids whose areas sum geometrically: $MN + \frac{MN}{2} + \frac{MN}{4} + \dots = 2MN$.
+2. **Combinatorial Word Invariant**: By Theorem 23.1, the horizontal difference mask $V$ after scanning $A[l_A .. \text{mid}]$ against $B[l_B .. r_B]$ satisfies $\operatorname{LCS}(A[l_A .. \text{mid}], B[l_B .. j]) = \sum_{k = l_B}^j V[k - l_B]$. By symmetry on the reversed strings $A[\text{mid}+1 .. r_A]^R$ and $B[l_B .. r_B]^R$, $V_{\text{bwd}}$ gives $\operatorname{LCS}(A[\text{mid}+1 .. r_A], B[j+1 .. r_B])$. Any optimal alignment path from $(l_A - 1, l_B - 1)$ to $(r_A, r_B)$ crosses row $\text{mid}$ at some column $j^* \in [l_B - 1, r_B]$.
+3. **Algorithmic Compilation**:
+   - Base cases: if $l_A > r_A$ or $l_B > r_B$, return; if $l_A == r_A$, check if $A[l_A]$ occurs in $B[l_B .. r_B]$ in $O(r_B - l_B + 1)$ time and append $A[l_A]$ if so.
+   - Recursive step ($l_A < r_A$):
+     - Let $W_{\text{sub}} = r_B - l_B + 1$ and $B_{\text{words}} = \lceil W_{\text{sub}} / 64 \rceil$.
+     - Collect the distinct characters appearing in $A[l_A .. r_A]$ and build $M_{\text{fwd}}[c][0..B_{\text{words}}-1]$ from $B[l_B .. r_B]$ and $M_{\text{bwd}}[c][0..B_{\text{words}}-1]$ from $B[l_B .. r_B]^R$ in $O(|\text{alph}(A[l_A..r_A])| \cdot B_{\text{words}} + W_{\text{sub}})$ time.
+     - Run the 4-instruction Allison–Dix loop (`§1.2`) for $A[l_A .. \text{mid}]$ and $A[\text{mid}+1 .. r_A]^R$.
+     - Scan $t = 0 \dots W_{\text{sub}}$ accumulating bit values to pick $j^* = l_B - 1 + \arg\max_t (\text{fwd}[t] + \text{bwd}[W_{\text{sub}} - t])$.
+     - Recurse on $(l_A, \text{mid}, l_B, j^*)$ and $(\text{mid}+1, r_A, j^*+1, r_B)$.
+   - Total time: $O(MN / 64 + (M + N)\log M)$, space: $O(M + N)$ ($\le 4\text{ MB}$).
+4. **Broken-Invariant Counterexample**: Allocating or clearing `M[26][N / 64]` of full width $N / 64$ inside every recursive call makes the work per node $O((r_A - l_A) N / 64)$ instead of $O((r_A - l_A)(r_B - l_B) / 64)$, blowing up to $O(MN \log M / 64)$ or $O(M N / 64 + M \cdot 26 \cdot N / 64)$!
+:::
+
+---
+
+#### Problem 23.2 (`W4B-26`) — `Myers' Bit-Parallel Semi-Local Substring Edit Distance` (`CF 1784F` / `Universal Cup`)
+
+- **Mathematical Statement**: Given a pattern $P[1..M]$, a text $T[1..N]$, and an error threshold $K$, find for every text end position $j \in \{1, \dots, N\}$ the minimum Levenshtein edit distance $\hat{E}[j] = \min_{1 \le l \le j} \operatorname{ed}(P[1..M], T[l..j])$ between $P$ and any suffix of $T[1..j]$, and report all $j$ with $\hat{E}[j] \le K$.
+- **Constraints**: $1 \le M \le 5000$, $1 \le N \le 10^5$, $0 \le K \le M$, time limit $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At $M = 5000, N = 10^5$, scalar DP takes $5 \times 10^8$ steps, whereas Myers' bit-parallel column step across $\lceil 5000 / 64 \rceil = 79$ words takes only $79 \times 10^5 \approx 7.9 \times 10^6$ word operations!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In the semi-local edit distance table $E[i][j] = \min_{1 \le l \le j+1} \operatorname{ed}(P[1..i], T[l..j])$, starting a match of $P$ at any column $j$ costs $0$, so the top boundary row is **$E[0][j] = 0$ for all $0 \le j \le N$**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Because $E[0][j] = 0$ for all $j$, the horizontal difference along row $0$ is $\Delta H[0][j] = E[0][j] - E[0][j-1] = 0$! Apply **Theorem 23.2** with **$b_0 = 0$** (`X' = HP << 1` in word $0$, with no `| 1`!) and track $\hat{E}[j] = E[M][j]$ via the $(M-1)$-st bits of $HP$ and $HN$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-26`)"}
+1. **Diagnostic Signal**: Semi-local approximate string matching allows free deletions of any prefix of $T[1..j]$ before the match of $P$ begins.
+2. **Combinatorial Word Invariant**: Setting $E[0][j] = 0$ for all $0 \le j \le N$ leaves the vertical difference initialization at column $0$ unchanged ($E[i][0] = i \implies VP = 1^M, VN = 0, E[M][0] = M$), and changes **only** the horizontal boundary input at row $0$: $\Delta H[0][j] = 0 \implies HP_{\text{row } 0} = 0, HN_{\text{row } 0} = 0$, which sets $b_0 = 0$ in `X' = (HP << 1) | b_0` of Theorem 23.2.
+3. **Algorithmic Compilation**:
+   - Let $W = \lceil M / 64 \rceil$. Precompute `M_P[c][0..W-1]` for $c \in \Sigma$.
+   - Initialize `VP[0..W-1] = ~0ULL`, `VN[0..W-1] = 0ULL`, and `score = M`.
+   - For $j = 1 \dots N$ (let $c = T[j]$):
+     - Maintain multi-word carries for `add` in $D0 = (((X \mathbin{\&} VP) + VP) \oplus VP) \mathbin{|} X$ and shift carries for `HP << 1` and `HN << 1` across words $b = 0 \dots W - 1$ (with initial shift carry **$0$** at $b = 0$ for both `HP` and `HN`!).
+     - In the last word $W - 1$, test bit $(M - 1) \bmod 64$: if set in $HP$, increment `score`; if set in $HN$, decrement `score`.
+     - If `score <= K`, record $j$. Total time: $O(MN / 64)$.
+4. **Broken-Invariant Counterexample**: Using `(HP[0] << 1) | 1` ($b_0 = 1$) instead of `HP[0] << 1` ($b_0 = 0$) charges $+1$ for every character of $T$ before the match starts, computing global edit distance $\operatorname{ed}(P, T[1..j])$ instead of substring edit distance!
+:::
+
+---
+
+### Tier 2 — Intermediate (`W4B-28`, `W4B-36`)
+
+#### Problem 23.3 (`W4B-28`) — `[THUPC 2021] 区间 LCS` (`Luogu P7456` / `LOJ 3399`)
+
+- **Mathematical Statement**: Given two strings $A[1..M]$ and $B[1..N]$ and $Q$ interval queries $(l_q, r_q)$ ($1 \le l_q \le r_q \le N$), output for each query the length of the Longest Common Subsequence $\operatorname{LCS}(A[1..M], B[l_q .. r_q])$.
+- **Constraints**: $1 \le M \le 5000$, $1 \le N \le 10^5$, $1 \le Q \le 2 \times 10^5$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+With $Q = 2 \times 10^5$ and $N = 10^5$, we cannot run DP per query, nor can we build an $N \times N$ table of answers. However, $M N = 5 \times 10^8$ with a 3-line inner loop runs in $< 0.25\text{ s}$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 23.4 (Family 1)**, running the 8-line Seaweed Comb (`§4.3`) on $A[1..M] \times B[1..N]$ produces the bottom-exit permutation array $W[1..N] \in \{-M, \dots, -1\} \cup \{1, \dots, N\}$ such that $\operatorname{LCS}(A[1..M], B[l..r]) = \#\{k \in [l, r] : W[k] < l\}$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+After computing $W[1..N]$ in $O(MN)$ time, each query $(l, r)$ simply counts how many indices $k \in [l, r]$ have $\max(0, W[k]) < l$. Answer all $Q$ queries online via a Persistent Segment Tree (Chairman Tree) over $[0, N]$ or offline by sweeping $l$ / $r$ with a Fenwick Tree in $O((N + Q)\log N)$ time!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-28`)"}
+1. **Diagnostic Signal**: $M \le 5000, N \le 10^5$ is the canonical regime where the $O(MN)$ Seaweed Comb + $O(Q \log N)$ 2D orthogonal range counting achieves optimal simplicity and speed.
+2. **Combinatorial Word Invariant**: By Theorem 23.3 and Theorem 23.4, initializing $W[j] = j$ ($1 \le j \le N$) and sweeping $i = 1 \dots M$ with $u = -i$ and rule `if (A[i] == B[j] || u > W[j]) swap(u, W[j]);` produces $W[1..N]$ such that every wire exiting at $k \in [l, r]$ with initial rank $W[k] < l$ contributes $+1$ to $\operatorname{LCS}(A[1..M], B[l..r])$.
+3. **Algorithmic Compilation**:
+   - Run `seaweed_comb(A, B)` from `§4.3` in $O(MN)$ time ($5 \times 10^8$ register swaps $\approx 0.2\text{ s}$).
+   - Clamp negative values $W[k] < 0$ to $0$ (since $l \ge 1$, $W[k] < 0 < l$ is equivalent to $\max(0, W[k]) < l$).
+   - Build a Chairman Tree where root `rt[k]` ($1 \le k \le N$) inserts value $\max(0, W[k]) \in [0, N]$ onto `rt[k - 1]` in $O(N \log N)$ time.
+   - Answer each query $(l, r)$ in $O(\log N)$ time by querying the count of values in $[0, l - 1]$ between `rt[r]` and `rt[l - 1]`. Total time: **$O(MN + (N + Q)\log N)$**.
+4. **Broken-Invariant Counterexample**: Using $W[k] \le l$ instead of strict inequality $W[k] < l$ falsely counts the wire that entered at top column $l$ itself (`W[k] == l`), which was never matched inside $B[l..r]$!
+:::
+
+---
+
+#### Problem 23.4 (`W4B-36`) — `Circular & Windowed LCS via Seaweed Comb on B · B` (`Universal Cup` / `Petrozavodsk`)
+
+- **Mathematical Statement**: Given two strings $A[1..M]$ and $B[1..N]$, compute the **Circular Longest Common Subsequence**:
+  $$\operatorname{CLCS}(A, B) := \max_{\substack{0 \le i < M \\ 0 \le j < N}} \operatorname{LCS}\bigl(\operatorname{shift}_i(A),\, \operatorname{shift}_j(B)\bigr),$$
+  where $\operatorname{shift}_k(S) = S[k+1..|S|] \cdot S[1..k]$.
+- **Constraints**: $1 \le M, N \le 3000$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+There are $M \times N$ pairs of cyclic shifts, and even fixing $A$ leaves $N$ shifts of $B$ ($O(MN^2)$ if run by naive LCS). Why do we only need to rotate $B$, and how does the Seaweed Comb evaluate all $N$ rotations of $B$ in a single pass?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In any cyclic matching of size $L$ between $A$ and $B$, cut the circle of $A$ between $A[M]$ and $A[1]$. Because the $L$ matched edges do not cross on the cylinder, cutting $A$ between $M$ and $1$ automatically induces a single cut in $B$ between some $B[j]$ and $B[j+1]$ such that the matching is a **standard linear LCS** between unrotated $A[1..M]$ and rotated $\operatorname{shift}_j(B)$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Concatenate $B' = B \cdot B$ of length $2N$. Every rotation $\operatorname{shift}_{l-1}(B)$ ($1 \le l \le N$) is the contiguous window $B'[l .. l + N - 1]$! Run the 8-line Seaweed Comb on $A[1..M] \times B'[1..2N]$ in $O(MN)$ time to get $W[1..2N]$, then evaluate $\max_{1 \le l \le N} \#\{k \in [l, l + N - 1] : W[k] < l\}$ in $O(N)$ time!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-36`)"}
+1. **Diagnostic Signal**: Replaces complex $O(MN)$ non-crossing shortest-path divide-and-conquer (Schmidt 1998) with a 10-line Seaweed Comb + sliding window.
+2. **Combinatorial Word Invariant**: Let $(x_1, y_1), \dots, (x_L, y_L)$ be a cyclic common subsequence of $A$ and $B$, ordered so that $1 \le x_1 < x_2 < \dots < x_L \le M$. Since the cyclic order on $B$ is preserved, there exists $j \in \{0, \dots, N-1\}$ such that $y_1, \dots, y_L$ appear in strictly increasing order inside $\operatorname{shift}_j(B) = (B \cdot B)[j+1 .. j+N]$. Thus:
+   $$\max_{i, j} \operatorname{LCS}\bigl(\operatorname{shift}_i(A),\, \operatorname{shift}_j(B)\bigr) = \max_{1 \le l \le N} \operatorname{LCS}\bigl(A[1..M],\, B'[l .. l + N - 1]\bigr).$$
+3. **Algorithmic Compilation**:
+   - Form $B' = B + B$ of length $2N$ and run `seaweed_comb(A, B')` in $O(MN)$ time to obtain $W[1..2N]$.
+   - Notice that as the window $[l, l + N - 1]$ slides from $l$ to $l + 1$:
+     - Column $k = l$ leaves the window (subtract $1$ if $W[l] < l$);
+     - Column $k = l + N$ enters the window (add $1$ if $W[l + N] < l + 1$);
+     - Any column $k \in [l + 1, l + N - 1]$ with $W[k] = l$ changes from $W[k] \ge l$ to $W[k] < l + 1$ (add $1$ if the unique exit column $p[l]$ of top wire $l$ lies in $[l + 1, l + N - 1]$!).
+   - Thus we can slide $l = 1 \dots N$ in **$O(N)$ time** (or query a Fenwick tree in $O(N \log N)$ time) after the $O(MN)$ Seaweed Comb!
+4. **Broken-Invariant Counterexample**: Rotating the shorter string should be placed on $B$ (columns) or $A$ (rows) consistently: if $B$ is doubled to $B' = B \cdot B$ of length $2N$, the Seaweed Comb takes $2MN$ operations.
+:::
+
+---
+
+### Tier 3 — Advanced (`W4B-35`, `W4B-39`)
+
+#### Problem 23.5 (`W4B-35`) — `Unified Prefix–Substring & Suffix–Prefix LCS via Signed Seaweed Rowports` (`CTT` / `QOJ`)
+
+- **Mathematical Statement**: Given strings $A[1..M]$ and $B[1..N]$, answer two batches of online queries:
+  - **Batch 1 ($Q_1$ queries $(i, j)$)**: Compute $\operatorname{LCS}(A[i..M], B[1..j])$ (Suffix of $A$ vs. Prefix of $B$) using $O(M + N)$ Seaweed storage (without storing $M$ row snapshots!).
+  - **Batch 2 ($Q_2$ queries $(i, l, r)$)**: Compute $\operatorname{LCS}(A[1..i], B[l..r])$ (Prefix of $A$ vs. Substring of $B$) when $M \le 2000, N \le 2000, Q_2 \le 10^6$.
+- **Constraints**: Batch 1: $M \le 5000, N \le 10^5, Q_1 \le 2 \times 10^5$; Batch 2: $M, N \le 2000, Q_2 \le 10^6$; time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+In Batch 1, storing $M = 5000$ snapshots of length $N = 10^5$ would take $2\text{ GB}$ (MLE). Why does a **single** final array $W[1..N]$ already encode $\operatorname{LCS}(A[i..M], B[1..j])$ for every $i$ and $j$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Invoke **Theorem 23.4 (Family 2)**: because left-wall wires entering rows $i \dots M$ have initial ranks $\{-M, \dots, -i\} \le -i$, while all wires from rows $1 \dots i - 1$ and top columns $1 \dots N$ have initial ranks $> -i$, rows $1 \dots i - 1$ only permute wires of rank $> -i$ among themselves! Thus $\operatorname{LCS}(A[i..M], B[1..j]) = \#\{k \in [1, j] : W[k] \le -i\}$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For Batch 1, build one Chairman Tree over $W[1..N]$ and query $\#\{k \in [1, j] : W[k] \le -i\}$ in $O(\log N)$ time and $O(N \log N)$ space. For Batch 2 ($M, N \le 2000$), observe that row snapshot $W^{(i)}[1..N]$ differs from $W^{(i-1)}[1..N]$ or can be queried via $\operatorname{LCS}(A[1..i], B[l..r]) = \#\{k \in [l, r] : W^{(i)}[k] < l\}$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-35`)"}
+1. **Diagnostic Signal**: Distinguishes queries that can be read off the **final** bottom-exit array $W[1..N]$ by rank-thresholding at $-i$ (Suffix-Prefix LCS) from queries that truncate the bottom of the grid at row $i$ (Prefix-Substring LCS).
+2. **Combinatorial Word Invariant**:
+   - **Batch 1 ($\operatorname{LCS}(A[i..M], B[1..j])$)**: By Theorem 23.4(2), in the Seaweed Comb on $A[1..M] \times B[1..N]$, the comparison $u > W[y]$ is invariant under any order-preserving relabeling of wire ranks. Merging all wires of rank $> -i$ into a single top-entrance class shows that at the bottom of row $M$, the wires in columns $1 \dots j$ with rank $\le -i$ are exactly those that would have rank $< 1$ if the comb had started at row $i$. Hence:
+     $$\operatorname{LCS}\bigl(A[i..M],\, B[1..j]\bigr) = \#\bigl\{\, k \in [1, j] \;\big|\; W[k] \le -i \,\bigr\}.$$
+   - **Batch 2 ($\operatorname{LCS}(A[1..i], B[l..r])$)**: After row $i$ of the Seaweed Comb, the current array $W^{(i)}[1..N]$ is the exact bottom-exit array of $A[1..i] \times B[1..N]$, so $\operatorname{LCS}(A[1..i], B[l..r]) = \#\{k \in [l, r] : W^{(i)}[k] < l\}$. (Alternatively, run the Seaweed Comb with $B$ reversed on the rows and $A$ on the columns so $A[1..i]$ becomes a prefix of columns and $B[l..r]$ becomes a suffix-prefix if one endpoint is fixed!)
+3. **Algorithmic Compilation**:
+   - For Batch 1: run `seaweed_comb(A, B)` once in $O(MN)$ time and $O(N)$ space; build a Chairman Tree over $k \in [1, N]$ storing $W[k] \in [-M, N]$; answer $(i, j)$ in $O(\log N)$ time.
+   - For Batch 2: group queries $(i, l, r)$ by prefix row $i \in [1, M]$ offline! During the Seaweed Comb, after finishing row $i$, update a Fenwick Tree where each $k \in [1, N]$ is placed at bucket $\max(0, W^{(i)}[k])$ (note: only the columns $j$ where `swap(u, W[j])` occurred in row $i$ change their value in $W$, or rebuild/query offline in $O(MN \log N + Q_2 \log N)$ time with $O(N)$ memory!).
+4. **Broken-Invariant Counterexample**: Attempting to compute $\operatorname{LCS}(A[1..i], B[l..r])$ from the **final** row-$M$ array $W^{(M)}[1..N]$ via $\#\{k \in [l, r] : -i \le W^{(M)}[k] < l\}$ fails because rows $i + 1 \dots M$ deflect wires from rows $1 \dots i$ further right across columns $[l, r]$! Prefix-substring queries must either read row-$i$ snapshot $W^{(i)}$ or stop the comb at row $i$.
+:::
+
+---
+
+#### Problem 23.6 (`W4B-39`) — `Dynamic Character Appends (append_A / append_B) with Online Interval LCS Queries` (`Petrozavodsk` / `QOJ`)
+
+- **Mathematical Statement**: Maintain two initially empty strings $A$ and $B$ under $Q$ interleaved online operations of three types:
+  1. `append_A(c)`: append character $c$ to the end of $A$ ($M \leftarrow M + 1$);
+  2. `append_B(c)`: append character $c$ to the end of $B$ ($N \leftarrow N + 1$);
+  3. `query(l, r)`: given $1 \le l \le r \le |B|$, return $\operatorname{LCS}(A[1..|A|], B[l..r])$.
+- **Constraints**: Final lengths $M, N \le 5000$, $Q \le 10^5$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Both $A$ (rows) and $B$ (columns) grow dynamically online. How do the bottom-exit array $W[1..N]$ and right-exit array $R[1..M]$ evolve under a new row vs. a new column?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In the Seaweed Comb (`§4.3`), $(W[1..N], R[1..M])$ records the **entire right-and-bottom exit perimeter** of the current $M \times N$ grid!
+
+- Adding row $M + 1$ (`append_A(c)`) sends wire $u = -(M + 1)$ from the left across the current bottom wires $W[1..N]$ and exits at $R[M + 1] = u$.
+- Adding column $N + 1$ (`append_B(c)`) sends wire $v = N + 1$ from the top down across the current right wires $R[1..M]$ and exits at $W[N + 1] = v$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Notice that `append_B(c)` only **appends** a single new element $W[N + 1] = v$ without modifying $W[1..N]$ at all, while `append_A(c)` sweeps $j = 1 \dots N$ in $O(N)$ time! Maintain a 2D Fenwick Tree or rebuilding prefix structure over $W[1..N]$ to answer `query(l, r)` in $O(\log N)$ time.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-39`)"}
+1. **Diagnostic Signal**: Storing both exit walls $W[1..N]$ (bottom) and $R[1..M]$ (right) makes the Seaweed grid extendable in both directions in $O(N)$ / $O(M)$ time per character.
+2. **Combinatorial Word Invariant**:
+   - **`append_A(c)` ($M \leftarrow M + 1, A[M] = c$)**: A new horizontal strip of height $1$ and width $N$ is attached to the bottom of the grid. Its top inputs are $W[1..N]$ and its left input is $u = -M$. Sweeping $j = 1 \dots N$:
+     ```cpp
+     int u = -M;
+     for (int j = 1; j <= N; ++j)
+         if (c == B[j] || u > W[j]) std::swap(u, W[j]);
+     R[M] = u;
+     ```
+   - **`append_B(c)` ($N \leftarrow N + 1, B[N] = c$)**: A new vertical strip of height $M$ and width $1$ is attached to the right of the grid. Its left inputs at rows $i = 1 \dots M$ are $R[1..M]$ and its top input is $v = N$. Sweeping $i = 1 \dots M$:
+     ```cpp
+     int v = N;
+     for (int i = 1; i <= M; ++i)
+         if (A[i] == c || R[i] > v) std::swap(R[i], v);
+     W[N] = v;
+     ```
+3. **Algorithmic Compilation**:
+   - Since $M, N \le 5000$, there are at most $5000$ `append_A` and $5000$ `append_B` calls, taking $O(MN)$ total comb time.
+   - To answer `query(l, r)` in $O(1)$ or $O(\log N)$ time: during `append_A(c)`, whenever `swap(u, W[j])` changes $W[j]$, update a 2D Fenwick tree (or maintain the 1D count array when $N \le 5000$). Even better: in `append_A(c)`, since $u$ only swaps with a **monotone subsequence** of $W[j]$, or if we rebuild a prefix table lazily when `query` is called after `append_A`, total time is $O(MN + Q \log N)$!
+4. **Broken-Invariant Counterexample**: In `append_B(c)`, wire $R[i]$ enters cell $(i, N)$ from the **left** and $v$ enters from the **top**, so the already-crossed condition is `R[i] > v` (`§4.3`). Writing `v > R[i]` swaps on every uncrossed mismatch cell instead of every already-crossed cell!
+:::
+
+---
+
+### Tier 4 — Mastery (`W4B-42`, `W4B-44`)
+
+#### Problem 23.7 (`W4B-42`) — `O(N log² N) Range Longest Increasing Subsequence LIS(B[l..r]) via Sparse Seaweed \boxdot` (`[国家集训队论文 2021]` / `Universal Cup`)
+
+- **Mathematical Statement**: Given a permutation $B[1..N]$ of $\{1, 2, \dots, N\}$ and $Q$ range queries $[l_q, r_q]$ ($1 \le l_q \le r_q \le N$), output for each query the length of the **Longest Increasing Subsequence** $\operatorname{LIS}(B[l_q .. r_q])$.
+- **Constraints**: $1 \le N, Q \le 10^5$, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At $N, Q = 10^5$, an $O(N \log N)$ LIS per query takes $O(Q N \log N) \approx 1.7 \times 10^{11}$ operations. How does Range LIS reduce to All-Pairs Interval LCS?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By `§4.2`, $\operatorname{LIS}(B[l..r]) = \operatorname{LCS}\bigl((1, 2, \dots, N),\, B[l..r]\bigr)$! Moreover, in the $N \times N$ Seaweed grid of $A = (1, \dots, N)$ against $B[1..N]$, row $x \in [1, N]$ has **only ONE matching cell**, at column $y = \operatorname{pos}_B[x]$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Use divide-and-conquer over the value range $[L, R] \subseteq [1, N]$ (`§4.2`): a subproblem of $K = R - L + 1$ values only has matches in the $K$ columns of $B$ holding values in $[L, R]$. Recurse on $[L, M]$ and $[M+1, R]$, lift both size-$K$ perimeter Seaweed permutations into the $2K \times 2K$ perimeter of the $K \times K$ active subgrid, and multiply them via **Theorem 23.5 ($O(K \log K)$ Unit-Monge $\boxdot$)** in $O(N \log^2 N)$ total time!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-42`)"}
+1. **Diagnostic Signal**: Range LIS on a general sequence reduces (via tie-breaking equal values in decreasing index order) to Range LIS on a permutation $B[1..N]$, which is identical to Interval LCS against $A = (1, 2, \dots, N)$!
+2. **Combinatorial Word Invariant**:
+   - Consider any horizontal strip of rows $x \in [L, R]$ ($K = R - L + 1$) in the alignment grid of $A = (1..N)$ and $B[1..N]$.
+   - Let $j_1 < j_2 < \dots < j_K$ be the sorted column indices in $B$ where $B[j_t] \in [L, R]$. All other $N - K$ columns of $B$ contain **zero** matches in rows $[L, R]$; in the Seaweed Comb, a column with zero matches simply crosses every uncrossed wire that passes through it without ever deflecting a wire downward!
+   - Thus we can delete the $N - K$ inactive columns and represent the strip $x \in [L, R]$ restricted to active columns $\{j_1, \dots, j_K\}$ as a $K \times K$ subgrid with $2K$ entrance wires ($K$ left, $K$ top) and $2K$ exit wires ($K$ bottom, $K$ right)—a $2K \times 2K$ Seaweed permutation $P_{[L, R]}$!
+3. **Algorithmic Compilation**:
+   - **Base case ($L == R, K = 1$)**: A $1 \times 1$ match cell $(L, \operatorname{pos}_B[L])$ bounces its left wire to the bottom and its top wire to the right (`swap`).
+   - **Divide & Conquer ($L < R$)**: Let $M = \lfloor (L + R)/2 \rfloor$. Recursively compute $P_{[L, M]}$ (on the $K_1$ columns with $B[j] \in [L, M]$) and $P_{[M+1, R]}$ (on the $K_2$ columns with $B[j] \in [M+1, R]$).
+   - **Lifting to $2K \times 2K$**: In the top strip $[L, M]$, the $K_2$ columns belonging to $[M+1, R]$ are pure mismatch columns; interleave them with $P_{[L, M]}$ (where mismatch columns shift uncrossed wires straight through) to form a $2K \times 2K$ permutation $P_{\text{top}}$, and similarly lift $P_{[M+1, R]}$ to $P_{\text{bot}}$.
+   - **Monotone-Staircase Product**: Compute $P_{[L, R]} = P_{\text{top}} \boxdot P_{\text{bot}}$ in $O(K \log K)$ time via **Theorem 23.5**.
+   - At the root $[1, N]$, extract $W[1..N]$ and answer all $Q$ Range LIS queries $[l, r]$ via $\#\{k \in [l, r] : W[k] < l\}$ on a Chairman Tree in **$O(N \log^2 N + Q \log N)$ time**!
+4. **Broken-Invariant Counterexample**: When reducing a general array $B[1..N]$ with duplicate values to a permutation for **strictly increasing** LIS, equal values must be broken by **decreasing index** (so two equal values in $B$ appear in reverse order in $A$ and can never both be matched!). Breaking ties by increasing index computes Longest *Non-Decreasing* Subsequence instead of strictly increasing LIS.
+:::
+
+---
+
+#### Problem 23.8 (`W4B-44`) — `Range–Range Substring LCS (LCS(A[l₁..r₁], B[l₂..r₂])) & RLE Seaweed Braid Multiplication` (`[国家集训队论文 2021]`)
+
+- **Mathematical Statement**:
+  - **Part A (Two-Sided Range–Range Substring LCS)**: Given strings $A[1..M]$ and $B[1..N]$ ($M, N \le 30{,}000$) and $Q \le 30{,}000$ queries $(l_1, r_1, l_2, r_2)$, compute $\operatorname{LCS}(A[l_1 .. r_1], B[l_2 .. r_2])$.
+  - **Part B (Run-Length Encoded LCS via Seaweed Blocks)**: Given two run-length encoded strings $A = c_1^{a_1} \cdots c_m^{a_m}$ and $B = d_1^{b_1} \cdots d_n^{b_n}$ ($m, n \le 1000$, unexpanded lengths $\sum a_i, \sum b_j \le 10^9$), explain how a uniform block $c_i^{a_i} \times d_j^{b_j}$ transforms the incoming seaweeds in $O(1)$ segments.
+- **Constraints**: Part A: $M, N, Q \le 30{,}000$; Part B: $m, n \le 1000, \sum a_i \le 10^9$; time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+In Part A, both $A[l_1..r_1]$ and $B[l_2..r_2]$ are arbitrary intervals! How can a Segment Tree over the rows of $A[1..M]$ store compressed Seaweed permutations and propagate a query $(l_2, r_2)$ across $O(\log M)$ nodes?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In a Segment Tree over rows $[1, M]$, a node covering $A[L..R]$ of height $H = R - L + 1$ has at most $H$ characters, so at most $H$ seaweeds can be deflected inside $A[L..R]$; its Seaweed permutation is built bottom-up via **Theorem 23.5 ($\boxdot$)** in $O(M \log^2 M)$ time. To query $[l_1, r_1] \times [l_2, r_2]$, we do **not** multiply the $O(\log M)$ node matrices together—instead, we multiply a **1D boundary vector** across each of the $O(\log M)$ nodes using **SMAWK / Monotone Minima** in $O(H \log H)$ or $O(\log^2 N)$ time!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For Part B, inside a uniform $a_i \times b_j$ rectangle $c_i^{a_i} \times d_j^{b_j}$:
+
+- If $c_i = d_j$ (**Match Block**): **every** cell is a match (`swap(u, W[y])`), so zero wires cross! Every wire simply shifts diagonally by $(+\min, +\min)$, mapping the sequence of $(a_i + b_j)$ left+top entrance wires identically (without order change!) onto the $(a_i + b_j)$ bottom+right exit wires!
+- If $c_i \ne d_j$ (**Mismatch Block**): wires $u < v$ cross while wires $u > v$ bounce (`swap`).
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-44`)"}
+1. **Diagnostic Signal**: Represents the pinnacle of the Seaweed / Unit-Monge paradigm from `[国家集训队论文 2021]`.
+2. **Combinatorial Word Invariant**:
+   - **Part A (Segment Tree of Seaweed Strips + Vector-Matrix Monge Propagation)**:
+     - Build a Segment Tree over $A[1..M]$ where each node $[L, R]$ stores the Seaweed permutation of strip $A[L..R] \times B[1..N]$ (or chunked in blocks of size $B$) via $P_{[L, R]} = P_{[L, M]} \boxdot P_{[M+1, R]}$.
+     - For a query $(l_1, r_1, l_2, r_2)$, decompose $[l_1, r_1]$ into $O(\log M)$ Segment Tree nodes. Maintain the 1D row vector $d(j) = \operatorname{LCS}(A[l_1 .. \text{cur}], B[l_2 .. j])$ for $j \in [l_2 - 1, r_2]$. Passing $d(\cdot)$ through a Segment Tree node's distribution matrix $D_P^\Sigma$ is a 1D $(\min, +)$ Monge matrix-vector product:
+       $$d'(k) = \min_{l_2 - 1 \le j \le k} \bigl(\dots + D_P^\Sigma(j, k)\bigr),$$
+       which is totally monotone and solvable via **SMAWK / Divide-and-Conquer Monotone Minima**!
+   - **Part B (RLE Uniform Block Transitions)**:
+     - In a **Match Block** ($c_i = d_j$) of size $a \times b$, every cell $(x, y)$ executes `swap(u, W[y])`, which means every wire moves strictly along its anti-diagonal $(x - y = \text{const})$: the $a$ left wires and $b$ top wires exit as the $b$ bottom wires and $a$ right wires in the **exact same clockwise perimeter order** (a pure cyclic shift of intervals by $a$)!
+     - In a **Mismatch Block** ($c_i \ne d_j$) of size $a \times b$, a left wire $u$ and a top wire $v$ cross if $u < v$ and bounce if $u > v$, which merges the two sorted interval runs by rank in $O(1)$ amortized split/merge steps on a balanced BST of compressed wire runs.
+3. **Algorithmic Compilation**:
+   - For Part B, maintain the perimeter wire ranks in a Treap / Splay tree of arithmetic-progression segments; each of the $m \times n$ blocks performs $O(1)$ interval shifts (on match blocks) or rank-split merges (on mismatch blocks).
+4. **Broken-Invariant Counterexample**: In a mismatch block $c_i \ne d_j$, assuming that **all** $a$ left wires cross **all** $b$ top wires (pushing all left wires to the right wall and all top wires to the bottom wall) is **false** whenever some left wire $u$ and top wire $v$ already crossed in an earlier block ($u > v$)! Even inside a pure mismatch block, pairs with $u > v$ bounce (`swap`).
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Decision Checklist: When to Apply Chapter 23 Machinery
+
+| Contest Signal / Query Structure | Invariant / Engine to Invoke | Complexity |
+| :--- | :--- | :--- |
+| Fast LCS length at $M, N \le 10^5$ | Allison–Dix 4-instruction borrow step $V' = X \mathbin{\&} \sim(X - Y)$ (**Theorem 23.1**) | **$O(MN / w)$** |
+| LCS actual string reconstruction in $O(M+N)$ memory | Bit-Parallel Allison–Dix + Hirschberg midpoint split with sliced masks (`§2.2`) | $O(MN / w)$ time, $O(M+N)$ space |
+| Fast Global or Substring Edit Distance at $N \le 10^5$ | Myers' 15-instruction $(VP, VN, HP, HN)$ step ($b_0 = 1$ global, $b_0 = 0$ semi-local, **Theorem 23.2**) | **$O(MN / w)$** |
+| Inner LCS DFA table `trans[V][c]` for `DP套DP` ($K \le 20$) | Apply Theorem 23.1 directly to $K$-bit mask $V \in [0, 2^K)$ (`§2.2.2`, `W4B-37`) | **$O(2^K \sigma)$** |
+| All-Pairs Interval LCS $\operatorname{LCS}(A, B[l..r])$ (`[THUPC 2021]`) | 8-line Seaweed Comb $W[1..N]$ + Chairman Tree $\#\{k \in [l, r] : W[k] < l\}$ (**Theorem 23.4(1)**) | $O(MN + Q \log N)$ |
+| Suffix-Prefix LCS $\operatorname{LCS}(A[i..M], B[1..j])$ (zero snapshots) | Rank-threshold final $W[1..N]$ at $-i$: $\#\{k \in [1, j] : W[k] \le -i\}$ (**Theorem 23.4(2)**) | $O(MN + Q \log N)$ |
+| Circular LCS $\max_{i,j} \operatorname{LCS}(\operatorname{shift}_i(A), \operatorname{shift}_j(B))$ | Seaweed Comb on $A \times (B \cdot B)$ + sliding window $[l, l+N-1]$ (`W4B-36`) | **$O(MN)$** |
+| Online `append_A(c)` / `append_B(c)` + Interval LCS | Sweep $u = -M$ across $W[1..N]$ (`append_A`) and $v = N$ down $R[1..M]$ (`append_B`, `W4B-39`) | $O(N)$ / $O(M)$ per append |
+| Range LIS $\operatorname{LIS}(B[l..r])$ on $N, Q \le 10^5$ (`区间 LIS`) | $\operatorname{LIS}(B[l..r]) = \operatorname{LCS}((1..N), B[l..r])$ + Sparse Seaweed D&C via $O(K \log K)$ $\boxdot$ (**Theorem 23.5**) | **$O(N \log^2 N + Q \log N)$** |
+
+### 6.2 What Comes Next in Part VI
+In Chapters 22 and 23, we analyzed subsequences and alignments of **given** strings. What if a problem asks us to **count or find the expected value over all strings $W \in \Sigma^n$** ($n \le 10^5$ or $n \le 10^{18}$) that avoid a set of forbidden patterns $\mathcal{P}$, contain a pattern $P$ **exactly $k$ times**, or asks for the $K$-th moment $\mathbb{E}[\operatorname{occ}_P(W)^K]$ at $n = 10^{18}$? In **[Chapter 24: The Goulden–Jackson Cluster Method, Bivariate $(t-1)$ Exact $k$-Occurrence FPS, and the $t = 1 + u$ Binomial Moment Shift](ch24-goulden-jackson-moment-shift-fps.qmd)**, we show how Guibas–Odlyzko autocorrelation polynomials $C_{i,j}(x)$ and the $t = 1 + u$ shift collapse degree-$n$ generating functions into $O(KL \log(KL))$ polynomial algebra.

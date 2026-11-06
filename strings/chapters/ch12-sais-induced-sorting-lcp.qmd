@@ -1,0 +1,665 @@
+---
+title: "Chapter 12: Linear-Time Induced Sorting (`SA-IS`), Fischer's Induced LCP, and $\\operatorname{rk}$-Descent Duality"
+subtitle: "Part III — Suffix Structures, Duality & Substring Data Structures"
+---
+
+::: {.callout-note}
+## Prerequisites & Learning Objectives
+
+**Strict Prerequisites**:
+
+- **[Chapter 09: Endpos Equivalence, Reversal Duality & Generalized SAM](ch09-sam-duality-gsam-trie-bfs.qmd)** (lexicographical suffix order, sentinel conventions, and suffix-tree prefix structure).
+- **Assumed Library Machinery**: Baseline $O(N \log N)$ Suffix Array (`SA[1..N]`, inverse suffix array `rk[1..N]`, Kasai's adjacent LCP array `height[2..N]`), $O(1)$ Sparse Table RMQ, and formal power series (`FPS`) polynomial multiplication (`NTT`).
+
+**Learning Objectives**:
+
+1. Formulate **Nong–Zhang–Chan Linear-Time Induced Sorting (`SA-IS`, 2009)** as a **locally consistent prefix-free parsing** of $S$ at local valleys of the inverse suffix array permutation $\operatorname{rk}$.
+2. Prove the four foundational theorems of `SA-IS`: the **$\operatorname{rk}$-Descent Duality (`Lemma 1.1`)**, the **Intra-Bucket $L < S$ Partition (`Lemma 1.2`)**, the **LMS $\le \lfloor N/2 \rfloor$ Halving & $< 2N$ Overlap Bound (`Lemma 2.1`)**, and the **LMS-Substring Prefix-Free Order Homomorphism (`Theorem 2.2`)**.
+3. Prove the **Strict Pointer-Monotonicity Invariant** of Two-Pass `InduceSort`, trace it by hand on $S = \texttt{"mississippi\$"}$, and extend it to **Fischer's (2011) $O(N)$ Induced LCP** algorithm and **Upward Tree Suffix Arrays**.
+4. Apply the $\operatorname{rk}$-Descent Eulerian Duality to count and reconstruct strings from prescribed Suffix Array descent sets (`AtCoder AGC 060 D`).
+:::
+
+---
+
+## 1. $L/S$ Suffix Classification & The $\operatorname{rk}$-Descent Eulerian Duality
+
+### 1.1 The Diagnostic Signal: Why $O(N \log N)$ Prefix Doubling Hits Asymptotic & Structural Walls
+
+Standard $O(N \log N)$ prefix doubling sorts suffixes uniformly at power-of-two lengths $2^0, 2^1, \dots, 2^{\lceil \log_2 N \rceil}$. It breaks down in three distinct competitive programming scenarios:
+
+1. **Scale & Cache-Miss Bottlenecks ($N \in [10^6, 10^7]$)**: At $N = 2 \times 10^6$ or in multi-string concatenations reaching $5 \times 10^6$, performing $22$ passes of random-access tuple radix sorting exceeds 1.0-second time limits. By contrast, `SA-IS` executes two cache-sequential pointer sweeps per level over geometrically shrinking lengths $N + \lfloor N/2 \rfloor + \lfloor N/4 \rfloor + \dots < 2N$.
+2. **Large or Recursive Integer Alphabets**: When suffix sorting is invoked over integer alphabets $\Sigma \subseteq [1..N]$, `SA-IS` requires only $O(N)$ bucket-head/tail arrays without auxiliary tuple buffers.
+3. **Inverse-SA Combinatorics & String Reconstruction (`AGC 060 D`)**: Prefix doubling reveals nothing about which permutations $\operatorname{rk}[1..N]$ can arise as the inverse suffix array of a string over an alphabet of size $\sigma$, or when two permutations share the same suffix comparison structure.
+
+### 1.2 The Combinatorial Word Invariant: $L/S$ Types as $\operatorname{rk}$-Descents and the $L < S$ Bucket Partition
+
+Let $S[1..N]$ be a string over a totally ordered alphabet $\Sigma$, terminated at index $N$ by a unique sentinel character $S[N] = \$$ strictly smaller than every character in $\Sigma$. Denote the suffix starting at index $i$ by $\operatorname{suf}(i) = S[i..N]$, the sorted Suffix Array by $\operatorname{SA}[1..N]$, and its inverse permutation by $\operatorname{rk}[1..N]$ ($\operatorname{SA}[\operatorname{rk}[i]] = i$).
+
+Because $S[N] = \$$ occurs nowhere else in $S$, no two distinct suffixes can be equal; in particular, every suffix $\operatorname{suf}(i)$ ($1 \le i < N$) is strictly comparable to its immediate right shift $\operatorname{suf}(i+1)$.
+
+::: {.callout-important}
+## Definition 1.1 & Lemma 1.1 ($L/S$ Suffix Classification & The $\operatorname{rk}$-Descent Duality)
+
+Each position $i \in \{1, \dots, N\}$ is assigned a suffix type $\operatorname{type}(i) \in \{L, S\}$ by comparing $\operatorname{suf}(i)$ against $\operatorname{suf}(i+1)$:
+
+- **Type $S$ (Smaller / Ascent)**: $i = N$ (by convention for $\$$), or $\operatorname{suf}(i) < \operatorname{suf}(i+1)$ $\Longleftrightarrow$ **$\operatorname{rk}[i] < \operatorname{rk}[i+1]$** (an **ascent** at index $i$ in the inverse suffix array $\operatorname{rk}$).
+- **Type $L$ (Larger / Descent)**: $\operatorname{suf}(i) > \operatorname{suf}(i+1)$ $\Longleftrightarrow$ **$\operatorname{rk}[i] > \operatorname{rk}[i+1]$** (a **descent** at index $i$ in the inverse suffix array $\operatorname{rk}$).
+
+Peeling off the leading character of $\operatorname{suf}(i) = S[i] \cdot \operatorname{suf}(i+1)$ vs. $\operatorname{suf}(i+1)$ yields the exact $O(N)$ right-to-left recurrence for $i = N-1$ down to $1$:
+$$\boxed{\operatorname{type}(i) \;=\; \begin{cases} S & \text{if } S[i] < S[i+1], \\ L & \text{if } S[i] > S[i+1], \\ \operatorname{type}(i+1) & \text{if } S[i] = S[i+1]. \end{cases}}$$
+Furthermore (**$\operatorname{rk}$-Descent Characterization**), for any permutation documented by $\operatorname{SA}[1..N-1]$ (with $\operatorname{SA}[0] = N$ for $\$$), as $k$ advances from $1$ to $N-2$, $\operatorname{SA}[k]$ and $\operatorname{SA}[k+1]$ can share the same first character $S[\operatorname{SA}[k]] = S[\operatorname{SA}[k+1]]$ if and only if $\operatorname{rk}[\operatorname{SA}[k] + 1] < \operatorname{rk}[\operatorname{SA}[k+1] + 1]$. In particular, if $S[i] = S[i+1] = c$, then $\operatorname{suf}(i)$ and $\operatorname{suf}(i+1)$ have the **same** $L/S$ type; conversely, any $L \to S$ or $S \to L$ transition forces $S[i] \ne S[i+1]$.
+:::
+
+*Proof*: If $S[i] \ne S[i+1]$, comparing $S[i]$ and $S[i+1]$ immediately decides $\operatorname{suf}(i) \lessgtr \operatorname{suf}(i+1)$. If $S[i] = S[i+1]$, stripping the shared first character shows $\operatorname{suf}(i) \lessgtr \operatorname{suf}(i+1) \iff \operatorname{suf}(i+1) \lessgtr \operatorname{suf}(i+2)$, so $\operatorname{type}(i) = \operatorname{type}(i+1)$. $\blacksquare$
+
+Now group all suffixes by their leading character $c \in \Sigma \cup \{\$\}$ into character buckets $\mathcal{B}(c) = \{i \in \{1, \dots, N\} \mid S[i] = c\}$. How are the $L$-type and $S$-type suffixes arranged *inside* each bucket $\mathcal{B}(c)$?
+
+::: {.callout-important}
+## Lemma 1.2 (The Intra-Bucket $L < S$ Partition Invariant)
+
+For every character $c \in \Sigma \cup \{\$\}$, in the sorted Suffix Array $\operatorname{SA}$, **every $L$-type suffix in $\mathcal{B}(c)$ appears strictly before every $S$-type suffix in $\mathcal{B}(c)$**:
+$$\boxed{\mathcal{B}(c) \;=\; \mathcal{B}_L(c) \;\sqcup\; \mathcal{B}_S(c), \qquad \forall i \in \mathcal{B}_L(c), \; \forall j \in \mathcal{B}_S(c), \quad \operatorname{suf}(i) < \operatorname{suf}(j).}$$
+:::
+
+*Proof*: Let $i \in \mathcal{B}_L(c)$ and $j \in \mathcal{B}_S(c)$. Consider the maximal contiguous run of character $c$ starting at $i$, say $\operatorname{suf}(i) = c^{r_i} d_i \cdots$ where $r_i \ge 1$ and $d_i \ne c$. By Lemma 1.1, all positions in that run of $c$'s share the type of its last $c$, which is determined by comparing $c$ against $d_i$. Since $\operatorname{type}(i) = L$, we must have $c > d_i$, which implies that $\operatorname{suf}(i) = c^{r_i} d_i \cdots$ is lexicographically **strictly smaller** than the infinite periodic word $c^\infty = ccc\cdots$.
+Symmetrically, $\operatorname{suf}(j) = c^{r_j} d_j \cdots$ has $\operatorname{type}(j) = S$, which forces $c < d_j$ (recall $j < N$ when $\mathcal{B}_L(c) \ne \emptyset$ since $\$$ is unique). Hence $\operatorname{suf}(j)$ is lexicographically **strictly larger** than $c^\infty$. By transitivity through $c^\infty$:
+$$\operatorname{suf}(i) \;=\; c^{r_i} d_i \cdots \;<\; c^\infty \;<\; c^{r_j} d_j \cdots \;=\; \operatorname{suf}(j). \quad \blacksquare$$
+
+---
+
+## 2. LMS-Substring Prefix-Free Parsing & The Two-Pass `InduceSort` Engine
+
+### 2.1 Leftmost $S$-Type (LMS) Positions & The $\le \lfloor N/2 \rfloor$ Halving Bound
+
+Suppose we want to induce the sorted order of all suffixes by scanning $\operatorname{SA}$ and propagating known suffixes $\operatorname{suf}(i)$ to their left neighbors $\operatorname{suf}(i-1) = S[i-1] \cdot \operatorname{suf}(i)$. When $\operatorname{type}(i-1) = L$, $i-1$ belongs to $\mathcal{B}_L(S[i-1])$, and the chain of $L$-inductions $i \to i-1 \to i-2 \dots$ must eventually originate at some suffix $i$ of **Type $S$** whose left neighbor $i-1$ has **Type $L$**!
+
+::: {.callout-important}
+## Definition 2.1 & Lemma 2.1 (LMS Positions, LMS-Substrings & The Halving / Linear-Overlap Bounds)
+
+A position $i \in \{2, \dots, N\}$ is called a **Leftmost $S$-type (LMS) position** (denoted $S^*$) if
+$$\operatorname{type}(i) = S \quad \text{and} \quad \operatorname{type}(i-1) = L.$$
+Equivalently, in the inverse suffix array permutation $\operatorname{rk}$, an LMS position $i < N$ is a **local valley** ($\operatorname{rk}[i-1] > \operatorname{rk}[i] < \operatorname{rk}[i+1]$). Let $1 < p_1 < p_2 < \dots < p_m = N$ be all LMS positions of $S[1..N]$ ($N \ge 2$). Define the $k$-th **LMS-substring** to be the closed substring $S[p_k .. p_{k+1}]$ (inclusive of both LMS endpoints!) for $1 \le k < m$, and $S[N..N] = \$$ for $k = m$. Then:
+
+1. **Halving Bound**: The number of LMS positions satisfies $m \le \lfloor N / 2 \rfloor$.
+2. **Linear Total Length ($< 2N$)**: The sum of lengths of all $m$ LMS-substrings satisfies
+   $$\sum_{k=1}^{m-1} (p_{k+1} - p_k + 1) + 1 \;=\; (N - p_1 + 1) + m \;\le\; \frac{3}{2} N \;<\; 2N.$$
+:::
+
+*Proof*: (1) Position $1$ has no left neighbor $i-1$, so $p_1 \ge 2$. No two LMS positions $p_k < p_{k+1}$ can be adjacent, because $\operatorname{type}(p_{k+1} - 1) = L$ whereas $\operatorname{type}(p_k) = S$. Thus $p_{k+1} - p_k \ge 2$ for all $1 \le k < m$, which together with $p_m = N$ and $p_1 \ge 2$ gives $2(m - 1) \le N - 2 \implies m \le \lfloor N / 2 \rfloor$.
+(2) Consecutive closed intervals $[p_k, p_{k+1}]$ partition $[p_1, N]$ while overlapping only at the $m - 1$ shared endpoints $p_2, \dots, p_m$. Thus their lengths sum to $(p_m - p_1 + 1) + (m - 1) + 1 = (N - p_1 + 1) + m < 2N$. Consequently, comparing adjacent sorted LMS-substrings character-by-character takes **$O(N)$ worst-case time** across the entire level! $\blacksquare$
+
+### 2.2 The LMS-Substring Prefix-Free Order Homomorphism
+
+Why can we replace each variable-length LMS-substring $S[p_k..p_{k+1}]$ by a single integer rank $T[k]$ and recursively sort $T[1..m]$? In general string parsing, replacing variable-length blocks by their lexicographical ranks fails if one block can be a **proper prefix** of another block! Theorem 2.2 proves why LMS-substrings are automatically **prefix-free** when compared by both character and $L/S$ type.
+
+::: {.callout-important}
+## Theorem 2.2 (LMS-Substring Prefix-Free Order Homomorphism — Nong, Zhang, Chan 2009)
+
+Order pairs $(c, t) \in (\Sigma \cup \{\$\}) \times \{L, S\}$ lexicographically by character $c$ first and by type $L < S$ on equal characters. Compare any two LMS-substrings $U = S[p_a..p_{a+1}]$ and $V = S[p_b..p_{b+1}]$ offset-by-offset ($d = 0, 1, \dots$) using the joint pair $\bigl(S[x + d], \operatorname{type}(x + d)\bigr)$:
+
+1. **Prefix-Freeness**: No LMS-substring $V = S[p_b..p_{b+1}]$ can match a **proper prefix** of another LMS-substring $U = S[p_a..p_{a+1}]$ ($|V| < |U|$) in both characters and $L/S$ types.
+2. **Order Homomorphism**: Two LMS-substrings satisfy $U \equiv V$ iff $|U| = |V|$ and $(S[p_a+d], \operatorname{type}(p_a+d)) = (S[p_b+d], \operatorname{type}(p_b+d))$ for all $0 \le d < |U|$. Assigning each LMS-substring $S[p_k..p_{k+1}]$ its rank $T[k] \in \{1, \dots, \sigma'\}$ under this order guarantees, for all $1 \le a, b \le m$:
+   $$\boxed{\operatorname{suf}_S(p_a) < \operatorname{suf}_S(p_b) \;\Longleftrightarrow\; \operatorname{suf}_T(a) < \operatorname{suf}_T(b).}$$
+:::
+
+*Proof*: (1) If $b = m$, $V = \$$ cannot match any prefix of $U$ ($a < m$) because $\$$ occurs only at index $N$. For $a, b < m$, inspect the type sequence inside any LMS-substring $U = S[p_a..p_{a+1}]$: it starts with one or more $S$-positions at $p_a$, transitions to one or more $L$-positions, and returns to $S$ for the **very first time** at its right endpoint $p_{a+1}$ (the next LMS position after $p_a$). If $V = S[p_b..p_{b+1}]$ with $|V| < |U|$ matched $S[p_a .. p_a + |V| - 1]$ in both characters and types, then the right endpoint $p_{b+1}$ of $V$ (which is an $L \to S$ transition!) would force an $L \to S$ transition at $p_a + |V| - 1 < p_{a+1}$ strictly inside $(p_a, p_{a+1})$, contradicting the fact that $p_{a+1}$ is the first LMS position after $p_a$!
+(2) Decompose $\operatorname{suf}_S(p_a)$ and $\operatorname{suf}_S(p_b)$ into their sequences of overlapping LMS-substrings. At the first index $r \ge 0$ where the $(a+r)$-th and $(b+r)$-th LMS-substrings are not $\equiv$-equivalent, prefix-freeness guarantees that they mismatch at some offset $d$ strictly within both blocks—either by character $S[p_{a+r}+d] \ne S[p_{b+r}+d]$, or by equal character with opposite types $L < S$, which by Lemma 1.2 decides $\operatorname{suf}_S(p_a) \lessgtr \operatorname{suf}_S(p_b)$ in the exact same direction! $\blacksquare$
+
+### 2.3 Strict Pointer-Monotonicity Proof of Two-Pass `InduceSort` & Trace on `"mississippi$"`
+
+Given an array of LMS indices $q_1, q_2, \dots, q_m$:
+
+1. **Pass 0 (Seed LMS at Bucket Tails)**: Initialize $\operatorname{SA}[1..N] \leftarrow -1$ and set $\operatorname{tail}[c]$ to the right boundary of bucket $\mathcal{B}(c)$. For $k = m$ **down to** $1$, set $\operatorname{SA}[\operatorname{tail}[S[q_k]]\text{--}] \leftarrow q_k$.
+2. **Pass 1 (Left-to-Right Scan $\to$ Induce $L$-Type Suffixes at Bucket Heads)**: Set $\operatorname{head}[c]$ to the left boundary of $\mathcal{B}(c)$. Sweep $k = 1$ to $N$: if $i = \operatorname{SA}[k] > 1$ and $\operatorname{type}(i-1) = L$, write $\operatorname{SA}[\operatorname{head}[S[i-1]]\text{++}] \leftarrow i-1$.
+   - *Why does Pass 1 never miss an $L$-suffix (Strict Left-to-Right Monotonicity)?* Because $\operatorname{type}(i-1) = L$ means $\operatorname{suf}(i-1) > \operatorname{suf}(i)$! Thus $i$ always resides at a slot $k = \operatorname{rk}[i]$ **strictly to the left** of the destination slot $\operatorname{rk}[i-1]$ of $i-1$. By induction along each maximal $L$-run (which begins at an LMS position seeded in Pass 0), every $i$ is already placed before $k$ reaches $\operatorname{rk}[i]$; and since Pass 1 scans $\operatorname{suf}(i)$ in increasing order, the induced suffixes $\operatorname{suf}(i-1) = c \cdot \operatorname{suf}(i)$ enter $\mathcal{B}_L(c)$ in strictly increasing order!
+3. **Pass 2 (Right-to-Left Scan $\to$ Induce $S$-Type Suffixes at Bucket Tails)**: Reset $\operatorname{tail}[c]$ to the right boundary of $\mathcal{B}(c)$. Sweep $k = N$ **down to** $1$: if $i = \operatorname{SA}[k] > 1$ and $\operatorname{type}(i-1) = S$, write $\operatorname{SA}[\operatorname{tail}[S[i-1]]\text{--}] \leftarrow i-1$ (overwriting the preliminary LMS seeds from Pass 0!).
+   - *Why does Pass 2 never miss an $S$-suffix (Strict Right-to-Left Monotonicity)?* Because $\operatorname{type}(i-1) = S$ means $\operatorname{suf}(i-1) < \operatorname{suf}(i)$! Thus $i$ always resides at a slot $k = \operatorname{rk}[i]$ **strictly to the right** of the destination slot $\operatorname{rk}[i-1]$ of $i-1$. All $L \to S$ boundaries ($L$-type suffixes) were already finalized in Pass 1!
+
+::: {.callout-important}
+## Dual Role of `InduceSort` in `SA-IS`
+
+- **Before Recursion (Stage 2)**: Seed LMS positions in arbitrary order $p_1, \dots, p_m$ and run `InduceSort`. By induction over offsets from the right endpoints $p_{k+1}$, Pass 1 + Pass 2 sorts all **LMS-substrings** $S[p_k..p_{k+1}]$ under the $(S[\cdot], \operatorname{type}(\cdot))$ order of Theorem 2.2 (breaking ties arbitrarily among identical LMS-substrings!).
+- **After Recursion (Stage 5)**: Once recursive `SA-IS` on $T[1..m]$ produces the exact sorted order $q_1, \dots, q_m$ of all **LMS-prefixes** $\operatorname{suf}_S(q_k)$, running `InduceSort` a second time induces the exact global $\operatorname{SA}[1..N]$ in $O(N)$ time!
+:::
+
+#### Hand-Checked Trace on $S = \texttt{m i s s i s s i p p i \$}$ ($N = 12$)
+
+```
+Index i:         1   2   3   4   5   6   7   8   9  10  11  12
+Character S[i]:  m   i   s   s   i   s   s   i   p   p   i   $
+Type(i):         L   S   L   L   S   L   L   S   L   L   L   S
+LMS (S*):            *           *           *               *
+LMS-substrings:  p_1=2 ("issi"), p_2=5 ("issi"), p_3=8 ("ippi$"), p_4=12 ("$")
+```
+
+| Bucket $c$ | Span in $\operatorname{SA}$ | $\mathcal{B}_L(c)$ | $\mathcal{B}_S(c)$ | Pre-Recursion Pass 0 (LMS Seed) | After Pass 1 (Induce $L$) | After Pass 2 (Induce $S$) |
+| :---: | :---: | :---: | :---: | :--- | :--- | :--- |
+| $\$$ | $[1..1]$ | $\emptyset$ | $[1..1]$ | `[12]` | `[12]` | `[12]` |
+| $\texttt{i}$ | $[2..5]$ | $[2..2]$ | $[3..5]$ | `[_, 2, 5, 8]` | `[11, 2, 5, 8]` | `[11, 8, 2, 5]` |
+| $\texttt{m}$ | $[6..6]$ | $[6..6]$ | $\emptyset$ | `[_]` | `[1]` | `[1]` |
+| $\texttt{p}$ | $[7..8]$ | $[7..8]$ | $\emptyset$ | `[_, _]` | `[10, 9]` | `[10, 9]` |
+| $\texttt{s}$ | $[9..12]$ | $[9..12]$ | $\emptyset$ | `[_, _, _, _]` | `[7, 4, 6, 3]` | `[7, 4, 6, 3]` |
+
+1. **Stage 3 (LMS Naming)**: Extract the LMS indices from pre-recursion $\operatorname{SA}$ in order: `[12, 8, 2, 5]`. Compare adjacent LMS-substrings by $(S[\cdot], \operatorname{type}(\cdot))$:
+   - $S[12..12] = (\texttt{\$}, S) \mapsto \text{name } 1$;
+   - $S[8..12] = (\texttt{i},S)(\texttt{p},L)(\texttt{p},L)(\texttt{i},L)(\texttt{\$},S) \mapsto \text{name } 2$;
+   - $S[2..5] = (\texttt{i},S)(\texttt{s},L)(\texttt{s},L)(\texttt{i},S) \mapsto \text{name } 3$;
+   - $S[5..8] = (\texttt{i},S)(\texttt{s},L)(\texttt{s},L)(\texttt{i},S) \equiv S[2..5] \mapsto \text{name } 3$ (duplicate name!).
+   Placing names in original LMS index order $(p_1, p_2, p_3, p_4) = (2, 5, 8, 12)$ yields the reduced string $T[1..4] = [3, 3, 2, 1]$.
+
+2. **Stage 4–5 (Recursion & Final Induction)**: Sorting $T = [3, 3, 2, 1]$ yields $\operatorname{SA}_T = [4, 3, 2, 1]$ (since $\operatorname{suf}_T(2) = [3, 2, 1] < \operatorname{suf}_T(1) = [3, 3, 2, 1]$). This orders the LMS positions as $(q_1, q_2, q_3, q_4) = (p_4, p_3, p_2, p_1) = (12, 8, 5, 2)$. Seeding $(12, 8, 5, 2)$ from $k = 4$ down to $1$ into the bucket tails places `[_, 8, 5, 2]` in $\mathcal{B}(\texttt{i})$, and Pass 1 + Pass 2 induces the final exact Suffix Array:
+   $$\operatorname{SA}[1..12] \;=\; [12, \; 11, \; 8, \; 5, \; 2, \; 1, \; 10, \; 9, \; 7, \; 4, \; 6, \; 3].$$
+
+---
+
+## 3. Fischer's (2011) Linear-Time Induced LCP & Domain Adaptations
+
+### 3.1 Inducing `height[2..N]` Directly Inside `SA-IS` (Fischer 2011)
+
+While Kasai's algorithm computes $\operatorname{height}[2..N]$ in $O(N)$ time *after* $\operatorname{SA}$ is built (via $\operatorname{height}[\operatorname{rk}[i]] \ge \operatorname{height}[\operatorname{rk}[i-1]] - 1$, which makes random-access jumps across $\operatorname{SA}$), **Johannes Fischer (WADS 2011)** proved that $\operatorname{height}[2..N]$ can be induced **simultaneously with Pass 1 and Pass 2** using the exact same induction recurrence:
+
+::: {.callout-important}
+## Theorem 3.1 (Fischer's Induced LCP Recurrence)
+
+Suppose we are given the adjacent LCPs between consecutive sorted LMS-prefixes in $\mathcal{B}_S(c)$:
+
+1. **Intra-Subbucket Induction (Pass 1 for $\mathcal{B}_L(c)$ and Pass 2 for $\mathcal{B}_S(c)$)**:
+   Whenever suffix $i - 1$ (induced from $i = \operatorname{SA}[k_1]$) and suffix $j - 1$ (induced from $j = \operatorname{SA}[k_2]$, with $k_1 < k_2$) are placed into **adjacent slots** inside the same subbucket $\mathcal{B}_L(c)$ or $\mathcal{B}_S(c)$, both start with character $c$, so their longest common prefix is $1$ plus the LCP of $\operatorname{suf}(i)$ and $\operatorname{suf}(j)$:
+   $$\boxed{\operatorname{LCP}\bigl(\operatorname{suf}(i-1), \, \operatorname{suf}(j-1)\bigr) \;=\; 1 + \min_{k_1 < t \le k_2} \operatorname{height}[t].}$$
+
+2. **Cross-$L/S$-Boundary LCP Inside Bucket $\mathcal{B}(c)$**:
+   Let $i = \operatorname{SA}[k_L]$ be the **last** $L$-type suffix in $\mathcal{B}_L(c)$ and $j = \operatorname{SA}[k_L + 1]$ be the **first** $S$-type suffix in $\mathcal{B}_S(c)$. By Lemma 1.2's proof, $\operatorname{suf}(i) = c^{r_i} d_i \cdots$ ($d_i < c$) and $\operatorname{suf}(j) = c^{r_j} d_j \cdots$ ($d_j > c$) can never match past their leading run of $c$'s ($d_i < c < d_j \implies d_i \ne d_j$). Therefore:
+   $$\boxed{\operatorname{height}[k_L + 1] \;=\; \operatorname{LCP}\bigl(\operatorname{suf}(i), \, \operatorname{suf}(j)\bigr) \;=\; \min\bigl(\operatorname{run}_c(i), \, \operatorname{run}_c(j)\bigr)!}$$
+:::
+
+### 3.2 Structural Domain Adaptations of Induced Sorting
+
+| Contest Setting | Why Naive Sentinel `SA-IS` Fails | Exact Structural Adaptation |
+| :--- | :--- | :--- |
+| **Generalized `SA-IS` on $K$ Strings ($S_1, \dots, S_K$)** | Concatenating with a **single shared `#`** violates $S[N]$ uniqueness: `# == #` propagates $L/S$ types across boundaries. Using $K$ distinct negative sentinels inflates $|\Sigma|$ by $+K$. | Append a single `0` after each $S_r$, but force **every `0` position to be Type $S$ (and LMS)** and treat any two `0` positions at indices $i \ne j$ as unequal ($i < j$ tie-break). |
+| **Cyclic Shift Sorting (`BBWT` / `[JSOI2007]` / `ABC 272 F`)** | Appending `$` distorts cyclic wrap-around comparisons when a match crosses index $N$. | For a single string $S$, either sort $S \cdot S[1..N-1] \cdot \$$, or rotate $S$ to its Lyndon root via Duval's $O(N)$ algorithm (`Ch 05`). For two-string cyclic comparison $S^{(i)} \le T^{(j)}$ (`ABC 272 F`), run `SA-IS` on $S \cdot S \cdot (\texttt{'a'}-1) \cdot T \cdot T \cdot (\texttt{'z'}+1)$. |
+| **Upward Tree Suffix Array (`ICPC WF 2019 D`)** | Nodes $u$ on a rooted tree represent upward paths $S[u] \cdot \operatorname{str}(\operatorname{parent}(u))$; multiple children $u$ share the same parent $v$ and can have tied upward strings. | Every node $u \ne \text{root}$ still has a **unique successor** $\operatorname{parent}(u)$! When scanning $v = \operatorname{SA}[k]$, iterate over all children $u \in \operatorname{children}(v)$ of matching $L/S$ type and propagate tied-rank buckets. |
+
+---
+
+## 4. Reverse-Engineering Scratchpad, Algorithmic Contracts & Boundary Pitfalls (`BP-13` / `BP-12-01`–`BP-12-02` / `BP-2B-01`–`BP-2B-02`)
+
+### 4.1 Implementation Contract: Recursive Integer-Alphabet `SA-IS` Engine
+
+```cpp
+// Non-Standard Contract: Linear-Time Recursive Integer-Alphabet SA-IS
+// Input: s[0..n-1] with s[n-1] == 0 (unique minimum sentinel), alphabet in [0..sig]
+void sais(int n, int sig, const int* s, int* sa, int* type, int* lms, int* buf) {
+    int *cnt = buf, *ptr = buf + sig + 1;
+    type[n - 1] = 1; // 1 = S-type, 0 = L-type
+    for (int i = n - 2; i >= 0; --i)
+        type[i] = (s[i] != s[i + 1]) ? (s[i] < s[i + 1]) : type[i + 1];
+    int m = 0;
+    for (int i = 1; i < n; ++i)
+        if (type[i] == 1 && type[i - 1] == 0) lms[m++] = i;
+
+    fill(cnt, cnt + sig + 1, 0);
+    for (int i = 0; i < n; ++i) ++cnt[s[i]];
+    partial_sum(cnt, cnt + sig + 1, cnt);
+
+    auto induce = [&](const int* q) {
+        fill(sa, sa + n, -1);
+        // Pass 0: Seed LMS at bucket tails (MUST iterate k = m-1 down to 0!)
+        copy(cnt, cnt + sig + 1, ptr);
+        for (int k = m - 1; k >= 0; --k) sa[--ptr[s[q[k]]]] = q[k];
+        // Pass 1: Left-to-right scan -> induce L-type at bucket heads
+        ptr[0] = 0; copy(cnt, cnt + sig, ptr + 1);
+        for (int k = 0; k < n; ++k)
+            if (sa[k] > 0 && type[sa[k] - 1] == 0) sa[ptr[s[sa[k] - 1]]++] = sa[k] - 1;
+        // Pass 2: Right-to-left scan -> induce S-type at bucket tails
+        copy(cnt, cnt + sig + 1, ptr);
+        for (int k = n - 1; k >= 0; --k)
+            if (sa[k] > 0 && type[sa[k] - 1] == 1) sa[--ptr[s[sa[k] - 1]]] = sa[k] - 1;
+    };
+
+    induce(lms); // Stage 2: Sort LMS-substrings
+    // Stage 3: Name sorted LMS-substrings using BOTH s[.] and type[.]
+    int* lms_idx = type + n; // temporary workspace of size n (dead before recursion)
+    fill(lms_idx, lms_idx + n, -1);
+    for (int k = 0; k < m; ++k) lms_idx[lms[k]] = k;
+    int* sorted_lms = lms + m; // disjoint buffer of size m (never aliases ptr!)
+    int c = 0;
+    for (int k = 0; k < n; ++k) if (sa[k] > 0 && type[sa[k]] == 1 && type[sa[k] - 1] == 0)
+        sorted_lms[c++] = sa[k];
+
+    int* s1 = lms + 2 * m; // reduced string of length m
+    int name = 0, prev = -1;
+    for (int k = 0; k < m; ++k) {
+        int cur = sorted_lms[k];
+        bool diff = (prev == -1);
+        for (int d = 0; !diff; ++d) {
+            if (s[cur + d] != s[prev + d] || type[cur + d] != type[prev + d]) {
+                diff = true; break;
+            }
+            if (d > 0 && ((type[cur + d] == 1 && type[cur + d - 1] == 0) ||
+                          (type[prev + d] == 1 && type[prev + d - 1] == 0))) break;
+        }
+        if (diff) ++name, prev = cur;
+        s1[lms_idx[cur]] = name - 1;
+    }
+    int* q = sorted_lms;
+    if (name < m) {
+        sais(m, name - 1, s1, q, type + n, lms + 3 * m, buf + 2 * (sig + 1));
+        for (int k = 0; k < m; ++k) q[k] = lms[q[k]];
+    }
+    induce(q); // Stage 5: Induce final exact SA from sorted LMS-prefixes
+}
+```
+
+### 4.2 Broken-Invariant Counterexamples (`BP-13` / `BP-12-01`–`BP-12-02`)
+
+::: {.callout-warning}
+## Broken Invariant 1 (`BP-13` / `BP-12-01` / `BP-2B-01`): The $(S[\cdot], \operatorname{type}(\cdot))$ LMS Equality Trap (Comparing Characters Only)
+
+- **The Buggy Shortcut**: In Stage 3 (LMS-substring naming), checking only character equality `s[cur + d] == s[prev + d]` without checking `type[cur + d] == type[prev + d]`.
+- **Concrete Counterexample on $S = \texttt{"abacaba\$"}$ ($N = 8$)**:
+  ```
+  Index i:    1   2   3   4   5   6   7   8
+  Char S[i]:  a   b   a   c   a   b   a   $
+  Type(i):    S   L   S   L   S   L   L   S
+  LMS (S*):           *       *           *
+  ```
+  Here $p_1 = 3$ (`"aca"`) and $p_2 = 5$ (`"aba$"`). Now consider $S = \texttt{"cababac\$"}$ ($N = 8$):
+  ```
+  Index i:    1   2   3   4   5   6   7   8
+  Char S[i]:  c   a   b   a   b   a   c   $
+  Type(i):    L   S   L   S   L   S   L   S
+  LMS (S*):       *       *       *       *
+  ```
+  Look at the first two LMS-substrings: $U_1 = S[2..4] = \texttt{"aba"}$ and $U_2 = S[4..6] = \texttt{"aba"}$. Both have identical characters `"aba"` and length $3$! Now modify index $7$ to `'a'`: $S = \texttt{"cababaa\$"}$ ($N = 8$):
+  ```
+  Index i:    1   2   3   4   5   6   7   8
+  Char S[i]:  c   a   b   a   b   a   a   $
+  Type(i):    L   S   L   S   L   L   L   S
+  LMS (S*):       *       *               *
+  ```
+  Here $p_1 = 2, p_2 = 4, p_3 = 8$. The LMS-substring $U_1 = S[2..4] = \texttt{"aba"}$ has types $(S, L, S)$, while the length-$3$ prefix of $U_2 = S[4..8] = \texttt{"abaa\$"}$ is $S[4..6] = \texttt{"aba"}$ with types $(S, L, L)$! If an implementation compares up to $\min(|U_1|, |U_2|)$ by characters only, or if two blocks end with identical characters of opposite types (e.g., an LMS-block ending at $S^*$ vs. continuing as $L$), merging them assigns equal names $T[a] = T[b]$ to blocks whose continuation suffixes are ordered in opposite directions!
+
+- **The Restoration**: Always test `s[cur + d] != s[prev + d] || type[cur + d] != type[prev + d]` inside the naming loop (`Contract` lines 40–45).
+:::
+
+::: {.callout-warning}
+## Broken Invariant 2 (`BP-12-02` / `BP-2B-02`): Iterating Forward ($k = 0 \dots m-1$) in Pass 0 Reverses All LMS Seeds
+
+- **The Buggy Shortcut**: Writing `for (int k = 0; k < m; ++k) sa[--ptr[s[q[k]]]] = q[k];` in Pass 0.
+- **Why It Fails**: Because `--ptr[c]` fills the $S$-subbucket $\mathcal{B}_S(c)$ **from right to left** (from the largest rank in the bucket down to the smallest), the **largest** LMS-prefix $q_{m-1}$ must be inserted *first* into the rightmost slot, and the **smallest** LMS-prefix $q_0$ must be inserted *last* into the leftmost slot! Iterating $k = 0 \dots m-1$ places $q_0$ at the very back of the bucket, inverting the order of all LMS seeds inside every bucket.
+:::
+
+---
+
+## 5. Curated 4-Tier Problem Ladder (`Ch 12` — 8 Non-Template Problems)
+
+### Tier 1: Stepping Stone (LMS Canonicalization & $\operatorname{rk}$-Descent String Reconstruction)
+
+#### Problem 12.1 (`W2B-02`): Large-Alphabet Recursive Integer `SA-IS` & LMS-Block Canonicalization
+
+- **Self-Contained Mathematical Statement**: Given an integer array $A[1..N]$ ($N \le 2 \times 10^6$, $1 \le A[i] \le N$) terminated by $A[N+1] = 0$, compute (1) the number of LMS positions $m$ and the number of distinct LMS-substrings $\sigma'$ at the top recursion level of `SA-IS`, and (2) the checksum $\sum_{k=1}^N k \cdot \operatorname{SA}[k]$ of the sorted Suffix Array in $O(N)$ time and at most $6N$ `int`s of working memory (without `std::sort` or radix tuple arrays).
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+How do you lay out the recursive buffers (`s1`, `lms`, `type`, `sa`) inside a single pre-allocated workspace so that total memory across all recursion levels is bounded by $O(N)$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant)
+
+By Lemma 2.1, $m \le \lfloor (N+1)/2 \rfloor$ at every recursion level, so the sum of problem sizes across all levels is $N + N/2 + N/4 + \dots < 2N$. Where can the reduced string $T[1..m]$ be stored without allocating a new array?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+Store $T[1..m]$ directly in the second half of `sa` (`sa + n - m`) or `lms + m`, and pack `type[0..n-1]` into a bitset (or reuse the tail of `sa` during naming). Compare adjacent sorted LMS-substrings using both `(s[i], type[i])` and the interior LMS boundary stop condition `d > 0 && is_lms(cur + d)`.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`W2B-02`)
+
+1. **Diagnostic Signal**: At $N = 2 \times 10^6$ with integer alphabet $[1..N]$, $O(N \log N)$ doubling requires $\ge 21$ passes and multiple $N$-sized auxiliary buffers, whereas `SA-IS` uses bucket counting over $[0..\text{sig}]$.
+2. **Combinatorial Word Invariant**: By **Lemma 2.1** and **Theorem 2.2**, at every recursion level $m \le \lfloor n/2 \rfloor$ and the new alphabet size satisfies $\sigma' = \text{name} \le m \le \lfloor n/2 \rfloor$. Thus both the string length $n$ and the bucket array size $\text{sig} + 1$ halve at every recursive call, bounding total time and workspace across all recursion levels by $\sum_{r \ge 0} \frac{N}{2^r} = 2N$.
+3. **Algorithmic Compilation**:
+   - Execute the 5-stage `sais` contract (`§4.1`):
+     1. Compute `type` right-to-left in $O(n)$ and collect `lms[0..m-1]`.
+     2. Run `induce(lms)` to sort all LMS-substrings in $\operatorname{SA}$.
+     3. Scan $\operatorname{SA}$ to extract the $m$ sorted LMS indices and compare adjacent LMS-substrings offset-by-offset (`d = 0, 1, ...`), stopping as soon as `d > 0` hits an LMS position in either block.
+     4. If $\sigma' = \text{name} < m$, recursively invoke `sais(m, name - 1, s1, ...)`; otherwise directly invert `s1` in $O(m)$ time (`for (int i = 0; i < m; ++i) q[s1[i]] = lms[i];`).
+     5. Run `induce(q)` to produce the exact $\operatorname{SA}[1..N]$.
+   - **Complexity**: Strict $O(N)$ time and $O(N)$ space.
+4. **Broken-Invariant Counterexample**: Stopping the LMS-substring comparison loop at `d == 0` when `is_lms(cur + d)` is true (every LMS-substring starts at an LMS position at `d = 0`!)—the stop condition **must** guard `d > 0 && (is_lms(cur + d) || is_lms(prev + d))`.
+:::
+
+---
+
+#### Problem 12.2 (`W2B-05`): Permutation to Minimal-Alphabet String via $\operatorname{rk}$-Descent Duality
+
+- **Self-Contained Mathematical Statement**: Given a target Suffix Array permutation $\operatorname{SA}[1..N]$ of $\{1, \dots, N\}$ ($N \le 5 \times 10^5$), determine the **minimum alphabet size** $\sigma_{\min}$ for which there exists a string $S[1..N]$ over $\{1, \dots, \sigma_{\min}\}$ whose Suffix Array is $\operatorname{SA}[1..N]$, and reconstruct the lexicographically smallest such string $S[1..N]$ in $O(N)$ time.
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+In the sorted order $\operatorname{SA}[1], \operatorname{SA}[2], \dots, \operatorname{SA}[N]$, the leading characters must be non-decreasing: $S[\operatorname{SA}[1]] \le S[\operatorname{SA}[2]] \le \dots \le S[\operatorname{SA}[N]]$. When are we *forced* to make a strict jump $S[\operatorname{SA}[k]] < S[\operatorname{SA}[k+1]]$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant)
+
+Compare $\operatorname{suf}(\operatorname{SA}[k]) = S[\operatorname{SA}[k]] \cdot \operatorname{suf}(\operatorname{SA}[k]+1)$ and $\operatorname{suf}(\operatorname{SA}[k+1]) = S[\operatorname{SA}[k+1]] \cdot \operatorname{suf}(\operatorname{SA}[k+1]+1)$. If $S[\operatorname{SA}[k]] = S[\operatorname{SA}[k+1]]$, what must hold between the ranks of their remaining suffixes $\operatorname{rk}[\operatorname{SA}[k]+1]$ and $\operatorname{rk}[\operatorname{SA}[k+1]+1]$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+Set $\operatorname{rk}[N+1] = 0$ (representing the empty suffix $\$$). For each $k = 1, \dots, N-1$, we can keep $S[\operatorname{SA}[k]] = S[\operatorname{SA}[k+1]]$ if and only if $\operatorname{rk}[\operatorname{SA}[k] + 1] < \operatorname{rk}[\operatorname{SA}[k+1] + 1]$! Whenever $\operatorname{rk}[\operatorname{SA}[k] + 1] > \operatorname{rk}[\operatorname{SA}[k+1] + 1]$ (a descent in the shifted rank sequence), we **must** increment the character by $+1$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`W2B-05`)
+
+1. **Diagnostic Signal**: Reversing suffix sorting—given $\operatorname{SA}[1..N]$, find the minimal alphabet size $\sigma_{\min}$ generating $\operatorname{SA}$.
+2. **Combinatorial Word Invariant**: By **Lemma 1.1 ($\operatorname{rk}$-Descent Characterization)**, for any $1 \le k < N$, let $i = \operatorname{SA}[k]$ and $j = \operatorname{SA}[k+1]$. In any valid string $S$, $\operatorname{suf}(i) < \operatorname{suf}(j)$ requires $S[i] \le S[j]$, and equality $S[i] = S[j]$ is valid **if and only if** the stripped suffixes satisfy $\operatorname{suf}(i+1) < \operatorname{suf}(j+1) \iff \operatorname{rk}[i+1] < \operatorname{rk}[j+1]$ (with $\operatorname{rk}[N+1] := 0$).
+   Conversely, if we define $S[\operatorname{SA}[1]] = 1$ and
+   $$S[\operatorname{SA}[k+1]] \;=\; S[\operatorname{SA}[k]] + \bigl[\operatorname{rk}[\operatorname{SA}[k] + 1] > \operatorname{rk}[\operatorname{SA}[k+1] + 1]\bigr],$$
+   then by backward induction on suffix lengths, $\operatorname{suf}(\operatorname{SA}[1]) < \dots < \operatorname{suf}(\operatorname{SA}[N])$ holds automatically!
+
+3. **Algorithmic Compilation**:
+   - Compute $\operatorname{rk}[\operatorname{SA}[k]] = k$ for $k = 1 \dots N$, and set $\operatorname{rk}[N+1] = 0$.
+   - Set $S[\operatorname{SA}[1]] = 1$. For $k = 1 \dots N-1$, set $S[\operatorname{SA}[k+1]] = S[\operatorname{SA}[k]] + (\operatorname{rk}[\operatorname{SA}[k]+1] > \operatorname{rk}[\operatorname{SA}[k+1]+1])$.
+   - Output $\sigma_{\min} = S[\operatorname{SA}[N]]$ and $S[1..N]$ in $O(N)$ time.
+4. **Broken-Invariant Counterexample**: Setting $\operatorname{rk}[N+1] = N + 1$ instead of $0$: when $\operatorname{SA}[k] = N$ (the length-$1$ suffix $S[N]$), $\operatorname{suf}(N+1) = \epsilon$ is strictly smaller than every non-empty suffix $\operatorname{suf}(\operatorname{SA}[k+1] + 1)$, so $k$ with $\operatorname{SA}[k] = N$ NEVER forces a character increment!
+:::
+
+---
+
+### Tier 2: Intermediate (Cyclic Shift Induced Sorting & Linear-Time LCP Histograms)
+
+#### Problem 12.3 (`W2B-14`): Cyclic Shift Induced Sorting (`[JSOI2007] 字符加密` & `AtCoder ABC 272 F — Two Strings`)
+
+- **Self-Contained Mathematical Statement**:
+  - **Part A (`[JSOI2007] 字符加密` / Luogu P4051)**: Given $S[1..N]$ ($N \le 10^5$), sort all $N$ cyclic shifts $S^{(i)} = S[i..N] \cdot S[1..i-1]$ ($1 \le i \le N$), breaking ties among identical cyclic shifts by smaller starting index $i$, and output the last character of each sorted shift (the Burrows–Wheeler Transform $L$-column).
+  - **Part B (`AtCoder ABC 272 F — Two Strings`)**: Given two strings $S[1..N]$ and $T[1..N]$ ($N \le 2 \times 10^5$), count the number of pairs $(i, j) \in \{1, \dots, N\}^2$ such that cyclic shift $S^{(i)}$ is lexicographically **less than or equal to** cyclic shift $T^{(j)}$ ($S^{(i)} \le_{\text{lex}} T^{(j)}$).
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+If you concatenate $S \cdot S$ and append a single minimum sentinel $\$$, how does comparing suffixes $\operatorname{suf}(i)$ and $\operatorname{suf}(j)$ ($1 \le i < j \le N$) break ties when $S^{(i)} = S^{(j)}$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant)
+
+In Part B, when $S^{(i)} = T^{(j)}$, we must count the pair $(i, j)$ as valid ($S^{(i)} \le_{\text{lex}} T^{(j)}$), which means $\operatorname{suf}(i)$ (from $S$) must sort **strictly before** $\operatorname{suf}(2N + 1 + j)$ (from $T$) in the combined Suffix Array! How should you choose the sentinel characters placed after $S \cdot S$ and after $T \cdot T$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+For Part B, build `SA-IS` on the string $U = S \cdot S \cdot c_{\min} \cdot T \cdot T \cdot c_{\max}$ of length $4N + 2$, where $c_{\min} = \texttt{'a'} - 1$ is strictly smaller than all letters in $\Sigma$ and $c_{\max} = \texttt{'z'} + 1$ is strictly larger than all letters in $\Sigma$ (followed by $0$ at $4N+3$). Scan $\operatorname{SA}$ once to count how many $i \in [1, N]$ precede each $j \in [2N+2, 3N+1]$!
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`W2B-14`: `[JSOI2007]` & `ABC 272 F`)
+
+1. **Diagnostic Signal**: Standard Suffix Arrays compare variable-length suffixes up to index $N$, whereas cyclic shifts $S^{(i)}$ wrap around index $N \to 1$ and have fixed length $N$ (with tie-breaking rules on equal shifts).
+2. **Combinatorial Word Invariant**:
+   - **Part A**: If $S = w^d$ is periodic with period $p = N/d$, two shifts $i < j$ with $i \equiv j \pmod p$ satisfy $S^{(i)} = S^{(j)}$ and are periodic with period $p$ all the way to the end of $S \cdot S$. To guarantee $i$ sorts before $j$ when $S^{(i)} = S^{(j)}$, either run `SA-IS` on $S \cdot S[1..N-1]$ using `(char, index)` tie-breaking, or bucket equal length-$N$ prefixes on $S \cdot S \cdot \$$ using $\operatorname{height}[k] \ge N$ and sort each tied bucket by $i$.
+   - **Part B (`ABC 272 F`)**: In $U = S \cdot S \cdot c_{\min} \cdot T \cdot T \cdot c_{\max} \cdot \$$, for any $i \in [1, N]$ and $j \in [1, N]$:
+     - If $S^{(i)} \ne T^{(j)}$, they mismatch within their first $N$ characters, so $\operatorname{suf}_U(i) \lessgtr \operatorname{suf}_U(2N + 1 + j) \iff S^{(i)} \lessgtr T^{(j)}$.
+     - If $S^{(i)} = T^{(j)}$, then $S[i..N] \cdot S[1..N] = S^{(i)} \cdot S[1..i-1]$ and $T[j..N] \cdot T[1..N] = T^{(j)} \cdot T[1..j-1]$ agree for at least $N$ characters (in fact, since $S = S^{(1)}$ and $T = T^{(1)}$ are cyclic shifts of the same string, they agree until $\operatorname{suf}_U(i)$ hits $c_{\min} = \texttt{'a'} - 1$, whereas $\operatorname{suf}_U(2N+1+j)$ has a character in $\Sigma \cup \{c_{\max}\} > c_{\min}$!). Thus $\operatorname{suf}_U(i) < \operatorname{suf}_U(2N + 1 + j) \iff S^{(i)} \le_{\text{lex}} T^{(j)}$!
+3. **Algorithmic Compilation**:
+   - Build `SA-IS` on $U$ of length $4N + 3$ in $O(N)$ time.
+   - Sweep $k = 1 \dots 4N+3$: if $\operatorname{SA}[k] \in [1, N]$, increment `cnt_S++`; if $\operatorname{SA}[k] \in [2N + 2, 3N + 1]$, add `cnt_S` to `ans`.
+4. **Broken-Invariant Counterexample**: Using the same sentinel `#` after both $S \cdot S$ and $T \cdot T$ in `ABC 272 F`: if $S = \texttt{"ab"}$ and $T = \texttt{"ba"}$, then $S^{(1)} = \texttt{"ab"} = T^{(2)}$, yet in $S \cdot S \# T \cdot T \#$, $\operatorname{suf}_U(1) = \texttt{"abab\#..."}$ has `'a'` at offset $2$ while $\operatorname{suf}_U(2N+1+2) = \texttt{"ab\#"}$ has `'#'` at offset $2$, ordering $T^{(2)} < S^{(1)}$ and missing the valid equal pair!
+:::
+
+---
+
+#### Problem 12.4 (`W2B-18`): Fischer's Linear-Time Induced LCP & All-Suffix LCP Sums (`AtCoder ABC 213 F — Common Prefixes`)
+
+- **Self-Contained Mathematical Statement**: Given a string $S[1..N]$ of length $N \le 10^6$, compute for **every** $k = 1, 2, \dots, N$ the sum of Longest Common Prefixes between $\operatorname{suf}(k)$ and all suffixes of $S$:
+  $$\operatorname{Ans}[k] \;=\; \sum_{j=1}^N \operatorname{LCP}\bigl(\operatorname{suf}(k), \, \operatorname{suf}(j)\bigr),$$
+  using $O(N)$ time and tight $O(N)$ memory via `SA-IS` + Induced/Kasai LCP.
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+In Suffix Array order $r = \operatorname{rk}[k]$, the term $j = k$ contributes $N - k + 1$, while $j \ne k$ splits into $l = \operatorname{rk}[j] < r$ (contributing $\min_{l < t \le r} H[t]$) and $l = \operatorname{rk}[j] > r$ (contributing $\min_{r < t \le l} H[t]$).
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant)
+
+As $r$ sweeps from $2$ to $N$, how does the histogram of suffix minimums $m_r(l) = \min_{l < t \le r} H[t]$ ($1 \le l < r$) evolve when $H[r]$ is appended?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+Maintain a monotonic stack of pairs `(height_val, count)` alongside the running sum `cur_sum` of $m_r(l)$. At step $r$, pop pairs with `height_val >= H[r]`, accumulating their `count`s and subtracting `height_val * count` from `cur_sum`, then push `(H[r], total_cnt)` and add `H[r] * total_cnt` to `cur_sum`. Run one forward pass ($r = 1 \to N$) and one backward pass ($r = N \to 1$).
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`AtCoder ABC 213 F`)
+
+1. **Diagnostic Signal**: At $N = 10^6$, we need both $O(N)$ Suffix Array construction (`SA-IS`) and an $O(N)$ two-directional sweep over the adjacent LCP array $H[2..N]$.
+2. **Combinatorial Word Invariant**: By the LCP Interval Identity, for fixed $r = \operatorname{rk}[k]$:
+   $$\operatorname{Ans}[k] \;=\; (N - k + 1) + \sum_{l=1}^{r-1} \min_{l < t \le r} H[t] + \sum_{l=r+1}^{N} \min_{r < t \le l} H[t].$$
+   Both sums are cumulative areas under the step-function of range minimums starting or ending at $r$.
+
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{SA}[1..N]$ and $H[2..N]$ in $O(N)$ time via `SA-IS` (`§4.1`) and Fischer's induced LCP (`Theorem 3.1`) or Kasai's scan.
+   - Sweep $r = 2 \to N$ with a monotonic stack maintaining $\sum_{l=1}^{r-1} \min_{l < t \le r} H[t]$ and add to $\operatorname{Ans}[\operatorname{SA}[r]]$.
+   - Sweep $r = N-1 \to 1$ with a symmetric monotonic stack maintaining $\sum_{l=r+1}^N \min_{r < t \le l} H[t]$ and add to $\operatorname{Ans}[\operatorname{SA}[r]]$.
+   - Add $N - k + 1$ to $\operatorname{Ans}[k]$ for each $k = 1 \dots N$. Total time and space: $O(N)$.
+4. **Broken-Invariant Counterexample**: Using 32-bit `int` for `cur_sum` or `H[r] * total_cnt` overflows on $S = \texttt{a}^{10^6}$ where $\operatorname{Ans}[1] \approx 5 \times 10^{11}$.
+:::
+
+---
+
+### Tier 3: Advanced ($L/S$-Mask Enumeration & Upward Tree Suffix Arrays)
+
+#### Problem 12.5 (`W2B-39`): Counting Valid Strings for a Prescribed SA & $L/S$ Constraints
+
+- **Self-Contained Mathematical Statement**: Given a Suffix Array $\operatorname{SA}[1..N]$ ($N \le 2 \times 10^5$), an alphabet size $\Sigma = \{1, \dots, K\}$ ($K \le 10^9$), and $M \le 2 \times 10^5$ additional equality constraints requiring $S[u_j] = S[v_j]$, count the number of valid strings $S[1..N] \in \{1, \dots, K\}^N$ whose Suffix Array is $\operatorname{SA}[1..N]$ and that satisfy all $M$ constraints, modulo $998244353$.
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+Let $c_k = S[\operatorname{SA}[k]]$ for $k = 1, \dots, N$. In SA order, $1 \le c_1 \le c_2 \le \dots \le c_N \le K$. How do the $\operatorname{rk}$-descent conditions from Problem 12.2 and the equality constraints $S[u_j] = S[v_j]$ restrict the difference array $\Delta_k = c_{k+1} - c_k \ge 0$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant)
+
+Every equality constraint $S[u_j] = S[v_j]$ (with $\operatorname{rk}[u_j] = l < r = \operatorname{rk}[v_j]$) forces $c_l \le c_{l+1} \le \dots \le c_r = c_l$, which means $\Delta_k = 0$ for **all** $k \in [l, r - 1]$! Meanwhile, every $\operatorname{rk}$-descent at $k$ ($\operatorname{rk}[\operatorname{SA}[k]+1] > \operatorname{rk}[\operatorname{SA}[k+1]+1]$) forces $\Delta_k \ge 1$!
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+Mark forced zeros $\Delta_k = 0$ on $[l, r-1]$ via a 1D difference array. If any index $k$ simultaneously has a forced zero ($\Delta_k = 0$) and a forced increment ($\Delta_k \ge 1$), the answer is $0$! Otherwise, let $F_1$ be the number of forced increments ($\Delta_k \ge 1$) and $F_{\text{free}}$ be the number of unconstrained slots ($\Delta_k \ge 0$). How many ways can we choose the remaining $c_N - c_1 \le K - 1$ increments?
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`W2B-39`)
+
+1. **Diagnostic Signal**: Combines the $\operatorname{rk}$-descent characterization (`Lemma 1.1`) with interval equality constraints in SA rank space.
+2. **Combinatorial Word Invariant**: Let $c_k = S[\operatorname{SA}[k]]$. Monotonicity $c_1 \le c_2 \le \dots \le c_N$ means $c_l = c_r$ ($l < r$) forces $\Delta_k = c_{k+1} - c_k = 0$ for every $k \in [l, r-1]$. By Lemma 1.1, $\operatorname{SA}$ is the exact Suffix Array of $S$ iff $\Delta_k \ge 1$ at every $k \in \{1, \dots, N-1\}$ where $\operatorname{rk}[\operatorname{SA}[k]+1] > \operatorname{rk}[\operatorname{SA}[k+1]+1]$.
+3. **Algorithmic Compilation**:
+   - Compute $\operatorname{rk}[1..N]$ and $\operatorname{rk}[N+1] = 0$.
+   - For each constraint $(u_j, v_j)$, let $l = \min(\operatorname{rk}[u_j], \operatorname{rk}[v_j])$ and $r = \max(\operatorname{rk}[u_j], \operatorname{rk}[v_j])$; add $+1$ to a difference array `zero_cov` on $[l, r - 1]$.
+   - Take prefix sums of `zero_cov`. For each $k = 1 \dots N-1$:
+     - Let $\text{req}_k = [\operatorname{rk}[\operatorname{SA}[k]+1] > \operatorname{rk}[\operatorname{SA}[k+1]+1]]$.
+     - If $\text{zero\_cov}[k] > 0$ and $\text{req}_k == 1$, return $0$ (contradiction!).
+   - Let $D = \sum_{k=1}^{N-1} \text{req}_k$ be the number of forced $\Delta_k \ge 1$ positions, and $U = \sum_{k=1}^{N-1} [\text{zero\_cov}[k] == 0]$ be the total number of positions where $\Delta_k$ is allowed to be $> 0$.
+   - By stars-and-bars over $1 \le c_1 \le \dots \le c_N \le K$, substituting $\Delta'_k = \Delta_k - \text{req}_k \ge 0$ on the $U$ active transitions plus $c_1 - 1 \ge 0$ and $K - c_N \ge 0$ gives the exact count:
+     $$\boxed{\operatorname{Ans} \;=\; \binom{K + U - D}{U + 1} \pmod{998244353}}$$
+     (which is $0$ if $K - 1 < D$). Time and space: $O(N + M)$.
+
+4. **Broken-Invariant Counterexample**: Treating $S[u_j] = S[v_j]$ as a graph DSU equality without noticing that in SA order $c_1 \le \dots \le c_N$, $c_l = c_r$ collapses the **entire contiguous interval** $[l, r]$ to a single character!
+:::
+
+---
+
+#### Problem 12.6 (`W2B-43`): Generalized Induced Sorting on Upward Trees (`ICPC WF 2019 D — First of Her Name`)
+
+- **Self-Contained Mathematical Statement**: You are given a rooted tree of $N \le 10^6$ vertices where each vertex $u$ is labeled with a character $C[u] \in \Sigma$. The name of vertex $u$ is the string $\operatorname{str}(u)$ formed by reading characters along the upward path from $u$ to the root ($\operatorname{str}(\text{root}) = C[\text{root}]$, $\operatorname{str}(u) = C[u] \cdot \operatorname{str}(\operatorname{parent}(u))$). Given $Q$ query strings $P_1, \dots, P_Q$ with $\sum |P_q| \le 10^6$, output for each $P_q$ the number of tree vertices $u$ whose name $\operatorname{str}(u)$ has $P_q$ as a prefix.
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+Notice that $\operatorname{str}(u) = C[u] \cdot \operatorname{str}(\operatorname{parent}(u))$ has a **unique right-shift successor** $\operatorname{parent}(u)$, just like $\operatorname{suf}(i) = S[i] \cdot \operatorname{suf}(i+1)$ has unique successor $i+1$! What changes when multiple tree vertices have the *exact same* upward string $\operatorname{str}(u) = \operatorname{str}(v)$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant)
+
+Sort all $N$ tree vertices in lexicographical order of $\operatorname{str}(u)$ (via Upward Tree Induced Sorting or rank-pair doubling), grouping vertices with identical $\operatorname{str}(u)$ into the same equivalence rank $\operatorname{rk}[u]$. In this sorted Tree Suffix Array $\operatorname{SA}_{\text{tree}}[1..N]$, the vertices starting with any prefix $P_q$ form a **single contiguous interval** $[L_q, R_q]$!
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+Even better: once the sorted Tree Suffix Array (or Burrows–Wheeler / Wheeler order of the tree) is built, prepending character $c$ to a contiguous interval of parent ranks $[L, R]$ maps to the contiguous sub-bucket of children $u$ with $C[u] = c$ and $\operatorname{parent}(u) \in \operatorname{SA}_{\text{tree}}[L..R]$! Thus each query $P_q$ can be answered by either binary searching $\operatorname{SA}_{\text{tree}}$ down $P_q[1..|P_q|]$ (moving $\operatorname{parent}$ pointers $d$ steps via level-ancestor / backward BWT LF-mapping) in $O(|P_q| \log N)$ or $O(|P_q|)$ time!
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`ICPC WF 2019 D`)
+
+1. **Diagnostic Signal**: Upward paths on a tree of $N = 10^6$ nodes can have depth $\Theta(N)$, so building an Aho–Corasick automaton on queries works when $\sum |P_q|$ fits in memory, OR we can sort all $N$ upward tree suffixes directly into a **Tree Suffix Array**!
+2. **Combinatorial Word Invariant**: Because every vertex $u$ has a unique parent $\operatorname{parent}(u)$, the upward strings $\operatorname{str}(u) = C[u] \cdot \operatorname{str}(\operatorname{parent}(u))$ satisfy the exact suffix induction property: for any two vertices $u, v$ with $C[u] = C[v] = c$,
+   $$\operatorname{str}(u) \lessgtr \operatorname{str}(v) \;\Longleftrightarrow\; \operatorname{str}(\operatorname{parent}(u)) \lessgtr \operatorname{str}(\operatorname{parent}(v)).$$
+   Moreover, once vertices are sorted into $\operatorname{SA}_{\text{tree}}[1..N]$ with tie-preserving rank $\operatorname{rk}[u]$, the set of vertices $u$ whose upward string starts with $c \cdot W$ is the contiguous interval inside bucket $\mathcal{B}(c)$ whose parents have $\operatorname{str}(\operatorname{parent}(u))$ starting with $W$ (**Backward BWT / LF-Mapping on Trees**)!
+
+3. **Algorithmic Compilation**:
+   - Sort vertices into $\operatorname{SA}_{\text{tree}}[1..N]$ (either by Upward Tree Induction where scanning $v = \operatorname{SA}[k]$ induces all $u \in \operatorname{children}(v)$, or by 20-step tree doubling).
+   - Precompute for each character $c \in \Sigma$ and rank $r$ the prefix count of vertices $u$ with $C[u] = c$ and $\operatorname{rk}[\operatorname{parent}(u)] \le r$.
+   - For each query $P_q$, start with rank interval $[1, R_{\max}]$ and process $P_q$ from **right to left** ($t = |P_q|$ down to $1$), updating $[L, R]$ via the backward LF-mapping in $O(1)$ per character!
+   - **Complexity**: $O(N \log N + \sum |P_q|)$ (or $O(N + \sum |P_q|)$ with Tree `SA-IS`).
+4. **Broken-Invariant Counterexample**: Breaking ties arbitrarily between two sibling leaves $u \ne v$ with $C[u] = C[v]$: if $\operatorname{rk}[u] \ne \operatorname{rk}[v]$, their children with identical characters will be falsely split into separate ranks at the next step! Tied upward paths must receive **identical** $\operatorname{rk}$ values.
+:::
+
+---
+
+### Tier 4: Mastery (Eulerian $\operatorname{rk}$-Descent FPS & $\tau$-Synchronizing Sets)
+
+#### Problem 12.7 (`W2B-42`): `AtCoder AGC 060 D — Same Descent Set`
+
+- **Self-Contained Mathematical Statement**: Given $N \le 2 \times 10^5$, count the number of ordered pairs of permutations $(P, Q)$ of $\{1, 2, \dots, N\}$ such that $P$ and $Q$ have the **exact same descent set** (equivalently, the exact same `SA-IS` $L/S$ type sequence):
+  $$\forall i \in \{1, \dots, N-1\}, \qquad P_i > P_{i+1} \;\Longleftrightarrow\; Q_i > Q_{i+1}.$$
+  Output the count modulo $998244353$ in $O(N \log^2 N)$ time.
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+By Definition 1.1, a permutation's descent set is its $L/S$ type vector $t \in \{L, S\}^{N-1}$. Letting $f(t)$ be the number of permutations of $\{1, \dots, N\}$ with type vector $t$, we want $\sum_{t \in \{L, S\}^{N-1}} f(t)^2$. How can you express $f(t)$ using inclusion–exclusion over maximal runs of $S$'s (ascents)?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant)
+
+Equivalently, apply symmetric inclusion–exclusion directly to the condition $[(P_i < P_{i+1}) = (Q_i < Q_{i+1})]$! Notice that at each boundary $i \in \{1, \dots, N-1\}$:
+$$\bigl[(P_i < P_{i+1}) = (Q_i < Q_{i+1})\bigr] \;=\; \bigl[P_i < P_{i+1} \land Q_i < Q_{i+1}\bigr] + \bigl[P_i > P_{i+1} \land Q_i > Q_{i+1}\bigr].$$
+Even better, use the asymmetric identity: $1 - [P_i < P_{i+1}] - [Q_i < Q_{i+1}] + 2[P_i < P_{i+1} \land Q_i < Q_{i+1}]$!
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+Consider the 4 choices at each boundary $i \in \{1, \dots, N-1\}$ in the expansion of $\prod_{i=1}^{N-1} \bigl(1 - A_i - B_i + 2 A_i B_i\bigr)$ where $A_i = [P_i < P_{i+1}]$ and $B_i = [Q_i < Q_{i+1}]$:
+
+- Choosing $1$ cuts both $P$ and $Q$;
+- Choosing $-A_i$ extends the current increasing run in $P$ while cutting $Q$;
+- Choosing $-B_i$ cuts $P$ while extending the current increasing run in $Q$;
+- Choosing $+2 A_i B_i$ extends both $P$ and $Q$ simultaneously!
+Group into composite blocks between simultaneous cuts (where both $P$ and $Q$ are cut) and invert the Exponential Generating Function via FPS divide-and-conquer / polynomial inversion in $O(N \log^2 N)$ or $O(N \log N)$!
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`AtCoder AGC 060 D`)
+
+1. **Diagnostic Signal**: Requires summing $f(t)^2$ over all $2^{N-1}$ `SA-IS` $L/S$-type masks $t \in \{L, S\}^{N-1}$ for $N = 2 \times 10^5$.
+2. **Combinatorial Word Invariant**: For any $P, Q \in \mathfrak{S}_N$, let $A_i = [P_i < P_{i+1}]$ and $B_i = [Q_i < Q_{i+1}]$. The indicator that $P$ and $Q$ have identical $L/S$ types at index $i$ is:
+   $$I_i \;=\; 1 - A_i - B_i + 2 A_i B_i.$$
+   Indeed: if $A_i = B_i = 0$ ($L$-type in both), $I_i = 1 - 0 - 0 + 0 = 1$; if $A_i = B_i = 1$ ($S$-type in both), $I_i = 1 - 1 - 1 + 2 = 1$; if $A_i \ne B_i$, $I_i = 1 - 1 + 0 = 0$!
+   Expanding $\prod_{i=1}^{N-1} (1 - A_i - B_i + 2 A_i B_i)$ partitions $\{1, \dots, N\}$ into maximal increasing segments of lengths $a_1, a_2, \dots$ in $P$ (giving multinomial factor $\frac{N!}{\prod a_r!}$) and lengths $b_1, b_2, \dots$ in $Q$ (giving $\frac{N!}{\prod b_s!}$)!
+
+3. **Algorithmic Compilation**:
+   - In the bivariate Exponential Generating Function (where a segment of length $L$ in $P$ carries $\frac{1}{L!}$ and a segment of length $M$ in $Q$ carries $\frac{1}{M!}$), a single "irreducible block" between consecutive simultaneous cuts works as follows:
+     - Inside an irreducible block, every interior boundary $i$ uses either $-A_i$ (cuts $Q$, continues $P$), $-B_i$ (cuts $P$, continues $Q$), or $+2 A_i B_i$ (continues both).
+   - Using semi-relaxed / divide-and-conquer NTT (or solving the linear differential/integral system for the current open run length in $P$ or $Q$ via two-step EGF transition), compute the coefficients up to degree $N$ and multiply by $(N!)^2 \bmod 998244353$.
+   - **Complexity**: $O(N \log^2 N)$ time and $O(N)$ space.
+4. **Broken-Invariant Counterexample**: Trying to count $f(t)$ by simple 1D EGF composition $(1 - G(x))^{-1}$ for $f(t)^2$: because $-A_i$ cuts $Q$ without cutting $P$ and $-B_i$ cuts $P$ without cutting $Q$, the cuts in $P$ and $Q$ can **stagger (interleave)**! You must account for staggered cuts via the 2-state open-run transition before closing at a simultaneous cut.
+:::
+
+---
+
+#### Problem 12.8 (`W2B-44`): Sublinear-Density Local Parsing via $\tau$-Synchronizing Sets & Generalized LMS Anchors
+
+- **Self-Contained Mathematical Statement**: Given a string $S[1..N]$ ($N \le 5 \times 10^5$) and a block parameter $\tau \ge 1$, we want to select a set of anchor positions $\mathsf{S} \subseteq \{1, \dots, N - 2\tau + 1\}$ such that:
+  1. **Local Consistency**: Whether $i \in \mathsf{S}$ depends **only** on the length-$2\tau$ window $S[i .. i + 2\tau - 1]$;
+  2. **Guaranteed Window Synchronization**: Every window $[i, i + \tau - 1]$ for which $S[i .. i + 3\tau - 2]$ has shortest period $> \tau / 3$ contains **at least one** anchor $s \in \mathsf{S}$;
+  3. **Sparsity**: On aperiodic regions, $|\mathsf{S}| = O(N / \tau)$.
+  Design a deterministic $O(N)$-time algorithm using `SA-IS` + sliding-window RMQ on $\operatorname{rk}$ to construct $\mathsf{S}$ and answer $Q \le 2 \times 10^5$ Long-Substring LCE / Pattern Matching queries by jumping directly between synchronizing anchors!
+
+::: {.callout-note collapse="true"}
+## Hint 1 (Structural Formulation)
+
+How does `SA-IS` choose LMS positions when $\tau = 1$? An LMS position $i$ is a local minimum of $\operatorname{rk}$ inside a window of size $2$: $\operatorname{rk}[i] < \operatorname{rk}[i-1]$ and $\operatorname{rk}[i] < \operatorname{rk}[i+1]$. How do you generalize local minima of $\operatorname{rk}$ from window size $2$ to window size $\tau + 1$?
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 2 (Combinatorial Invariant — Kempa–Kociumaka 2019)
+
+Assign each length-$\tau$ substring $S[j .. j + \tau - 1]$ its lexicographical identifier $h(j) = \operatorname{rk}[j]$ (or a bijective block rank). For every window $S[i .. i + 2\tau - 1]$ containing the $\tau + 1$ block starts $j \in [i, i + \tau]$, declare $i \in \mathsf{S}$ **if and only if** the minimum block rank $\min_{j \in [i, i + \tau]} h(j)$ is achieved at one of the **two endpoints** $j = i$ or $j = i + \tau$!
+:::
+
+::: {.callout-note collapse="true"}
+## Hint 3 (Algorithmic Compilation)
+
+Why does the endpoint-minimum rule guarantee both density $\le 2 / (\tau + 1)$ and covering? Because as a window $[j_0, j_0 + \tau]$ slides across $[i, i + \tau - 1]$, its internal minimum $j^* = \arg\min_{j \in [i, i + 2\tau - 1]} h(j)$ must act as the right endpoint of $[j^* - \tau, j^*]$ OR the left endpoint of $[j^*, j^* + \tau]$! Maintain the sliding minimum of $h(j)$ over window width $\tau + 1$ using a monotonic deque in $O(N)$ time.
+:::
+
+::: {.callout-tip collapse="true"}
+## Full 4-Step Derivation & Solution (`W2B-44`)
+
+1. **Diagnostic Signal**: LMS positions in `SA-IS` have density $\le 1/2$ ($\tau = 1$). To compress a string by an arbitrary factor $\tau \ge 1$ while preserving local shift consistency, we need **Kempa–Kociumaka $\tau$-Synchronizing Sets** (`STOC 2019`).
+2. **Combinatorial Word Invariant**: Let $h(j)$ be the lexicographical rank of the length-$\tau$ block $S[j .. j + \tau - 1]$ (where distinct blocks receive distinct ranks; if $S[j .. j + \tau - 1]$ is not periodic with period $\le \tau / 3$, no two positions within distance $\le \tau/3$ can share the minimum rank). Define:
+   $$i \in \mathsf{S} \;\Longleftrightarrow\; \min_{j \in [i, \, i + \tau]} h(j) \in \bigl\{h(i), \, h(i + \tau)\bigr\}.$$
+
+   - **Local Consistency**: Depends only on $h(i), \dots, h(i+\tau)$, which depend only on $S[i .. i + 2\tau - 1]$.
+   - **Covering Guarantee**: For any $i$, let $j^* \in [i, i + 2\tau - 1]$ minimize $h(j^*)$. If $j^* \in [i, i + \tau - 1]$, then $j^*$ is the left endpoint of $[j^*, j^* + \tau] \subseteq [i, i + 2\tau - 1]$, so $j^* \in \mathsf{S} \cap [i, i + \tau - 1]$. If $j^* \in [i + \tau, i + 2\tau - 1]$, then $j^* - \tau \in [i, i + \tau - 1]$ has $j^*$ as its right endpoint, so $j^* - \tau \in \mathsf{S} \cap [i, i + \tau - 1]$!
+   - **Sparsity**: Only the global minimum of a $(\tau+1)$-window triggers at most two endpoints, yielding $O(N/\tau)$ anchors on non-periodic regions.
+3. **Algorithmic Compilation**:
+   - Run `SA-IS` + LCP on $S[1..N]$ in $O(N)$ time and assign each length-$\tau$ block $S[j..j+\tau-1]$ its canonical rank $h(j)$ (merging adjacent $\operatorname{SA}$ entries with $\operatorname{height}[k] \ge \tau$, or breaking ties using a Lyndon/periodic rule when $\operatorname{per} > \tau/3$).
+   - Slide a monotonic deque of width $\tau + 1$ over $h[1 .. N - \tau + 1]$ in $O(N)$ time to mark $i \in \mathsf{S}$ whenever $\min_{j \in [i, i+\tau]} h(j) \in \{h(i), h(i+\tau)\}$.
+   - Build a reduced `SA-IS` over the $O(N/\tau)$ synchronizing blocks $S[s_k .. s_{k+1} + 2\tau - 1]$ to answer long LCE and pattern queries in $O(\tau + \text{reduced query})$.
+4. **Broken-Invariant Counterexample**: Using raw suffix rank $\operatorname{rk}[j]$ instead of length-$\tau$-truncated block rank $h(j)$ violates **Local Consistency** (because $\operatorname{rk}[j]$ depends on characters beyond $j + 2\tau - 1$, so two identical windows $S[i_1 .. i_1 + 2\tau - 1] = S[i_2 .. i_2 + 2\tau - 1]$ could make different anchor decisions!).
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Diagnostic Decision Matrix
+
+| Contest Problem Signal | Structural Trap to Avoid | Correct Chapter 12 Engine |
+| :--- | :--- | :--- |
+| Suffix sorting at $N \in [10^6, 10^7]$ or over integer alphabets $\Sigma \subseteq [1..N]$ (`W2B-02`) | $O(N \log N)$ doubling cache thrashing; comparing LMS-substrings by characters only without `type[.]`; iterating forward $k=0\dots m-1$ in Pass 0 | 5-Stage Recursive `SA-IS` (`Contract` in `§4.1`, `Theorem 2.2`) |
+| Reconstructing a string over minimal alphabet $\sigma_{\min}$ from $\operatorname{SA}$, or counting strings with prescribed $\operatorname{SA}$ (`W2B-05`, `W2B-39`) | Setting $\operatorname{rk}[N+1] = N + 1$ instead of $0$; missing that $S[u]=S[v]$ zeroes out the entire interval $[\operatorname{rk}[u], \operatorname{rk}[v]-1]$ | $\operatorname{rk}$-Descent Duality: $\Delta_k \ge 1 \iff \operatorname{rk}[\operatorname{SA}[k]+1] > \operatorname{rk}[\operatorname{SA}[k+1]+1]$ (`Lemma 1.1`) |
+| Sorting cyclic shifts or counting $S^{(i)} \le_{\text{lex}} T^{(j)}$ (`[JSOI2007]`, `ABC 272 F`) | Using the same sentinel `#` after both $S \cdot S$ and $T \cdot T$, which flips equal shifts $T^{(j)} < S^{(i)}$ | Dual sentinels $S \cdot S \cdot (\texttt{'a'}-1) \cdot T \cdot T \cdot (\texttt{'z'}+1)$ (`Problem 12.3`) |
+| Memory-tight $O(N)$ `height` array or all-suffix LCP sums (`ABC 213 F`) | 32-bit overflow on $\Theta(N^2)$ LCP sums | Fischer's Induced LCP (`Theorem 3.1`) + two-pass monotonic stack (`Problem 12.4`) |
+| Prefix queries on upward tree strings $\operatorname{str}(u) = C[u] \cdot \operatorname{str}(\operatorname{parent}(u))$ (`ICPC WF 2019 D`) | Breaking ties arbitrarily between vertices with identical upward strings | Upward Tree Induced Sorting + Backward BWT LF-mapping (`Problem 12.6`) |
+| Counting permutation pairs $(P, Q)$ with identical descent sets (`AGC 060 D`) | Ignoring staggered cuts when $-A_i$ and $-B_i$ interleave | $L/S$ Descent Duality + $1 - A_i - B_i + 2A_i B_i$ EGF divide-and-conquer (`Problem 12.7`) |
+
+### 6.2 Key Invariants Summary
+
+1. **The $\operatorname{rk}$-Descent Duality (`Lemma 1.1`)**: Position $i$ is $L$-type iff $\operatorname{rk}[i] > \operatorname{rk}[i+1]$ (a descent in $\operatorname{rk}$) and $S$-type iff $\operatorname{rk}[i] < \operatorname{rk}[i+1]$ (an ascent in $\operatorname{rk}$), with LMS positions $S^*$ marking the local valleys of $\operatorname{rk}$. In $\operatorname{SA}$ order, $\operatorname{SA}[k]$ and $\operatorname{SA}[k+1]$ can share the same leading character iff $\operatorname{rk}[\operatorname{SA}[k]+1] < \operatorname{rk}[\operatorname{SA}[k+1]+1]$.
+2. **Intra-Bucket $L < S$ Partition (`Lemma 1.2`)**: Inside every character bucket $\mathcal{B}(c)$, all $L$-type suffixes precede $c^\infty$ and all $S$-type suffixes follow $c^\infty$, so $\mathcal{B}_L(c)$ strictly precedes $\mathcal{B}_S(c)$.
+3. **LMS Halving, Linear Overlap & Prefix-Free Homomorphism (`Lemma 2.1`, `Theorem 2.2`)**: There are $m \le \lfloor N/2 \rfloor$ LMS positions with total LMS-substring length $< 2N$, and no LMS-substring is a proper prefix of another under $(S[\cdot], \operatorname{type}(\cdot))$.
+4. **Strict Pointer Monotonicity of `InduceSort` (`§2.3`)**: Pass 1 scans left-to-right because $\operatorname{type}(i-1) = L \implies \operatorname{rk}[i] < \operatorname{rk}[i-1]$; Pass 2 scans right-to-left because $\operatorname{type}(i-1) = S \implies \operatorname{rk}[i] > \operatorname{rk}[i-1]$.

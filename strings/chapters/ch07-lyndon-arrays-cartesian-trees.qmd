@@ -1,0 +1,705 @@
+---
+title: "07 — Lyndon Arrays (λ<, λ>), Double-Order Monotonic Stacks & Min-Cartesian Lyndon Tree Isomorphism"
+subtitle: "Part II · Lyndon Theory, Significant Suffixes & Periodic Runs"
+---
+
+::: {.callout-note icon=false}
+## Chapter Navigation & Dependencies
+
+- **Strict Prerequisites**: [Chapter 05 — Lyndon Words, the Chen–Fox–Lyndon Theorem, Necklaces & Duval's Automaton](ch05-lyndon-factorization-duval-necklaces.qmd). Assumes familiarity with Suffix Arrays ($\operatorname{SA}$, $\operatorname{rk}$, $\operatorname{height}$), $O(1)$ RMQ Longest Common Extension ($\operatorname{LCE}$), and linear-time Cartesian Tree construction.
+- **Assigned Technique IDs**: `T-1B-04` (Lyndon Arrays $\lambda_<, \lambda_>$, Double-Order Monotonic Stacks, Min-Cartesian Lyndon Tree Isomorphism, and Worst-Case $O(\log N)$ Persistent CFL Maintenance).
+- **Core Combinatorial Objects Introduced**:
+  1. **The Lyndon Array ($\lambda[1..N]$ and $R_{\mathcal{L}}[1..N]$)**: For each starting index $i \in [1..N]$, $\lambda[i] = \max\{\ell \ge 1 \mid S[i..i+\ell-1] \in \mathcal{L}\}$ and right endpoint $R_{\mathcal{L}}[i] = i + \lambda[i] - 1$.
+  2. **Next-Smaller-Suffix Identity (`Theorem 7.1`)**: With empty suffix $S[N+1..N] = \varepsilon = -\infty$, the first breaking index $R_{\mathcal{L}}[i] + 1$ equals $\operatorname{nsv}[i] = \min\{j \in [i+1..N+1] \mid S[j..N] < S[i..N]\}$.
+  3. **The Right-Standard Lyndon Tree & Min-Cartesian Tree Isomorphism (`Theorem 7.2`)**: In $\$S[1..N]$, every internal node $S[l..r]$ splits at $m = \arg\min_{j \in [l+1..r]} \operatorname{rk}[j]$, establishing a canonical bijection with the Min-Cartesian Tree of $\operatorname{rk}[2..N+1]$ where Cartesian range $[L_m, R_m]$ represents $S[L_m - 1 .. R_m]$.
+- **Learning Objectives**:
+  - Prove why the longest Lyndon prefix starting at $i$ ends immediately before the first suffix $S[j..N]$ ($j > i$) that is lexicographically smaller than $S[i..N]$.
+  - Construct both $\lambda_<[1..N]$ and $\lambda_>[1..N]$ in $O(N)$ time and avoid the classic **$S = \texttt{bab}$ Negated-Rank Trap** where $-\operatorname{rk}_<[i]$ reverses proper-prefix containment and falsely classifies bordered strings as Lyndon.
+  - Map the recursive Right-Standard Factorization of $\$S[1..N]$ onto the Min-Cartesian Tree of $\operatorname{rk}[2..N+1]$ (accounting for the $-1$ left-index shift) to solve substring Lyndon queries and build the $O(N)$ Lyndon-root seed generator for Chapter 08's Runs Theorem.
+  - Upgrade Duval's amortized $O(1)$ right-append to worst-case $O(\log N)$ per step on persistent version trees via binary lifting on the Lyndon Tree right spine.
+:::
+
+---
+
+## 1. Lyndon Prefixes at Every Index & The Next-Smaller-Suffix Identity
+
+In [Chapter 05](ch05-lyndon-factorization-duval-necklaces.qmd), Duval's three-pointer automaton decomposed the entire string $S[1..N]$ into its unique Chen–Fox–Lyndon (CFL) factorization $S = w_1 w_2 \cdots w_k$ ($w_1 \ge w_2 \ge \cdots \ge w_k$) in $O(N)$ time. By the First-Factor Structural Pillar of the CFL theorem, the very first factor $w_1$ is the **longest Lyndon prefix** of $S[1..N]$.
+
+What if we ask that same question at **every starting position** $i \in \{1, 2, \dots, N\}$ simultaneously?
+
+### Step 1 — The Diagnostic Signal: All-Start Longest Lyndon Prefixes
+
+Many string problems—and most notably Bannai et al.'s $O(N)$ enumeration of all maximal periodic runs (`Runs`, which we prove in [Chapter 08](ch08-runs-theorem-squares-sweep.qmd))—require knowing, for every index $i \in [1..N]$, how far to the right a Lyndon word can extend from $i$:
+
+- **The Lyndon Array ($\lambda[1..N]$)**: For each starting position $i \in [1..N]$, let $\lambda[i]$ be the length of the longest prefix of the suffix $S[i..N]$ that is a Lyndon word:
+  $$
+  \lambda[i] := \max\bigl\{\ell \in [1..N - i + 1] \;\big|\; S[i..i + \ell - 1] \in \mathcal{L}\bigr\}.
+  $$
+
+- **The Right-Endpoint Array ($R_{\mathcal{L}}[1..N]$)**: Equivalently, let $R_{\mathcal{L}}[i] := i + \lambda[i] - 1$ denote the ending index of the longest Lyndon substring starting at $i$.
+
+Running Duval's algorithm independently on each suffix $S[i..N]$ would take $\Theta(N^2)$ time in the worst case (for instance, on $S = \texttt{a}^{N-1}\texttt{b}$, where $\lambda[i] = N - i + 1$ for every $i$). How can we compute the entire array $\lambda[1..N]$ in $O(N)$ time?
+
+### Step 2 — The Combinatorial Word Invariant: Next-Smaller-Suffix Identity
+
+Consider the suffix $S[i..N]$ and factor it into its unique CFL decomposition:
+
+$$
+S[i..N] = w_1 w_2 \cdots w_k, \qquad w_1, \dots, w_k \in \mathcal{L}, \quad w_1 \ge w_2 \ge \cdots \ge w_k.
+$$
+
+We already know from Chapter 05 that $w_1 = S[i..R_{\mathcal{L}}[i]]$ is the longest Lyndon prefix of $S[i..N]$, so $\lambda[i] = |w_1|$ and $w_2$ begins at index $R_{\mathcal{L}}[i] + 1$. Let us compare the full suffix $S[i..N]$ against every shorter suffix $S[j..N]$ for $j \in [i + 1..N + 1]$, where we adopt the standard convention that the empty suffix $S[N + 1..N] = \varepsilon$ has rank $-\infty$ (strictly smaller than every nonempty suffix).
+
+::: {.callout-important}
+## Theorem 7.1 (Next-Smaller-Suffix Identity — Hohlweg & Reutenauer 2003; Franek et al. 2016)
+For every index $i \in [1..N]$, the first position $j > i$ whose suffix $S[j..N]$ is lexicographically smaller than $S[i..N]$ is **precisely** $R_{\mathcal{L}}[i] + 1 = i + \lambda[i]$:
+
+$$
+\operatorname{nsv}[i] := \min\bigl\{j \in [i + 1..N + 1] \;\big|\; S[j..N] < S[i..N]\bigr\} = i + \lambda[i] = R_{\mathcal{L}}[i] + 1.
+$$
+
+Equivalently, in terms of the Inverse Suffix Array $\operatorname{rk}[1..N]$ (with sentinel $\operatorname{rk}[N + 1] = 0$):
+
+$$
+R_{\mathcal{L}}[i] = \min\bigl\{j \in [i + 1..N + 1] \;\big|\; \operatorname{rk}[j] < \operatorname{rk}[i]\bigr\} - 1, \qquad \lambda[i] = \operatorname{nsv}[i] - i.
+$$
+:::
+
+#### Complete Proof (Two-Part Sandwich on $j \in [i + 1..N + 1]$)
+
+Let $S[i..N] = w_1 w_2 \cdots w_k$ ($w_1 \ge w_2 \ge \cdots \ge w_k$) be the unique CFL factorization of $S[i..N]$, where $w_1 = S[i..r_1]$ has right endpoint $r_1 = R_{\mathcal{L}}[i] = i + \lambda[i] - 1$.
+
+1. **Why $S[j..N] > S[i..N]$ for all interior positions $j \in [i + 1..r_1]$**:
+   For any $j \in [i + 1..r_1]$, the substring $v = S[j..r_1]$ is a nonempty proper suffix of the Lyndon word $w_1 = S[i..r_1]$. By the Strong Lexicographical Characterization of Lyndon words (`Theorem 5.1(3)`), $w_1$ is *strongly* smaller than $v$:
+   $$
+   w_1 \prec v \qquad (\text{meaning } w_1 < v \text{ and } w_1 \not\sqsubset v).
+   $$
+   Because strong inequality $\prec$ is resolved at a character mismatch within the length of $v$ and is invariant under arbitrary right-extensions, appending $S[r_1 + 1..N]$ to both sides preserves the inequality:
+   $$
+   S[i..N] = w_1 S[r_1 + 1..N] \prec v S[r_1 + 1..N] = S[j..N] \implies S[i..N] < S[j..N].
+   $$
+   Thus no index $j \in [i + 1..r_1]$ can satisfy $S[j..N] < S[i..N]$, proving $\operatorname{nsv}[i] \ge r_1 + 1$.
+
+2. **Why $S[r_1 + 1..N] < S[i..N]$ at the exact factor boundary $j = r_1 + 1$**:
+   - **Case 2a ($k = 1$, so $r_1 = N$)**: Then $j = N + 1$ and $S[N + 1..N] = \varepsilon < S[i..N]$ by definition.
+   - **Case 2b ($k \ge 2$)**: Group all leading CFL factors equal to $w_1$: suppose $w_1 = w_2 = \cdots = w_q$ ($q \ge 1$), and either $q = k$ or $w_q > w_{q+1}$. Write $U = w_{q+1} \cdots w_k$ (with $U = \varepsilon$ if $q = k$). Then:
+     $$
+     S[i..N] = w_1^q U = w_1^{q-1} (w_1 U), \qquad S[r_1 + 1..N] = w_2 \cdots w_k = w_1^{q-1} U.
+     $$
+     By Left-Cancellation Invariance of lexicographical order, cancelling the common prefix $w_1^{q-1}$ reduces the comparison between $S[r_1 + 1..N]$ and $S[i..N]$ to comparing $U$ against $w_1 U$:
+
+     - If $q = k$, then $U = \varepsilon$ is a proper prefix of $w_1 U = w_1$, so $U < w_1 U \implies S[r_1 + 1..N] < S[i..N]$.
+     - If $q < k$ and $w_1 \succ w_{q+1}$, then the mismatch between $w_{q+1}$ and $w_1$ already decides $U = w_{q+1}\cdots < w_1 U$.
+     - If $q < k$ and $w_{q+1} \sqsubset w_1$ (since $w_1 > w_{q+1}$, it is possible that $w_{q+1}$ is a proper prefix of $w_1$!), suppose for contradiction that $w_1 U \le U$. Since $|w_1 U| > |U|$, we cannot have $w_1 U \sqsubset U$, so we would have $w_1 U \prec U$. That mismatch would occur within $|U|$, and since $w_1$ is Lyndon, taking the first CFL factor of $w_1 U$ would produce a Lyndon prefix of $S[i + (q-1)|w_1|..N]$ strictly longer than $w_q = w_1$, contradicting the uniqueness of the CFL factorization! (Directly: induction on the length of $U$ shows that for any CFL sequence $w_1 > w_{q+1} \ge \cdots \ge w_k$, $w_{q+1} \cdots w_k < w_1 w_{q+1} \cdots w_k$.)
+
+   Therefore $S[r_1 + 1..N] < S[i..N]$ always holds, establishing $\operatorname{nsv}[i] = r_1 + 1 = R_{\mathcal{L}}[i] + 1$. $\blacksquare$
+
+::: {.callout-tip}
+## Corollary: Recovering Any Suffix's CFL Factorization by Jumping Along $\operatorname{nsv}$
+Because the first CFL factor of $S[i..N]$ is $S[i..\operatorname{nsv}[i]-1]$ and the remaining suffix is $S[\operatorname{nsv}[i]..N]$, the complete CFL factorization of **any** suffix $S[i..N]$ is simply the chain of parent jumps in the Next-Smaller-Element tree rooted at $N + 1$:
+
+$$
+i \;\to\; \operatorname{nsv}[i] \;\to\; \operatorname{nsv}[\operatorname{nsv}[i]] \;\to\; \cdots \;\to\; N + 1.
+$$
+:::
+
+---
+
+## 2. Double-Order ($<$ and $>$) Monotonic Stacks & The $S = \texttt{bab}$ Negated-Rank Trap (BP-07)
+
+In Chapter 08, proving and implementing Bannai et al.'s Runs Theorem requires computing the Lyndon array under **both** the standard alphabet order $<_0 = (<)$ and the reversed alphabet order $<_1 = (>)$:
+
+- $\lambda_<[1..N]$ and $R_{\mathcal{L}, <}[1..N]$ under standard alphabet order $a <_0 b \iff a < b$;
+- $\lambda_>[1..N]$ and $R_{\mathcal{L}, >}[1..N]$ under reversed alphabet order $a <_1 b \iff a > b$.
+
+By Theorem 7.1, once we know how to compare two suffixes $S[i..N]$ and $S[j..N]$ in $O(1)$ time, computing $\operatorname{nsv}[1..N]$ is a textbook **Next Smaller Element** scan from $i = N$ down to $1$ using a monotonic stack in $O(N)$ time.
+
+### Step 4 — Boundary Pitfall BP-07 (BP-07-01 / BP-1B-07): The $S = \texttt{bab}$ Negated-Rank Trap (Why $-\operatorname{rk}_<[i]$ Is Fatally Wrong!)
+
+A pervasive and fatal bug in competitive programming implementations of $\lambda_>[1..N]$ (and $O(N)$ Runs enumeration) is attempting to avoid building a second Suffix Array by simply **negating the standard rank array**—setting $\operatorname{rk}_>[i] := -\operatorname{rk}_<[i]$ (or $N + 1 - \operatorname{rk}_<[i]$) and running the Next-Smaller-Element stack!
+
+Why does $-\operatorname{rk}_<[i]$ fail? Let us inspect the two cases in which a suffix $S[j..N]$ ($j > i$) is smaller than $S[i..N]$ under standard order $<_0$:
+
+1. **Case A (Character Mismatch before $N$)**: Let $\ell = \operatorname{LCP}(i, j) < N - j + 1$. Then $S[i + \ell] \ne S[j + \ell]$, and reversing the alphabet flips the inequality:
+   $$
+   S[j + \ell] <_0 S[i + \ell] \iff S[j + \ell] >_1 S[i + \ell].
+   $$
+   On mismatch pairs, negating $\operatorname{rk}_<$ *does* correctly reverse the order!
+
+2. **Case B (Proper Prefix Containment — $S[j..N] \sqsubset S[i..N]$)**: Suppose $\ell = \operatorname{LCP}(i, j) = N - j + 1$ (which happens whenever $S[j..N]$ is a proper prefix and therefore a **proper border** of $S[i..N]$!). What is the lexicographical relation between a proper prefix $U = S[j..N]$ and a longer string $V = S[i..N]$ under **any** alphabet order?
+   Because $U$ runs out of characters at the end-of-string sentinel $\varepsilon = -\infty$, **a proper prefix is ALWAYS strictly smaller than the full string under BOTH $<_0$ and $<_1$**:
+   $$
+   S[j..N] \sqsubset S[i..N] \implies S[j..N] <_0 S[i..N] \quad \textbf{AND} \quad S[j..N] <_1 S[i..N]!
+   $$
+   When you negate $\operatorname{rk}_<[i]$, you reverse Case B as well, falsely pretending that the end-of-string sentinel $\varepsilon$ became $+\infty$ instead of $-\infty$!
+
+::: {.callout-caution}
+## Hand-Checked Broken-Invariant Counterexample: $S = \texttt{bab}$ ($N = 3$)
+Let $S[1..3] = \texttt{bab}$ over $\Sigma = \{\texttt{a} < \texttt{b}\}$. The three suffixes are:
+
+- $i = 1$: $S[1..3] = \texttt{bab}$
+- $i = 2$: $S[2..3] = \texttt{ab}$
+- $i = 3$: $S[3..3] = \texttt{b}$
+
+Under standard order $<_0$, the sorted suffixes are $\texttt{ab} (2) <_0 \texttt{b} (3) <_0 \texttt{bab} (1)$, so:
+
+$$
+\operatorname{rk}_<[1..3] = [3, 1, 2].
+$$
+
+Now consider index $i = 1$ ($S[1..3] = \texttt{bab}$) under the reversed alphabet order $<_1 = (>)$ where $\texttt{b} <_1 \texttt{a}$:
+
+- **What is the true longest $>-$Lyndon prefix starting at $i = 1$?**
+  Notice that $S[1..3] = \texttt{bab}$ has a nonempty proper border $\texttt{b}$ of length $1$! By Theorem 5.1(3), a Lyndon word is **unbordered** under *every* alphabet order; therefore $\texttt{bab}$ CANNOT be a $>-$Lyndon word! Its longest $>-$Lyndon prefix is $S[1..2] = \texttt{ba}$ ($\lambda_>[1] = 2$, $R_{\mathcal{L}, >}[1] = 2$).
+  Indeed, under $(>, -\infty)$, the suffixes are ordered as:
+  $$
+  S[3..3] = \texttt{b} \;<_1\; S[1..3] = \texttt{bab} \;<_1\; S[2..3] = \texttt{ab},
+  $$
+  because $S[3..3] = \texttt{b}$ is a proper prefix of $S[1..3] = \texttt{bab}$! Thus $\operatorname{nsv}_>[1] = 3$ and $\lambda_>[1] = 3 - 1 = 2$.
+
+- **What happens if you naively negate $\operatorname{rk}_<$ to $[-\operatorname{rk}_<] = [-3, -1, -2]$?**
+  The negated rank claims that $i = 1$ has rank $-3 < -1 < -2$, making $i = 1$ smaller than both $j = 2$ and $j = 3$! The monotonic stack outputs $\operatorname{nsv}_{\text{fake}}[1] = 4$ and $\lambda_{\text{fake}}[1] = 3$, **falsely declaring the bordered word $\texttt{bab}$ to be a Lyndon word**!
+:::
+
+### Step 3 — Reverse-Engineering Scratchpad: Two Exact $O(N)$ Fixes for Double-Order Lyndon Arrays
+
+To compute both $\lambda_<[1..N]$ and $\lambda_>[1..N]$ without falling into the $S = \texttt{bab}$ trap, use either of two exact $O(N)$ methods:
+
+1. **Method 1 (Character-Inverted Second Suffix Array)**:
+   Construct a second string $\overline{S}[1..N]$ by inverting each character $c \mapsto |\Sigma| + 1 - c$ while **keeping the end-of-string sentinel at $0 = -\infty$**, and build its Suffix Array $\operatorname{rk}_>[1..N]$. Then standard integer comparison $\operatorname{rk}_>[j] < \operatorname{rk}_>[i]$ handles both character mismatches and proper prefixes exactly.
+
+2. **Method 2 (Single Suffix Array + $O(1)$ LCE Comparator in the Monotonic Stack)**:
+   Build only a single Suffix Array + LCP RMQ table on $S$. In the monotonic stack for order $\prec \in \{<, >\}$, compare $S[j..N]$ vs. $S[i..N]$ ($i < j$) via a 3-line $O(1)$ LCE function:
+
+   - Let $\ell = \operatorname{LCP}(i, j)$.
+   - If $j + \ell > N$ (since $i < j$, $S[j..N]$ is a proper prefix of $S[i..N]$): return $S[j..N] <_\prec S[i..N] = \texttt{true}$ under **both** orders!
+   - Otherwise, return $S[j + \ell] \prec S[i + \ell]$.
+
+Let us trace both $\lambda_<[1..N]$ and $\lambda_>[1..N]$ on a complete hand-checkable example.
+
+### Hand-Checked Trace on $S = \texttt{abaababa}$ ($N = 8$)
+
+Let $S[1..8] = \texttt{abaababa}$. Below are the suffix ranks under $<_0 = (<)$ and $<_1 = (>)$, together with $\operatorname{nsv}$, $R_{\mathcal{L}}$, and $\lambda$:
+
+| $i$ | $S[i..8]$ | $\operatorname{rk}_<[i]$ | $\operatorname{nsv}_<[i]$ | $\lambda_<[i]$ ($S[i..R_{\mathcal{L},<}[i]]$) | $\operatorname{rk}_>[i]$ | $\operatorname{nsv}_>[i]$ | $\lambda_>[i]$ ($S[i..R_{\mathcal{L},>}[i]]$) |
+| :---: | :--- | :---: | :---: | :--- | :---: | :---: | :--- |
+| $1$ | $\texttt{abaababa}$ | $4$ | $3$ | $2$ ($\texttt{ab}$) | $5$ | $2$ | $1$ ($\texttt{a}$) |
+| $2$ | $\texttt{baababa}$ | $6$ | $3$ | $1$ ($\texttt{b}$) | $4$ | $5$ | $3$ ($\texttt{baa}$) |
+| $3$ | $\texttt{aababa}$ | $2$ | $8$ | $5$ ($\texttt{aabab}$) | $6$ | $4$ | $1$ ($\texttt{a}$) |
+| $4$ | $\texttt{ababa}$ | $5$ | $6$ | $2$ ($\texttt{ab}$) | $4'$ ($> \operatorname{rk}_>[2]$) | $5$ | $1$ ($\texttt{a}$) |
+| $5$ | $\texttt{baba}$ | $8$ | $6$ | $1$ ($\texttt{b}$) | $3$ | $7$ | $2$ ($\texttt{ba}$) |
+| $6$ | $\texttt{aba}$ | $3$ | $8$ | $2$ ($\texttt{ab}$) | $2'$ ($> \operatorname{rk}_>[8]$) | $7$ | $1$ ($\texttt{a}$) |
+| $7$ | $\texttt{ba}$ | $7$ | $8$ | $1$ ($\texttt{b}$) | $2$ | $9$ | $2$ ($\texttt{ba}$) |
+| $8$ | $\texttt{a}$ | $1$ | $9$ | $1$ ($\texttt{a}$) | $1$ | $9$ | $1$ ($\texttt{a}$) |
+
+Notice how at $i = 4$ ($S[4..8] = \texttt{ababa}$) and $j = 6$ ($S[6..8] = \texttt{aba}$), $S[6..8] \sqsubset S[4..8]$, so $S[6..8] < S[4..8]$ holds under **both** $<$ and $>$.
+
+---
+
+## 3. Core Combinatorial Word Invariants: The Lyndon Tree & Min-Cartesian Tree Isomorphism
+
+In [Chapter 05 (`Theorem 5.1(4)`)](ch05-lyndon-factorization-duval-necklaces.qmd), we proved the recursive characterization of Lyndon words: a word $w$ of length $|w| \ge 2$ is a Lyndon word if and only if it can be split into two nonempty Lyndon words $w = u v$ with $u < v$.
+
+Because a long Lyndon word can admit several valid Lyndon splits (for example, $\texttt{aab} = (\texttt{a})(\texttt{ab}) = (\texttt{aa})\text{---invalid}$, or $\texttt{aabab} = (\texttt{a})(\texttt{abab}) = (\texttt{aab})(\texttt{ab})$), we make the split canonical by selecting the **Right-Standard Factorization**.
+
+### Definition 7.1 (Right-Standard Factorization & The Lyndon Tree)
+
+For any Lyndon word $w \in \mathcal{L}$ of length $|w| \ge 2$, its **Right-Standard Factorization** is the unique split $w = u v$ ($u, v \in \mathcal{L}$, $u < v$) where $v$ is the **longest nonempty proper suffix of $w$ that is a Lyndon word**.
+
+By Theorem 5.2(2) of Chapter 05 (applied to $w[2..|w|]$), the longest Lyndon suffix of $w[2..|w|]$ is simultaneously the **lexicographically smallest nonempty proper suffix of $w$**!
+
+To build a single unified tree for an arbitrary string $S[1..N]$ (which may not itself be a Lyndon word), prepend a global sentinel character $\$ = S[0] = -\infty$ strictly smaller than all characters in $\Sigma$. Then the augmented string
+
+$$
+\widetilde{S}[0..N] = \$ S[1..N]
+$$
+
+is guaranteed to be a Lyndon word of length $N + 1$! Recursively applying the Right-Standard Factorization to $\widetilde{S}[0..N]$ until reaching single-character leaves $[i..i]$ produces a full binary tree with $N + 1$ leaves and $N$ internal nodes called the **Lyndon Tree** of $S$.
+
+### Step 2 — Why the Lyndon Tree Is Isomorphic to the Min-Cartesian Tree of $\operatorname{rk}$
+
+How do we find the Right-Standard Factorization split point $m \in [l + 1..r]$ (where $S[l..r]$ splits into $u = S[l..m-1]$ and $v = S[m..r]$) for every internal node in $O(N)$ total time?
+
+Look closely at how $v = S[m..r]$ is defined: among all nonempty proper suffixes $S[j..r]$ ($j \in [l + 1..r]$) of the Lyndon word $S[l..r]$, $S[m..r]$ is the **lexicographically smallest** one. Normally, comparing two substrings $S[j_1..r]$ and $S[j_2..r]$ truncated at $r$ is *not* the same as comparing their global Suffix Array ranks $\operatorname{rk}[j_1]$ and $\operatorname{rk}[j_2]$ (because one could be a prefix of the other up to $r$).
+
+**Why can a proper suffix $S[j_2..r]$ NEVER be a prefix of $S[j_1..r]$ ($l < j_1 < j_2 \le r$) inside a Lyndon word $S[l..r]$?**
+Rather than comparing arbitrary pairs $(j_1, j_2)$, compare any proper suffix $S[j..r]$ ($l < j \le r$) directly against the **optimal** suffix $S[m..r]$! Since $S[m..r]$ is the longest Lyndon suffix of $S[l+1..r]$, it is the **last CFL factor** of $S[l+1..r]$. By Theorem 7.1 (applied at $m$), $S[m..r]$ is a Lyndon word and every suffix inside $[m+1..r]$ is *strongly* larger than $S[m..r]$ ($S[m..r] \prec S[j..r]$ for all $j \in [m+1..r]$), while for any $j \in [l+1..m-1]$, $S[m..N] < S[j..N]$ holds globally in the Suffix Array!
+
+Let us state and prove this exact isomorphism.
+
+::: {.callout-important}
+## Theorem 7.2 (Min-Cartesian Tree Isomorphism of the Lyndon Tree — Barcelo 1990; Bannai et al. 2017)
+Let $\widetilde{S}[1..N+1] = \$ S[1..N]$ (using 1-based indexing on $\widetilde{S}$ so $\widetilde{S}[1] = \$$ and $\widetilde{S}[k] = S[k-1]$ for $k \in [2..N+1]$), and let $\operatorname{rk}[1..N+1]$ be its Inverse Suffix Array.
+
+1. **(Exact Split-Point Formula)**: For every internal Lyndon node $\widetilde{S}[l..r]$ ($1 \le l < r \le N + 1$) generated by recursive Right-Standard Factorization of $\widetilde{S}[1..N+1]$, the split point $m \in [l + 1..r]$ (splitting $\widetilde{S}[l..r]$ into left child $\widetilde{S}[l..m-1]$ and right child $\widetilde{S}[m..r]$) is given by the global Suffix Array minimum:
+   $$
+   m = \arg\min_{j \in [l + 1..r]} \operatorname{rk}[j].
+   $$
+2. **(Min-Cartesian Tree Bijection & The $-1$ Left-Index Shift)**: Consequently, the $N$ internal nodes of the Lyndon Tree of $\widetilde{S}[1..N+1]$ are **canonically isomorphic to the Min-Cartesian Tree built on the array $\operatorname{rk}[2..N+1]$**:
+   - The Cartesian node at index $m \in [2..N+1]$ whose Cartesian subtree spans the index interval $[L_m, R_m] \subseteq [2..N+1]$ corresponds to the Lyndon Tree internal node spanning
+     $$
+     \widetilde{S}[L_m - 1 .. R_m],
+     $$
+     which splits at $m$ into left child $\widetilde{S}[L_m - 1 .. m - 1]$ and right child $\widetilde{S}[m .. R_m]$.
+3. **(Right-Child Right-Maximality)**: For every Cartesian node $m \in [2..N+1]$, its right boundary $R_m$ in the Min-Cartesian Tree of $\operatorname{rk}[2..N+1]$ is the last index before the first element to the right of $m$ with $\operatorname{rk}[j] < \operatorname{rk}[m]$. Therefore, **every right child $\widetilde{S}[m..R_m]$ in the Lyndon Tree is a right-maximal Lyndon word starting at $m$**:
+   $$
+   R_m = R_{\mathcal{L}}[m] = m + \lambda[m] - 1!
+   $$
+:::
+
+#### Proof of Theorem 7.2
+
+Let $\widetilde{S}[l..r]$ be any node in the Lyndon Tree built by top-down Cartesian splitting $m = \arg\min_{j \in [l+1..r]} \operatorname{rk}[j]$ starting from $[1..N+1]$. By definition of the Min-Cartesian Tree on $\operatorname{rk}[2..N+1]$, for any node $m$ with Cartesian span $[L_m, R_m]$, the element immediately to the right of $R_m$ (namely $R_m + 1$, if $R_m \le N$) satisfies $\operatorname{rk}[R_m + 1] < \operatorname{rk}[m]$, while every $j \in [m + 1..R_m]$ satisfies $\operatorname{rk}[j] > \operatorname{rk}[m]$.
+
+By Theorem 7.1, this means $R_m + 1 = \operatorname{nsv}[m]$, so $\widetilde{S}[m..R_m]$ is **always** the longest Lyndon prefix starting at $m$! In particular, at the root ($[l..r] = [1..N+1]$), the right spine $m_1 < m_2 < \cdots < m_k$ selected by repeated minimum rank in $[l+1..r]$ traces the exact CFL factorization of $S[1..N] = w_1 w_2 \cdots w_k$ backwards from $w_k$ to $w_1$, and inside each factor $\widetilde{S}[l..r]$, $m = \arg\min_{j \in [l+1..r]} \operatorname{rk}[j]$ selects the longest proper Lyndon suffix $\widetilde{S}[m..r]$ because no $j \in [l+1..m-1]$ can start a Lyndon suffix extending to $r$ (since $\operatorname{nsv}[j] \le m \le r$). $\blacksquare$
+
+```{mermaid}
+flowchart TD
+    Root["Node m=2 ($a b a b)<br/>Cartesian span [2..5] -> String [1..5] = $abab"] --> L1["Leaf [1..1] = $"]
+    Root --> R1["Node m=4 (a b a b)<br/>Cartesian span [3..5] -> String [2..5] = abab"]
+    R1 --> L2["Node m=3 (a b)<br/>Cartesian span [3..3] -> String [2..3] = ab"]
+    R1 --> R2["Node m=5 (a b)<br/>Cartesian span [5..5] -> String [4..5] = ab"]
+    L2 --> L2a["Leaf [2..2] = a"]
+    L2 --> L2b["Leaf [3..3] = b"]
+    R2 --> R2a["Leaf [4..4] = a"]
+    R2 --> R2b["Leaf [5..5] = b"]
+```
+
+::: {.callout-warning}
+## Implementation Pitfall BP-07-02 (BP-1B-08): Don't Forget the $-1$ Left-Endpoint Shift!
+In the Min-Cartesian Tree of $\operatorname{rk}[2..N+1]$ (or $\operatorname{rk}[1..N]$ in 1-based $S$ where $\widetilde{S}[0] = \$$), node $m$ is the **midpoint** (the start of the *right* child $v = S[m..R_m]$), NOT the left endpoint of $w = uv$!
+
+- Cartesian range $[L_m, R_m]$ means $\operatorname{rk}[m] = \min_{j \in [L_m..R_m]} \operatorname{rk}[j]$.
+- The Lyndon word formed at node $m$ spans **$S[L_m - 1 .. R_m]$**: its left child is $S[L_m - 1 .. m - 1]$ and its right child is $S[m .. R_m]$.
+:::
+
+---
+
+## 4. Reverse-Engineering Scratchpad, Persistent $O(\log N)$ CFL Maintenance & Boundary Pitfalls (BP-07 / BP-07-01–BP-07-03)
+
+Duval's three-pointer algorithm maintains the CFL factorization online in $O(1)$ *amortized* time per appended character, but a single step can take $\Theta(N)$ worst-case time: on $S = \texttt{a}^{N-1}$, appending $\texttt{b}$ triggers Case 2 and collapses $N - 1$ separate CFL factors $\texttt{a} \ge \texttt{a} \ge \cdots \ge \texttt{a}$ into a single Lyndon word $\texttt{a}^{N-1}\texttt{b}$.
+
+If a problem gives a **persistent version tree** of character appends (`v = append(u, c)`), an adversary can repeatedly branch from $u = \texttt{a}^{N-1}$ by appending $\texttt{b}$ in $Q$ separate queries, forcing Duval's naive state to spend $\Theta(NQ)$ time!
+
+### Right-Spine Run-Length CFL Stack + Binary Lifting
+
+How do we achieve **worst-case $O(\log N)$** (or $O(\log^2 N)$ with tree-hash LCE) time per persistent append?
+
+Look at the right spine of the Lyndon Tree of $\$S[1..r]$: as proved in Theorem 7.2, the sequence of left-child subtrees hanging off the right spine from top to bottom is the exact CFL factorization of $S[1..r]$. If we group identical adjacent CFL factors into **power blocks**:
+
+$$
+S[1..r] = w_1^{d_1} w_2^{d_2} \cdots w_m^{d_m}, \qquad w_1 > w_2 > \cdots > w_m, \quad w_t \in \mathcal{L}, \; d_t \ge 1,
+$$
+
+then appending a single character $c = S[r+1]$ pushes a new block $(v = c, 1)$ at the bottom of the stack and repeatedly merges the last block $v$ with the preceding power block $(u, d) = (w_m, d_m)$ whenever $u < v$:
+
+$$
+(u, d) + (v, 1) \;\longrightarrow\; (u^d v,\; 1) \qquad (\text{a single Lyndon word by Theorem 5.1(4)!}).
+$$
+
+Why does collapsing an entire power block $(u, d)$ with $v$ in one step still not immediately guarantee $O(\log N)$ merges?
+
+- **Halving Case ($d|u| \le |v|$)**: Whenever $d|u| \le |v|$, the merged Lyndon word $v_{\text{new}} = u^d v$ has length $|v_{\text{new}}| = d|u| + |v|$ which either doubles the preceding suffix or at the next merge step (when $v_{\text{new}}$ merges with an even earlier block) has $|v_{\text{new}}| \ge 2 d|u|$. This can happen at most $\lfloor \log_2 r \rfloor + 1$ times!
+- **Long-Left-Block Case ($d|u| > |v|$)**: What if a chain of blocks $(u_t, d_t)$ each have $d_t |u_t| > |v|$ and all satisfy $u_t < v$? Notice that because $w_1 > w_2 > \cdots > w_m$ is **strictly decreasing** lexicographically, the condition $w_t < v_{\text{current}}$ is **monotonic** along the stack whenever $w_t \not\sqsubset v_{\text{current}}$! Even better: if $u < v$ and $d|u| > |v|$, then $u \not\sqsubset v$ is **guaranteed** because $|u| > |v|/d$ (if $|u| > |v|$) or $u^d$ is longer than $v$; in fact, if $|u| > |v|$, $u < v$ implies $u \prec v$ (strong inequality!), which means $v < u^d v < v_{\text{first}|v|\text{ chars}}$ keeps the first $|v|$ characters of $u^d v$ strictly smaller than $v$, or we can binary-lift up the persistent stack to find how many blocks collapse in $O(\log N)$ steps!
+
+### Algorithmic Contract: Double-Order Lyndon Arrays & Lyndon Tree
+
+::: {.callout-note icon=false}
+## Algorithmic Contract (`T-1B-04`)
+
+- **Input**: A 1-indexed string $S[1..N]$ over an integer alphabet $\Sigma = \{1, \dots, \sigma\}$.
+- **Output**:
+  1. $\lambda_<[1..N]$ and $\lambda_>[1..N]$: longest Lyndon prefix lengths under $<$ and $>$.
+  2. `left_child[1..N]`, `right_child[1..N]`, and node spans $[L_m - 1, R_m]$ of the Lyndon Tree of $\$S[1..N]$.
+- **Preconditions**:
+  - Suffix Array $\operatorname{rk}_<[1..N]$ is built on $S$, and $\operatorname{rk}_>[1..N]$ is built on $\overline{S}[i] = \sigma + 1 - S[i]$ (with end-of-string sentinel $0 < 1$, **never** $-\operatorname{rk}_<[i]$!).
+- **Complexity**:
+  - $O(N)$ time and $O(N)$ auxiliary space beyond the Suffix Array.
+:::
+
+---
+
+## 5. Worked Problem Set (The 4-Tier Smooth Difficulty Ladder)
+
+Every problem below is self-contained, excludes bare template verifications (such as Library Checker `Lyndon Factorization` or `CF Gym 103102I`), and provides progressive 3-stage hints alongside a complete 4-Step Zero-Magic derivation.
+
+---
+
+### Tier 1 — Stepping Stone (2 Problems)
+
+#### Problem 7.1 (`W1B-12`): Double-Order Lyndon Array Reconstruction & Minimum Alphabet Realization
+
+- **Source**: Universal Cup / QOJ String Combinatorics Archive (`[EN]`/`[ZH]`).
+- **Inline Mathematical Statement & Constraints**:
+  You are given an integer array $\lambda[1..N]$ ($1 \le N \le 5 \times 10^5$, $1 \le \lambda[i] \le N - i + 1$). Determine whether there exists a string $S[1..N]$ over some ordered alphabet $(\Sigma, <)$ whose Lyndon array under $<$ is **exactly** $\lambda[1..N]$. If a valid string exists, find the minimum required alphabet size $\sigma = |\Sigma|$ and output the lexicographically smallest valid string $S[1..N]$. Time limit: $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+By Theorem 7.1, $\operatorname{nsv}[i] = i + \lambda[i]$ must be the first index $j > i$ with $\operatorname{rk}[j] < \operatorname{rk}[i]$. What geometric property must the intervals $[i, i + \lambda[i] - 1]$ satisfy for $\operatorname{nsv}[1..N]$ to come from *any* array of numbers $\operatorname{rk}[1..N]$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Two intervals $[i, R_{\mathcal{L}}[i]]$ and $[j, R_{\mathcal{L}}[j]]$ ($i < j \le R_{\mathcal{L}}[i]$) can **never cross properly**: if $j \le R_{\mathcal{L}}[i]$, then $\operatorname{rk}[j] > \operatorname{rk}[i]$, and since $\operatorname{rk}[R_{\mathcal{L}}[i]+1] < \operatorname{rk}[i] < \operatorname{rk}[j]$, the next smaller suffix after $j$ must occur at or before $R_{\mathcal{L}}[i] + 1$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Once the intervals $[i, R_{\mathcal{L}}[i]]$ form a laminar forest, reconstruct the canonical permutation $\operatorname{rk}[1..N]$ (and $\operatorname{SA}[1..N]$) by traversing the Next-Smaller-Element tree and breaking ties between left-to-right siblings in decreasing order of rank so $\operatorname{rk}[\operatorname{nsv}[i]] < \operatorname{rk}[i]$. Then greedily assign characters along $\operatorname{SA}[1..N]$ using the classical Suffix Array inverse condition $\operatorname{rk}[\operatorname{SA}[t-1]+1] > \operatorname{rk}[\operatorname{SA}[t]+1]$.
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   We are asked to invert Theorem 7.1: instead of computing $\lambda[i] = \operatorname{nsv}[i] - i$ from $S$, we must test whether $\operatorname{nsv}[i] = i + \lambda[i]$ is realizable by a valid Suffix Array $\operatorname{SA}[1..N]$ and find the minimal alphabet size.
+
+2. **Step 2 — Combinatorial Word Invariant**:
+   - **Laminarity Condition**: For $\operatorname{nsv}[i] = i + \lambda[i]$ to be the Next-Smaller-Element array of a permutation $\operatorname{rk}[1..N]$, it is necessary and sufficient that $\operatorname{nsv}[i] \in [i + 1..N + 1]$ and for all $1 \le i < j < \operatorname{nsv}[i]$, we have $\operatorname{nsv}[j] \le \operatorname{nsv}[i]$.
+   - **Canonical Suffix Rank Permutation**: If we order siblings under the same parent $p = \operatorname{nsv}[i]$ from left to right as $i_1 < i_2 < \cdots < i_k < p$, we need $\operatorname{rk}[i_1] \ge \operatorname{rk}[i_2] \ge \cdots \ge \operatorname{rk}[i_k] > \operatorname{rk}[p]$ while every descendant of $i_t$ (lying in $[i_t + 1 .. i_{t+1} - 1]$) has rank strictly larger than $\operatorname{rk}[i_t]$. Because $\operatorname{rk}[1..N]$ is a strict permutation (no two suffixes have equal rank), this forces the exact relative order $\operatorname{rk}[i_1] > \operatorname{rk}[i_2] > \cdots > \operatorname{rk}[i_k] > \operatorname{rk}[p]$! Thus a valid laminar $\lambda[1..N]$ **uniquely determines the entire Suffix Array $\operatorname{SA}[1..N]$ and $\operatorname{rk}[1..N]$**!
+3. **Step 3 — Algorithmic Compilation**:
+   - Verify laminarity in $O(N)$ time using a stack of active right endpoints $R_{\mathcal{L}}[i] = i + \lambda[i] - 1$.
+   - Build the tree where each $i \in [1..N]$ has parent $p = i + \lambda[i] \in [2..N+1]$. Perform a post-order traversal (visiting children of $p$ in **decreasing** order of index $i_k, \dots, i_1$ and outputting each node *before* its children in pre-order of rank) to produce $\operatorname{SA}[1..N]$ and $\operatorname{rk}[1..N]$ in $O(N)$ time.
+   - Reconstruct the lexicographically smallest string $S[1..N]$ from $\operatorname{SA}[1..N]$ in $O(N)$ time: set $S[\operatorname{SA}[1]] = 1$, and for $t = 2 \dots N$, set
+     $$
+     S[\operatorname{SA}[t]] = S[\operatorname{SA}[t-1]] + \bigl[\operatorname{rk}[\operatorname{SA}[t-1] + 1] > \operatorname{rk}[\operatorname{SA}[t] + 1]\bigr],
+     $$
+     where $\operatorname{rk}[N + 1] = 0$. The minimum alphabet size is $\sigma = S[\operatorname{SA}[N]]$.
+
+4. **Step 4 — Boundary Pitfalls**:
+   Always run the monotonic stack check first: if $\lambda[i] < 1$ or $i + \lambda[i] > N + 1$ or an inner interval extends past an outer interval ($j + \lambda[j] > i + \lambda[i]$ for $i < j < i + \lambda[i]$), output `Impossible` immediately in $O(N)$ time.
+:::
+
+---
+
+#### Problem 7.2 (`W1B-14`): Right-Standard Factorization & Lyndon Tree Traversal Verification
+
+- **Source**: JOI / Luogu P5353 Style Lyndon Tree Foundations (`[JA]`/`[ZH]`).
+- **Inline Mathematical Statement & Constraints**:
+  Given a string $S[1..N]$ ($N \le 10^6$), prepend $S[0] = \$$ and construct its Right-Standard Lyndon Tree of $2N + 1$ nodes. For every internal node $u$ representing the Lyndon substring $S[l_u..r_u]$ with standard factorization $S[l_u..r_u] = S[l_u..m_u-1] + S[m_u..r_u]$, output the XOR sum of $(l_u \oplus m_u \oplus r_u)$ and verify how many internal nodes are right-maximal Lyndon substrings of $S$. Time limit: $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Do not search for the longest Lyndon suffix $S[m_u..r_u]$ by string comparisons at each node. Use Theorem 7.2 (Min-Cartesian Tree Isomorphism).
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Build the Min-Cartesian Tree on $\operatorname{rk}[1..N]$ in $O(N)$ time using a standard right-spine monotonic stack.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Remember the $-1$ left shift: if node $m \in [1..N]$ has Cartesian subtree span $[L_m, R_m]$, then the corresponding Lyndon Tree node is $S[L_m - 1 .. R_m]$ with split midpoint $m$. And by Theorem 7.2(3), every right child $S[m..R_m]$ is automatically right-maximal!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   Explicit recursive splitting takes $\Theta(N^2)$ if done naively, whereas Theorem 7.2 maps the entire recursion to a single Min-Cartesian Tree over $\operatorname{rk}[1..N]$.
+2. **Step 2 — Combinatorial Word Invariant**:
+   In $\widetilde{S}[0..N] = \$S[1..N]$, every proper suffix starting at $j \in [1..N]$ has $\widetilde{S}[0..N] \prec \widetilde{S}[j..N]$. By Theorem 7.2, the Right-Standard Factorization of any node $\widetilde{S}[l..r]$ splits at $m = \arg\min_{j \in [l+1..r]} \operatorname{rk}[j]$.
+3. **Step 3 — Algorithmic Compilation**:
+   - Build $\operatorname{rk}[1..N]$ in $O(N)$ time.
+   - Build the Min-Cartesian Tree of $\operatorname{rk}[1..N]$ in $O(N)$ time via a single left-to-right stack pass.
+   - Perform a bottom-up pass on the $N$ Cartesian nodes to compute $L_m = \min(\text{subtree of } m)$ and $R_m = \max(\text{subtree of } m)$. Then node $m$ represents $\widetilde{S}[L_m - 1 .. R_m]$ with midpoint $m$.
+4. **Step 4 — Boundary Pitfalls**:
+   The root of the Min-Cartesian Tree of $\operatorname{rk}[1..N]$ has $L_{\text{root}} = 1$ and $R_{\text{root}} = N$, so with the $-1$ left shift it represents $\widetilde{S}[0..N] = \$S[1..N]$ (left child $\widetilde{S}[0..m_{\text{root}}-1]$, right child $\widetilde{S}[m_{\text{root}}..N]$). Only nodes with $L_m - 1 \ge 1$ (i.e., $L_m \ge 2$) are pure substrings of $S[1..N]$ without the leading $\$$.
+:::
+
+---
+
+### Tier 2 — Intermediate (2 Problems)
+
+#### Problem 7.3 (`W1B-19`): AtCoder AGC 023 F — `01 on Tree` & Lyndon Tree Greedy Exchange
+
+- **Source**: AtCoder Grand Contest 023 Problem F (`[JA]`/`[EN]`).
+- **Inline Mathematical Statement & Constraints**:
+  You are given a rooted tree with $N \le 2 \times 10^5$ vertices rooted at $1$. In the classic version, each vertex $u$ holds $c_u \in \{0, 1\}$ and we want a valid topological ordering of the vertices (every parent appears before its children) minimizing the number of inversions $(1, 0)$; in the general string version, each vertex $u$ holds a Lyndon word $w_u \in \mathcal{L}$ and we want a valid topological ordering minimizing the concatenated string $w_{\pi(1)} w_{\pi(2)} \cdots w_{\pi(N)}$ lexicographically (or maximizing Lyndon merges). Time limit: $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Why does a top-down priority queue from the root fail? Because a "bad" (large) parent vertex $p$ might guard a "very good" (tiny) child vertex $v$ immediately below it.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Flip your perspective from top-down to bottom-up! Consider the vertex $v \ne 1$ whose label $w_v$ is the **globally smallest** across the entire tree (under infinite periodic order $X \prec_\omega Y \iff X^\omega < Y^\omega$, or smallest ratio `#1 / #0` for inversions).
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Once $v$'s parent $p = \operatorname{parent}(v)$ is visited, could any optimal topological ordering delay visiting $v$? No—by an adjacent exchange argument ($w_v X < X w_v$ whenever $w_v \prec_\omega X$), $v$ must be visited **immediately** after $p$! Merge $v$ into $p$ via DSU ($w_p \gets w_p w_v$) and repeat in a priority queue!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   Tree topological scheduling with a transitive pairwise exchange comparator $A B < B A$.
+
+2. **Step 2 — Combinatorial Word Invariant**:
+   For two blocks $A, B$, moving $A$ immediately before $B$ strictly improves the objective iff $A B < B A$:
+
+   - For binary inversion counting (`AGC 023 F`), swapping $A = (\text{zeros}_A, \text{ones}_A)$ before $B = (\text{zeros}_B, \text{ones}_B)$ changes the inversion count by $\text{ones}_A \cdot \text{zeros}_B - \text{ones}_B \cdot \text{zeros}_A$, so $A \prec B \iff \frac{\text{ones}_A}{\text{zeros}_A} < \frac{\text{ones}_B}{\text{zeros}_B}$.
+   - For Lyndon words $w_u \in \mathcal{L}$, by Theorem 5.1(4), if $v \ne 1$ has the globally smallest Lyndon label $w_v$, then for any block $X$ placed between $p = \operatorname{parent}(v)$ and $v$, we have $w_v \le X \implies w_v X \le X w_v$, and merging $w_p \gets w_p w_v$ when $w_p < w_v$ mirrors the bottom-up construction of a Lyndon Tree!
+3. **Step 3 — Algorithmic Compilation**:
+   - Maintain a DSU over the tree vertices, where each component $u$ stores its current merged descriptor (`(zeros, ones, inv_count)`).
+   - Push all non-root vertices $v \in [2..N]$ into a min-heap ordered by $\prec$.
+   - While the heap is nonempty: pop the minimum valid component $v$, find its current parent component $p = \operatorname{find}(\operatorname{parent}(v))$, accumulate the cross-cost of concatenating $p$ followed by $v$, merge $v$ into $p$ in the DSU, and if $p \ne 1$, push the updated $p$ into the heap. Total time: $O(N \log N)$.
+4. **Step 4 — Boundary Pitfalls**:
+   Use lazy deletion in the heap (skip popped entries whose size/version no longer matches the current DSU component of $u$), and watch out for $\text{zeros}_A = 0$ when cross-multiplying $\text{ones}_A \cdot \text{zeros}_B < \text{ones}_B \cdot \text{zeros}_A$ in 64-bit integers.
+:::
+
+---
+
+#### Problem 7.4 (`W1B-23`): All-Substrings Longest Lyndon Prefix Sum via Cartesian Tree
+
+- **Source**: National Training Team / Universal Cup Lyndon Array Contribution Problem (`[ZH]`/`[EN]`).
+- **Inline Mathematical Statement & Constraints**:
+  Given a string $S[1..N]$ ($N \le 5 \times 10^5$), for any substring $S[l..r]$ let $f(l, r)$ denote the length of the **longest Lyndon prefix** of $S[l..r]$ (i.e., the length of the first factor in the CFL factorization of $S[l..r]$). Compute the sum over all $\binom{N+1}{2}$ substrings:
+  $$
+  \sum_{1 \le l \le r \le N} f(l, r).
+  $$
+  Time limit: $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Fix the left endpoint $l \in [1..N]$. In the full suffix $S[l..N]$, the longest Lyndon prefix has right endpoint $R_{\mathcal{L}}[l] = l + \lambda[l] - 1$. What happens when the right endpoint $r$ of the substring satisfies $r \ge R_{\mathcal{L}}[l]$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Whenever $r \ge R_{\mathcal{L}}[l]$, can the longest Lyndon prefix of $S[l..r]$ ever extend past $R_{\mathcal{L}}[l]$? No—because $S[l..R_{\mathcal{L}}[l]]$ is already the longest Lyndon prefix of $S[l..N]$, and Lyndonness of a prefix depends *only* on the characters inside that prefix! Thus for all $r \in [R_{\mathcal{L}}[l]..N]$, $f(l, r) = \lambda[l]$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+What if $l \le r < R_{\mathcal{L}}[l]$? Then $S[l..r]$ is a **prefix of the Lyndon word** $w = S[l..R_{\mathcal{L}}[l]]$—meaning $S[l..r]$ is a **pre-Lyndon word** $u^d u'$! For each Lyndon prefix $S[l..m]$ ($m \le R_{\mathcal{L}}[l]$), we can determine the exact interval of right endpoints $r$ for which $S[l..m]$ is the longest Lyndon prefix of $S[l..r]$ using the right-spine ancestors of leaf $l$ in Theorem 7.2!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   We need to aggregate $f(l, r) = |w_1(S[l..r])|$ across all $1 \le l \le r \le N$ in $O(N)$ or $O(N \log N)$ time.
+
+2. **Step 2 — Combinatorial Word Invariant**:
+   Fix $l \in [1..N]$ and consider how $f(l, r)$ behaves as $r$ varies:
+
+   - By definition, $f(l, r) = \max\{\ell \in [1..r - l + 1] \mid S[l..l + \ell - 1] \in \mathcal{L}\}$.
+   - Notice that whether $S[l..m]$ is a Lyndon word depends **solely on the substring $S[l..m]$ itself**, NOT on $r$!
+   - **Characterizing Lyndon Prefix Right Endpoints $m \in [l..N]$**:
+     By Theorem 7.1, $S[l..m]$ is a Lyndon word if and only if for every $j \in [l + 1..m]$, the proper suffix $S[j..m]$ satisfies $S[l..m] \prec S[j..m]$.
+
+     - First, no $m > R_{\mathcal{L}}[l]$ can make $S[l..m]$ Lyndon (since $R_{\mathcal{L}}[l]$ is the maximum such right endpoint!).
+     - Second, for $m \in [l..R_{\mathcal{L}}[l]]$, we already know $\operatorname{rk}[j] > \operatorname{rk}[l]$ for all $j \in [l + 1..R_{\mathcal{L}}[l]]$. When does $S[l..m]$ fail to be Lyndon for some $m < R_{\mathcal{L}}[l]$? Precisely when $S[l..m]$ is **periodic / bordered**—i.e., when $S[l..m] = u^d u'$ ($|u^d u'| > |u|$) is an incomplete prefix of a longer Lyndon word before the Case-2 character that collapses it!
+     - Equivalently, in the **Lyndon Tree** (Min-Cartesian Tree of $\operatorname{rk}[1..N]$), walk up the ancestors of leaf $l$: an ancestor $m \in [l + 1..R_{\mathcal{L}}[l]]$ has left child $S[l..m-1]$ only when $l = L_m$! Specifically, the Lyndon prefixes starting at $l$ are $m_0 = l$, followed by the right endpoints $R_v$ of all Cartesian nodes $v$ whose left boundary satisfies $L_v - 1 = l$!
+3. **Step 3 — Algorithmic Compilation**:
+   - Build the Min-Cartesian Tree of $\operatorname{rk}[1..N]$ in $O(N)$ time.
+   - By Theorem 7.2, every internal Cartesian node $v$ with span $[L_v, R_v]$ represents the Lyndon word $S[L_v - 1 .. R_v]$, and **every right-maximal Lyndon prefix segment starting at $l = L_v - 1$ corresponds to such a node $v$** (where the next longer Lyndon prefix starting at $l$ is the nearest ancestor $p$ of $v$ that also has $L_p - 1 = l$, i.e., moving up along right-child edges!).
+   - Thus for each $l \in [1..N]$, the sequence of Lyndon prefix right-endpoints starting at $l$ is $l = r_0 < r_1 < r_2 < \cdots < r_k = R_{\mathcal{L}}[l]$, which are simply the right boundaries $R_v$ of the chain of right-spine nodes rooted at the right child of $l$ in the Cartesian tree!
+   - For every $r \in [r_t .. r_{t+1} - 1]$, $f(l, r) = r_t - l + 1$, and for $r \in [r_k .. N]$, $f(l, r) = r_k - l + 1$. Since each of the $N$ Cartesian nodes $v$ belongs to the chain of **strictly one** left endpoint $l = L_v - 1$, summing $(r_{t+1} - r_t)(r_t - l + 1)$ over all nodes takes **$O(N)$ total time**!
+4. **Step 4 — Boundary Pitfalls**:
+   Remember that every single character $S[l..l]$ ($r_0 = l$) is always a Lyndon word of length $1$, even if no internal Cartesian node has $L_v - 1 = l$ with $R_v = l$. Initialize each $l$'s list with $r_0 = l$ and append $N + 1$ as the sentinel upper bound.
+:::
+
+---
+
+### Tier 3 — Advanced (2 Problems)
+
+#### Problem 7.5 (`W1B-28`): Longest Lyndon Substring in $S[l..r]$ Queries
+
+- **Source**: Luogu P5353 / QOJ / JOI Open Style Substring Lyndon Query (`[ZH]`/`[JA]`).
+- **Inline Mathematical Statement & Constraints**:
+  Given a string $S[1..N]$ ($N \le 2 \times 10^5$) and $Q \le 2 \times 10^5$ queries $[l, r]$ ($1 \le l \le r \le N$), find for each query the maximum length of a Lyndon word $S[a..b]$ wholly contained inside $S[l..r]$ ($l \le a \le b \le r$). Time limit: $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Factor the query substring $S[l..r]$ into its unique CFL decomposition $S[l..r] = w_1 w_2 \cdots w_k$ ($w_1 \ge w_2 \ge \cdots \ge w_k$). Could a Lyndon substring $S[a..b] \subseteq S[l..r]$ ever cross a boundary between $w_m$ and $w_{m+1}$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Never! If $S[a..b]$ crossed $w_m \mid w_{m+1}$, then since each $w_i$ is Lyndon, merging adjacent CFL factors that overlap $S[a..b]$ would contradict the uniqueness of the CFL factorization of $S[l..r]$. Therefore, the longest Lyndon substring of $S[l..r]$ is **simply the maximum length $\max_{1 \le m \le k} |w_m|$ of a CFL factor of $S[l..r]$**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+How do the CFL factors of $S[l..r]$ relate to the CFL factors of the full suffix $S[l..N]$? By Theorem 7.1, the CFL factors of $S[l..N]$ follow the $\operatorname{nsv}$ parent path $l \to \operatorname{nsv}[l] \to \dots$ as long as $\operatorname{nsv}[i] \le r + 1$! Only the **very last** factor $S[i_{\text{last}}..R_{\mathcal{L}}[i_{\text{last}}]]$ that crosses $r$ ($i_{\text{last}} \le r < R_{\mathcal{L}}[i_{\text{last}}]$) gets truncated to $S[i_{\text{last}}..r]$—and how do we factor $S[i_{\text{last}}..r]$? By walking the right spine of the Min-Cartesian Tree on $[i_{\text{last}} + 1 .. r]$!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   Querying the maximum Lyndon substring inside $S[l..r]$ reduces to finding the maximum CFL factor length in $S[l..r] = w_1 w_2 \cdots w_k$.
+
+2. **Step 2 — Combinatorial Word Invariant**:
+   - Let $l = i_1 < i_2 < \cdots < i_t \le r < i_{t+1} = \operatorname{nsv}[i_t]$ be the chain of $\operatorname{nsv}$-tree ancestors starting at $l$ that do not exceed $r$.
+   - For every $m \in [1..t-1]$, the factor $S[i_m .. i_{m+1}-1]$ lies completely inside $[l, r]$ and is the exact $m$-th CFL factor of $S[l..r]$!
+   - At $i_t$, the full Lyndon prefix $S[i_t .. \operatorname{nsv}[i_t]-1]$ extends past $r$ (unless $\operatorname{nsv}[i_t] = r + 1$). What is the CFL factorization of the truncated suffix $S[i_t .. r]$?
+     By Theorem 7.2, the last CFL factor of $S[i_t .. r]$ starts at $j_1 = \arg\min_{j \in [i_t + 1 .. r]} \operatorname{rk}[j]$, and the second-to-last starts at $j_2 = \arg\min_{j \in [i_t + 1 .. j_1 - 1]} \operatorname{rk}[j]$; however, walking *left* from $r$ along prefix-minima of $\operatorname{rk}$ can traverse $\Theta(N)$ equal factors (e.g., on $\texttt{a}^N$)!
+     Instead, walk **right** from $i_t$: the **first** CFL factor of $S[i_t .. r]$ is the longest Lyndon prefix of $S[i_t .. r]$, which (as proved in Problem 7.4!) is the largest right boundary $R_v \le r$ among the Cartesian nodes $v$ with $L_v - 1 = i_t$! Once $R_v \le r$ is chosen, the CFL factors of $S[l..r]$ are formed by greedily jumping from the current $x$ to the highest ancestor $v$ in the Cartesian tree with $L_v - 1 = x$ and $R_v \le r$, then setting $x \gets R_v + 1$!
+     In the Min-Cartesian Tree of $\operatorname{rk}[1..N]$, if we query the minimum rank $m = \arg\min_{j \in [l + 1 .. r]} \operatorname{rk}[j]$, then:
+
+     - $S[m .. r]$ only depends on $[m .. r]$ (moving right to $m$);
+     - Every CFL factor of $S[l .. m - 1]$ is an **untruncated** CFL factor of $S[l .. N]$ because $\operatorname{rk}[m] < \operatorname{rk}[j]$ for all $j \in [l + 1 .. m - 1]$ implies $\operatorname{nsv}[x] \le m$ for every $x \in [l .. m - 1]$!
+3. **Step 3 — Algorithmic Compilation**:
+   That observation gives a breathtakingly clean $O(\log N)$ query algorithm:
+
+   - Precompute the $\operatorname{nsv}$-tree binary lifting table `up[k][i]` and `max_len[k][i]` (maximum factor length $\operatorname{nsv}[x] - x$ along $2^k$ jumps from $i$).
+   - For query $[l, r]$:
+     1. Binary-lift from $x = l$ using `up[k][x]` as long as `up[k][x] <= r + 1`, taking the maximum of `max_len[k][x]`.
+     2. When $x \le r$ and $\operatorname{nsv}[x] > r + 1$, binary-search on the precomputed sorted list of Lyndon prefix right-endpoints of $x$ (from Problem 7.4: the Cartesian nodes $v$ with $L_v - 1 = x$) to find the largest $R_v \le r$. That gives the exact first CFL factor $S[x .. R_v]$ of $S[x .. r]$!
+     3. **Why Subsequent Factors of $S[x..r]$ Never Exceed $|S[x..R_v]|$**: Since $S[x .. \operatorname{nsv}[x]-1]$ was a single Lyndon word $w$ truncated at $r$, $S[x .. r] = u_1^{d_1} u_2^{d_2} \cdots u_s^{d_s}$ is a pre-Lyndon decomposition where **the very first factor $u_1 = S[x .. R_v]$ satisfies $u_1 \ge u_2 \ge \cdots \ge u_s$ and $|u_1| \ge |u_2| \ge \cdots \ge |u_s|$** (by the Duval Pre-Lyndon Remainder Lemma: in any prefix $w[1..\ell] = u^d u'$ of a Lyndon word $w$, the remainder $u'$ is a proper prefix of $u$, so all subsequent CFL factors of $u'$ have length $< |u'| < |u_1| = R_v - x + 1$)!
+     4. Read Step 3 again: **because $S[x..r]$ is a prefix of the Lyndon word $S[x..\operatorname{nsv}[x]-1]$, its first CFL factor $u_1 = S[x..R_v]$ is strictly longer than ALL subsequent CFL factors of $S[x..r]$!**
+     5. Therefore, we only need **ONE** binary search at $x$ to find $R_v \le r$, update the answer with $R_v - x + 1$, and **stop immediately**! Total query time: $O(\log N)$, total space: $O(N \log N)$!
+4. **Step 4 — Boundary Pitfalls**:
+   Assuming $S[x..r]$ itself is Lyndon when $\operatorname{nsv}[x] > r + 1$ is false (e.g., $S[x..\operatorname{nsv}[x]-1] = \texttt{abababb}$ truncated at $r = x + 5$ is $\texttt{ababab} = (\texttt{ab})^3$, where $R_v - x + 1 = 2$, not $6$). The pre-Lyndon remainder inequality $|u_1| > |u'|$ guarantees that checking only the first CFL factor $S[x..R_v]$ of the truncated tail $S[x..r]$ is 100% exact!
+:::
+
+---
+
+#### Problem 7.6 (`W1B-30`): Counting Distinct Lyndon Substrings via Lyndon Tree & SAM
+
+- **Source**: Petrozavodsk / QOJ / `[EN]` Grandmaster Stringology (`Bannai et al.` / `Urabe et al.`).
+- **Inline Mathematical Statement & Constraints**:
+  Given a string $S[1..N]$ ($N \le 3 \times 10^5$), count the number of **distinct substrings** of $S$ that are Lyndon words (under standard order $<$), and for each prefix $S[1..r]$ (or globally), compute the sum of lengths of all distinct Lyndon substrings. Time limit: $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+A string of length $N$ can have $\Theta(N^2)$ distinct substrings, and even $\Theta(N^2)$ distinct Lyndon substrings (e.g., on $S = \texttt{a}^{N/2} \texttt{b}^{N/2}$, every substring $S[i..j]$ with $i \le N/2 < j$ is a distinct Lyndon word!). How can we represent all Lyndon substrings in $O(N)$ intervals?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Recall from Problem 7.4 that for a fixed starting index $l \in [1..N]$, the right endpoints $m$ for which $S[l..m]$ is Lyndon are **only** $m = l$ and the right boundaries $R_v$ of Cartesian nodes $v$ with $L_v - 1 = l$! Notice that in the Lyndon Tree there are only $N$ internal Cartesian nodes when distinct ranks are used, whereas on $S = \texttt{a}^{N/2}\texttt{b}^{N/2}$, $S[l..r] = \texttt{a}^x \texttt{b}^y$ is Lyndon for *every* $r \in [N/2+1..N]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+To deduplicate across all starting positions $l$ simultaneously, work directly on the Suffix Tree $\operatorname{ST}(S)$ (or the Link Tree of $\operatorname{SAM}(S^R)$)! Along any root-to-leaf path spelling $S[l..N]$, a prefix $S[l..r]$ is Lyndon iff $r \le R_{\mathcal{L}}[l]$ and $S[l..r]$ is unbordered—which happens at the exact depths where Duval's Case 2 ($S[r] > S[j]$) resets the active period to $p = r - l + 1$!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   Counting *distinct* substrings with a structural property calls for the Suffix Tree $\operatorname{ST}(S)$ (equivalently, the Link Tree of the Suffix Automaton $\operatorname{SAM}(S^R)$), where each root-to-leaf path spells a suffix $S[l..N]$ and each explicit node $u$ represents a contiguous band of right endpoints $r \in [l + \operatorname{len}(\operatorname{link}(u)) .. l + \operatorname{len}(u) - 1]$ sharing the same earliest start position $l$.
+
+2. **Step 2 — Combinatorial Word Invariant (Bannai–Urabe Suffix-Tree Duval Invariant)**:
+   For any fixed starting position $l \in [1..N]$, a substring $S[l..r]$ is a Lyndon word if and only if:
+   $$
+   r \le R_{\mathcal{L}}[l] \quad \textbf{AND} \quad S[l..r] \text{ is unbordered } (\operatorname{per}(S[l..r]) = r - l + 1).
+   $$
+   In terms of Duval's first outer phase ($i = l$) scanning $S[l..N]$ from left to right:
+   - Before Case 3 ($S[k] < S[j]$) occurs at $k = R_{\mathcal{L}}[l] + 1$, every prefix $S[l..r]$ ($l \le r \le R_{\mathcal{L}}[l]$) is a pre-Lyndon word $w^d w'$ of current fundamental period $p = r + 1 - j$.
+   - The prefix $S[l..r]$ is itself a **Lyndon word** if and only if $d = 1$ and $w' = \varepsilon$, which holds **if and only if its length $D = r - l + 1$ equals its current Duval period $p$** (i.e., at $D = 1$ and at every depth $D$ where Case 2 $S[r] > S[j]$ collapses $S[l..r]$ into a single Lyndon word)!
+
+3. **Step 3 — Algorithmic Compilation**:
+   - Construct the Suffix Tree $\operatorname{ST}(S)$ (with $\le 2N - 1$ nodes and edges) and an $O(1)$ $\operatorname{LCP}$ table on $S$ in $O(N)$ time.
+   - Perform a top-down DFS on $\operatorname{ST}(S)$ maintaining the active Duval period $p$ of the current root-to-node path (representing $S[l .. l + d - 1]$):
+     - Along a Suffix Tree edge of string-depth interval $D \in [d + 1 .. d_{\text{child}}]$ labeled by $S[a..b]$ (where $l = a - d$ is an occurrence start position of the child):
+     - While the edge has remaining characters, jump across all Case 1 matches ($S[k] == S[j]$) in $O(1)$ time via $\ell = \operatorname{LCP}(l + D - 1 - p,\; l + D - 1)$.
+     - During a Case 1 run of $\ell$ matching characters, $D > p$ strictly (except at $D = 1, p = 1$), so **zero** depths in the Case 1 run are Lyndon words.
+     - At the first mismatch after $\ell$ characters (if still inside the edge):
+       - **Case 3 ($S[l + D - 1 + \ell] < S[l + D - 1 - p + \ell]$)**: Periodicity ruptures; neither the rest of this edge nor any of its descendants in $\operatorname{ST}(S)$ can ever be a Lyndon word—prune the DFS subtree immediately!
+       - **Case 2 ($S[l + D - 1 + \ell] > S[l + D - 1 - p + \ell]$)**: The prefix of depth $D_{\text{new}} = D + \ell$ collapses into a **distinct Lyndon substring**! Add $+1$ to the distinct Lyndon count (and $+D_{\text{new}}$ to the length sum), update the period to $p \gets D_{\text{new}}$, and advance along the edge from $D_{\text{new}} + 1$.
+   - Because every Case 2 reset on an edge of length $> 1$ is followed by a comparison against the prefix $S[l..]$ of length $p = D_{\text{new}}$ before another Case 2 reset can occur, the period $p$ **at least doubles** between consecutive Case 2 resets after the first on any edge! Thus each of the $\le 2N - 1$ Suffix Tree edges performs at most $O(\log N)$ $\operatorname{LCP}$ jumps, running in $O(N \log N)$ total time and $O(N)$ space.
+4. **Step 4 — Boundary Pitfalls (`BP-07-03` / `BP-1B-09`)**:
+   Remember that along a Suffix Tree edge where $j$ matches ($S[k] == S[j]$, Case 1), the depth $D$ increases while the period $p$ stays fixed ($D > p$), so intermediate depths in Case 1 are proper pre-Lyndon words ($w^d w'$ with $|w^d w'| > |w|$) and must **not** be counted as Lyndon words—only depths where $D = p$ (Case 2 resets) are Lyndon!
+:::
+
+---
+
+### Tier 4 — Mastery (2 Problems)
+
+#### Problem 7.7 (`W1B-39`): Persistent Online Worst-Case $O(\log N)$ Lyndon Factorization on Version Trees
+
+- **Source**: UOJ / QOJ / `[JA]` Grandmaster Stringology (`Persistent Duval Automaton`).
+- **Inline Mathematical Statement & Constraints**:
+  Maintain a persistent version tree of strings starting from $v_0 = \varepsilon$. Across $Q \le 2 \times 10^5$ operations, operation $q$ specifies an existing version $u$ and a character $c \in \Sigma$, creating a new version $v_q = v_u + c$. After each operation, output for $v_q$: (1) the number of factors in the CFL factorization of $v_q$, (2) the length of the longest (or last) CFL factor of $v_q$, and (3) the hash of the right spine of the Lyndon Tree of $v_q$. **All queries are online and must run in worst-case $O(\log^2 N)$ (or $O(\log N)$) time per operation.** Time limit: $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Why does storing Duval's $(i, j, k)$ pointers on the version tree fail? Because branching from $u = \texttt{a}^{N-1}$ with $c = \texttt{b}$ vs $c = \texttt{a}$ can force an $O(N)$ rewind or collapse on a single step.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Represent the CFL factorization of version $u$ as a persistent linked list (with binary lifting pointers) of **run-length grouped Lyndon power blocks** $(w_1, d_1) > (w_2, d_2) > \cdots > (w_m, d_m)$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+When appending $(c, 1)$, we merge the top of the stack $v$ with $(w_t, d_t)$ while $w_t < v$. How do we compare $w_t$ and $v$ on a tree? Using binary-lifting rolling hashes in $O(\log N)$ time! And how do we bound the number of stack pops to $O(\log N)$ in the worst case? Whenever $d_t |w_t| \le |v|$, $|w_t^{d_t} v| \ge 2 d_t |w_t|$ doubles; when $d_t |w_t| > |v|$ and $w_t < v$, use binary lifting on the CFL stack to jump directly to the highest ancestor block $w_a$ that is still $< v$!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   Persistent version-tree branching destroys amortization; every state transition must be compressed using power blocks + binary lifting.
+
+2. **Step 2 — Combinatorial Word Invariant (Exponential Suffix Growth on Coalesced CFL Stacks)**:
+   - Let the coalesced CFL power-block stack of version $u$ at length $r - 1$ be $B_1 > B_2 > \cdots > B_m$, where $B_s = (w_s, d_s)$ spans the tree-depth interval $[l_s, r_s]$ of length $r_s - l_s + 1 = d_s |w_s|$, and adjacent blocks satisfy strict inequality $w_1 > w_2 > \cdots > w_m$.
+   - When a single character $c$ is appended at depth $r$, we start with the candidate Lyndon suffix $v = c$ and repeatedly merge $v$ with the top block $B_s = (w_s, d_s)$ as long as $w_s < v$, replacing $v \gets w_s^{d_s} v$.
+   - **Why at most $\lfloor \log_2 r \rfloor + 2$ power blocks can collapse**:
+     Suppose two blocks $B_s$ and $B_{s+1}$ ($1 \le s < m$) both collapse into $c$. For each collapsing block $B_t$ ($t \in \{s, s+1\}$), let $U_t = w_{t+1}^{d_{t+1}} \cdots w_m^{d_m} = S[l_{t+1} .. r - 1]$ be the nonempty suffix of $S[1..r-1]$ lying to the right of $B_t$.
+     1. Before $c$ was appended, $w_t > w_{t+1} \ge \cdots \ge w_m$ was a valid CFL factorization, so by Theorem 7.1(2), $w_t > U_t$.
+     2. After $c$ is appended, $B_t$ collapses with $U_t c$, so $w_t < U_t c$.
+     3. How can appending $c$ to $U_t$ reverse the inequality from $w_t > U_t$ to $w_t < U_t c$? If $w_t \succ U_t$ held at a character mismatch within $|U_t|$, Law 2 (right-extension stability of $\succ$) would force $w_t \succ U_t c$, a contradiction! Therefore, **$U_t$ must be a proper prefix of $w_t$**:
+        $$
+        U_t \sqsubset w_t \implies |w_t| \ge |U_t| + 1.
+        $$
+     4. Consequently, the suffix length $|U_{s-1}| = d_s |w_s| + |U_s|$ strictly more than doubles at every collapsed block $B_s$ ($s < m$):
+        $$
+        |U_{s-1}| = d_s |w_s| + |U_s| \ge |w_s| + |U_s| \ge 2|U_s| + 1 > 2|U_s|!
+        $$
+     5. Since $|U_{m-1}| = d_m |w_m| \ge 1$ and $|U_0| \le r$, **at most $\lfloor \log_2 r \rfloor + 2$ power blocks can ever collapse on a single character append in the worst case**!
+
+3. **Step 3 — Algorithmic Compilation**:
+   - Store the coalesced CFL stack as a persistent linked list (each node storing `(l_s, len_w, d_s, parent_ptr, total_factors)`).
+   - Maintain binary-lifting parent pointers and polynomial hashes on the character version tree to compute $\operatorname{LCP}$ between any two tree-path substrings in $O(\log N)$ time.
+   - On operation `1 u c`: create character node $r$ under $u$, initialize $v = S[r..r]$, and walk up the persistent CFL stack of $u$ while $w_s < v$ (at most $\lfloor \log_2 r \rfloor + 2$ iterations, each comparing $w_s$ vs. $v$ in $O(\log N)$ time via tree-hash LCE). If the next block has $w_s == v$, increment its multiplicity to $d_s + 1$; otherwise push $(v, 1)$. Total time per query: **worst-case $O(\log^2 N)$**.
+4. **Step 4 — Boundary Pitfalls**:
+   When the new merged Lyndon word $v$ equals $w_t$ of the block $(w_t, d_t)$ currently on top of the stack ($v == w_t$), do **not** push $(v, 1)$ as a separate node—increment its exponent to $(w_t, d_t + 1)$ so the stack stays strictly decreasing ($w_1 > w_2 > \cdots > w_m$)!
+:::
+
+---
+
+#### Problem 7.8 (`W1B-42`): Dynamic Right-Spine Lyndon Tree Queries with Substring Splits
+
+- **Source**: Universal Cup Grandmaster / QOJ String Synthesis (`[EN]`/`[ZH]`).
+- **Inline Mathematical Statement & Constraints**:
+  Given a static string $S[1..N]$ ($N \le 2 \times 10^5$) and $Q \le 2 \times 10^5$ queries $(l, r, k)$, consider the CFL factorization of the substring $S[l..r] = w_1 w_2 \cdots w_m$. Output the total number of CFL factors $m$, the starting and ending indices of the $k$-th CFL factor $w_k$, and the split midpoint of $w_k$ in the Lyndon Tree of $S[l..r]$. Time limit: $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Combine the $\operatorname{nsv}$-tree prefix path from Problem 7.5 with the Min-Cartesian Tree right-spine decomposition of the truncated tail $S[i_t .. r]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+As shown in Problem 7.5, the CFL factors of $S[l..r]$ split into two phases: Phase 1 follows $l \to \operatorname{nsv}[l] \to \dots \to i_t$ while $\operatorname{nsv}[x] \le r + 1$; Phase 2 factors the truncated pre-Lyndon tail $S[i_t .. r]$ starting at $i_t$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+In Phase 2, each step from $x \le r$ jumps to $R_v + 1$ where $v$ is the highest Cartesian node with $L_v - 1 = x$ and $R_v \le r$. What if $S[x..r] = u^d u'$ has $d$ equal copies of $u = S[x..R_v]$? By Duval's Pre-Lyndon Remainder Theorem (`Definition 5.3` / `Theorem 5.5` in `Ch 05`), $S[x..r]$ emits $d = \lfloor (r - x + 1)/|u| \rfloor$ copies of $u$ and jumps directly to $x_{\text{new}} = x + d|u|$, where $|r - x_{\text{new}} + 1| < |u| \le (r - x + 1)/2$ **halves the remaining length in one step**!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   We need the **complete** CFL factorization of $S[l..r]$ (all $m$ factors, compressed into $O(\log N)$ segments) and the Lyndon Tree midpoint of the $k$-th factor.
+
+2. **Step 2 — Combinatorial Word Invariant**:
+   - **Phase 1 ($\operatorname{nsv}$-Tree Ancestors)**: From $l$, all $\operatorname{nsv}$-ancestors $i_1 = l, i_2 = \operatorname{nsv}[i_1], \dots, i_t$ with $i_t \le r < \operatorname{nsv}[i_t]$ give the first $t - 1$ CFL factors of $S[l..r]$.
+   - **Phase 2 (Halving Pre-Lyndon Tail Decomposition)**: At $x = i_t$ (where $S[x .. \operatorname{nsv}[x]-1]$ is a single Lyndon word containing $S[x..r]$ as a prefix), let $R_v \le r$ be the largest Lyndon prefix right-endpoint starting at $x$ (found by binary search on the Cartesian nodes $v$ with $L_v - 1 = x$).
+     Then $u = S[x .. R_v]$ is the fundamental pre-Lyndon period of $S[x..r]$ of length $p = R_v - x + 1$!
+     By Duval's algorithm, $S[x..r] = u^d u'$ emits **$d = \lfloor (r - x + 1)/p \rfloor \ge 1$ consecutive CFL factors of length $p$**, leaving the incomplete remainder $u' = S[x + dp .. r]$ of length $|u'| = (r - x + 1) \bmod p < p \le (r - x + 1)/2$!
+     Because $|u'| < (r - x + 1)/2$, **repeating this jump $x \gets x + dp$ terminates in at most $\lfloor \log_2(r - i_t + 1) \rfloor + 1$ steps**!
+
+3. **Step 3 — Algorithmic Compilation**:
+   - Phase 1 uses binary lifting on the $\operatorname{nsv}$-tree to count the $t - 1$ full factors (and find the $k$-th factor if $k \le t - 1$) in $O(\log N)$ time.
+   - Phase 2 runs at most $\log_2 N$ halving steps: at each step, binary-search the list of Cartesian nodes with $L_v - 1 = x$ for the largest $R_v \le r$, set $p = R_v - x + 1$ and $d = \lfloor (r - x + 1)/p \rfloor$, and advance $x \gets x + dp$.
+   - Once the $k$-th CFL factor $w_k = S[a..b]$ is identified: if $a = b$, it is a leaf; if $a < b$, by Theorem 7.2(1), its Right-Standard Factorization midpoint in the Lyndon Tree is simply
+     $$
+     m = \arg\min_{j \in [a + 1 .. b]} \operatorname{rk}[j],
+     $$
+     which is a single **$O(1)$ RMQ query** on $\operatorname{rk}[a + 1 .. b]$!
+
+   - Total time per query: $O(\log^2 N)$ (or $O(\log N)$ with fractional cascading / Cartesian binary lifting).
+4. **Step 4 — Boundary Pitfalls**:
+   In Phase 2, always advance by $d \cdot p = \lfloor (r - x + 1)/p \rfloor \cdot p$ in a single step rather than $1 \cdot p$; advancing by $1 \cdot p$ when $p = 1$ (e.g., on $S[x..r] = \texttt{a}^{r-x+1}$) would take $O(r - x)$ steps instead of $1$ step!
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+::: {.callout-important icon=false}
+## Diagnostic Decision Checklist for Chapter 07 (`T-1B-04`)
+
+1. **Do you need the longest Lyndon prefix starting at every index $i \in [1..N]$ ($\lambda_<[1..N], \lambda_>[1..N]$)?**
+   - Use **Theorem 7.1**: $R_{\mathcal{L}}[i] + 1 = \operatorname{nsv}[i] = \min\{j > i \mid S[j..N] < S[i..N]\}$, computed in $O(N)$ via a monotonic stack over $\operatorname{rk}[1..N]$.
+2. **Are you computing $\lambda_>[1..N]$ under the reversed alphabet order $>$?**
+   - **NEVER negate $\operatorname{rk}_<[i]$ (`-rk_<[i]`)!** Remember the **$S = \texttt{bab}$ Counterexample**: negating $\operatorname{rk}_<$ reverses proper-prefix containment $S[j..N] \sqsubset S[i..N]$ and falsely declares bordered words like $\texttt{bab}$ to be Lyndon. Either build $\operatorname{rk}_>$ on the character-inverted string $\overline{S}[t] = \sigma + 1 - S[t]$ (keeping sentinel $0 = -\infty$) or use $O(1)$ LCE in the stack.
+3. **Do you need the Lyndon Tree (Right-Standard Factorization $w = uv$) of $S[1..N]$ or of a Lyndon substring $S[a..b]$?**
+   - By **Theorem 7.2**, the Lyndon Tree of $\$S[1..N]$ is isomorphic to the **Min-Cartesian Tree of $\operatorname{rk}[1..N]$**, where Cartesian node $m$ with subtree span $[L_m, R_m]$ represents **$S[L_m - 1 .. R_m]$** (note the $-1$ left-index shift!), and the split midpoint of any Lyndon substring $S[a..b]$ is $m = \arg\min_{j \in [a+1..b]} \operatorname{rk}[j]$.
+4. **Do you need the CFL factorization of an arbitrary substring $S[l..r]$ or persistent worst-case $O(\log N)$ appends?**
+   - For $S[l..r]$: binary-lift on the $\operatorname{nsv}$-tree while $\operatorname{nsv}[x] \le r + 1$, then decompose the pre-Lyndon tail $S[i_t..r]$ in $\le \log_2 N$ halving jumps $x \gets x + \lfloor (r-x+1)/p \rfloor p$.
+   - For persistent right-appends: coalesce equal adjacent CFL factors into power blocks $(w_t, d_t)$; at most $\lfloor \log_2 N \rfloor + 2$ power blocks can collapse on any single character append!
+:::

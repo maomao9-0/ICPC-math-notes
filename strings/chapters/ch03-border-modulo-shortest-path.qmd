@@ -1,0 +1,640 @@
+---
+title: "Chapter 03 — Border-Group Modulo Shortest Path (同余最短路) and Residue-Cycle Monotonic Queues"
+subtitle: "Part I · Structural Periodicity, Border Algebra & Series-Link (slink) DP (Technique ID: T-1A-03)"
+---
+
+::: {.callout-note title="Prerequisites & Learning Objectives"}
+**Prerequisites**:
+
+- **[Chapter 01 — Period–Border Duality & Fine–Wilf](ch01-fine-wilf-periodicity-orbits.qmd)**: The order-reversing bijection $b \in \operatorname{Border}(S) \iff p = N - b \in \operatorname{Per}(S)$ between proper border lengths and weak periods.
+- **[Chapter 02 — Weak Periodicity Lemma & Border APs](ch02-weak-periodicity-border-aps.qmd)**: The decomposition of all positive borders of $S[1..N]$ into $K \le \lceil \log_2 N \rceil$ disjoint half-open arithmetic progressions $(\operatorname{slink}[u], u]$ with period step $d = \operatorname{diff}[u]$.
+- **Baseline Graph Primitives**: Standard Frobenius modulo shortest path (`同余最短路`) on $\mathbb{Z}/m\mathbb{Z}$ and 1D sliding-window monotonic queues.
+
+**Learning Objectives**:
+
+1. Formulate **overlapping string self-concatenation** up to huge target length $W \le 10^{18}$ as an unbounded knapsack / Frobenius reachability problem whose item weights are the weak periods $\{N - b : b \in \operatorname{Border}(S)\} \subseteq [1, N]$.
+2. Prove why naive Frobenius modulo shortest path degrades to $\Theta(N^2)$ on strings with $\Theta(N)$ borders, and compress the $\Theta(N)$ period items into $K \le \lceil \log_2 N \rceil$ arithmetic progressions $\mathcal{A}_k = \{x_k + j \cdot d_k \mid 0 \le j \le c_k\}$.
+3. Compile the **Dynamic Modulus Switch ($m_{\text{old}} \to x_k$)** in $O(m_{\text{old}} + x_k)$ time by projecting shortest-path distances to $\mathbb{Z}/x_k\mathbb{Z}$ and unrolling each of the $\gcd(m_{\text{old}}, x_k)$ residue cycles from its argmin vertex.
+4. Compile the **Residue-Cycle Monotonic Queue** (`[WC2016] 论战捆竹竿` / `Luogu P4156`) in $O(x_k)$ time per AP block ($O(N \log N)$ total time and $O(N)$ space), and diagnose the two canonical implementation bugs (`BP-1A-04`: starting cycle unrolling at residue $0$ instead of $\arg\min D[v]$, and pushing old distances before relaxing $D[v_t]$, which restricts each AP block to a $0$-$1$ choice instead of unbounded reuse).
+:::
+
+---
+
+## 1. Diagnostic Signal: Overlapping String Concatenation as Period-Weight Knapsack ($W \le 10^{18}$)
+
+### 1.1 The Concrete Counting & Optimization Object
+
+Let $S = S[1..N]$ be a base string of length $N \le 5 \times 10^5$, and let $W \le 10^{18}$ be a target length threshold. We construct a long string $T$ by starting with a single copy of $S$ (initial length $|T| = N$) and repeatedly appending new copies of $S$ that **overlap** the current suffix of $T$.
+
+Specifically, if we overlap the new copy of $S[1..N]$ with the current string $T$ along a proper prefix-suffix match of length $b \in [0, N-1]$:
+
+- For the overlapping region of length $b$ to match character-for-character, the prefix $S[1..b]$ of the newly appended copy must equal the suffix $S[N-b+1..N]$ of the previous copy of $S$.
+- By definition, this holds if and only if $b \in \operatorname{Border}(S)$ is a proper border of $S$ (including the empty border $b = 0$, which corresponds to concatenating $S$ with zero overlap).
+- Appending $S$ with overlap $b$ increases the total length $|T|$ by **exactly the complementary weak period**:
+  $$\Delta L \;=\; N - b \;=\; p \in \operatorname{Per}(S).$$
+
+```
+Current T ends with S:   ... [ S[1 ............ N-b] | S[N-b+1 .... N] ]
+                                                       || (overlap b)
+New copy of S appended:                              [ S[1 ........ b] | S[b+1 ........ N] ]
+                             |<---- old length ----->|<------ b ------>|<--- +p = N-b --->|
+```
+
+Consequently, a total length $L \ge N$ can be formed by overlapping copies of $S$ if and only if $L$ can be written as $N$ plus a non-negative integer linear combination of weak periods of $S$:
+$$L \;=\; N + \sum_{p \in \operatorname{Per}(S)} k_p \cdot p, \qquad k_p \in \mathbb{Z}_{\ge 0}.$$
+
+In **[WC2016] 论战捆竹竿 (`Luogu P4156` / `UOJ #179`)**, we are given $S[1..N]$ ($N \le 5 \times 10^5$) and $W \le 10^{18}$, and we must count how many distinct lengths $L \in [N, W]$ are achievable. Variations ask for the minimum number of copies needed to reach length $W$, or the minimum cost when each border overlap carries an associated weight.
+
+---
+
+### 1.2 Why Naive Frobenius Modulo Shortest Path Takes $\Theta(N^2)$ Time
+
+When $W \le 10^{18}$ is huge and item weights $p \in \operatorname{Per}(S)$ satisfy $p \le N$, the standard tool is **Frobenius Modulo Shortest Path (`同余最短路`)**:
+
+1. Pick a reference modulus $m \in \operatorname{Per}(S)$ (for instance, the base length $m = N$ corresponding to $b = 0$, or the shortest period $m = p_{\min}(S)$).
+2. For each residue class $r \in \{0, 1, \dots, m - 1\}$, define $D[r]$ to be the **minimum achievable string length $L \ge N$** such that $L \equiv r \pmod m$.
+3. Because adding $+m$ is a valid period transition that does not change the residue $r \pmod m$, once $L = D[r]$ is achievable, the entire infinite ray $\{D[r] + k \cdot m \mid k \in \mathbb{Z}_{\ge 0}\}$ is achievable!
+4. Thus the exact count of achievable lengths in $[N, W]$ is:
+   $$\text{Ans}(W) \;=\; \sum_{\substack{0 \le r < m \\ D[r] \le W}} \left(\left\lfloor \frac{W - D[r]}{m} \right\rfloor + 1\right).$$
+
+**Where is the bottleneck?** In the residue graph on $\mathbb{Z}/m\mathbb{Z}$, each state $r \in \{0, \dots, m-1\}$ has $|\operatorname{Per}(S)|$ outgoing edges:
+$$r \xrightarrow{\text{weight } p} (r + p) \bmod m \qquad \forall p \in \operatorname{Per}(S).$$
+On a unary string $S = \texttt{a}^{N-1}\texttt{b}\texttt{a}^{N-1}$ or $S = \texttt{a}^N$, $|\operatorname{Border}(S)| = \Theta(N)$ and $m = \Theta(N)$. The residue graph has $\Theta(N)$ vertices and $\Theta(N^2)$ directed edges, so Dijkstra or cycle-relaxation takes $\Theta(N^2)$ time—a fatal Time Limit Exceeded at $N = 5 \times 10^5$.
+
+---
+
+## 2. Core Combinatorial Word Invariants: Border-Period APs & Dynamic Modulus Switching
+
+### 2.1 Grouping $\Theta(N)$ Period Weights into $O(\log N)$ Arithmetic Progressions
+
+By **Period–Border Duality (`Theorem 1.1`)** and the **$O(\log N)$ Border AP Decomposition (`Theorem 2.3` in Chapter 02)**, traversing the KMP `slink` chain from $u = \pi[N]$ down to $0$ partitions all positive borders $b \in \operatorname{Border}(S) \setminus \{0\}$ into $K \le \lceil \log_2 N \rceil$ disjoint half-open arithmetic progressions $(\operatorname{slink}[u], u]$.
+
+Let us translate each border AP $(\operatorname{slink}[u], u]$ into its complementary **period-weight AP** via $p = N - b$:
+
+- In the half-open border chain $(\operatorname{slink}[u], u]$ with period step $d_k = \operatorname{diff}[u] = u - \pi[u]$, the **longest** border is $b_{\max, k} = u$, and the **shortest** border is $b_{\min, k} = \operatorname{slink}[u] + d_k$.
+- The number of additional steps in the progression is $c_k = \frac{u - \operatorname{slink}[u]}{d_k} - 1 \ge 0$.
+- Under the order-reversing map $p = N - b$, the longest border $b_{\max, k} = u$ becomes the **smallest period weight** in the $k$-th block:
+  $$x_k \;=\; N - u,$$
+  and the $c_k + 1$ period weights in block $k$ form an **increasing arithmetic progression**:
+  $$\boxed{\mathcal{A}_k \;=\; \bigl\{\,x_k + j \cdot d_k \;\big|\; 0 \le j \le c_k\,\bigr\}, \qquad x_k = N - u,\quad d_k = \operatorname{diff}[u],\quad c_k = \frac{u - \operatorname{slink}[u]}{d_k} - 1.}$$
+
+Notice the structural relation between $x_k, d_k, c_k$, and $N$: since the shortest border in the chain satisfies $b_{\min, k} = u - c_k \cdot d_k = \operatorname{slink}[u] + d_k > 0$, the largest period in $\mathcal{A}_k$ satisfies:
+$$x_k + c_k \cdot d_k \;=\; N - (\operatorname{slink}[u] + d_k) \;<\; N.$$
+
+---
+
+### 2.2 Why Dynamic Modulus Switching ($m_{\text{old}} \to x_k$) Collapse $\mathcal{A}_k$ to a Sliding Window
+
+Suppose we process the $K \le \lceil \log_2 N \rceil$ period blocks $\mathcal{A}_1, \mathcal{A}_2, \dots, \mathcal{A}_K$ one by one. If we kept a fixed modulus $m$ throughout the algorithm, an item $x_k + j \cdot d_k \in \mathcal{A}_k$ would shift residues by $(x_k + j \cdot d_k) \bmod m$, which tangles the base offset $x_k$ with the step $d_k$.
+
+Instead, **before relaxing the $k$-th progression $\mathcal{A}_k$, we dynamically switch the DP modulus from $m_{\text{old}}$ to the new base period $m_{\text{new}} = x_k$**!
+
+::: {.callout-important title="Theorem 3.1 (The Modulus-Switch Simplification Invariant)"}
+When the shortest-path array $D[0..x_k-1]$ is indexed modulo the base period $x_k$ of $\mathcal{A}_k = \{x_k + j \cdot d_k \mid 0 \le j \le c_k\}$:
+
+1. **The $j = 0$ item ($p = x_k$) becomes a zero-shift self-loop**: Since $x_k \equiv 0 \pmod{x_k}$ and $x_k > 0$, adding any number of copies of $x_k$ preserves the residue $r \bmod x_k$ and is automatically accounted for by the definition of $D[r]$ as the minimum achievable length congruent to $r \pmod{x_k}$.
+2. **The remaining items ($1 \le j \le c_k$) lie on pure $+d_k \pmod{x_k}$ cycles**: Adding a single item $x_k + j \cdot d_k$ ($1 \le j \le c_k$) transitions from residue $r$ to
+   $$(r + x_k + j \cdot d_k) \bmod x_k \;=\; (r + j \cdot d_k) \bmod x_k$$
+   with cost $+x_k + j \cdot d_k$. Thus every transition in $\mathcal{A}_k$ moves forward by $j \in \{1, \dots, c_k\}$ steps along the directed cycle generated by $+d_k \pmod{x_k}$!
+:::
+
+---
+
+### 2.3 Proving Subroutine A: Lossless Modulus Switching ($m_{\text{old}} \to x_k$)
+
+How do we convert a shortest-path table $D_{\text{old}}[0..m_{\text{old}}-1]$ (under modulus $m_{\text{old}}$) into $D_{\text{new}}[0..x_k-1]$ (under modulus $x_k$) in $O(m_{\text{old}} + x_k)$ time without losing any previously reachable lengths?
+
+Under the old modulus $m_{\text{old}}$, the table $D_{\text{old}}$ represents the set of achievable lengths
+$$\mathcal{S}_{\text{old}} \;=\; \bigcup_{r=0}^{m_{\text{old}}-1} \bigl\{\,D_{\text{old}}[r] + t \cdot m_{\text{old}} \;\big|\; t \in \mathbb{Z}_{\ge 0}\,\bigr\}.$$
+Under the new modulus $x_k$, $D_{\text{new}}[u]$ must equal the minimum element of $\mathcal{S}_{\text{old}} + \mathbb{Z}_{\ge 0} \cdot x_k$ that is congruent to $u \pmod{x_k}$. This is accomplished in two steps:
+
+1. **Direct Residue Projection ($t = 0$)**: Initialize $D_{\text{new}}[0..x_k-1] \leftarrow +\infty$. For each $r \in \{0, \dots, m_{\text{old}}-1\}$ with $D_{\text{old}}[r] < +\infty$, seed its exact residue modulo $x_k$:
+   $$D_{\text{new}}\bigl[\,D_{\text{old}}[r] \bmod x_k\,\bigr] \;\leftarrow\; \min\Bigl(D_{\text{new}}\bigl[\,D_{\text{old}}[r] \bmod x_k\,\bigr],\; D_{\text{old}}[r]\Bigr).$$
+
+2. **Cycle Unrolling for $+m_{\text{old}} \pmod{x_k}$ ($t \ge 1$)**: Adding $+m_{\text{old}}$ repeatedly is equivalent to relaxing directed edges $u \to (u + m_{\text{old}}) \bmod x_k$ of weight $+m_{\text{old}}$.
+   - By elementary number theory, the permutation $u \mapsto (u + m_{\text{old}}) \bmod x_k$ partitions $\mathbb{Z}/x_k\mathbb{Z}$ into $g_1 = \gcd(m_{\text{old}}, x_k)$ disjoint directed cycles, each of length $L_1 = x_k / g_1$.
+   - On any single cycle $C$, let $u_{\min} = \arg\min_{u \in C} D_{\text{new}}[u]$ be a vertex achieving the minimum seeded distance on $C$.
+   - Since $m_{\text{old}} > 0$, no incoming edge $v \to u_{\min}$ can ever strictly decrease $D_{\text{new}}[u_{\min}]$ (as $D_{\text{new}}[v] + m_{\text{old}} > D_{\text{new}}[u_{\min}]$).
+   - Therefore, $D_{\text{new}}[u_{\min}]$ is already final! Deleting the incoming edge into $u_{\min}$ unrolls the cycle $C$ into a directed path of $L_1 - 1$ edges starting at $u_{\min}$:
+     $$u_{\min} \xrightarrow{+m_{\text{old}}} (u_{\min} + m_{\text{old}}) \bmod x_k \xrightarrow{+m_{\text{old}}} \dots \xrightarrow{+m_{\text{old}}} \bigl(u_{\min} + (L_1 - 1) m_{\text{old}}\bigr) \bmod x_k.$$
+
+   - A single linear pass of $L_1 - 1$ edge relaxations along this path computes the exact shortest paths on $C$ in $O(L_1)$ time. Summing over all $g_1$ cycles takes $O(g_1 \cdot L_1) = O(x_k)$ time.
+
+---
+
+## 3. Reverse-Engineering Scratchpad: Residue-Cycle Monotonic Queues ($O(N \log N)$)
+
+### 3.1 Unrolling $+d_k \pmod{x_k}$ Cycles from the Argmin Anchor
+
+After Subroutine A completes, the modulus is $x_k$, and we must relax unbounded combinations of the remaining items $\{x_k + j \cdot d_k \mid 1 \le j \le c_k\}$ (when $c_k \ge 1$).
+
+Partition $\mathbb{Z}/x_k\mathbb{Z}$ into $g_2 = \gcd(d_k, x_k)$ independent directed cycles under the step $+d_k \pmod{x_k}$, each of length $L_2 = x_k / g_2$. Consider one such cycle $C$ containing the residue class of $c_0 \in \{0, 1, \dots, g_2 - 1\}$:
+
+1. **Locate the Cycle Argmin Anchor**: Scan all $L_2$ vertices of $C$ to find a vertex $v_0 \in C$ that minimizes the current distance $D[v_0]$. (If $D[v_0] = +\infty$, the entire cycle is unreachable and we skip it.)
+2. **Why $v_0$ Cannot Be Improved**: Every item in $\mathcal{A}_k$ has strictly positive weight $x_k + j \cdot d_k > 0$. Since $D[v_0] \le D[v]$ for all $v \in C$, no sequence of positive-weight transitions within $C$ can ever produce a distance strictly smaller than $D[v_0]$.
+3. **Unrolling $C$ into a Linear Index Line $t = 0, 1, \dots, L_2 - 1$**: Parameterize the vertices of $C$ starting at $v_0$:
+   $$v_t \;=\; (v_0 + t \cdot d_k) \bmod x_k \qquad (0 \le t \le L_2 - 1).$$
+   Could an optimal path start at some $v_s$, wrap past $v_0$, and improve $v_t$ ($0 < t \le s$)? No: any path passing through or jumping over $v_0$ has total length $> D[v_s] \ge D[v_0]$, whereas starting directly from $v_0$ and advancing to $v_t$ uses fewer steps from a smaller or equal base distance $D[v_0]$! Thus all transitions can be restricted to $0 \le s < t \le L_2 - 1$.
+
+---
+
+### 3.2 Deriving the Separated Key & Unbounded Monotonic Queue
+
+At cycle position $t \in \{1, \dots, L_2 - 1\}$, taking a single item $x_k + j \cdot d_k$ ($1 \le j \le c_k$) transitions from predecessor index $s = t - j \in [\max(0, t - c_k),\, t - 1]$ to $t$ with weight $x_k + (t - s) \cdot d_k$:
+
+$$
+\begin{aligned}
+D[v_t] &\;\leftarrow\; \min\Bigl(D[v_t],\; \min_{\max(0, t - c_k) \le s \le t - 1} \bigl\{\,D[v_s] + x_k + (t - s) \cdot d_k\,\bigr\}\Bigr) \\
+&\;=\; \min\Bigl(D[v_t],\; \underbrace{x_k + t \cdot d_k}_{\text{depends only on } t} \;+\; \min_{\max(0, t - c_k) \le s \le t - 1} \bigl\{\,\underbrace{D[v_s] - s \cdot d_k}_{\text{key}(s) \text{ depends only on } s}\,\bigr\}\Bigr).
+\end{aligned}
+$$
+
+```
+Cycle index:   0       ...   t-c_k     ...     s       ...    t-1      t
+Vertices:     v_0      ...  v_{t-c_k}  ...    v_s      ...  v_{t-1}   v_t
+               |             |<--- sliding window of width c_k --->|   ^
+               |             |   key(s) = D[v_s] - s * d_k         |___|
+           (argmin)          +-----------------------------------------+
+                               Relax D[v_t] FIRST, then push updated key(t)!
+```
+
+Because each item in $\mathcal{A}_k$ can be used **an arbitrary number of times** (and different items $x_k + j_1 d_k$ and $x_k + j_2 d_k$ from the same AP block $\mathcal{A}_k$ can be chained together), we must update $D[v_t]$ from the front of the monotonic queue **before** computing $\text{key}(t) = D[v_t] - t \cdot d_k$ and pushing $t$ into the back of the queue. That way, if $D[v_t]$ was improved by some $s < t$ using one item from $\mathcal{A}_k$, the newly improved $D[v_t]$ is immediately available to transition to $t' \in [t + 1, t + c_k]$ using a second item from $\mathcal{A}_k$!
+
+---
+
+### 3.3 Non-Standard Algorithmic Compilation: `[WC2016]` Kernel
+
+Below is the complete, self-contained compilation of the two-phase AP modulo shortest path engine (taking the precomputed KMP `pi`, `diff`, and `slink` arrays from `Ch 02` as input):
+
+```cpp
+// Non-Standard Kernel: Border-Group Modulo Shortest Path ([WC2016] Luogu P4156)
+// Precondition: pi[1..n], diff[1..n], slink[1..n] computed on S[1..n] in O(n) time.
+long long solve_wc2016_bamboo(int n, long long W, const vector<int>& pi,
+                              const vector<int>& diff, const vector<int>& slink) {
+    // Extract the O(log n) period AP blocks (x_k, d_k, c_k) via half-open slink chains
+    vector<tuple<int, int, int>> aps;
+    for (int u = pi[n]; u > 0; u = slink[u]) {
+        int x_k = n - u;                      // Smallest period in this chain
+        int d_k = diff[u];                    // Period step
+        int c_k = (u - slink[u]) / d_k - 1;   // Number of additional AP terms
+        aps.emplace_back(x_k, d_k, c_k);
+    }
+
+    int m = n;
+    vector<long long> D(m, INF), nxt;
+    D[0] = n; // Initial string S has length n === 0 (mod n)
+
+    for (auto [x, d, c] : aps) {
+        // Phase A: Dynamic Modulus Switch (m -> x) on gcd(m, x) cycles
+        nxt.assign(x, INF);
+        for (int r = 0; r < m; ++r)
+            if (D[r] < INF) nxt[D[r] % x] = min(nxt[D[r] % x], D[r]);
+
+        int g1 = std::gcd(m, x), len1 = x / g1;
+        for (int start = 0; start < g1; ++start) {
+            int best = start;
+            for (int u = (start + m) % x; u != start; u = (u + m) % x)
+                if (nxt[u] < nxt[best]) best = u;
+            if (nxt[best] >= INF) continue;
+            for (int u = best, step = 1; step < len1; ++step) {
+                int v = (u + m) % x;
+                nxt[v] = min(nxt[v], nxt[u] + m);
+                u = v;
+            }
+        }
+        D.swap(nxt);
+        m = x;
+
+        // Phase B: Residue-Cycle Monotonic Queue of width c on +d (mod x) cycles
+        if (c == 0) continue;
+        int g2 = std::gcd(d, x), len2 = x / g2;
+        for (int start = 0; start < g2; ++start) {
+            int best = start;
+            for (int u = (start + d) % x; u != start; u = (u + d) % x)
+                if (D[u] < D[best]) best = u;
+            if (D[best] >= INF) continue;
+
+            deque<pair<int, long long>> dq;
+            dq.emplace_back(0, D[best]); // t = 0: key(0) = D[v_0] - 0 * d
+            int u = best;
+            for (int t = 1; t < len2; ++t) {
+                u = (u + d) % x;
+                while (!dq.empty() && dq.front().first < t - c) dq.pop_front();
+                if (!dq.empty())
+                    D[u] = min(D[u], dq.front().second + x + 1LL * t * d);
+                // CRITICAL (BP-1A-04): Push UPDATED D[u] so multiple items from A_k chain!
+                long long key = D[u] - 1LL * t * d;
+                while (!dq.empty() && dq.back().second >= key) dq.pop_back();
+                dq.emplace_back(t, key);
+            }
+        }
+    }
+
+    long long ans = 0;
+    for (int r = 0; r < m; ++r)
+        if (D[r] <= W) ans += (W - D[r]) / m + 1;
+    return ans;
+}
+```
+
+---
+
+## 4. Hand-Checked Trace, Algorithmic Contract & Boundary Pitfalls (`BP-1A-04`)
+
+### 4.1 Hand-Checkable Trace on $S = \texttt{ababaababa}$ ($N = 10$)
+
+Let $S[1..10] = \texttt{ababaababa}$. Let us trace the exact border decomposition and AP blocks:
+
+1. **KMP Border Chain at $N = 10$**:
+   - $\pi[10] = 5$ ($S[1..5] = \texttt{ababa}$), $\operatorname{diff}[5] = 5 - 3 = 2$.
+   - $\pi[5] = 3$ ($S[1..3] = \texttt{aba}$), $\operatorname{diff}[3] = 3 - 1 = 2$.
+   - $\pi[3] = 1$ ($S[1..1] = \texttt{a}$), $\operatorname{diff}[1] = 1 - 0 = 1$.
+   - $\pi[1] = 0$.
+   Notice that at $u = 5$, $\operatorname{diff}[5] = 2 = \operatorname{diff}[3] \ne \operatorname{diff}[1] = 1$, so $\operatorname{slink}[5] = 1$ and $\operatorname{slink}[1] = 0$.
+
+2. **Half-Open Border Chains $\to$ Period AP Blocks**:
+   - **Block 1 ($u = 5, \operatorname{slink}[5] = 1$)**: Half-open border chain $(1, 5] = \{3, 5\}$ has longest border $u = 5$, step $d_1 = 2$, and count $c_1 = \frac{5 - 1}{2} - 1 = 1$. The period AP is:
+     $$\mathcal{A}_1 \;=\; \{x_1 + j \cdot d_1 \mid 0 \le j \le 1\} \;=\; \{5, 7\} \qquad (x_1 = 10 - 5 = 5,\; d_1 = 2,\; c_1 = 1).$$
+
+   - **Block 2 ($u = 1, \operatorname{slink}[1] = 0$)**: Half-open border chain $(0, 1] = \{1\}$ has longest border $u = 1$, step $d_2 = 1$, and count $c_2 = \frac{1 - 0}{1} - 1 = 0$. The period AP is:
+     $$\mathcal{A}_2 \;=\; \{9\} \qquad (x_2 = 10 - 1 = 9,\; d_2 = 1,\; c_2 = 0).$$
+
+3. **Trace of Block 1 ($m = 10 \to x_1 = 5$, $d_1 = 2$, $c_1 = 1$)**:
+   - Initially $D_{10}[0] = 10$ and $D_{10}[1..9] = +\infty$.
+   - **Phase A ($10 \to 5$)**: $D_5[10 \bmod 5] = D_5[0] = 10$, and $D_5[1..4] = +\infty$. Since $\gcd(10, 5) = 5$, each cycle has length $5 / 5 = 1$. Now $D_5 = [10, \infty, \infty, \infty, \infty]$, which already represents $\{10, 15, 20, 25, \dots\}$ (unlimited $+5$ extensions!).
+   - **Phase B ($+2 \pmod 5$ with window $c_1 = 1$)**: Since $\gcd(2, 5) = 1$, there is $1$ cycle of length $L_2 = 5$ anchored at $v_0 = 0$ ($D_5[0] = 10$):
+     - $t = 0$ ($v_0 = 0$): `dq = [(0, 10)]`.
+     - $t = 1$ ($v_1 = 2$): window $[0, 0]$ gives $D_5[2] = 10 + 5 + 1 \cdot 2 = 17$ ($10 + 7 = 17$). Updated $\text{key}(1) = 17 - 2 = 15$; push `(1, 15)`.
+     - $t = 2$ ($v_2 = 4$): window $[1, 1]$ pops $t = 0$! Using $s = 1$ gives $D_5[4] = 15 + 5 + 2 \cdot 2 = 24$ ($10 + 7 + 7 = 24$, chaining two copies of period $7$!). Updated $\text{key}(2) = 24 - 4 = 20$; push `(2, 20)`.
+     - $t = 3$ ($v_3 = 1$): window $[2, 2]$ gives $D_5[1] = 20 + 5 + 3 \cdot 2 = 31$ ($10 + 7 + 7 + 7 = 31$).
+     - $t = 4$ ($v_4 = 3$): window $[3, 3]$ gives $D_5[3] = 25 + 5 + 4 \cdot 2 = 38$ ($10 + 7 + 7 + 7 + 7 = 38$).
+
+---
+
+### 4.2 Algorithmic Contract & Complexity Invariant
+
+| Contract Component | Specification |
+| :--- | :--- |
+| **Input** | String $S[1..N]$ ($N \le 5 \times 10^5$), target bound $W \le 10^{18}$. |
+| **State Invariant** | After processing $\mathcal{A}_1, \dots, \mathcal{A}_k$ with current modulus $m = x_k$, $D[r]$ stores the minimum achievable length $L \ge N$ using periods $\{N\} \cup \bigcup_{i=1}^k \mathcal{A}_i$ such that $L \equiv r \pmod{x_k}$. |
+| **Time Complexity** | At step $k$, Phase A takes $O(m_{\text{old}} + x_k)$ and Phase B takes $O(x_k)$, where $x_k < N$. Since there are $K \le \lceil \log_2 N \rceil$ AP blocks, total time is **$O(N \log N)$**. |
+| **Space Complexity** | Two rolling arrays `D` and `nxt` of size $\le N$ plus a deque of size $\le N$: **$O(N)$ auxiliary space**. |
+
+---
+
+### 4.3 Boundary Pitfalls & Broken-Invariant Counterexamples (`BP-03` / `BP-1A-04`)
+
+::: {.callout-warning title="Pitfall BP-03 (`BP-1A-04a`): Pushing Old $D[v_t]$ Before Updating (0-1 vs. Unbounded Deque Bug)"}
+**The Broken Shortcut**: In Phase B, computing `long long key = D[u] - 1LL * t * d;` *before* relaxing `D[u] = min(D[u], dq.front().second + x + 1LL * t * d);` and pushing the old `key` into `dq`.
+
+**Why It Fails (Hand-Checkable Counterexample)**:
+Look at $t = 2$ ($v_2 = 4$) in our trace of $S = \texttt{ababaababa}$ above, where $\mathcal{A}_1 = \{5, 7\}$ ($x_1 = 5, d_1 = 2, c_1 = 1$):
+
+- Before Phase B, only $D_5[0] = 10$ is finite; $D_5[2] = D_5[4] = +\infty$.
+- At $t = 1$ ($v_1 = 2$), `dq.front()` ($s = 0$) updates $D_5[2] \leftarrow 17$.
+- If we pushed the **old** $D_5[2] = +\infty$ into `dq`, then at $t = 2$ ($v_2 = 4$), after $s = 0$ is popped (because $t - c_1 = 2 - 1 = 1 > 0$), `dq.front()` has value $+\infty$, leaving $D_5[4] = +\infty$ instead of $24 = 10 + 7 + 7$!
+- **Structural Reason**: Pushing old values treats the pass over $\mathcal{A}_k$ as a single-choice ($0$-$1$) transition (allowing at most one item from $\{x_k + d_k, \dots, x_k + c_k d_k\}$ to be used), whereas overlapping string concatenation allows **unbounded reuse** of any period in $\mathcal{A}_k$. Always relax $D[v_t]$ *first*, then push the updated $D[v_t] - t \cdot d_k$!
+:::
+
+::: {.callout-warning title="Pitfall BP-1A-04b: Starting Cycle Unrolling at Residue $0$ Instead of $\arg\min_{v \in C} D[v]$"}
+**The Broken Shortcut**: Unrolling the cycle $v_t = (\text{start} + t \cdot d_k) \bmod x_k$ starting at `start` $\in \{0, \dots, g_2 - 1\}$ without rotating the cycle to start at $v_0 = \arg\min_{v \in C} D[v]$ (or without doing a second wrap-around pass).
+
+**Why It Fails**: If `start = 0` has $D[0] = +\infty$ while the last vertex on the cycle $v_{L_2 - 1}$ has $D[v_{L_2 - 1}] = 12$, a single pass from $t = 0 \to L_2 - 1$ visits $v_{L_2 - 1}$ last and **never propagates** $D[v_{L_2 - 1}] = 12$ across the wrap-around edge $v_{L_2 - 1} \to v_0 \to v_1 \dots$! Anchoring $t = 0$ at $v_0 = \arg\min_{v \in C} D[v]$ guarantees that no shortest path ever crosses into $v_0$ from $v_{L_2 - 1}$, making a single pass of $L_2 - 1$ steps 100% exact.
+:::
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Problem Ladder (8 Non-Template Problems)
+
+Every problem below is self-contained and moves progressively from single-cycle Frobenius reachability to full $O(N \log N)$ border-group modulo shortest path, minimum-copy auxiliary potentials, and bounded-multiplicity / weighted border knapsacks.
+
+---
+
+### Tier 1 — Stepping Stone (Residue-Cycle Unrolling & Single-AP Knapsack)
+
+#### Problem 3.1 (`W1A-14` · Few-Period Frobenius String Concatenation)
+
+**Statement**:
+You are given a string $S[1..N]$ ($N \le 5 \times 10^5$) whose positive border set $\operatorname{Border}(S) \setminus \{0\}$ has size $M \le 20$, and a length bound $W \le 10^{18}$. Starting with $T = S$, you may repeatedly append $S$ overlapping by any $b \in \operatorname{Border}(S)$ (including $b = 0$). Compute the number of distinct lengths $L \in [N, W]$ that can be formed, and find the largest length $L_{\text{unreachable}}$ (not necessarily $\le W$) congruent to some reachable residue that **cannot** be formed (or report that all residues are unreachable).
+
+**Constraints**: $1 \le N \le 5 \times 10^5$, $|\operatorname{Border}(S) \setminus \{0\}| \le 20$, $N \le W \le 10^{18}$. Time limit: $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+By Period–Border Duality, each border $b \in \operatorname{Border}(S)$ yields an extension weight $p = N - b \in \operatorname{Per}(S)$. Since there are at most $M + 1 \le 21$ distinct weights and $p_{\min} = N - \pi[N] \le N$, how small can we make the modulo shortest-path graph?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Choose the shortest period $m = p_{\min} = N - \pi[N]$ as the fixed modulus. Every other period $p \in \operatorname{Per}(S)$ can be relaxed around the $\gcd(p, m)$ directed cycles of step $+p \pmod m$ in $O(m)$ time per period without needing Dijkstra's priority queue!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Initialize $D[N \bmod m] = N$ and $D[r] = +\infty$ for $r \ne N \bmod m$. For each period $p \in \operatorname{Per}(S) \setminus \{m\}$, partition $\{0, \dots, m-1\}$ into $g = \gcd(p, m)$ cycles; on each cycle, find $u_{\min} = \arg\min D[u]$ and relax $m/g - 1$ steps forward via $D[(u+p)\bmod m] \leftarrow \min(\dots, D[u] + p)$.
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: Although $W \le 10^{18}$ precludes direct DP over $[1, W]$, the set of valid step sizes $\operatorname{Per}(S) = \{N - b : b \in \operatorname{Border}(S)\}$ has size $\le 21$ and minimum element $m = N - \pi[N] \le N$. Even here, running generic Dijkstra with a heap takes $O(M m \log m)$, whereas cycle unrolling eliminates the $\log m$ factor completely.
+2. **Combinatorial Word Invariant**: Fix modulus $m = N - \pi[N]$. Since $+m$ is a valid step size, the set of achievable lengths in residue class $r \pmod m$ is $\{D[r] + k \cdot m \mid k \ge 0\}$ whenever $D[r] < +\infty$. For any period $p \in \operatorname{Per}(S)$, the transition $u \to (u + p) \bmod m$ of weight $+p$ decomposes $\mathbb{Z}/m\mathbb{Z}$ into $g = \gcd(p, m)$ directed cycles. Because $p > 0$, the minimum-distance vertex $u_{\min}$ on each cycle cannot be improved by any incoming edge on that cycle, so unrolling $m/g - 1$ steps from $u_{\min}$ achieves full unbounded relaxation for weight $p$.
+3. **Algorithmic Compilation**:
+   - Compute $\pi[1..N]$ in $O(N)$ time and collect $\operatorname{Per}(S) = \{N - b : b \in \operatorname{Border}(S)\}$.
+   - Set $m = N - \pi[N]$, `D.assign(m, INF)`, and `D[N % m] = N`.
+   - For each $p \in \operatorname{Per}(S) \setminus \{m\}$ and each cycle start $s \in [0, \gcd(p, m) - 1]$, locate $u_{\min}$ on the $+p \pmod m$ cycle and relax $m/\gcd(p, m) - 1$ edges forward.
+   - Count lengths in $[N, W]$ as $\sum_{D[r] \le W} \bigl(\lfloor (W - D[r])/m \rfloor + 1\bigr)$. For any reachable residue $r$ with $D[r] > N$, the largest unreachable length $\ge N$ in residue class $r$ is $D[r] - m$.
+   - **Complexity**: $O(N + M \cdot m)$ time and $O(m)$ space.
+4. **Broken-Invariant Counterexample**: Initializing $D[0] = 0$ instead of $D[N \bmod m] = N$ falsely counts lengths $< N$ (or fails when $N \not\equiv 0 \pmod m$, such as $S = \texttt{aba}$ where $N = 3, m = 2$, and $N \bmod m = 1$).
+:::
+
+---
+
+#### Problem 3.2 (`W1A-20` · Single-AP Residue-Cycle Monotonic Queue Knapsack)
+
+**Statement**:
+You are given a string $S[1..N]$ ($N \le 5 \times 10^5$) such that $\pi[N] \ge \lceil N/2 \rceil$, and a query threshold $W \le 10^{18}$. We are only allowed to overlap consecutive copies of $S$ along borders of length $b \ge \lceil N/2 \rceil$ (or $b = 0$). Compute the number of distinct lengths $L \in [N, W]$ that can be formed.
+
+**Constraints**: $2 \le N \le 5 \times 10^5$, $\pi[N] \ge \lceil N/2 \rceil$, $N \le W \le 10^{18}$. Time limit: $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+When $S = \texttt{a}^N$, there are $N/2$ borders of length $\ge \lceil N/2 \rceil$, so relaxing them one by one as in Problem 3.1 would take $\Theta(N^2)$ time. What does the Half-Length Border AP Theorem (`Theorem 2.1` in `Ch 02`) guarantee about all borders $\ge \lceil N/2 \rceil$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+All borders of length $\ge \lceil N/2 \rceil$ have period $p \le \lfloor N/2 \rfloor$ divisible by $d = N - \pi[N]$. Together with the empty border $b = 0$ (period $N$), the allowed extension weights are $\{d, 2d, \dots, (c+1)d\} \cup \{N\}$, or more generally a single arithmetic progression $\mathcal{A} = \{x + j \cdot d \mid 0 \le j \le c\}$ plus $N$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For borders $\ge \lceil N/2 \rceil$, the smallest period is $x = N - \pi[N] = d$, so $x + j \cdot d = (j+1)d$ is a multiple of $x = d$! More generally, when restricting to any single border AP $\mathcal{A} = \{x + j \cdot d \mid 0 \le j \le c\}$, working modulo $x$ reduces the transition to a sliding-window monotonic queue of width $c$ on each $+d \pmod x$ cycle.
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: A single border AP $\mathcal{A} = \{x + j \cdot d \mid 0 \le j \le c\}$ can contain $c = \Theta(N)$ items. Relaxing all $c$ edges per vertex takes $O(c \cdot x) = \Theta(N^2)$ time.
+2. **Combinatorial Word Invariant**: Under modulus $x$, item $j = 0$ (weight $x$) shifts residues by $0 \pmod x$, while items $1 \le j \le c$ (weight $x + j \cdot d$) shift residues by $+j \cdot d \pmod x$. Unrolling each of the $g = \gcd(d, x)$ cycles of length $L = x / g$ from its argmin vertex $v_0 = \arg\min_{v \in C} D[v]$ yields $v_t = (v_0 + t \cdot d) \bmod x$ and the separated recurrence:
+   $$D[v_t] \;\leftarrow\; \min\Bigl(D[v_t],\; x + t \cdot d + \min_{\max(0, t-c) \le s \le t-1} \bigl(D[v_s] - s \cdot d\bigr)\Bigr).$$
+   Notice that for the topmost chain $u = \pi[N]$ with $u \ge \lceil N/2 \rceil$, we actually have $x = N - u = d$, so $\gcd(d, x) = x$ and $L = 1$ (every multiple $(j+1)d$ is already generated by $+d$!), whereas for any lower chain $(\operatorname{slink}[u], u]$, $x = N - u > d$ and the monotonic queue of width $c$ reduces $O(c \cdot x)$ to $O(x)$.
+
+3. **Algorithmic Compilation**:
+   - Initialize $D$ modulo $x$: set $D[N \bmod x] = N$ and relax $+N \pmod x$ around the $\gcd(N, x)$ cycles from $v_0 = N \bmod x$.
+   - On each of the $\gcd(d, x)$ cycles of step $+d \pmod x$, rotate to $v_0 = \arg\min D[v]$ and sweep $t = 1 \dots x/\gcd(d,x) - 1$ with a monotonic deque maintaining $\min_{s \in [t-c, t-1]} (D[v_s] - s \cdot d)$, updating $D[v_t]$ before pushing $(t, D[v_t] - t \cdot d)$.
+   - **Complexity**: $O(N + x) = O(N)$ time and $O(x)$ space.
+4. **Broken-Invariant Counterexample**: Pushing the un-updated $D[v_t] - t \cdot d$ into the deque (`BP-1A-04a`) fails whenever the shortest path to residue $v_{2c}$ requires chaining two steps of $+c$ along the $+d \pmod x$ cycle.
+:::
+
+---
+
+### Tier 2 — Intermediate (Dynamic Modulus Switching & Multi-String Overlaps)
+
+#### Problem 3.3 (`W1A-29` · Dynamic Modulus Switching Between Two Period Groups)
+
+**Statement**:
+You are given a string $S[1..N]$ ($N \le 5 \times 10^5$) whose border set decomposes into at most two `slink` arithmetic progressions $\mathcal{A}_1 = \{x_1 + j d_1 \mid 0 \le j \le c_1\}$ and $\mathcal{A}_2 = \{x_2 + j d_2 \mid 0 \le j \le c_2\}$ (for example, $S = (\texttt{ab}^m \texttt{a})^k$). Given $Q \le 10^5$ queries $W_1, \dots, W_Q \le 10^{18}$, answer for each $W_q$ how many achievable overlapping lengths lie in $[N, W_q]$.
+
+**Constraints**: $1 \le N \le 5 \times 10^5$, $1 \le Q \le 10^5$, $N \le W_q \le 10^{18}$. Time limit: $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+After relaxing $\mathcal{A}_1$ under modulus $x_1$, we have $D_1[0..x_1-1]$. To relax $\mathcal{A}_2$ efficiently, we want the modulus to be $x_2$. How do we switch from modulus $x_1$ to modulus $x_2$ in $O(x_1 + x_2)$ time? And how do we answer $Q = 10^5$ queries $W_q$ in $O(\log x_2)$ time per query after the DP finishes?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Project $D_1[r]$ into $D_2[D_1[r] \bmod x_2] \leftarrow \min(\dots, D_1[r])$, then relax $+x_1 \pmod{x_2}$ along each of the $\gcd(x_1, x_2)$ cycles starting at its argmin vertex. Once the final array $D[0..m-1]$ is computed, sort the finite values $D[0..m-1]$ as $d_{(1)} \le d_{(2)} \le \dots \le d_{(k)}$ and precompute prefix sums $\sum \lfloor D[r]/m \rfloor$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Notice that for any $D[r] \le W_q$, we can write $\lfloor (W_q - D[r]) / m \rfloor$ using integer division by splitting $W_q = q_W \cdot m + r_W$ and $D[r] = q_r \cdot m + r$: $\lfloor (W_q - D[r])/m \rfloor = q_W - q_r - [r > r_W]$. Even simpler: for queries asking whether a specific target length $L_q$ is reachable, check $L_q \ge D[L_q \bmod m]$ in $O(1)$ time; for counting in $[N, W_q]$, binary search for $D[r] \le W_q$ and split by whether $r \le W_q \bmod m$!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: Keeping modulus $x_1$ while relaxing $\mathcal{A}_2$ fails because $x_2 \not\equiv 0 \pmod{x_1}$, so $+x_2 + j d_2$ does not form a contiguous window on $+d_2 \pmod{x_1}$ cycles. Furthermore, scanning all $m$ residues for each of the $Q = 10^5$ queries $W_q$ would take $O(Q N)$ time.
+2. **Combinatorial Word Invariant**:
+   - **Modulus Switch ($x_1 \to x_2$)**: Every length generated after $\mathcal{A}_1$ has the form $D_1[r] + t \cdot x_1$ ($t \ge 0$). Seeding $D_2[D_1[r] \bmod x_2] \leftarrow \min(\dots, D_1[r])$ covers $t = 0$, and relaxing $u \to (u + x_1) \bmod x_2$ of weight $+x_1$ from $u_{\min} = \arg\min_{u \in C} D_2[u]$ on each of the $\gcd(x_1, x_2)$ cycles covers all $t \ge 1$ in $O(x_1 + x_2)$ time.
+   - **Fast Query Aggregation**: Let $m$ be the final modulus. Since $D[r] \equiv r \pmod m$, write $D[r] = q_r \cdot m + r$ where $q_r = \lfloor D[r] / m \rfloor$. For any query $W = q_W \cdot m + r_W$ ($0 \le r_W < m$):
+     $$\left\lfloor \frac{W - D[r]}{m} \right\rfloor + 1 \;=\; q_W - q_r + [r \le r_W] \qquad (\forall r \text{ with } D[r] \le W).$$
+     Notice that $D[r] \le W \iff (q_r < q_W) \lor (q_r = q_W \land r \le r_W)$!
+
+3. **Algorithmic Compilation**:
+   - Run the two-block dynamic modulus switch + monotonic queue in $O(N)$ time to get $D[0..m-1]$.
+   - Sort the finite values $D[r]$ in $O(m \log m)$ time and build prefix sums of $\lfloor D[r] / m \rfloor$.
+   - For each query $W_q$, since $D[r] \le W_q$ already captures the exact borrow condition $r \le W_q \bmod m$ whenever $q_r = q_W$, and for $q_r \le q_W$ we have $\lfloor (W_q - D[r])/m \rfloor + 1 = q_W - q_r + [r \le r_W]$, sorting the $Q$ queries offline by $W_q$ (or maintaining a Fenwick tree over $r \in [0, m-1]$ as $q_W$ increases) answers all $Q$ queries in $O((m + Q) \log m)$ time!
+4. **Broken-Invariant Counterexample**: Using $\lfloor W_q / m \rfloor - \lfloor D[r] / m \rfloor$ without the borrow term $-[r > (W_q \bmod m)]$ overcounts by $1$ whenever $D[r] \le W_q$ but $(D[r] \bmod m) > (W_q \bmod m)$.
+:::
+
+---
+
+#### Problem 3.4 (`W1A-32` · Multi-String Overlap Shortest Path with Small Period Base)
+
+**Statement**:
+You are given $M$ strings $S_1, S_2, \dots, S_M$ ($\sum |S_i| \le 5 \times 10^5$, $M \le 50$) such that no string $S_i$ is a substring of another $S_j$ ($i \ne j$). We start with $S_1$ and repeatedly append any $S_j$, overlapping $S_j$ with the current suffix $S_i$ along any common suffix-prefix match (when $i = j$, this can be any proper border $b \in \operatorname{Border}(S_i)$; when $i \ne j$, we only use the **longest** suffix-prefix overlap $b_{i,j}$ between $S_i$ and $S_j$). Suppose $S_1$ has shortest period $p_{\min}(S_1) \le 2\,000$. Given $W \le 10^{18}$, count how many lengths $L \in [|S_1|, W]$ are achievable ending with $S_1$.
+
+**Constraints**: $1 \le M \le 50$, $\sum |S_i| \le 5 \times 10^5$, $p_{\min}(S_1) \le 2\,000$, $W \le 10^{18}$. Time limit: $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Unlike single-string overlapping, the state now depends on BOTH which string $S_i$ ($1 \le i \le M$) is currently at the end AND the length residue modulo $m = p_{\min}(S_1) \le 2\,000$. How many states $(i, r)$ are there in the product graph?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+There are only $M \cdot m \le 50 \times 2\,000 = 10^5$ states $(i, r) \in \{1, \dots, M\} \times \mathbb{Z}/m\mathbb{Z}$! Between $i$ and $j$ ($i \ne j$), the longest overlap $b_{i,j}$ is found in $O(|S_i| + |S_j|)$ via KMP/Z (or AC automaton in $O(\sum |S_i|)$), adding weight $w_{i,j} = |S_j| - b_{i,j}$. And at each node $i$, self-overlaps $b \in \operatorname{Border}(S_i)$ form $O(\log |S_i|)$ period APs!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Run Dijkstra over the $M \cdot m$ states for cross-string transitions $(i, r) \to (j, (r + w_{i,j}) \bmod m)$, or notice that any proper border of $S_i$ can also be decomposed via the AC fail tree!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: Tracking which string $S_i$ ends the concatenation creates an $M$-vertex transition graph. Because any valid length ending at $S_1$ can be extended by $+m$ (where $m = p_{\min}(S_1) = |S_1| - \pi_{S_1}[|S_1|]$) while still ending at $S_1$, $m \le 2\,000$ serves as a global modulus for all paths returning to $S_1$.
+2. **Combinatorial Word Invariant**: Build the Aho–Corasick automaton on $\{S_1, \dots, S_M\}$ in $O(\sum |S_i|)$ time. The longest suffix of $S_i$ that is a prefix of $S_j$ is the deepest ancestor of $S_i$'s terminal node in the AC fail tree that lies on the Trie path of $S_j$. This gives all pairwise transition weights $w_{i,j} = |S_j| - b_{i,j}$ ($i \ne j$) and self-period weights $p_{i} = |S_i| - \pi_{S_i}[|S_i|]$ ($i = j$).
+3. **Algorithmic Compilation**:
+   - Define $D[i][r]$ ($1 \le i \le M,\; 0 \le r < m$) as the minimum length ending with $S_i$ congruent to $r \pmod m$, initialized with $D[1][|S_1| \bmod m] = |S_1|$.
+   - From $(i, r)$, transition to $(j, (r + w_{i,j}) \bmod m)$ with cost $+w_{i,j}$ for all $j \in \{1, \dots, M\}$.
+   - Run Dijkstra on the $M \cdot m \le 10^5$ states with $M^2 \cdot m \le 5 \times 10^6$ edges, then sum $\lfloor (W - D[1][r])/m \rfloor + 1$ over $0 \le r < m$ with $D[1][r] \le W$.
+   - **Complexity**: $O(\sum |S_i| + M^2 m \log(M m))$ time and $O(M m)$ space.
+4. **Broken-Invariant Counterexample**: Using $D[i][r]$ for $i \ne 1$ directly in the final answer formula $\lfloor (W - D[i][r])/m \rfloor + 1$ is invalid unless $i = 1$, because $+m = p_{\min}(S_1)$ is a valid self-overlap period of $S_1$, not of $S_i$ ($i \ne 1$).
+:::
+
+---
+
+### Tier 3 — Advanced (`[WC2016] 论战捆竹竿` & Minimum-Step Tie-Breaking)
+
+#### Problem 3.5 (`W1A-33` · `[WC2016] 论战捆竹竿` / `Luogu P4156` / `UOJ #179`)
+
+**Statement**:
+Given $T \le 5$ test cases, each consisting of a string $S[1..N]$ ($N \le 5 \times 10^5$) over lowercase letters and an integer $W \le 10^{18}$, start with a single copy of $S$ and repeatedly append $S$ overlapping along any proper border $b \in \operatorname{Border}(S)$ (including $b = 0$). Compute the number of distinct string lengths $L \in [N, W]$ that can be formed.
+
+**Constraints**: $T \le 5$, $\sum N \le 5 \times 10^5$, $N \le W \le 10^{18}$. Time limit: $1.0\text{ s}$–$2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+This is the flagship problem of Chapter 03. Why must we use the half-open border decomposition $(\operatorname{slink}[u], u]$ from Chapter 02, and why is the number of modulus switches bounded by $\lceil \log_2 N \rceil$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Each half-open border chain $(\operatorname{slink}[u], u]$ maps via $p = N - b$ to $\mathcal{A}_k = \{x_k + j d_k \mid 0 \le j \le c_k\}$ with $x_k = N - u, d_k = \operatorname{diff}[u], c_k = (u - \operatorname{slink}[u])/d_k - 1$. Switching the modulus to $x_k$ makes $+x_k$ free and reduces $+x_k + j d_k$ ($1 \le j \le c_k$) to a width-$c_k$ monotonic queue along the $\gcd(d_k, x_k)$ cycles of step $+d_k \pmod{x_k}$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Assemble the two-phase loop from Section 3.3 (`solve_wc2016_bamboo`). Check what happens when $W < N$: the answer is $0$.
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: At $N = 5 \times 10^5$ and $W = 10^{18}$, $|\operatorname{Border}(S)|$ can be $N - 1$, making standard Frobenius shortest path $\Theta(N^2)$.
+2. **Combinatorial Word Invariant**: By Theorem 2.3 (`Ch 02`) and Theorem 3.1 (`§2.2`), the $\Theta(N)$ period weights $\{N - b : b \in \operatorname{Border}(S) \setminus \{0\}\}$ partition into $K \le \lceil \log_2 N \rceil$ progressions $\mathcal{A}_k = \{x_k + j d_k \mid 0 \le j \le c_k\}$. Switching the modulus from $m_{\text{old}}$ to $x_k$ via $\gcd(m_{\text{old}}, x_k)$ cycle unrolling takes $O(m_{\text{old}} + x_k)$ time, and relaxing $\mathcal{A}_k$ via a sliding-window monotonic queue of width $c_k$ on the $\gcd(d_k, x_k)$ cycles takes $O(x_k)$ time.
+3. **Algorithmic Compilation**:
+   - Execute `solve_wc2016_bamboo(n, W, pi, diff, slink)` exactly as derived in Section 3.3.
+   - Note that for min-plus reachability, even if one accidentally used closed intervals $[\operatorname{slink}[u], u]$ ($c_k = (u - \operatorname{slink}[u])/d_k$), the duplicate period $N - \operatorname{slink}[u]$ is idempotent under $\min$; however, using the canonical half-open interval $(\operatorname{slink}[u], u]$ ($c_k = (u - \operatorname{slink}[u])/d_k - 1$) avoids unnecessary work when $c_k = 0$.
+   - **Complexity**: $O(N \log N)$ time and $O(N)$ auxiliary space per testcase.
+4. **Broken-Invariant Counterexample**: Failing to observe both parts of `BP-1A-04` (anchoring each cycle at $\arg\min D[v]$ and updating $D[u]$ before pushing `D[u] - t * d` into the deque) fails immediately on multi-item chains within a single AP block.
+:::
+
+---
+
+#### Problem 3.6 (`W1A-36` · Minimum-Copy Overlapping String Generation for $W \le 10^{18}$)
+
+**Statement**:
+You are given a string $S[1..N]$ ($N \le 2 \times 10^5$) and a target length $W$ ($N \le W \le 10^{18}$). Starting from a single copy of $S$ (which counts as $1$ copy), you repeatedly append $S$ overlapping along any border $b \in \operatorname{Border}(S)$ (including $b = 0$). Determine whether exact length $W$ can be formed, and if so, find the **minimum number of copies of $S$** required to form a string of exact length $W$.
+
+**Constraints**: $1 \le N \le 2 \times 10^5$, $N \le W \le 10^{18}$. Time limit: $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Unlike Problem 3.5 (which only needs to know the *minimum achievable length* $D[r] \equiv r \pmod m$), here we want to reach **exact length $W$** using as **few copies** as possible. To minimize the number of copies, each copy should add as *large* a period weight $p = N - b$ as possible!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+The largest possible extension weight is $+N$ (corresponding to $b = 0$, zero overlap!). Every time we use a positive border $b \in \operatorname{Border}(S) \setminus \{0\}$, we add $p = N - b$ instead of $N$, which "loses" $b = N - p$ units of length compared to a full $+N$ step, or equivalently, if we fix the modulus to $m = N$:
+Every copy of $S$ adds $N - b \equiv -b \pmod N$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Every positive border overlap $b_i \in \operatorname{Border}(S) \setminus \{0\}$ advances length by $p_i = N - b_i < N$, whereas a zero-overlap step ($b = 0$) advances length by the maximum possible step $+N$. Therefore, once a path reaches the target residue class $W \bmod N$ at some length $L \le W$, the optimal way to pad $L$ to $W$ is **always** to use $(W - L)/N$ copies of the full string $+N$! Track the lexicographical pair `(min_len, min_copies)` across the dynamic modulus switches, and perform one final Phase A modulus switch back to $m_{\text{final}} = N$.
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: If we want to reach exact length $W$ using the minimum number of copies $C$, every step $p_i \in \operatorname{Per}(S)$ satisfies $1 \le p_i \le N$, with $p = N$ (empty border $b = 0$) being the **maximum possible step size**.
+2. **Combinatorial Word Invariant (The Excess-Border Identity)**:
+   Suppose a valid sequence of $c$ copies (starting with $p_1 = N$ and $c - 1$ border extensions $p_2, \dots, p_c \in \operatorname{Per}(S)$) reaches length $L = \sum_{i=1}^c p_i \le W$ with $L \equiv W \pmod N$. Padding $L$ up to $W$ using $(W - L)/N$ zero-overlap copies of $+N$ produces a valid representation of $W$ using total copies:
+   $$C_{\text{total}} \;=\; c + \frac{W - L}{N} \;=\; \frac{W}{N} + 1 + \sum_{i=2}^c \left(1 - \frac{p_i}{N}\right) \;=\; \frac{W + \sum_{i=2}^c b_i}{N},$$
+   where $b_i = N - p_i \in \operatorname{Border}(S)$ is the border overlap of the $i$-th step. Because each additional step $p_i \in [1, N-1]$ increases $L$ by $p_i > 0$ AND increases $C_{\text{total}}$ by $b_i / N > 0$, minimizing $L$ first (and breaking ties by minimum copies $c$) on each residue class across all AP blocks—followed by a final modulus switch back to $m_{\text{final}} = N$—simultaneously guarantees feasibility ($L \le W$) and minimizes $C_{\text{total}}$.
+
+3. **Algorithmic Compilation (Minimum-Length Tie-Broken by Minimum Copies)**:
+   Carry a `struct State { long long len, copies; }` ordered lexicographically by `(len, copies)`:
+
+   - Initially at modulus $m = N$: `D[0] = {N, 1}`.
+   - During Phase A ($m_{\text{old}} \to x_k$): advancing by $+m_{\text{old}}$ adds $+m_{\text{old}}$ to `len` and $+1$ to `copies`.
+   - During Phase B ($+d_k \pmod{x_k}$): advancing by $x_k + (t - s) d_k$ adds $+x_k + (t - s) d_k$ to `len` and $+1$ to `copies` (since each window step uses **one** item $x_k + (t-s)d_k$ from $\mathcal{A}_k$ regardless of $t - s$), so the separated key in the monotonic deque is the pair `(D[v_s].len - s * d_k, D[v_s].copies + 1)`.
+   - At the end, perform one final Phase A switch from $x_K$ back to $m_{\text{final}} = N$: then for residue $r = W \bmod N$, if $D[r].\text{len} \le W$, the total number of copies is $D[r].\text{copies} + (W - D[r].\text{len}) / N$.
+   - **Complexity**: $O(N \log N)$ time and $O(N)$ space.
+4. **Broken-Invariant Counterexample**: Forgetting the final modulus switch $x_K \to N$ pads the remaining distance $W - D[r].\text{len}$ with steps of size $x_K < N$ instead of steps of size $N$.
+:::
+
+---
+
+### Tier 4 — Mastery (Bounded-Multiplicity & Weighted Border-Group Knapsacks)
+
+#### Problem 3.7 (`W1A-38` · Bounded-Copy & Cost-Weighted Border-Group Modulo Shortest Path)
+
+**Statement**:
+You are given a string $S[1..N]$ ($N \le 2 \times 10^5$) and a target length bound $W \le 10^{18}$. As before, the positive borders of $S$ partition into $K \le \lceil \log_2 N \rceil$ `slink` arithmetic progressions $\mathcal{A}_1, \dots, \mathcal{A}_K$. However, you are also given a multiplicity limit $B_k \ge 1$ for each progression $\mathcal{A}_k$ ($1 \le k \le K$): while the base period $x_k$ of $\mathcal{A}_k$ (and the full length $N$) may be used an **unlimited** number of times, you may use **at most $B_k$ non-base borders** ($x_k + j \cdot d_k$ with $1 \le j \le c_k$) in total from block $\mathcal{A}_k$. Compute the number of distinct achievable lengths $L \in [N, W]$.
+
+**Constraints**: $1 \le N \le 2 \times 10^5$, $\sum_{k=1}^K B_k \le 200$, $N \le W \le 10^{18}$. Time limit: $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Recall `BP-1A-04a` from Section 4.3: why did pushing the *old* $D_{\text{old}}[v_t] - t \cdot d_k$ into the monotonic queue fail for `[WC2016]`? Because pushing old values restricts the pass over $\mathcal{A}_k$ to selecting **at most ONE** item from $\{x_k + j \cdot d_k \mid 1 \le j \le c_k\}$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+A single 0-1 monotonic queue pass (where we read from `D_prev[v_s] - s * d_k` and write to `D_curr[v_t]`) relaxes **at most $1$ item** from $\{x_k + j \cdot d_k \mid 1 \le j \le c_k\}$! What if we repeat this 0-1 monotonic queue pass $B_k$ times (or use binary-grouping / min-plus convex / doubling)?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Even better: picking $m \in \{1, \dots, B_k\}$ items $x_k + j_1 d_k, \dots, x_k + j_m d_k$ with $j_i \in [1, c_k]$ has total weight $m \cdot x_k + (j_1 + \dots + j_m) d_k$. Since $x_k \equiv 0 \pmod{x_k}$ and $+x_k$ is already available in unlimited supply, for any fixed step sum $J = j_1 + \dots + j_m \in [1, B_k \cdot c_k]$, the minimum number of items $m \ge 1$ needed to reach step sum $J$ is simply $m_{\min}(J) = \lceil J / c_k \rceil$!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: Running $B_k$ separate 0-1 monotonic queue passes takes $O(x_k \cdot \sum B_k)$ time (which already passes when $\sum B_k \le 200$). Can we do even better—solving **arbitrary $B_k \le 10^9$** in $O(N \log N)$ time?
+2. **Combinatorial Word Invariant (Exact Collapse of $B_k$ Item Sums Modulo $x_k$)**:
+   Suppose we choose $m \in [1, B_k]$ items $x_k + j_1 d_k, \dots, x_k + j_m d_k$ with $1 \le j_i \le c_k$.
+
+   - Their total weight is $m \cdot x_k + J \cdot d_k$, where $J = \sum_{i=1}^m j_i \in [m,\, m \cdot c_k]$.
+   - Under modulus $x_k$, this sum shifts the residue along the $+d_k \pmod{x_k}$ cycle by $+J \cdot d_k \pmod{x_k}$.
+   - For any fixed total step shift $J \in [1, B_k \cdot c_k]$, since $+x_k > 0$, we want to minimize the coefficient $m$ of $x_k$ subject to $m \ge 1$ and $m \cdot c_k \ge J$. The minimum valid $m$ is:
+     $$m_{\min}(J) \;=\; \left\lceil \frac{J}{c_k} \right\rceil!$$
+
+   - Furthermore, any $J \in [1, B_k \cdot c_k]$ can be uniquely written as $J = q \cdot c_k + r$ with $0 \le q < B_k$ and $1 \le r \le c_k$ (or decompose $B_k$ into powers of $2$, or run $B_k$ passes of the 0-1 monotonic queue when $\sum B_k \le 200$!).
+   - In fact, notice that incrementing $J$ by $+c_k$ increases $m_{\min}(J)$ by $+1$ and weight by $x_k + c_k d_k$! Thus the bounded-multiplicity transition is equivalent to taking **at most $B_k - 1$ steps of the maximal item $x_k + c_k d_k$** (in 0-1 monotonic queue form with step $c_k d_k$) followed by **at most $1$ step from $\{x_k + r \cdot d_k \mid 1 \le r \le c_k\}$**!
+3. **Algorithmic Compilation**:
+   - **Method A (Direct $B_k$-Pass 0-1 Queue for $\sum B_k \le 200$)**: In Phase B, repeat $B_k$ times: on each cycle, read `key = D_old[v_s] - s * d_k` and write `D_new[v_t] = min(D_old[v_t], dq.front().second + x_k + t * d_k)`.
+   - **Method B ($O(N \log N)$ for Arbitrary $B_k \le 10^9$)**: First relax $\le B_k - 1$ copies of the single item $W_{\max} = x_k + c_k d_k$ along cycles of step $+c_k d_k \pmod{x_k}$ using a single sliding-window monotonic queue of width $B_k - 1$; then perform **one** 0-1 monotonic queue pass of width $c_k$ on the $+d_k \pmod{x_k}$ cycles (pushing `D_old[v_s] - s * d_k` *before* updating `D_new[v_t]`)!
+   - **Complexity**: $O(N \log N)$ time and $O(N)$ space even for $B_k \le 10^9$!
+4. **Broken-Invariant Counterexample**: Using an unbounded queue in the final width-$c_k$ pass allows $m > B_k$ items to be chained; the final width-$c_k$ pass **must** push `D_old[v_t]` (the 0-1 push order from `BP-1A-04a`) so at most one remainder $r \in [1, c_k]$ is added to the $\le B_k - 1$ full blocks of $c_k$.
+:::
+
+---
+
+#### Problem 3.8 (`W1A-41` · Forbidden-Length & Multi-Target Border Concatenation Counting)
+
+**Statement**:
+You are given a string $S[1..N]$ ($N \le 5 \times 10^5$), a range $[L_{\min}, L_{\max}]$ ($N \le L_{\min} \le L_{\max} \le 10^{18}$), and an auxiliary divisor $M \le 10^6$ with $\gcd(M, p_{\min}(S)) = 1$. You form strings by starting with $S$ and repeatedly overlapping $S$ along any border $b \in \operatorname{Border}(S)$. Count how many achievable lengths $L \in [L_{\min}, L_{\max}]$ are **NOT divisible by $M$** ($M \nmid L$).
+
+**Constraints**: $1 \le N \le 5 \times 10^5$, $N \le L_{\min} \le L_{\max} \le 10^{18}$, $1 \le M \le 10^6$, $\gcd(M, N - \pi[N]) = 1$. Time limit: $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+By reducing to $\text{Ans}(L_{\max}) - \text{Ans}(L_{\min} - 1)$, we only need to count achievable lengths $L \le W$ with $M \nmid L$. After the `[WC2016]` algorithm finishes, the final modulus is $m = x_K = N - b_{\min}$ (or we can switch the final modulus to $m = p_{\min}(S) = N - \pi[N]$, where $\gcd(M, m) = 1$).
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In each residue class $r \pmod m$, the achievable lengths $\le W$ are $D[r] + k \cdot m$ for $0 \le k \le K_r = \lfloor (W - D[r]) / m \rfloor$. How many of these $K_r + 1$ integers are divisible by $M$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Since $\gcd(M, m)$ may be $> 1$ when $m = x_K$, either perform one final Phase A modulus switch to $m = p_{\min}(S) = N - \pi[N]$ (where $\gcd(M, m) = 1$) or handle general $g = \gcd(M, m)$ directly: the congruence $D[r] + k \cdot m \equiv 0 \pmod M$ has a solution for $k$ if and only if $g \mid D[r]$, in which case the solutions $k \ge 0$ form a single arithmetic progression modulo $M / g$.
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: Incorporating $M \le 10^6$ into the shortest-path state space would multiply the number of states by $M$, causing an immediate Memory/Time Limit Exceeded ($N \cdot M \approx 5 \times 10^{11}$).
+2. **Combinatorial Word Invariant**:
+   The condition $M \nmid L$ does NOT constrain intermediate transitions—it only filters the final set of achievable lengths $L \in [L_{\min}, L_{\max}]$!
+   After running `solve_wc2016_bamboo` to obtain the final modulus $m$ and shortest-path array $D[0..m-1]$, the set of achievable lengths is partitioned into $m$ disjoint arithmetic progressions:
+   $$\mathcal{P}_r \;=\; \bigl\{\,D[r] + k \cdot m \;\big|\; k \in \mathbb{Z}_{\ge 0}\,\bigr\} \qquad (0 \le r < m,\; D[r] < +\infty).$$
+   For a given bound $W$, let $K_r = \lfloor (W - D[r]) / m \rfloor$. We want to count $k \in [0, K_r]$ such that:
+   $$D[r] + k \cdot m \;\equiv\; 0 \pmod M \iff k \cdot m \;\equiv\; -D[r] \pmod M.$$
+   Let $g = \gcd(m, M)$. By linear congruence theory:
+
+   - If $g \nmid D[r]$, there are **zero** multiples of $M$ in $\mathcal{P}_r$.
+   - If $g \mid D[r]$, let $m' = m / g$, $M' = M / g$, and $c = (-D[r] / g) \bmod M'$. Since $\gcd(m', M') = 1$, the unique solution modulo $M'$ is:
+     $$k_0 \;=\; \bigl(c \cdot (m')^{-1}\bigr) \bmod M' \;\in\; [0, M' - 1],$$
+     and the number of multiples of $M$ in $k \in [0, K_r]$ is $\lfloor (K_r - k_0) / M' \rfloor + 1$ (if $K_r \ge k_0$, else $0$).
+
+3. **Algorithmic Compilation**:
+   - Run `solve_wc2016_bamboo` to get $D[0..m-1]$ in $O(N \log N)$ time.
+   - Compute $g = \gcd(m, M)$, $m' = m / g$, $M' = M / g$, and the modular inverse $(m')^{-1} \bmod M'$ via Extended Euclidean Algorithm in $O(\log M)$ time.
+   - For each $r \in [0, m-1]$ with $D[r] < +\infty$, evaluate the count of valid $k$ in $[L_{\min}, L_{\max}]$ by subtracting the count of multiples of $M$ from total achievable lengths in $[L_{\min}, L_{\max}]$.
+   - **Complexity**: $O(N \log N)$ time and $O(N)$ space.
+4. **Broken-Invariant Counterexample**: Multiplying the graph state space by $M$ when $M$ only filters the final length $L$ confuses a **path constraint** with an **endpoint congruence filter**.
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 When to Reach for Border-Group Modulo Shortest Path (`Ch 03`)
+
+Use this diagnostic checklist whenever a string problem combines **overlapping concatenations** with **huge target lengths ($W \le 10^{18}$)**:
+
+- [ ] **Symptom 1 — Overlapping Self-Concatenation**: Does appending $S$ with border overlap $b \in \operatorname{Border}(S)$ increase the string length by the complementary period $p = N - b \in \operatorname{Per}(S)$?
+- [ ] **Symptom 2 — Huge Target Length $W \le 10^{18}$ with $N \le 5 \times 10^5$**: Does standard Frobenius modulo shortest path TLE at $\Theta(N^2)$ because $|\operatorname{Border}(S)| = \Theta(N)$?
+- [ ] **Invariant Check 1 — Half-Open AP Extraction**: Did you extract $\mathcal{A}_k = \{x_k + j \cdot d_k \mid 0 \le j \le c_k\}$ using $x_k = N - u$, $d_k = \operatorname{diff}[u]$, and $c_k = (u - \operatorname{slink}[u])/d_k - 1$?
+- [ ] **Invariant Check 2 — Argmin Cycle Unrolling (`BP-1A-04b`)**: In both Phase A ($+m_{\text{old}} \pmod{x_k}$) and Phase B ($+d_k \pmod{x_k}$), did you rotate every residue cycle to start at its argmin vertex $v_0 = \arg\min_{v \in C} D[v]$ before relaxing forward?
+- [ ] **Invariant Check 3 — Unbounded vs. 0-1 Deque Push Order (`BP-1A-04a`)**: For unbounded border reuse, did you update `D[u]` from `dq.front()` **before** computing `key = D[u] - t * d` and pushing into `dq`? (Conversely, for 0-1 / bounded-multiplicity remainder passes in Problem 3.7, push `D_old[u] - t * d` before updating `D_new[u]`.)
+
+---
+
+### 6.2 Chapter 03 Revision & Transition Table
+
+| Concept / Subroutine | Mathematical Formula / Rule | Complexity | Next Connection |
+| :--- | :--- | :--- | :--- |
+| **Overlap $\leftrightarrow$ Period Weight** | Overlap $b \in \operatorname{Border}(S) \iff$ length step $+p = N - b \in \operatorname{Per}(S)$ | $O(1)$ per border | [`Ch 04`](ch04-series-link-dp-kmp-pam.qmd) (`slink` Partition DP) |
+| **Period AP Block $\mathcal{A}_k$** | $x_k = N - u,\; d_k = \operatorname{diff}[u],\; c_k = \frac{u - \operatorname{slink}[u]}{d_k} - 1$ | $\le \lceil \log_2 N \rceil$ blocks | [`Ch 15`](ch15-internal-pattern-matching-borders.qmd) (Internal Borders) |
+| **Modulus Switch ($m_{\text{old}} \to x_k$)** | Project $D_{\text{old}}[r] \bmod x_k$, relax $+m_{\text{old}}$ on $\gcd(m_{\text{old}}, x_k)$ cycles from $u_{\min}$ | $O(m_{\text{old}} + x_k)$ | [`CP-I`](../checkpoints/cp01-part1-periodicity-borders-slink.qmd) (Blind Checkpoint I) |
+| **Residue-Cycle Queue** | Unroll $+d_k \pmod{x_k}$ from $v_0 = \arg\min D[v]$; window $c_k$ on $D[v_s] - s \cdot d_k$ | $O(x_k)$ per block, $O(N \log N)$ total | [`Ch 04`](ch04-series-link-dp-kmp-pam.qmd) (`g[u]` Rolling Accumulators) |

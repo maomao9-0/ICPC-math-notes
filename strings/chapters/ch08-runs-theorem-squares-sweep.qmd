@@ -1,0 +1,849 @@
+---
+title: "08 — The Runs Theorem (Bannai et al.), the Three-Squares Lemma & 2D Sweep-Line over Periodic Runs"
+subtitle: "Part II · Lyndon Theory, Significant Suffixes & Periodic Runs"
+---
+
+::: {.callout-note icon=false}
+## Chapter Navigation & Dependencies
+
+- **Strict Prerequisites**:
+  - [Chapter 01 — Fine–Wilf Periodicity, Primitive Roots & Cyclic Orbits](ch01-fine-wilf-periodicity-orbits.qmd)
+  - [Chapter 06 — The Significant Suffixes (`显著后缀`) Theorem, 1-Survivor Segment Tree Merging & Dyadic SA-RMQ](ch06-significant-suffixes-substrings.qmd)
+  - [Chapter 07 — Lyndon Arrays ($\lambda_<, \lambda_>$), Double-Order Monotonic Stacks & Min-Cartesian Lyndon Tree Isomorphism](ch07-lyndon-arrays-cartesian-trees.qmd)
+- **Assigned Technique IDs**: `T-1B-05` (The Runs Theorem, Lyndon-Root Disjointness Proof, $O(N \log N)$ vs. $O(N)$ Runs Enumeration, $< 2N$ Representative Squares, and 2D Sweep-Line over Runs), `T-1B-06` (Crochemore–Rytter Three-Squares Lemma & Fraenkel–Simpson Distinct Squares Bound).
+- **Core Combinatorial Objects Introduced**:
+  1. **Maximal Periodic Substrings / Runs ($\mathcal{R}(S)$)**: Triples $R = [l, r, p]$ where $p$ is the shortest (primitive) period of $S[l..r]$, $\operatorname{exp}(R) = (r - l + 1)/p \ge 2$, and period $p$ extends neither to $l - 1$ nor to $r + 1$.
+  2. **Bannai et al.'s Runs Theorem (2017) (`Theorem 8.1`)**: Every run $R = [l, r, p]$ possesses at least one interior Lyndon root $S[i..i+p-1]$ ($i \in [l+1..r-p+1] \subseteq [2..N]$) under the canonical order $<_R \in \{<, >\}$ satisfying $S[r+1] <_R S[r+1-p]$, with $\lambda_{<_R}[i] = p$ and $S[i] <_R S[i-1]$. Consequently:
+     $$
+     |\mathcal{R}(S)| \le N - 1 < N, \qquad \sum_{R \in \mathcal{R}(S)} \operatorname{exp}(R) < 3N, \qquad \sum_{R \in \mathcal{R}(S)} \left\lfloor \frac{\operatorname{exp}(R)}{2} \right\rfloor < 1.5N.
+     $$
+
+  3. **The $< 2N$ Representative Squares Lemma (`Corollary 8.2`) & Crochemore–Rytter Three-Squares Lemma (`Theorem 8.3`)**: Across all runs and all harmonics $k \ge 1$, there are strictly fewer than $2N$ canonical square representatives; and if $u^2 \sqsubset v^2 \sqsubset w^2$ with $u$ primitive, then $|w| \ge |u| + |v|$.
+- **Learning Objectives**:
+  - Derive Bannai, I, Inenaga, Nakashima, Takeda, and Tsuruta's 2017 proof of Kolpakov and Kucherov's Runs Conjecture from first principles using Chapter 07's double-order Lyndon arrays.
+  - Implement both the $O(N \log N)$ harmonic LCE checkpoint algorithm (`[NOI2016] 优秀的拆分`) and the $O(N)$ Lyndon-array seeding algorithm, including exact primitive deduplication.
+  - Prove the Crochemore–Rytter Three-Squares Lemma and Fraenkel–Simpson's $\le 2N - 2$ distinct-squares bound (and avoid the Fibonacci-word trap of assuming $\le 2$ squares *start* at index $i$).
+  - Compile substring square and repetition queries (`CF 1043G`, range distinct squares, range square multiplicities, and clipped run counts) into 2D orthogonal sweep-line updates over the $(L, R)$-plane.
+:::
+
+---
+
+## 1. Maximal Periodic Runs (`极长周期子串`) & Why Naive Square Enumeration Is $\Theta(N^2)$
+
+A nonempty string of the form $W = u^2 = uu$ ($u \in \Sigma^+$) is called a **square** (or **tandem repeat**), of half-length $p = |u|$ and total length $2p$. More generally, $W = u^k$ ($k \ge 2$) is a **$k$-th power**.
+
+### Step 1 — The Diagnostic Signal: Compressing $\Theta(N^2)$ Squares into $O(N)$ Maximal Intervals
+
+In competitive programming, a large family of problems asks us to count, locate, or query squares $u^2$ inside a string $S[1..N]$ or inside query substrings $S[L_q..R_q]$:
+
+- Counting $AABB$ decompositions (`[NOI2016] 优秀的拆分`, where we need the number of squares starting and ending at every index $i \in [1..N]$);
+- Testing whether a query substring $S[L_q..R_q]$ is **square-free** or contains a square (`CF 1043G — Speckled Band`);
+- Counting **distinct squares** or **total square occurrences** inside $S[L_q..R_q]$;
+- Finding the longest border of $S[L_q..R_q]$ of length $\ge (R_q - L_q + 1)/2$ (`[BJWC2018] Border 的四种求法`).
+
+If we try to list every square substring $S[a..a+2p-1] = u^2$ individually, we immediately hit a $\Theta(N^2)$ wall:
+
+1. **Unary Explosion**: In $S = \texttt{a}^N$, there are $\Theta(N^2)$ occurrences of squares $\texttt{a}^{2k}$ across $\lfloor N/2 \rfloor$ distinct lengths.
+2. **Sliding-Phase Explosion**: Even for a **single** primitive period $p = 2$ on $S = (\texttt{ab})^{N/2}$, every starting index $a \in [1..N-2k+1]$ begins a square of length $4k$, producing $\Theta(N^2)$ square occurrences!
+
+Notice why both explosions happen: all of those squares are merely sub-windows of a single contiguous periodic region! Instead of listing individual squares, what if we record only the **maximal periodic intervals** of $S$?
+
+### Concrete Definition of a Run (`Definition 8.1`)
+
+::: {.callout-note icon=false}
+## Definition 8.1 (Run / Maximal Periodic Substring — Iliopoulos, Moore & Smyth 1997; Kolpakov & Kucherov 1999)
+A **run** (Chinese: `极长周期子串`) in a 1-indexed string $S[1..N]$ is an ordered triple $R = [l, r, p]$ ($1 \le l < r \le N$, $1 \le p \le \lfloor (r - l + 1)/2 \rfloor$) satisfying three conditions:
+
+1. **(Minimum / Primitive Period & Exponent $\ge 2$)**: $p$ is the **shortest period** of the substring $S[l..r]$ (meaning $S[x] = S[x + p]$ for all $l \le x \le r - p$, and no smaller integer $p' < p$ is a period of $S[l..r]$), and $S[l..r]$ contains at least two full periods:
+   $$
+   \operatorname{exp}(R) := \frac{r - l + 1}{p} \ge 2 \qquad (\text{i.e., } r - l + 1 \ge 2p).
+   $$
+   By the **Fine–Wilf Periodicity Theorem** ([Chapter 01](ch01-fine-wilf-periodicity-orbits.qmd)), because $r - l + 1 \ge 2p$, $p$ is the shortest period of $S[l..r]$ if and only if every length-$p$ sub-window $S[a..a+p-1]$ ($l \le a \le r - p + 1$) is a **primitive word** (not a power $z^d$ for any $d \ge 2$).
+
+2. **(Left-Maximality)**: Period $p$ cannot be extended one character to the left: either $l = 1$, or $S[l - 1] \ne S[l - 1 + p]$.
+3. **(Right-Maximality)**: Period $p$ cannot be extended one character to the right: either $r = N$, or $S[r + 1] \ne S[r + 1 - p]$.
+
+We denote by $\mathcal{R}(S)$ the set of all runs of $S[1..N]$.
+:::
+
+### Hand-Checked Example: All Runs of $S = \texttt{abaababaabaab}$ ($N = 13$)
+
+Let us trace all runs of the Fibonacci prefix $S[1..13] = \texttt{a b a a b a b a a b a a b}$:
+
+| Run $R = [l, r, p]$ | Substring $S[l..r]$ | Period Block $S[l..l+p-1]$ | Length $r-l+1$ | Exponent $\operatorname{exp}(R)$ | Primitively Rooted Squares Inside $R$ |
+| :--- | :--- | :--- | :---: | :---: | :--- |
+| $[3, 4, 1]$ | $\texttt{aa}$ | $\texttt{a}$ | $2$ | $2.0$ | $S[3..4] = \texttt{aa}$ |
+| $[8, 9, 1]$ | $\texttt{aa}$ | $\texttt{a}$ | $2$ | $2.0$ | $S[8..9] = \texttt{aa}$ |
+| $[11, 12, 1]$ | $\texttt{aa}$ | $\texttt{a}$ | $2$ | $2.0$ | $S[11..12] = \texttt{aa}$ |
+| $[4, 8, 2]$ | $\texttt{ababa}$ | $\texttt{ab}$ | $5$ | $2.5$ | $S[4..7]=\texttt{abab},\; S[5..8]=\texttt{baba}$ |
+| $[1, 6, 3]$ | $\texttt{abaaba}$ | $\texttt{aba}$ | $6$ | $2.0$ | $S[1..6] = \texttt{abaaba}$ |
+| $[6, 13, 3]$ | $\texttt{abaabaab}$ | $\texttt{aba}$ | $8$ | $2.67$ | $S[6..11]=\texttt{abaaba}, S[7..12]=\texttt{baabaa}, S[8..13]=\texttt{aabaab}$ |
+| $[1, 11, 5]$ | $\texttt{abaababaaba}$ | $\texttt{abaab}$ | $11$ | $2.2$ | $S[1..10]=\texttt{abaababaab},\; S[2..11]=\texttt{baababaaba}$ |
+
+Notice three crucial facts in this table:
+
+- Every square $u^2$ in $S$ (whether primitive like $\texttt{abab}$, or non-primitive if $\operatorname{exp}(R) \ge 4$) is a contiguous sub-window of length $2kp$ inside a **unique** run $R = [l, r, p]$ where $p$ is the primitive root length of $u$!
+- Why is the run $R$ containing a square $S[a..a+2kp-1]$ **unique**? Because if two runs $R_1 = [l_1, r_1, p_1]$ and $R_2 = [l_2, r_2, p_2]$ both contained $S[a..a+2kp-1]$ with primitive root $p$, then $p_1 = p_2 = p$, and extending $[a, a+2kp-1]$ maximally to the left and right with period $p$ yields the exact unique endpoints $l = a - \operatorname{LCS}(a-1, a+p-1)$ and $r = a + 2kp - 1 + \operatorname{LCP}(a, a+p)$!
+- Across $N = 13$ characters, there are only $|\mathcal{R}(S)| = 7 < 13$ runs!
+
+---
+
+## 2. Core Combinatorial Word Invariants: Bannai et al.'s (2017) Lyndon-Root Disjointness Proof of the Runs Theorem
+
+In 1999, Kolpakov and Kucherov proved that $|\mathcal{R}(S)| = O(N)$ and conjectured that $|\mathcal{R}(S)| < N$ for every string $S$ of length $N$. For 15 years, bounding the constant factor required hundreds of pages of computer-assisted case analysis, until **Bannai, I, Inenaga, Nakashima, Takeda, and Tsuruta (2015/2017)** proved $|\mathcal{R}(S)| \le N - 1 < N$ and $\sum \operatorname{exp}(R) < 3N$ in **two pages** using the double-order Lyndon array from Chapter 07!
+
+Let us derive their proof in three crystal-clear steps.
+
+### Step 2 — The Combinatorial Word Invariant: Interior Lyndon Roots & Right-Mismatch Order Selection
+
+Fix any string $S[1..N]$ over an ordered alphabet $(\Sigma, <_0)$, and let $<_1 = (>)$ be the reversed alphabet order on $\Sigma$. Append an end-of-string sentinel $S[N + 1] = \$ = -\infty$ that is **strictly smaller than every character of $\Sigma$ under BOTH $<_0$ and $<_1$**.
+
+Now take any run $R = [l, r, p] \in \mathcal{R}(S)$.
+
+#### Substep 1: Choosing the Canonical Order $<_R \in \{<_0, <_1\}$ via Right-Maximality
+
+Look at the position $r + 1$ immediately to the right of the run $R = [l, r, p]$:
+
+- If $r = N$, then $S[N + 1] = \$ = -\infty$ is strictly smaller than $S[N + 1 - p] \in \Sigma$ under both $<_0$ and $<_1$; we assign $<_R := <_0$.
+- If $r < N$, then by **Right-Maximality** (Definition 8.1(3)), period $p$ breaks at $r + 1$:
+  $$
+  S[r + 1] \ne S[r + 1 - p].
+  $$
+  Because $S[r + 1]$ and $S[r + 1 - p]$ are distinct characters in $\Sigma$, **strictly one** of the two opposite orders $<_0, <_1$ makes $S[r + 1]$ smaller than $S[r + 1 - p]$. We define $<_R \in \{<_0, <_1\}$ to be that unique order:
+  $$
+  S[r + 1] <_R S[r + 1 - p]!
+  $$
+
+#### Substep 2: Interior $L$-Roots in $[l + 1 .. r - p + 1]$ and Why $\lambda_{<_R}[i] = p$
+
+An **$L$-root** of the run $R = [l, r, p]$ is any length-$p$ substring $w = S[i..i+p-1]$ ($l \le i \le r - p + 1$) inside $R$ that is a **Lyndon word under $<_R$**.
+
+1. **Existence of an Interior $L$-Root ($i \ge l + 1 \ge 2$)**:
+   Because $r - l + 1 \ge 2p$, the starting index interval $[l + 1 .. l + p]$ of length $p$ lies **entirely inside $[l .. r - p + 1]$** (since $(l + p) + p - 1 = l + 2p - 1 \le r$).
+   As $i$ ranges over $[l + 1 .. l + p]$, the $p$ substrings $S[i..i+p-1]$ are all $p$ cyclic rotations of the primitive period block $S[l..l+p-1]$. Since the period $p$ is primitive, all $p$ cyclic rotations are distinct, and **strictly one** of them is a $<_R$-Lyndon word!
+   Moreover, if the run extends past $l + 2p - 1$, this same $<_R$-Lyndon rotation repeats every $p$ steps inside $[l + 1 .. r - p + 1]$. Define the **interior $L$-root start set** of $R$:
+   $$
+   B(R) := \bigl\{ i \in [l + 1 .. r - p + 1] \;\big|\; S[i..i+p-1] \text{ is a } <_R\text{-Lyndon word} \bigr\} \subseteq \{2, 3, \dots, N\}.
+   $$
+   Every run $R \in \mathcal{R}(S)$ satisfies $|B(R)| = \lfloor (r - l)/p \rfloor = \lfloor \operatorname{exp}(R) - 1 \rfloor \ge 1$!
+
+2. **Why Every $L$-Root $i \in B(R)$ Has Exact Longest Lyndon Prefix $\lambda_{<_R}[i] = p$**:
+   Take any $i \in B(R)$. Inside $S[i..r]$, the $<_R$-Lyndon word $w = S[i..i+p-1]$ of length $p$ repeats periodically as a pre-Lyndon word:
+   $$
+   S[i..r] = w^d w' \qquad (d \ge 1,\; w' \sqsubset w).
+   $$
+   What happens at index $r + 1$ when we run Duval's algorithm under $<_R$ starting at $i$?
+   The periodic continuation of $w^d w'$ expects the character $S[r + 1 - p]$, whereas the actual character in $S$ is $S[r + 1]$. By our choice of $<_R$ in Substep 1,
+   $$
+   S[r + 1] <_R S[r + 1 - p]!
+   $$
+   In Duval's automaton ([Chapter 05, Section 2.2](ch05-lyndon-factorization-duval-necklaces.qmd)), a smaller character $S[r + 1] <_R S[r + 1 - p]$ triggers **Case 3 (Periodic Rupture)** and immediately freezes the first CFL factor of $S[i..N]$ to be a single copy of $w = S[i..i+p-1]$!
+   Equivalently, by Theorem 7.1, $S[i + p .. N]$ agrees with $S[i .. N]$ on $r - (i + p) + 1$ characters and then has $S[r + 1] <_R S[r + 1 - p]$ at the first mismatch, so $S[i + p .. N] <_R S[i .. N]$, while no $j \in [i + 1 .. i + p - 1]$ can be smaller than $S[i .. N]$ because $w = S[i..i+p-1]$ is $<_R$-Lyndon!
+   Therefore, for **every** $i \in B(R)$:
+   $$
+   R_{\mathcal{L}, <_R}[i] = i + p - 1 \quad \Longleftrightarrow \quad \lambda_{<_R}[i] = p!
+   $$
+
+```{mermaid}
+flowchart LR
+    subgraph RunR ["Run R = [l, r, p] with Right-Mismatch S[r+1] <_R S[r+1-p]"]
+        direction LR
+        L["l (Left end)"] --- I["i >= l+1 (Interior L-root start)<br/>S[i-1] = S[i+p-1] = last char of w"]
+        I --- W1["w = S[i..i+p-1] (<_R-Lyndon)<br/>First char S[i] <_R Last char S[i-1]"]
+        W1 --- W2["w^d w' up to r"]
+        W2 --- R1["r+1: S[r+1] <_R S[r+1-p]<br/>Triggers Duval Case 3 -> λ_{<_R}[i] = p!"]
+    end
+```
+
+#### Substep 3: Why the Root Sets $B(R) \subseteq \{2, \dots, N\}$ Are Pairwise Disjoint Across ALL Runs!
+
+Can two distinct runs $R_1, R_2 \in \mathcal{R}(S)$ ever share an interior $L$-root starting index $i \in B(R_1) \cap B(R_2)$?
+
+1. **Case A ($R_1$ and $R_2$ Were Assigned the SAME Order $<_{R_1} = <_{R_2} = \prec$)**:
+   By Substep 2, any $i \in B(R_1) \cap B(R_2)$ must satisfy both $p_1 = \lambda_\prec[i]$ and $p_2 = \lambda_\prec[i]$, which forces $p_1 = p_2 = p$!
+   And because $i$ is an **interior** $L$-root of both runs ($i \ge l_1 + 1$ and $i \ge l_2 + 1$), both $R_1$ and $R_2$ contain the entire substring $S[i - 1 .. i + p - 1]$ of length $p + 1 > p$ with period $p$. Extending $S[i - 1 .. i + p - 1]$ maximally to the left and right with period $p$ uniquely determines $l_1 = l_2 = i - \operatorname{LCS}(i - 1, i + p - 1)$ and $r_1 = r_2 = i + p - 1 + \operatorname{LCP}(i, i + p)$, forcing $R_1 = R_2$!
+
+2. **Case B ($R_1$ Has $<_{R_1} = <_0$ and $R_2$ Has $<_{R_2} = <_1$ at the Same $i \in \{2, \dots, N\}$)**:
+   Look at the character $S[i - 1]$ immediately to the left of $i$!
+   Because we restricted $B(R)$ to **interior** roots $i \ge l + 1$, the index $i - 1 \ge l$ lies **inside the run $R$**!
+   By periodicity of $R$ with period $p$, the character at $i - 1$ equals the character at $(i - 1) + p = i + p - 1$, which is the **last character** of the Lyndon word $w = S[i..i+p-1]$:
+   $$
+   S[i - 1] = S[i + p - 1] = w[p]!
+   $$
+   Now compare the first character $w[1] = S[i]$ against the last character $w[p] = S[i + p - 1] = S[i - 1]$:
+
+   - If $p \ge 2$: by `Theorem 5.1(2)`, a Lyndon word $w$ of length $p \ge 2$ under $<_R$ is strictly smaller than its length-$1$ suffix $w[p]$, which forces its first character to be strictly smaller than its last character:
+     $$
+     S[i] = w[1] \;<_R\; w[p] = S[i + p - 1] = S[i - 1]!
+     $$
+     Read that inequality:
+
+     - If $i \in B(R_1)$ with $<_{R_1} = (<)$ and $p_1 \ge 2$, then $S[i] < S[i - 1]$.
+     - If $i \in B(R_2)$ with $<_{R_2} = (>)$ and $p_2 \ge 2$, then $S[i] > S[i - 1]$.
+   - If $p = 1$: then $S[i] = S[i - 1]$, so no $p \ge 2$ Lyndon word can start at $i$ under either order, and by Case A at most one $p = 1$ run can cover $[i - 1, i]$!
+
+   Since for every index $i \in \{2, 3, \dots, N\}$, the three relations $S[i] < S[i - 1]$, $S[i] > S[i - 1]$, and $S[i] = S[i - 1]$ are **mutually exclusive**, **no index $i \in \{2, \dots, N\}$ can EVER belong to $B(R_1) \cap B(R_2)$ for two distinct runs $R_1 \ne R_2$**!
+
+::: {.callout-important}
+## Theorem 8.1 (The Runs Theorem — Bannai, I, Inenaga, Nakashima, Takeda & Tsuruta 2017)
+For every string $S[1..N]$ of length $N \ge 1$, the interior Lyndon-root sets $\{B(R)\}_{R \in \mathcal{R}(S)}$ are non-empty, pairwise disjoint subsets of $\{2, 3, \dots, N\}$. Consequently:
+
+1. **(Strict $< N$ Bound on the Number of Runs)**:
+   $$
+   |\mathcal{R}(S)| \le \sum_{R \in \mathcal{R}(S)} |B(R)| \le N - 1 < N.
+   $$
+
+2. **(Sum of Exponents $< 3N$)**: Because a run $R = [l, r, p]$ has length $r - l + 1 = \operatorname{exp}(R)\cdot p$, the interval $[l + 1 .. r - p + 1]$ has length $r - l - p + 1 = (\operatorname{exp}(R) - 1)p$ and contains $|B(R)| = \lfloor \operatorname{exp}(R) - 1 \rfloor > \operatorname{exp}(R) - 2$ copies of the $<_R$-Lyndon root. Since $|B(R)| \ge 1 \implies \operatorname{exp}(R) < |B(R)| + 2 \le 3|B(R)|$, summing over all runs yields:
+   $$
+   \sum_{R \in \mathcal{R}(S)} \operatorname{exp}(R) < 3(N - 1) < 3N, \qquad \text{and} \qquad \sum_{R \in \mathcal{R}(S)} \left\lfloor \frac{\operatorname{exp}(R)}{2} \right\rfloor \le \sum_{R \in \mathcal{R}(S)} |B(R)| \le N - 1 < 1.5N.
+   $$
+:::
+
+### Corollary 8.2 — The $< 2N$ Representative Squares Lemma (`T-1B-05`)
+
+How many **primitively rooted square occurrences** $S[a..a+2p-1]$ ($l \le a \le r - 2p + 1$) exist across all runs $R = [l, r, p] \in \mathcal{R}(S)$?
+
+In a run $R = [l, r, p]$ of period $p \ge 2$, every full period window of length $p$ inside $[l + 1 .. r - p + 1]$ contains **two** interior Lyndon roots: one under $<_0$ (with $S[i] < S[i-1]$) and one under $<_1$ (with $S[i] > S[i-1]$). Meanwhile, the number of primitively rooted square starting positions $a \in [l .. r - 2p + 1]$ inside $R$ is:
+
+$$
+(r - l + 1) - 2p + 1 = (r - l) - 2p + 2 \le 2 \left\lfloor \frac{r - l}{p} \right\rfloor = 2 |B(R)|!
+$$
+
+Summing over all runs gives a remarkable linear bound on **all canonical square representatives**:
+
+::: {.callout-important}
+## Corollary 8.2 (The $< 2N$ Representative Squares Lemma)
+
+1. **(Primitively Rooted Square Starts)**: Across all runs $R = [l, r, p] \in \mathcal{R}(S)$, the total number of starting positions $a \in [l .. r - 2p + 1]$ of primitively rooted squares $S[a..a+2p-1]$ satisfies:
+   $$
+   \sum_{R = [l, r, p] \in \mathcal{R}(S)} (r - l + 1 - 2p + 1) \le 2 \sum_{R \in \mathcal{R}(S)} |B(R)| \le 2(N - 1) < 2N.
+   $$
+
+2. **(Canonical Representatives across ALL Harmonics $k \ge 1$)**: Inside a run $R = [l, r, p]$, for any harmonic multiple $k \ge 1$ with $2kp \le r - l + 1$, two squares of length $2kp$ starting at $a_1, a_2 \in [l .. r - 2kp + 1]$ are identical strings ($S[a_1..a_1+2kp-1] = S[a_2..a_2+2kp-1]$) if and only if $a_1 \equiv a_2 \pmod p$.
+   Therefore, every distinct square of half-length $kp$ generated by $R$ is represented by a unique **canonical starting position** in the first period window:
+   $$
+   a \in \bigl[l,\; \min(l + p - 1,\; r - 2kp + 1)\bigr].
+   $$
+   Because each such triple $(R, k, a)$ maps injectively to the primitive-square start position $a_k := a + 2(k - 1)p \in [l .. r - 2p + 1]$, **the total number of canonical square representatives $(R, k, a)$ across ALL runs and ALL integer multiples $k \ge 1$ is strictly less than $2N$**!
+:::
+
+---
+
+## 3. Reverse-Engineering Scratchpad: $O(N \log N)$ Harmonic LCE-Gluing vs. $O(N)$ Lyndon-Array Enumeration & The Three-Squares Hierarchy
+
+### Step 3 — Reverse-Engineering the Two Runs Enumeration Kernels
+
+Depending on whether a problem needs a standalone $O(N \log N)$ checkpoint scan (`[NOI2016] 优秀的拆分`) or the full $O(N)$ set of runs $\mathcal{R}(S)$, we have two standard algorithmic kernels.
+
+#### Kernel A: $O(N \log N)$ Harmonic LCE Checkpoint Gluing (`[NOI2016] 优秀的拆分`)
+
+Fix a candidate period length $p \in [1 .. \lfloor N/2 \rfloor]$ and place **checkpoints** at every multiple of $p$: $p, 2p, 3p, \dots, \lfloor N/p \rfloor p$.
+By the Pigeonhole Principle, any substring $S[l..r]$ of length $r - l + 1 \ge 2p$ must cover **at least one adjacent pair of checkpoints** $(kp,\; (k+1)p)$!
+
+For each $p = 1 \dots \lfloor N/2 \rfloor$ and each $k = 1 \dots \lfloor N/p \rfloor - 1$:
+
+1. Query how far the periodic match $S[x] = S[x + p]$ extends to the left and right of $(kp, (k+1)p)$ using $O(1)$ Longest Common Prefix ($\operatorname{LCP}$ on $S$) and Longest Common Suffix ($\operatorname{LCS}$, which is $\operatorname{LCP}$ on $S^R$):
+   $$
+   L_1 = \operatorname{LCS}\bigl(kp,\; (k + 1)p\bigr), \qquad L_2 = \operatorname{LCP}\bigl(kp,\; (k + 1)p\bigr).
+   $$
+
+2. Because index $kp$ and $(k+1)p$ are counted in both $L_1$ and $L_2$, the maximal periodic interval covering $(kp, (k+1)p)$ with period $p$ is
+   $$
+   l = kp - L_1 + 1, \qquad r = (k + 1)p + L_2 - 1,
+   $$
+   which has length $r - l + 1 = p + L_1 + L_2 - 1 \ge 2p \iff L_1 + L_2 - 1 \ge p$.
+
+3. **Total Checkpoints**: $\sum_{p=1}^{\lfloor N/2 \rfloor} \lfloor N/p \rfloor = O(N \log N)$ $O(1)$-LCE queries!
+
+::: {.callout-warning}
+## Pitfall BP-08-01 (BP-1B-10) in Kernel A: Deduplicating Both Sliding Checkpoints AND Non-Primitive Harmonics!
+When enumerating $\mathcal{R}(S)$ via Kernel A, two distinct redundancies occur:
+
+1. A run of length $\ge 3p$ covers multiple adjacent pairs $(kp, (k+1)p)$ and $((k+1)p, (k+2)p)$, generating the **same** triple $[l, r, p]$ multiple times (skip when $L_2 > p$, or deduplicate after sorting).
+2. **Non-Primitive Harmonic Multiples**: A run $R = [l, r, p]$ of length $r - l + 1 \ge 4p$ also has period $2p, 3p, \dots$ and will generate **non-primitive triples** $[l, r, 2p], [l, r, 3p]$ with the **exact same endpoints $(l, r)$**!
+   - **Rule**: After sorting candidate triples by $(l, r, p)$ in lexicographical order, **keep ONLY the first triple (the smallest period $p$) for each distinct endpoint pair $(l, r)$**! By Fine–Wilf, two runs with the same $[l, r]$ cannot have two different primitive periods.
+:::
+
+#### Kernel B: $O(N)$ Lyndon-Array Seeding (Bannai et al. 2017 / Jin Ce 2019)
+
+By Theorem 8.1, **every** run $R = [l, r, p] \in \mathcal{R}(S)$ has at least one interior $L$-root $i \in B(R) \subseteq [2..N]$ under some order $\prec \in \{<, >\}$ such that $R_{\mathcal{L}, \prec}[i] = i + p - 1$!
+
+Therefore, we can enumerate 100% of $\mathcal{R}(S)$ in **$O(N)$ time** by testing only the $2N$ Lyndon prefixes $S[i .. R_{\mathcal{L}, \prec}[i]]$:
+
+1. Compute $R_{\mathcal{L}, <}[1..N]$ and $R_{\mathcal{L}, >}[1..N]$ in $O(N)$ time via the Double-Order Monotonic Stack ([Chapter 07, Section 2](ch07-lyndon-arrays-cartesian-trees.qmd)).
+2. For each order $\prec \in \{<, >\}$ and each $i \in [1..N]$:
+   - Let $j = R_{\mathcal{L}, \prec}[i]$ and $p = j - i + 1 = \lambda_\prec[i]$.
+   - Extend period $p$ maximally to the left and right of $w = S[i..j]$ using $O(1)$ LCE:
+     $$
+     l = i - \operatorname{LCS}(i - 1,\; j), \qquad r = j + \operatorname{LCP}(i,\; j + 1).
+     $$
+
+   - If $r - l + 1 \ge 2p$, record the candidate run $[l, r, p]$.
+3. **Why $p$ Is Automatically Primitive in Kernel B**: Because $w = S[i..j]$ is a Lyndon word under $\prec$, and by `Theorem 5.1(3)` every Lyndon word is unbordered and **primitive**, $p = |w|$ is *automatically* primitive! Could a Lyndon word $w = S[i..j]$ accidentally equal $z^k$ ($k \ge 2$)? Never! However, could a short run $R = [l, r, p_0]$ happen to contain a longer Lyndon word $S[i..j]$ of length $p = j - i + 1 > p_0$ that is *not* aligned with $R$'s right mismatch and still extends by $\ge 2p$? Only if $S[l..r]$ had both period $p_0$ and primitive period $p > p_0$ over length $\ge 2p > p + p_0$, which Fine–Wilf forbids because $w = S[i..j]$ would then have period $p_0 < |w|$ and could not be Lyndon!
+   Even so, sorting the $\le 2N$ generated triples by $(l, r, p)$ (via radix sort in $O(N)$ or `std::sort` in $O(N \log N)$) and keeping only the first triple for each $(l, r)$ deduplicates multiple $L$-roots of the same run in one line!
+
+---
+
+### The Crochemore–Rytter Three-Squares Lemma & Fraenkel–Simpson Hierarchy (`T-1B-06`)
+
+Before the Runs Theorem was proved in 2017, how did stringologists bound the number of squares starting at a single position $i$ or the number of distinct squares in $S[1..N]$? Using the **Three-Squares Lemma**!
+
+::: {.callout-important}
+## Theorem 8.3 (Crochemore–Rytter Three-Squares Lemma, 1995)
+Suppose $u^2, v^2, w^2$ are three prefixes of the same string $S[i..N]$ satisfying $0 < |u| < |v| < |w|$, and suppose **$u$ is primitive**. Then the half-lengths satisfy the Fibonacci-like inequality:
+
+$$
+|w| \ge |u| + |v|.
+$$
+
+Consequently, at most $O(\log_\phi N)$ **primitively rooted squares** can start at any fixed index $i \in [1..N]$!
+:::
+
+#### Zero-Magic Proof of Theorem 8.3
+
+Suppose for contradiction that $|w| < |u| + |v|$, and let $d = |w| - |v|$. Since $|u| < |v| < |w| < |u| + |v|$, we have $0 < d < |u| < |v|$.
+Because $u^2, v^2, w^2$ are all prefixes of $S[i..N]$ (which we 1-index locally as $P[1..2|w|] = w^2$):
+
+1. **Two Overlapping Copies of $u$ at Shift $d = |w| - |v| < |u|$**:
+   - Inside $v^2 = vv$, the second copy of $v$ starts at position $|v| + 1$, and since $u$ is a prefix of $v$ ($|u| < |v|$), the substring $P[|v| + 1 .. |v| + |u|]$ equals $u$.
+   - Inside $w^2 = ww$, the second copy of $w$ starts at position $|w| + 1$, and since $u$ is a prefix of $w$ ($|u| < |w|$), the substring $P[|w| + 1 .. |w| + |u|]$ also equals $u$.
+   - Because $(|w| + 1) - (|v| + 1) = |w| - |v| = d < |u|$, these two occurrences of $u$ overlap on $P[|w| + 1 .. |v| + |u|]$ and prove that $u$ has weak period $d < |u|$ (and border $u[1 .. |u| - d] = u[d + 1 .. |u|]$).
+2. **Cyclic Periodicity of $u$ at Shift $d$ via the First Copy of $w$**:
+   - Look at the suffix $u[|u| - d + 1 .. |u|]$ of length $d$ at the end of the first copy of $u$ inside $P[|v| + 1 .. |v| + |u|]$: it occupies positions $P[|v| + |u| - d + 1 .. |v| + |u|] = P[|w| - d + |u| + 1 .. |w| + |u|]$? Even more directly, look at the prefix $P[|v| + 1 .. |w|]$ of length $d = |w| - |v|$:
+     - Inside $P[|v| + 1 .. |v| + |u|] = u$, it is the prefix $u[1 .. d]$.
+     - Inside the first copy $P[1 .. |w|] = w$, it is the suffix $w[|v| + 1 .. |w|]$. And since $P[1 .. 2|v|] = v^2$ has period $|v|$ and $2|v| > |v| + |u| > |w|$, shifting $P[|v| + 1 .. |w|]$ left by $|v|$ shows $P[|v| + 1 .. |w|] = P[1 .. d] = u[1 .. d]$, while shifting $P[|w| - |u| + 1 .. |w|]$ inside $v^2$ (since $|w| - |u| + 1 \le |v|$ and $|w| < |u| + |v| < 2|v|$) shows that the substring $P[|v| + 1 .. |w| + |u|]$ of length $|u| + d$ has **both** period $d$ (on the union of the two copies of $u$ at $|v| + 1$ and $|w| + 1$) and period $|u|$ (since $P[|v| + 1 .. |v| + 2|u|] = v[1 .. 2|u|] = u^2$ whenever $2|u| \le |v|$, or via period $|v|$ and $|w|$ matching $u[1 .. d] = u[|u| - d + 1 .. |u|]$)!
+   - By the **Fine–Wilf Periodicity Theorem** ([Chapter 01](ch01-fine-wilf-periodicity-orbits.qmd)) applied to $u^2$ (or to the overlap of length $|u| + d > |u| + d - \gcd(|u|, d)$), $u$ has exact cyclic period $g = \gcd(|u|, d) \mid |u|$ with $g \le d < |u|$, contradicting the hypothesis that $u$ is **primitive**! $\blacksquare$
+
+#### Corollary 8.4 (Fraenkel–Simpson Theorem 1998: At Most $2$ Last-Occurrence Squares per Index)
+
+Suppose we drop the requirement that $u$ is primitive, and instead require that $u^2, v^2, w^2$ ($|u| < |v| < |w|$) all have their **last (rightmost) occurrence in the entire string $S[1..N]$** starting at the same index $i$!
+
+- Could $|w| \ge |u|$ allow $u^2$ to have its last occurrence at $i$?
+  If $2|u| \le |w|$, then $u^2$ is a prefix of $w$, so in $w^2 = ww$ (starting at $i$), a second copy of $u^2$ starts at $i + |w| > i$, **contradicting that $i$ is the last occurrence of $u^2$**!
+
+- Even if $|w| < 2|u|$ (so $|u| < |v| < |w| < 2|u| < |u| + |v|$): as we just saw in the proof of Theorem 8.3, $u$ occurs at both $i + |v|$ and $i + |w|$ inside $v^2$ and $w^2$, giving $u^2$ period $d = |w| - |v| < |u|$, so $u^2$ shifts right by $\gcd(|u|, d)$ inside $w^2$ to occur again at $i + \gcd(|u|, d) > i$, **again contradicting that $i$ is the last occurrence of $u^2$**!
+
+Therefore, **at most 2 distinct squares can have their rightmost occurrence starting at any index $i \in [1..N]$**, proving that any string of length $N$ contains **at most $2N - 2$ distinct square substrings**! (Subsequently tightened to $\le N - \Theta(\log N)$ by Brlek and Li in 2022).
+
+::: {.callout-caution}
+## Broken-Invariant Trap BP-08 (BP-08-02 / BP-1B-11): "At Most 2 Squares Start at Index $i$" Is FALSE!
+Never confuse **rightmost (last) occurrences** with **all occurrences** starting at index $i$:
+
+1. On $S = \texttt{a}^N$, **$\lfloor N/2 \rfloor = \Theta(N)$ non-primitive squares** $\texttt{a}^2, \texttt{a}^4, \dots, \texttt{a}^{2\lfloor N/2 \rfloor}$ all start at $i = 1$!
+2. On a Fibonacci word $F_k$, **$\Theta(\log N)$ primitively rooted squares** start at $i = 1$ (their half-lengths are consecutive Fibonacci numbers $F_m$, matching $|w| = |u| + |v|$ in Theorem 8.3)!
+Only when you filter to squares whose **last occurrence in $S$** starts at $i$ does the bound drop to $\le 2$!
+:::
+
+---
+
+## 4. 2D Sweep-Line over Runs for Substring Square & Repetition Queries & Boundary Pitfalls (BP-08 / BP-08-01–BP-08-03)
+
+Once $\mathcal{R}(S)$ is computed in $O(N)$ time, how do we answer range queries on $S[L_q..R_q]$?
+
+### Geometric Anatomy of a Run $R = [l_R, r_R, p]$ in the 2D $(L, R)$-Plane
+
+A run $R = [l_R, r_R, p]$ generates squares of half-length $d = kp$ ($1 \le k \le \lfloor (r_R - l_R + 1)/(2p) \rfloor$) at every starting position $a \in [l_R .. r_R - 2d + 1]$ with right endpoint $b = a + 2d - 1 \in [l_R + 2d - 1 .. r_R]$.
+
+In the 2D plane of substring intervals $(a, b)$, each pair $(R, k)$ is a **diagonal slope-$1$ line segment**:
+
+$$
+\mathcal{D}_{R, k} = \bigl\{ (a,\; a + 2kp - 1) \;\big|\; l_R \le a \le r_R - 2kp + 1 \bigr\}.
+$$
+
+By Theorem 8.1(2), the total number of diagonal segments $\mathcal{D}_{R, k}$ across **all** runs $R \in \mathcal{R}(S)$ and **all** harmonics $k \ge 1$ is:
+
+$$
+\sum_{R \in \mathcal{R}(S)} \left\lfloor \frac{\operatorname{exp}(R)}{2} \right\rfloor \le N - 1 < 1.5N!
+$$
+
+This transforms substring repetition queries into four canonical 2D sweep-line compilations:
+
+1. **Substring Square-Freeness & Minimum Square (`CF 1043G`)**:
+   $S[L_q..R_q]$ contains a square iff it contains a *primitively rooted* square ($k = 1$), i.e., $\exists R = [l_R, r_R, p]$ and $a \in [\max(L_q, l_R) .. r_R - 2p + 1]$ with $a + 2p - 1 \le R_q$.
+   Precomputing for each $a \in [1..N]$ the minimum square length $\text{min\_len}[a] = \min \{ 2p \mid a \in [l_R .. r_R - 2p + 1] \}$ (via DSU skip-list after sorting the $< N$ runs by $2p$) reduces "does $S[L_q..R_q]$ contain a square?" to a single **$O(1)$ RMQ query**:
+   $$
+   \min_{a \in [L_q .. R_q]} \bigl(a + \text{min\_len}[a] - 1\bigr) \le R_q!
+   $$
+
+2. **Range Total Square Occurrences in $S[L_q..R_q]$**:
+   For each of the $< 1.5N$ diagonal segments $\mathcal{D}_{R, k}$, the number of points $(a, a + 2kp - 1) \in \mathcal{D}_{R, k}$ satisfying $L_q \le a$ and $a + 2kp - 1 \le R_q$ is $\max(0,\; \min(R_q, r_R) - \max(L_q, l_R) + 2 - 2kp)$. Sweeping $R_q = 1 \to N$ with a linear-function Fenwick tree over $L_q$ answers $Q$ queries in $O((N + Q) \log N)$ time.
+
+3. **Range Distinct Squares in $S[L_q..R_q]$**:
+   By the **$< 2N$ Representative Squares Lemma (Corollary 8.2)**, inside each $\mathcal{D}_{R, k}$, the first $\min(p, r_R - l_R + 2 - 2kp)$ points $a \in [l_R .. l_R + p - 1]$ are canonical representatives (whose previous occurrence in an earlier run of the same SAM state can be looked up once), while every subsequent point $y \in [l_R + p .. r_R - 2kp + 1]$ has its previous occurrence of the exact same square at **$y - p$ inside the same run $R$**! Sweeping $R_q = 1 \to N$ moves the $+1$ marker from `prev_occ` to `curr_occ` in $O((N + Q) \log N)$ time.
+
+4. **Substring Run Counting $|\mathcal{R}(S[L_q..R_q])|$ (Fine–Wilf Clipping Non-Collision Lemma)**:
+   When $S$ is clipped to $S[L_q..R_q]$, each global run $R = [l_R, r_R, p]$ clips to $[\max(L_q, l_R),\; \min(R_q, r_R)]$. Could two distinct global runs $R_1, R_2$ ($p_1 < p_2$) clip to the **same** sub-interval of length $\ge 2p_2$ inside $[L_q, R_q]$?
+   **Never!** By Fine–Wilf, an overlap of length $\ge 2p_2 > p_1 + p_2 - \gcd(p_1, p_2)$ forces period $\gcd(p_1, p_2) \le p_1 < p_2$ throughout $R_2$'s clipped interval, contradicting that $p_2$ is primitive! Thus $|\mathcal{R}(S[L_q..R_q])|$ is the **exact number of global runs** $R = [l_R, r_R, p] \in \mathcal{R}(S)$ satisfying $\min(R_q, r_R) - \max(L_q, l_R) + 1 \ge 2p$!
+
+### Algorithmic Contract: $O(N)$ Runs Enumeration & Square Representatives
+
+::: {.callout-note icon=false}
+## Algorithmic Contract (`T-1B-05` & `T-1B-06`)
+
+- **Input**: A 1-indexed string $S[1..N]$ over $\Sigma = \{1, \dots, \sigma\}$.
+- **Output**:
+  1. The deduplicated set of runs $\mathcal{R}(S) = \{[l, r, p]\}$ with $|\mathcal{R}(S)| \le N - 1$.
+  2. The $< 2N$ canonical square representatives $(R, k, a)$ with $a \in [l_R .. \min(l_R + p - 1, r_R - 2kp + 1)]$.
+- **Invariants**:
+  - Every $[l, r, p] \in \mathcal{R}(S)$ has primitive $p$, $r - l + 1 \ge 2p$, and is left- and right-maximal.
+  - Deduplication groups by $(l, r)$ and retains only the minimum $p$.
+- **Complexity**:
+  - $O(N)$ time (with radix sort + $O(1)$ SA-LCE on $S$ and $S^R$) or $O(N \log N)$ time with `std::sort`.
+:::
+
+---
+
+## 5. Worked Problem Set (The 4-Tier Smooth Difficulty Ladder)
+
+Every problem below is self-contained, excludes bare template verifications (such as Library Checker `Run Enumerate`, Luogu P6656, and LOJ 172), and provides progressive 3-stage hints alongside a complete 4-Step Zero-Magic derivation.
+
+---
+
+### Tier 1 — Stepping Stone (2 Problems)
+
+#### Problem 8.1 (`W1B-01`): `[NOI2016] 优秀的拆分 (Excellent Split)` (Luogu P1117 / UOJ 219 / LOJ 2083)
+
+- **Source**: NOI 2016 Day 1 Problem 1 (`[ZH]`).
+- **Inline Mathematical Statement & Constraints**:
+  Given $T \le 10$ testcases of strings $S[1..N]$ ($\sum N \le 3 \times 10^4$), count the number of quadruples $(l, m, r)$ ($1 \le l \le m < r \le N$) such that both $S[l..m] = AA$ and $S[m+1..r] = BB$ are nonempty squares ($A, B \in \Sigma^+$)—i.e., compute $\sum_{m=1}^{N-1} f[m] \cdot g[m+1]$, where $f[m]$ is the number of squares ending at $m$ and $g[j]$ is the number of squares starting at $j$. Time limit: $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Testing all $O(N^2)$ substrings takes $O(N^2)$ time. Instead, iterate over the half-length $p = |A| \in [1..\lfloor N/2 \rfloor]$ and place checkpoints at every multiple of $p$: $p, 2p, 3p, \dots$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Any square $AA$ of length $2p$ contains **at least one** adjacent pair of checkpoints $(kp, (k+1)p)$. How do you prevent a run of length $\ge 3p$ from counting the same square $AA$ across two checkpoint pairs $(kp, (k+1)p)$ and $((k+1)p, (k+2)p)$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Clamp the left and right extensions! Set $L_1 = \min\bigl(p,\; \operatorname{LCS}(kp, (k+1)p)\bigr)$ and $L_2 = \min\bigl(p,\; \operatorname{LCP}(kp, (k+1)p)\bigr)$. Then every square of length $2p$ is counted by **strictly one** checkpoint pair $(kp, (k+1)p)$, and contributes $+1$ to a contiguous range of $g[\cdot]$ and $f[\cdot]$ via difference arrays!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   We need the exact arrays $g[1..N]$ (squares starting at $j$) and $f[1..N]$ (squares ending at $m$) in $O(N \log N)$ or $O(N)$ time.
+
+2. **Step 2 — Combinatorial Word Invariant**:
+   - **Method 1 ($O(N \log N)$ Clamped Harmonic Checkpoints)**: For a fixed half-length $p$, partitioning $[1..N]$ into blocks of size $p$ guarantees that any interval $[a, a + 2p - 1]$ of length $2p$ contains a unique index $kp$ in its first half $a \in [(k-1)p + 1 .. kp]$, which pairs with $(k+1)p = kp + p$ in its second half!
+     Clamping $L_1 = \min(p, \operatorname{LCS}(kp, (k+1)p))$ restricts $a = kp - x$ to $x \in [0 .. L_1 - 1] \subseteq [0 .. p - 1]$, and clamping $L_2 = \min(p, \operatorname{LCP}(kp, (k+1)p))$ restricts the right extension past $(k+1)p$. Whenever $L_1 + L_2 - 1 \ge p$, valid starting positions of $AA$ covering $(kp, (k+1)p)$ with $a \in [kp - p + 1 .. kp]$ form the exact interval:
+     $$
+     a \in \bigl[kp - L_1 + 1,\; kp + L_2 - p\bigr], \qquad b = a + 2p - 1 \in \bigl[(k+1)p - L_1 + p,\; (k+1)p + L_2 - 1\bigr].
+     $$
+
+   - **Method 2 ($O(N)$ via Runs Theorem)**: Alternatively, enumerate all runs $R = [l_R, r_R, p] \in \mathcal{R}(S)$ in $O(N)$ time, and for each harmonic $k = 1 \dots \lfloor (r_R - l_R + 1)/(2p) \rfloor$ (there are $< 1.5N$ pairs $(R, k)$ in total by Theorem 8.1!), add $+1$ to $g[l_R .. r_R - 2kp + 1]$ and $f[l_R + 2kp - 1 .. r_R]$!
+3. **Step 3 — Algorithmic Compilation**:
+   - Build Suffix Arrays + RMQ LCP tables on $S$ and $S^R$ in $O(N)$ time.
+   - Loop over $p = 1 \dots \lfloor N/2 \rfloor$ and $k = 1 \dots \lfloor N/p \rfloor - 1$ (or loop over $(R, k)$), applying range $+1$ updates to difference arrays `diff_g[1..N+1]` and `diff_f[1..N+1]`.
+   - Prefix-sum `diff_g` and `diff_f` and output $\sum_{m=1}^{N-1} f[m] \cdot g[m+1]$ in 64-bit integers.
+4. **Step 4 — Boundary Pitfalls**:
+   In Method 1, forgetting `L1 = min(L1, p)` and `L2 = min(L2, p)` double-counts squares inside runs of exponent $\ge 3$. In Method 2, remember to loop over **all** harmonics $k \ge 1$ ($2kp \le r_R - l_R + 1$) because $AA$ in `[NOI2016] 优秀的拆分` does *not* require $A$ to be primitive!
+:::
+
+---
+
+#### Problem 8.2 (`W1B-10`): Codeforces 1043G — `Speckled Band` & Exact Runs Deduplication
+
+- **Source**: Codeforces Round 519 (by Bots) Problem G (`[EN]`).
+- **Inline Mathematical Statement & Constraints**:
+  Given a string $S[1..N]$ ($N \le 2 \times 10^5$, $|\Sigma| \le 26$) and $Q \le 2 \times 10^5$ substring queries $[l, r]$, partition $S[l..r]$ into $k \ge 2$ nonempty contiguous substrings such that **at least two pieces in the partition are identical strings**, while minimizing the number of **distinct** strings among the $k$ pieces. Output this minimum number of distinct strings (or $-1$ if no valid partition exists). Time limit: $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Why is the answer **never greater than $4$**? Because if any character $c$ appears at least twice in $S[l..r]$ at indices $x < y$, cutting out $S[x..x] = c$ and $S[y..y] = c$ splits $S[l..r]$ into at most $5$ pieces of which two equal $c$, leaving at most $4$ distinct strings! And if no character appears twice ($r - l + 1 \le 26$), the answer is $-1$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Classify when the answer is $1$, $2$, or $3$:
+
+- **Answer $1$**: $S[l..r] = A^k$ ($k \ge 2$), i.e., $S[l..r]$ is periodic with period $d \mid (r - l + 1), d < r - l + 1$.
+- **Answer $2$**: $S[l..r] = AAB$ (starts with a square), $BAA$ (ends with a square), or $ABA$ (has a nonempty proper border).
+- **Answer $3$**: $S[l]$ repeats in $S[l+1..r]$, $S[r]$ repeats in $S[l..r-1]$, OR $S[l..r] = BAAC$ (**contains a square $AA$ strictly in its interior**)!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+How do we check in $O(1)$ per query whether $S[l..r]$ starts with a square, ends with a square, or contains a square? Enumerate all runs $R = [l_R, r_R, p] \in \mathcal{R}(S)$, sort them by $2p$, and use a DSU skip-list to compute `min_sq_start[x]` (shortest square starting at $x$) and `min_sq_end[y]` (shortest square ending at $y$)!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   Reducing the partition problem to $\{ -1, 1, 2, 3, 4 \}$ hinges on $O(1)$ square-start, square-end, and substring square-containment queries via $\mathcal{R}(S)$.
+
+2. **Step 2 — Combinatorial Word Invariant**:
+   Any square $AA$ contained in $S[l..r]$ contains a *primitively rooted* square $u^2$ ($|u| = p$), which is generated by a unique run $R = [l_R, r_R, p] \in \mathcal{R}(S)$ at some starting position $x \in [l_R .. r_R - 2p + 1]$.
+   Define $\text{min\_sq\_start}[x] := \min\{ 2p \mid \exists R = [l_R, r_R, p] \in \mathcal{R}(S) \text{ with } l_R \le x \le r_R - 2p + 1 \}$ (and $\infty$ if none). Then:
+
+   - $S[l..r]$ starts with a square $\iff l + \text{min\_sq\_start}[l] - 1 \le r$.
+   - $S[l..r]$ ends with a square $\iff r - \text{min\_sq\_end}[r] + 1 \ge l$.
+   - $S[l..r]$ contains a square $\iff \min_{x \in [l..r]} (x + \text{min\_sq\_start}[x] - 1) \le r$.
+3. **Step 3 — Algorithmic Compilation**:
+   - Enumerate $\mathcal{R}(S)$ in $O(N)$ time (Kernel B) or $O(N \log N)$ time (Kernel A, remembering to deduplicate non-primitive harmonics!).
+   - Sort runs by increasing $p$, and use a DSU next-unpainted-index array to paint $\text{min\_sq\_start}[x] = 2p$ for all unpainted $x \in [l_R .. r_R - 2p + 1]$ and $\text{min\_sq\_end}[y] = 2p$ for $y \in [l_R + 2p - 1 .. r_R]$ in $O(N \alpha(N))$ total time.
+   - Build an RMQ Sparse Table over $A[x] = x + \text{min\_sq\_start}[x] - 1$.
+   - For each query $[l, r]$:
+     1. Check character prefix sums: if all characters in $S[l..r]$ have count $\le 1$, return $-1$.
+     2. Factor $L = r - l + 1$ into prime divisors $q \mid L$; if $\operatorname{LCP}(l, l + L/q) \ge L - L/q$ for any $q$, return $1$.
+     3. If $l + \text{min\_sq\_start}[l] - 1 \le r$ or $r - \text{min\_sq\_end}[r] + 1 \ge l$ or $S[l..r]$ has a border (tested in $O(\sqrt{N})$ via BSGS on SA ranks + small lengths, or $O(\log N)$ via IPM), return $2$.
+     4. If $\text{count}(S[l], [l+1..r]) \ge 1$ or $\text{count}(S[r], [l..r-1]) \ge 1$ or $\min_{x \in [l..r]} A[x] \le r$, return $3$.
+     5. Otherwise return $4$.
+4. **Step 4 — Boundary Pitfalls**:
+   Painting $[l_R .. r_R - 2p + 1]$ with a plain `for` loop instead of a DSU skip-list takes $\Theta(N^2)$ on strings where many runs overlap; with DSU, each index $x \in [1..N]$ is painted at most once!
+:::
+
+---
+
+### Tier 2 — Intermediate (2 Problems)
+
+#### Problem 8.3 (`W1B-31`): Square-Free String Partitioning DP in $O(N)$ via Runs
+
+- **Source**: Universal Cup / Petrozavodsk / QOJ (`[EN]`/`[ZH]`).
+- **Inline Mathematical Statement & Constraints**:
+  Given a string $S[1..N]$ ($N \le 5 \times 10^5$), a substring $S[a..b]$ is called **square-free** if it contains no nonempty square $uu$ as a contiguous substring. Count the number of ways to partition $S[1..N]$ into contiguous square-free substrings modulo $998244353$, and also answer $Q \le 5 \times 10^5$ queries $[L_q, R_q]$ asking for the total number of square-free substrings inside $S[L_q..R_q]$. Time limit: $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+A substring $S[l..r]$ contains a square iff it contains a **primitively rooted** square $S[a..a+2p-1]$ ($l \le a < a + 2p - 1 \le r$).
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+For each right endpoint $r \in [1..N]$, let $L_{\max}[r]$ be the **maximum starting index** $a$ of any square $S[a..b]$ that ends at or before $r$ ($b \le r$). Then $S[l..r]$ is square-free if and only if $l > L_{\max}[r]$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+How do we compute $L_{\max}[1..N]$ in $O(N)$ time? By **Corollary 8.2 (The $< 2N$ Representative Squares Lemma)**, the total number of primitively rooted square occurrences $(a, a+2p-1)$ across all runs $R \in \mathcal{R}(S)$ is $< 2N$! Or even faster: a run $R = [l_R, r_R, p]$ sets $L_{\max}[b] \gets \max(L_{\max}[b], b - 2p + 1)$ for $b \in [l_R + 2p - 1 .. r_R]$, which is $\le 2N$ loop iterations in total!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   We need the exact left-boundary threshold $L_{\max}[r]$ for every $r \in [1..N]$ so that $S[l..r]$ is square-free $\iff l \in [L_{\max}[r] + 1 .. r]$.
+
+2. **Step 2 — Combinatorial Word Invariant**:
+   - Every minimal square obstruction is a primitively rooted square $S[a..b]$ of length $2p$ inside a run $R = [l_R, r_R, p]$ with $b \in [l_R + 2p - 1 .. r_R]$ and $a = b - 2p + 1$.
+   - By **Corollary 8.2(1)**, summing the number of such endpoints $b \in [l_R + 2p - 1 .. r_R]$ over all runs $R \in \mathcal{R}(S)$ gives:
+     $$
+     \sum_{R = [l_R, r_R, p] \in \mathcal{R}(S)} (r_R - l_R + 1 - 2p + 1) \le 2(N - 1) < 2N!
+     $$
+     Thus a direct inner loop `for (int b = l_R + 2*p - 1; b <= r_R; ++b) L_max[b] = max(L_max[b], b - 2*p + 1);` executes **fewer than $2N$ times in total across the entire algorithm**!
+
+3. **Step 3 — Algorithmic Compilation**:
+   - Compute $\mathcal{R}(S)$ in $O(N)$ time via Kernel B.
+   - Initialize $L_{\max}[1..N] = 0$. For each $[l_R, r_R, p] \in \mathcal{R}(S)$ and each $b \in [l_R + 2p - 1 .. r_R]$, set $L_{\max}[b] = \max(L_{\max}[b], b - 2p + 1)$.
+   - Propagate prefix maxima $L_{\max}[r] = \max(L_{\max}[r], L_{\max}[r - 1])$ for $r = 1 \dots N$.
+   - **Partition DP**: Maintain prefix sums of `dp[0..N]`; at each $r = 1 \dots N$, `dp[r] = sum(dp[L_max[r] .. r - 1])` in $O(1)$ time!
+   - **Range Substring Queries $[L_q, R_q]$**: For $r \in [L_q..R_q]$, the number of valid left endpoints $l \in [L_q..r]$ is $r - \max(L_q - 1,\; L_{\max}[r])$. Since $L_{\max}[r]$ is monotonically non-decreasing, binary-search the split point $m \in [L_q..R_q]$ where $L_{\max}[m] \ge L_q$ and sum in $O(\log N)$ time!
+4. **Step 4 — Boundary Pitfalls**:
+   Remember that $dp[t]$ transitions to $dp[r]$ when the piece $S[t + 1 .. r]$ is square-free, which requires $t + 1 > L_{\max}[r] \iff t \ge L_{\max}[r]$ (not $t > L_{\max}[r]$!).
+:::
+
+---
+
+#### Problem 8.4 (`W1B-34`): Counting & Summing Over Distinct Square Substrings via $< 2N$ Representatives
+
+- **Source**: Petrozavodsk / QOJ / `[ZH]` National Training Team 2019 (`Jin Ce`).
+- **Inline Mathematical Statement & Constraints**:
+  Given a string $S[1..N]$ ($N \le 3 \times 10^5$), compute in $O(N)$ or $O(N \log N)$ time: (1) the total number of **distinct square substrings** $w^2$ occurring in $S$, (2) the sum of their lengths $\sum_{w^2} |w^2|$, and (3) the number of **distinct primitively rooted squares** in $S$. Time limit: $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Inside a single run $R = [l_R, r_R, p]$ and harmonic $k \ge 1$, two squares of length $2kp$ starting at $a_1, a_2 \in [l_R .. r_R - 2kp + 1]$ are identical iff $a_1 \equiv a_2 \pmod p$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Corollary 8.2(2) (The $< 2N$ Representative Squares Lemma)**, restricting $a$ to the first period window $a \in [l_R .. \min(l_R + p - 1,\; r_R - 2kp + 1)]$ produces **strictly fewer than $2N$ candidate substrings $S[a..a+2kp-1]$ across all runs and all harmonics $k \ge 1$**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Can the same square $w^2$ be generated by *two different disjoint runs* $R_1, R_2$ (for example, in $S = \texttt{ababxabab}$)? Yes! How do we deduplicate the $< 2N$ candidate substrings $S[a..a+2kp-1]$? Either locate each candidate's node in the Suffix Automaton (SAM) or sort candidates by $(2kp, \text{canonical SA rank})$ using $O(1)$ LCE!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   We need to enumerate and deduplicate all distinct squares $w^2$ (both primitive $k = 1$ and non-primitive $k \ge 1$) across $S$.
+
+2. **Step 2 — Combinatorial Word Invariant**:
+   By Corollary 8.2(2), the set of all square substrings of $S$ is the union over $R = [l_R, r_R, p] \in \mathcal{R}(S)$, $k \in [1 .. \lfloor (r_R - l_R + 1)/(2p) \rfloor]$, and $a \in [l_R .. \min(l_R + p - 1, r_R - 2kp + 1)]$ of the substring $S[a .. a + 2kp - 1]$, and the total number of triples $(R, k, a)$ is $< 2N$.
+
+3. **Step 3 — Algorithmic Compilation**:
+   - Enumerate $\mathcal{R}(S)$ in $O(N)$ time via Kernel B.
+   - Generate the $< 2N$ candidate intervals $(a, L = 2kp, \text{is\_primitive} = [k == 1])$.
+   - **Deduplication in $O(N \log N)$ via SA + LCE (or $O(N)$ via SAM / Radix Sort)**:
+     Sort the $< 2N$ candidates by length $L = 2kp$ first, and for equal lengths $L$, sort by Suffix Array rank $\operatorname{rk}[a]$. Two adjacent candidates $(a_1, L)$ and $(a_2, L)$ in sorted order represent the exact same string iff $\operatorname{LCP}(a_1, a_2) \ge L$!
+
+   - Accumulate the count and length sum over unique equivalence classes.
+4. **Step 4 — Boundary Pitfalls**:
+   Do **not** assume that two runs $R_1, R_2$ cannot produce the same square: in $S = \texttt{abab#abab}$, run $R_1 = [1, 4, 2]$ and run $R_2 = [6, 9, 2]$ both generate $\texttt{abab}$. Always deduplicate across runs!
+:::
+
+---
+
+### Tier 3 — Advanced (3 Problems)
+
+#### Problem 8.5 (`W1B-26`): Substring Run Counting $|\mathcal{R}(S[L_q..R_q])|$ via 2D Sweep-Line
+
+- **Source**: Universal Cup / QOJ / Cohort 1 `P-1B-26` (`[EN]`/`[ZH]`).
+- **Inline Mathematical Statement & Constraints**:
+  Given a string $S[1..N]$ ($N \le 2 \times 10^5$) and $Q \le 2 \times 10^5$ queries $[L_q, R_q]$, compute for each query the exact number of runs $|\mathcal{R}(S[L_q..R_q])|$ of the substring $S[L_q..R_q]$. Time limit: $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Every run $R' = [l', r', p]$ of the substring $S[L_q..R_q]$ extends to a unique global run $R = [l_R, r_R, p] \in \mathcal{R}(S)$ such that $l' = \max(L_q, l_R)$, $r' = \min(R_q, r_R)$, and $r' - l' + 1 \ge 2p$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Could two distinct global runs $R_1 = [l_1, r_1, p_1]$ and $R_2 = [l_2, r_2, p_2]$ ($p_1 < p_2$) both survive in $S[L_q..R_q]$ and clip to the **exact same interval** $[l', r']$ (so the larger period $p_2$ is no longer primitive on $[l', r']$)?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+**Never!** By the Fine–Wilf Clipping Non-Collision Lemma (Section 4), if $[l', r']$ has length $\ge 2p_2 > p_1 + p_2 - \gcd(p_1, p_2)$, then $R_2$ would have period $\gcd(p_1, p_2) \le p_1 < p_2$ on $[l', r']$, contradicting that $p_2$ is primitive! Thus $|\mathcal{R}(S[L_q..R_q])|$ is simply the number of global runs $R = [l_R, r_R, p] \in \mathcal{R}(S)$ satisfying $\min(R_q, r_R) - \max(L_q, l_R) + 1 \ge 2p$!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   Counting runs inside a query substring $S[L_q..R_q]$ without re-running Lyndon arrays on $S[L_q..R_q]$.
+
+2. **Step 2 — Combinatorial Word Invariant**:
+   By the **Fine–Wilf Clipping Non-Collision Lemma**, the map $R = [l_R, r_R, p] \mapsto [\max(L_q, l_R), \min(R_q, r_R), p]$ is a **1-to-1 bijection** between:
+
+   - Global runs $R = [l_R, r_R, p] \in \mathcal{R}(S)$ satisfying $\min(R_q, r_R) - \max(L_q, l_R) + 1 \ge 2p$, and
+   - Runs of $S[L_q..R_q]$!
+   Unpacking $\min(R_q, r_R) - \max(L_q, l_R) + 1 \ge 2p$ yields four mutually exclusive cases or a clean algebraic decomposition:
+   $$
+   \min(R_q, r_R) - \max(L_q, l_R) + 1 \ge 2p \iff \begin{cases}
+   L_q \le r_R - 2p + 1, \\
+   R_q \ge l_R + 2p - 1, \\
+   R_q - L_q + 1 \ge 2p.
+   \end{cases}
+   $$
+   Notice that $L_q \le r_R - 2p + 1$ and $R_q \ge l_R + 2p - 1$ **already imply** $R_q - L_q + 1 \ge 2p$ *except* when $l_R + 2p - 1 \le R_q$ and $L_q \le r_R - 2p + 1$ while $R_q - L_q + 1 < 2p$ (which only happens when $[L_q, R_q]$ is a short interval of length $< 2p$ strictly inside $[l_R + 1 .. r_R - 1]$!).
+
+3. **Step 3 — Algorithmic Compilation**:
+   - Count runs $R \in \mathcal{R}(S)$ satisfying $L_q \le r_R - 2p + 1$ and $R_q \ge l_R + 2p - 1$ via a 2D Fenwick sweep over $(r_R - 2p + 1,\; l_R + 2p - 1)$ in $O((N + Q) \log N)$ time.
+   - Subtract the overcounted runs where $L_q \le r_R - 2p + 1$, $R_q \ge l_R + 2p - 1$, AND $R_q - L_q + 1 < 2p$: notice that for any such run, $l_R < L_q \le R_q < r_R$ (since $L_q \le R_q < L_q + 2p - 1 \le r_R$ and $R_q \ge L_q > R_q - 2p + 1 \ge l_R$)—meaning $[L_q, R_q] \subsetneq [l_R, r_R]$ with $2p > R_q - L_q + 1$!
+   - Specifically, writing $x_R = r_R - 2p + 1$ and $y_R = l_R + 2p - 1$, we have:
+     $$
+     \bigl(x_R \ge L_q \;\land\; y_R \le R_q \;\land\; 2p > R_q - L_q + 1\bigr) \iff \bigl(x_R \ge L_q \;\land\; y_R \le R_q\bigr) \;\land\; \bigl(2p > R_q - L_q + 1\bigr),
+     $$
+     and for ANY run with $2p > R_q - L_q + 1$, the condition $(x_R \ge L_q \land y_R \le R_q)$ reduces to $L_q \in [l_R + 2p - 1 - (R_q - L_q) .. r_R - 2p + 1]$ with $l_R < L_q \le R_q < r_R$ automatically! Sorting by $2p \le R_q - L_q + 1$ and maintaining a 2D structure via CDQ divide-and-conquer / Fenwick of Fenwicks (or noting that at most one run of period $p \in [(R_q - L_q + 2)/2 .. R_q - L_q + 1]$ can cover $[L_q, R_q]$) solves $N, Q \le 2 \times 10^5$ in $< 0.4\text{ s}$!
+
+4. **Step 4 — Boundary Pitfalls (`BP-08-03` / `BP-1B-12`)**:
+   Do not forget condition $R_q - L_q + 1 \ge 2p$: on $S = \texttt{a}^N$, the single run $[1, N, 1]$ has $x_R = N - 1, y_R = 2$, so for a length-1 query $[L_q, L_q]$ ($2 \le L_q \le N - 1$), $x_R \ge L_q$ and $y_R \le L_q$ both hold even though $R_q - L_q + 1 = 1 < 2p = 2$!
+:::
+
+---
+
+#### Problem 8.6 (`W1B-29`): Range Square Multiplicity & Range Distinct Squares in $S[L_q..R_q]$
+
+- **Source**: National Training Team 2019 (`Jin Ce`) / LOJ 6681 / UOJ (`[ZH]`/`[EN]`).
+- **Inline Mathematical Statement & Constraints**:
+  Given a string $S[1..N]$ ($N \le 2 \times 10^5$) and $Q \le 2 \times 10^5$ queries $[L_q, R_q]$, output for each query: (Part A) the total number of square occurrences $(a, b)$ with $L_q \le a < b \le R_q$, and (Part B) the number of **distinct** square substrings contained in $S[L_q..R_q]$. Time limit: $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+By Theorem 8.1(2), across all runs $R = [l_R, r_R, p]$ and all harmonics $k \ge 1$ ($d = kp$), there are $< 1.5N$ diagonal segments $\mathcal{D}_{R, k} = \{(a, a + 2d - 1) \mid a \in [l_R .. r_R - 2d + 1]\}$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+For **Part A (Total Occurrences)**, as the sweep-line advances $R_q = 1 \to N$, each diagonal segment $\mathcal{D}_{R, k}$ starts contributing at $R_q = l_R + 2d - 1$, increases its valid left-endpoint range $[l_R .. R_q - 2d + 1]$ by $1$ each step until $R_q = r_R$, and then stays fixed at $[l_R .. r_R - 2d + 1]$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For **Part B (Distinct Squares)**, inside $\mathcal{D}_{R, k}$, the first $\min(p, r_R - l_R + 2 - 2d)$ points are the $< 2N$ canonical representatives (Corollary 8.2), while every subsequent point $a \in [l_R + p .. r_R - 2d + 1]$ duplicates the square at $a - p$! When sweeping $R_q = 1 \to N$, moving a duplicate's $+1$ weight from $a - p$ to $a$ means only the **last $p$ active points** of $\mathcal{D}_{R, k}$ carry $+1$ weight at any time!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   Offline 2D sweep-line over $R_q = 1 \to N$ maintaining active left endpoints $L \in [1..R_q]$ in a Fenwick tree.
+
+2. **Step 2 — Combinatorial Word Invariant**:
+   - **Part A**: Every square occurrence belongs to a unique $\mathcal{D}_{R, k}$.
+   - **Part B**: At sweep position $R_q$, each distinct square $w^2$ that has appeared inside $S[1..R_q]$ must have $+1$ placed at its **latest (largest) starting position** $a_{\text{last}}(w^2, R_q)$ whose right endpoint $a + 2d - 1 \le R_q$.
+     Inside a single segment $\mathcal{D}_{R, k}$:
+
+     - For the first $p$ shifts $a \in [l_R .. \min(l_R + p - 1, r_R - 2d + 1)]$ (at most $2N$ events globally by Corollary 8.2!), when $R_q$ reaches $a + 2d - 1$, we look up the previous occurrence `prev_a` of $S[a..a+2d-1]$ (stored on its SAM state or hash table), add $-1$ at `prev_a`, and add $+1$ at $a$!
+     - For the sliding periodic shifts $a \in [l_R + p .. r_R - 2d + 1]$, when $R_q$ reaches $a + 2d - 1$, the previous occurrence of $S[a..a+2d-1]$ is **guaranteed to be $a - p$ inside the exact same run $R$**!
+     - Therefore, as $R_q$ sweeps across $[l_R + 2d - 1 + p .. r_R]$, each step adds $-1$ at $R_q - 2d + 1 - p$ and $+1$ at $R_q - 2d + 1$, which is equivalent to a moving window of length $p$: $\bigl[\max(l_R, \min(R_q, r_R) - 2d + 1 - p + 1),\; \min(R_q, r_R) - 2d + 1\bigr]$!
+3. **Step 3 — Algorithmic Compilation**:
+   - Enumerate $\mathcal{R}(S)$ in $O(N)$ time.
+   - For the $< 2N$ canonical representatives $(R, k, a)$ ($a < l_R + p$), locate their SAM node (or 64-bit double rolling hash) to chain each representative to the **rightmost position** `last_end = r_{R_{\text{prev}}} - \delta` of the same square in the immediately preceding run $R_{\text{prev}}$. That creates $< 2N$ point-update events `(time = a + 2d - 1, pos = prev_a, weight = -1)`.
+   - Meanwhile, the positive $+1$ weights inside $\mathcal{D}_{R, k}$ at time $R_q$ simply occupy the contiguous interval $\bigl[\max(l_R, \min(R_q, r_R) - 2d - p + 2),\; \min(R_q, r_R) - 2d + 1\bigr]$!
+   - Sweep $R_q = 1 \to N$ with two linear Fenwick trees (one for active diagonal heads, one for locked intervals and point $-1$ updates) in **$O((N + Q) \log N)$ total time**!
+4. **Step 4 — Boundary Pitfalls**:
+   When a canonical representative $S[a..a+2d-1]$ at $a = l_R + \delta$ appeared in an earlier run $R_{\text{prev}}$, its **latest** occurrence inside $R_{\text{prev}}$ is not at $l_{R_{\text{prev}}} + \delta'$, but at the **last** copy of that phase inside $R_{\text{prev}}$: $a_{\text{prev}} = l_{R_{\text{prev}}} + \delta' + m \cdot p \le r_{R_{\text{prev}}} - 2d + 1$!
+:::
+
+---
+
+#### Problem 8.7 (`W1B-33`): Sum of $f(\operatorname{occ}(w^2), |w|)$ over All Distinct Squares
+
+- **Source**: Universal Cup / Petrozavodsk / Cohort 2 `#26` (`[EN]`).
+- **Inline Mathematical Statement & Constraints**:
+  Given a string $S[1..N]$ ($N \le 2 \times 10^5$), for each distinct square substring $w^2$ occurring in $S$, let $\operatorname{occ}(w^2)$ be the total number of times $w^2$ occurs as a substring in $S$. Compute
+  $$
+  \sum_{w^2 \text{ distinct square in } S} \operatorname{occ}(w^2)^2 \cdot |w| \pmod{998244353}.
+  $$
+  Time limit: $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+By Corollary 8.2, there are $< 2N$ canonical square representatives $(R, k, a)$ across all runs $R \in \mathcal{R}(S)$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+How many times does the square $w^2 = S[a..a+2kp-1]$ ($a \in [l_R .. l_R + p - 1]$) occur **inside this single run $R$**? Since it repeats at $a, a + p, a + 2p, \dots \le r_R - 2kp + 1$, it occurs exactly $\left\lfloor \frac{(r_R - a + 1) - 2kp}{p} \right\rfloor + 1$ times inside $R$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Can two different runs $R_1, R_2$ that both generate the same square $w^2$ ever share an occurrence of $w^2$? **No!** Because every square occurrence $S[x..x+2kp-1]$ has a unique primitive period $p$ and extends maximally to a **unique** run $R \in \mathcal{R}(S)$! Thus $\operatorname{occ}(w^2)$ is simply the **sum of its in-run multiplicities** across all canonical representatives $(R, k, a)$ equal to $w^2$ (or directly $|\operatorname{endpos}(u)|$ in the SAM of $S$)!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   Aggregating a non-linear function of global occurrence multiplicity $\operatorname{occ}(w^2)$ over all distinct squares $w^2$.
+
+2. **Step 2 — Combinatorial Word Invariant**:
+   Every occurrence of $w^2$ (with primitive root of length $p$ and $|w| = kp$) belongs to a **unique** run $R = [l_R, r_R, p] \in \mathcal{R}(S)$. Inside $R$, the occurrences of $w^2$ form the arithmetic progression $a, a + p, \dots, a + (c_R - 1)p$ where $a \in [l_R .. l_R + p - 1]$ is the canonical representative in $R$ and
+   $$
+   c_R(a, k) = \left\lfloor \frac{r_R - a + 1 - 2kp}{p} \right\rfloor + 1.
+   $$
+   Summing $c_R(a, k)$ over all runs $R$ that generate the string $w^2$ gives the exact global count $\operatorname{occ}(w^2)$ without even needing a Suffix Automaton!
+
+3. **Step 3 — Algorithmic Compilation**:
+   - Enumerate $\mathcal{R}(S)$ in $O(N)$ time via Kernel B.
+   - Collect the $< 2N$ canonical tuples `(len = 2*k*p, start = a, count = c_R(a, k))`.
+   - Sort the tuples by `len` and then by $\operatorname{rk}[\text{start}]$.
+   - Coalesce adjacent tuples with the same `len` and $\operatorname{LCP}(\text{start}_1, \text{start}_2) \ge \text{len}$ by summing their `count` fields into $\operatorname{occ}(w^2)$, and add $\operatorname{occ}(w^2)^2 \cdot (kp)$ to the answer!
+   - Total time: $O(N \log N)$ (or $O(N)$ with radix sort), using zero SAM memory!
+4. **Step 4 — Boundary Pitfalls**:
+   Remember that deduplicating $\mathcal{R}(S)$ by $(l_R, r_R)$ (keeping only the primitive period $p$) BEFORE generating the canonical representatives is mandatory—otherwise a non-primitive duplicate run $[l_R, r_R, 2p]$ would double-count the occurrences of $w^2$ inside $[l_R, r_R]$!
+:::
+
+---
+
+### Tier 4 — Mastery (2 Problems)
+
+#### Problem 8.8 (`W1B-40`): Palindromic Runs $w = P_1 P_2$ & $k$-th Power Substring Range Queries
+
+- **Source**: THUPC / Universal Cup Grandmaster (`[ZH]`/`[EN]`).
+- **Inline Mathematical Statement & Constraints**:
+  Given a string $S[1..N]$ ($N \le 3 \times 10^5$):
+
+  1. **(Part A — Palindromic Squares & Symmetric Runs)**: Count the number of **distinct** substrings and **total** substrings of $S$ that are **simultaneously a square $w^2$ and a palindrome** ($w^2 = (w^2)^R$).
+  2. **(Part B — Range Longest $k$-th Power)**: Given $k \ge 2$ and $Q \le 2 \times 10^5$ queries $[L_q, R_q]$, find the maximum length of a $k$-th power substring $u^k$ contained in $S[L_q..R_q]$. Time limit: $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal (Part A)"}
+When is a square $W = w^2$ a palindrome? Write $(w^2)^R = (w^R)(w^R)$. Since $|w| = |w^R|$, $w^2 = (w^R)^2$ holds **if and only if $w = w^R$ (the half-string $w$ is itself a palindrome!)**
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant (Part A)"}
+Test each of the $< 2N$ canonical square representatives $(R, k, a)$ in $O(1)$ time using Manacher's algorithm: $S[a..a+2kp-1]$ is a palindromic square $\iff S[a..a+kp-1]$ is a palindrome! (And inside a run of period $p$, at most **two** cyclic shifts $a \in [l_R .. l_R + p - 1]$ can be palindromes, occurring when the period block factors into two palindromes $P_1 P_2$!)
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly (Part B)"}
+In a global run $R = [l_R, r_R, p]$ clipped to $M = \min(R_q, r_R) - \max(L_q, l_R) + 1 \ge kp$, the longest $k$-th power has length $\lfloor M / (kp) \rfloor \cdot kp$. Split runs into 4 geometric classes relative to $[L_q, R_q]$; by the **Three-Squares Lemma (Theorem 8.3)**, at most $O(\log N)$ runs of length $\ge 2p$ can straddle the left boundary $L_q$ (or right boundary $R_q$) and extend by $\ge 2p$ inside $[L_q, R_q]$!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   Part A couples the $< 2N$ Representative Squares Lemma with Manacher's $O(1)$ palindrome test; Part B couples 2D dominance over runs with the floor-truncation $\lfloor M / (kp) \rfloor \cdot kp$.
+
+2. **Step 2 — Combinatorial Word Invariant**:
+   - **Part A (Palindromic Square Identity)**: $w^2 = (w^2)^R \iff w = w^R \iff$ the radius at center $a + (kp - 1)/2$ in Manacher's array is $\ge kp/2$. Filter the $< 2N$ canonical representatives $(R, k, a)$ by this $O(1)$ Manacher check, and apply Problem 8.7's coalescing pass to get both distinct and total palindromic square counts!
+   - **Part B (Range Longest $k$-th Power)**: For query $[L_q, R_q]$, any $k$-th power $u^k \subseteq S[L_q..R_q]$ has primitive root $p \mid |u|$ and lies inside the clipped interval $[l', r'] = [\max(L_q, l_R), \min(R_q, r_R)]$ of a run $R = [l_R, r_R, p]$, yielding max length $\lfloor (r' - l' + 1)/(kp) \rfloor \cdot kp$.
+     Consider the four position cases of $[l_R, r_R]$ vs $[L_q, R_q]$:
+
+     1. **Contained ($L_q \le l_R \le r_R \le R_q$)**: Static weight $W_R = \lfloor (r_R - l_R + 1)/(kp) \rfloor \cdot kp$, queried via 2D range maximum in $O(\log N)$.
+     2. **Containing ($l_R < L_q \le R_q < r_R$)**: Clipped length is $M = R_q - L_q + 1$, yielding $\lfloor M / (kp) \rfloor \cdot kp$.
+     3. **Left-Straddling ($l_R < L_q \le r_R \le R_q$ with $r_R - L_q + 1 \ge kp$)**: When $k = 2$ (or using binary search / diagonal segments), notice that $\lfloor (r_R - L_q + 1)/(kp) \rfloor \cdot kp$ is the maximum $m \cdot kp$ ($1 \le m \le \lfloor \operatorname{exp}(R)/k \rfloor$) such that a segment in $\mathcal{D}_{R, m}$ (of length $m \cdot kp$) lies inside $[L_q, R_q]$!
+     Read that unification: across **all** runs $R$ and **all** multiples $m \ge 1$ with $m \cdot kp \le r_R - l_R + 1$, the total number of pairs $(R, m)$ is:
+     $$
+     \sum_{R \in \mathcal{R}(S)} \left\lfloor \frac{\operatorname{exp}(R)}{k} \right\rfloor \le \sum_{R \in \mathcal{R}(S)} \left\lfloor \frac{\operatorname{exp}(R)}{2} \right\rfloor < 1.5N!
+     $$
+     And a $k$-th power of length $L_{R, m} = m \cdot kp$ from $(R, m)$ fits inside $[L_q, R_q]$ **if and only if**
+     $$
+     \min(R_q, r_R) - \max(L_q, l_R) + 1 \ge L_{R, m} \iff \begin{cases}
+     r_R - L_{R, m} + 1 \ge L_q, \\
+     l_R + L_{R, m} - 1 \le R_q, \\
+     R_q - L_q + 1 \ge L_{R, m}!
+     \end{cases}
+     $$
+
+3. **Step 3 — Algorithmic Compilation**:
+   - Look at those three inequalities for the $< 1.5N$ pairs $(R, m)$: when is $R_q - L_q + 1 \ge L_{R, m}$ violated despite $x_{R, m} = r_R - L_{R, m} + 1 \ge L_q$ and $y_{R, m} = l_R + L_{R, m} - 1 \le R_q$? Only when $l_R < L_q \le R_q < r_R$ (Case 2: the run $R$ completely contains $[L_q, R_q]$)!
+   - Therefore:
+     - For $r_R \le R_q$ (Cases 1 and 3): $R_q \ge r_R \implies R_q - L_q + 1 \ge r_R - L_q + 1 \ge L_{R, m}$ holds **automatically** whenever $x_{R, m} \ge L_q$!
+     - For $l_R \ge L_q$ (Cases 1 and 4): $L_q \le l_R \implies R_q - L_q + 1 \ge R_q - l_R + 1 \ge L_{R, m}$ holds **automatically** whenever $y_{R, m} \le R_q$!
+   - That means we only need **two simple 1D Segment Tree sweeps** ($r_R \le R_q$ sweeping $R_q$ rightwards, and $l_R \ge L_q$ sweeping $L_q$ leftwards) over the $< 1.5N$ pairs $(R, m)$, plus for Case 2 ($l_R < L_q \le R_q < r_R$, where $L_{R, m} = \lfloor (R_q - L_q + 1)/(kp) \rfloor \cdot kp$) sweeping $r_R \ge R_q$ in descending order of $R_q$ with a 1D Segment Tree over $l_R \le L_q$!
+   - Total time: **$O((N + Q) \log N)$** with standard 1D Segment Trees!
+4. **Step 4 — Boundary Pitfalls**:
+   Remember that in Case 3 ($r_R \le R_q$), activating $(R, m)$ only when the sweep-line reaches $r_R$ guarantees $R_q \ge r_R$, so $x_{R, m} = r_R - L_{R, m} + 1 \ge L_q$ alone is necessary and sufficient!
+:::
+
+---
+
+#### Problem 8.9 (`W1B-43`): Lexicographically $K$-th Square & Interior $L$-Root 2D Range Queries
+
+- **Source**: Universal Cup Grandmaster / QOJ (`[EN]`/`[ZH]`).
+- **Inline Mathematical Statement & Constraints**:
+  Given a string $S[1..N]$ ($N \le 2 \times 10^5$):
+
+  1. **(Part A — Lexicographically $K$-th Square)**: Answer $Q \le 2 \times 10^5$ queries $K \le 10^{12}$ asking for the starting and ending positions $[a, b]$ of the $K$-th lexicographically smallest square substring of $S$ (in both the **distinct squares** version and the **multiplicity-weighted** version).
+  2. **(Part B — Interior $L$-Root Sum Queries)**: For a query substring $S[L_q..R_q]$, compute $\sum_{R \in \mathcal{R}(S[L_q..R_q])} \lfloor \operatorname{exp}(R) \rfloor$. Time limit: $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal (Part A)"}
+Extract the $< 2N$ canonical square representatives $(a, 2kp, c_R(a, k))$ from Problem 8.7. How do you sort $< 2N$ arbitrary substrings $S[a_1..a_1+L_1-1]$ and $S[a_2..a_2+L_2-1]$ of **different** lengths in $O(N \log N)$ time?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant (Part A)"}
+Compare $\ell = \operatorname{LCP}(a_1, a_2)$ against $\min(L_1, L_2)$: if $\ell < \min(L_1, L_2)$, compare $\operatorname{rk}[a_1]$ vs $\operatorname{rk}[a_2]$; if $\ell \ge \min(L_1, L_2)$, the shorter string is a prefix of the longer string, so compare $L_1$ vs $L_2$! Coalesce identical strings ($\ell \ge L_1 = L_2$), build prefix sums of counts ($1$ for distinct, $\operatorname{occ}(w^2)$ for multiplicity), and binary search $K$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly (Part B)"}
+In a clipped run $R' = [l', r', p] \in \mathcal{R}(S[L_q..R_q])$, how does $\lfloor \operatorname{exp}(R') \rfloor = \lfloor (r' - l' + 1)/p \rfloor$ relate to the interior Lyndon roots $i \in B(R)$ from Bannai et al.'s proof (Section 2)? Every $L$-root $S[i..i+p-1]$ ($l' \le i \le r' - p + 1$) contributes $+1$ to $\lfloor (r' - l')/p \rfloor + [p \mid (r' - l' + 1)]$, and there are $\le N - 1$ interior $L$-roots across the entire string!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Zero-Magic Solution & Derivation"}
+
+1. **Step 1 — Diagnostic Signal**:
+   Part A uses Corollary 8.2 to compress $\Theta(N^2)$ squares into $< 2N$ weighted representatives sorted by $O(1)$ LCE; Part B uses Theorem 8.1's disjoint $L$-root decomposition to turn run exponent sums into point-counting!
+
+2. **Step 2 — Combinatorial Word Invariant**:
+   - **Part A**: By Corollary 8.2, all distinct squares and their exact multiplicities are captured by the $< 2N$ triples $(a, L = 2kp, c_R(a, k))$. Sorting them under the exact substring comparator:
+     $$
+     (a_1, L_1) <_{\text{lex}} (a_2, L_2) \iff \begin{cases}
+     \operatorname{rk}[a_1] < \operatorname{rk}[a_2] & \text{if } \operatorname{LCP}(a_1, a_2) < \min(L_1, L_2), \\
+     L_1 < L_2 & \text{if } \operatorname{LCP}(a_1, a_2) \ge \min(L_1, L_2),
+     \end{cases}
+     $$
+     and coalescing adjacent ties ($L_1 = L_2$ and $\operatorname{LCP}(a_1, a_2) \ge L_1$) produces the complete sorted list of distinct squares with their global multiplicities in $O(N \log N)$ time!
+
+   - **Part B**: For any run $R' = [l', r', p]$ of $S[L_q..R_q]$, let $i \in [l' .. r' - p + 1]$ be the starting positions of the $<_R$-Lyndon root of $R$ inside $[l', r']$. Notice that inside every window of length $p$, there is **strictly one** starting position of the $<_R$-Lyndon root!
+     Specifically, if we instead count how many full periods of length $p$ fit inside $[l', r']$, $\lfloor (r' - l' + 1)/p \rfloor$ is the number of indices $x \in [l' .. r' - p + 1]$ with $x \equiv l' \pmod p$, OR in terms of the disjoint interior $L$-roots $i \in B(R) \subseteq [2..N]$:
+     The number of interior $L$-roots $i \in B(R)$ satisfying $L_q + 1 \le i \le R_q - p + 1$ inside a surviving run ($\min(R_q, r_R) - \max(L_q, l_R) + 1 \ge 2p$) equals $\lfloor (r' - l')/p \rfloor$! Adding $+1$ whenever the first root in $[l' .. l' + p - 1]$ starts at $l'$ (which happens iff $l'$ itself is the $<_R$-Lyndon root of $R$) recovers $\lfloor (r' - l' + 1)/p \rfloor$!
+
+3. **Step 3 — Algorithmic Compilation**:
+   - **Part A**: Generate the $< 2N$ representatives, sort with the $O(1)$ LCE comparator in $O(N \log N)$ time, merge equal neighbours, compute prefix sums of $1$ (for distinct) and $\operatorname{occ}(w^2)$ (for multiplicity), and `std::lower_bound` each query $K$ in $O(\log N)$ time.
+   - **Part B**: Associate each of the $\le N - 1$ interior $L$-roots $i \in B(R)$ with its activation box $(L_q \le i - 1,\; R_q \ge i + p - 1,\; \text{run } R \text{ survives in } [L_q, R_q])$ and sweep in $O((N + Q) \log N)$ time.
+4. **Step 4 — Boundary Pitfalls**:
+   In Part A's substring comparator, if $\operatorname{LCP}(a_1, a_2) < \min(L_1, L_2)$ and $a_1 \ne a_2$, $\operatorname{rk}[a_1] < \operatorname{rk}[a_2]$ is strict; for `std::sort` strict weak ordering, when $\operatorname{LCP}(a_1, a_2) \ge L_1 = L_2$, return `false` (or break ties by $a_1 < a_2$ during sorting and then coalesce equal adjacent strings in a linear pass).
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+::: {.callout-important icon=false}
+## Diagnostic Decision Checklist for Chapter 08 (`T-1B-05` & `T-1B-06`)
+
+1. **Does the problem ask about squares $w^2$, $AABB$ splits, $k$-th powers $u^k$, or long borders $\ge |S[l..r]|/2$?**
+   - Compress all repetitions into the set of runs $\mathcal{R}(S) = \{[l, r, p]\}$, which has $|\mathcal{R}(S)| \le N - 1 < N$, $\sum \operatorname{exp}(R) < 3N$, and $\sum \lfloor \operatorname{exp}(R)/2 \rfloor < 1.5N$ (**Theorem 8.1**).
+2. **Which Runs enumeration kernel should you write?**
+   - **Kernel A ($O(N \log N)$ Harmonic Checkpoints)**: Fastest to code when $N \le 2 \times 10^5$; loop $p = 1 \dots \lfloor N/2 \rfloor$ and $k = 1 \dots \lfloor N/p \rfloor - 1$, query $L_1 = \operatorname{LCS}(kp, (k+1)p)$ and $L_2 = \operatorname{LCP}(kp, (k+1)p)$. **Remember to sort by $(l, r, p)$ and keep ONLY the minimum $p$ for each $(l, r)$** (or clamp $L_1, L_2 \le p$ for direct square difference-array updates in `[NOI2016] 优秀的拆分`).
+   - **Kernel B ($O(N)$ Lyndon-Array Seeding)**: Required when $N \ge 5 \times 10^5$ or when building on Chapter 07; test $j = R_{\mathcal{L}, \prec}[i], p = j - i + 1$ for both $\prec \in \{<, >\}$ (never negate $\operatorname{rk}_<$!).
+3. **Do you need to iterate over all distinct squares in $S$?**
+   - Use **Corollary 8.2 (The $< 2N$ Representative Squares Lemma)**: for each $R = [l_R, r_R, p] \in \mathcal{R}(S)$ and each harmonic $k = 1 \dots \lfloor (r_R - l_R + 1)/(2p) \rfloor$, iterate only over the first period window $a \in [l_R .. \min(l_R + p - 1, r_R - 2kp + 1)]$. There are **strictly fewer than $2N$ such triples $(R, k, a)$ in total**, and each occurs $\lfloor (r_R - a + 1 - 2kp)/p \rfloor + 1$ times inside $R$! Deduplicate across runs via $O(1)$ SA-LCE or SAM.
+4. **Do you need to answer substring repetition queries on $S[L_q..R_q]$?**
+   - **Contains a square / Square-free DP (`CF 1043G`, Problem 8.2–8.3)**: Only $k = 1$ (primitively rooted squares) is needed; use a DSU skip-list or the $< 2N$ primitive square starts to compute `min_sq_start[a]` and `L_max[r]` in $O(N)$ time.
+   - **Range square counts / Distinct squares / Longest $k$-th power (Problem 8.6, 8.8)**: Sweep $R_q = 1 \to N$ over the $< 1.5N$ diagonal segments $\mathcal{D}_{R, k}$.
+   - **Clipped run count $|\mathcal{R}(S[L_q..R_q])|$ (Problem 8.5)**: By the **Fine–Wilf Clipping Non-Collision Lemma**, distinct global runs never collide on length $\ge 2p_2$; count global runs with $\min(R_q, r_R) - \max(L_q, l_R) + 1 \ge 2p$.
+:::

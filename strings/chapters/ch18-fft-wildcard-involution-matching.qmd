@@ -1,0 +1,570 @@
+---
+title: "Polynomial & FFT String Matching: 1-NTT Wildcards, Kalai's Projection, 3-in-2 FFT, and Involution/Affine Matching"
+subtitle: "Chapter 18 · Part V: Algebraic/FFT String Matching, k-Mismatch, Structural Isomorphism & Grammar-Compressed Strings"
+---
+
+::: {.callout-important title="Prerequisites, Assumed Library & Learning Objectives"}
+
+- **Assumed Library Primitives**: $O(N)$ KMP prefix function ($\pi$), and black-box $O(N \log N)$ polynomial multiplication via Fast Fourier Transform (`FFT` over $\mathbb{C}$) and Number Theoretic Transform (`NTT` modulo $p = 998244353$). In this chapter, we use 0-based indexing $P[0..M-1]$ and $T[0..N-1]$ to align directly with polynomial degrees $x^0, x^1, \dots, x^{N-1}$ (see [Notation & Conventions](../notation.qmd)).
+- **Strict Prerequisite Chapters**: [Chapter 02 (Weak Periodicity & Border APs)](ch02-weak-periodicity-border-aps.qmd).
+- **Assigned Technique IDs**: `T-3B-01` (Index-Reflection Cauchy Duality, Degree-Reduced Indicator NTT, Kalai Projection & 3-in-2 Complex FFT), `T-3B-02` (Involution vs. General Permutation Matching, Cauchy–Schwarz Affine Matching & $\sqrt{M\log M}$ Value-Bucket Splitting).
+- **Learning Objectives**:
+  1. Convert string alignment cross-correlations $\sum_{j=0}^{M-1} f(P_j) g(T_{i+j})$ into standard Cauchy polynomial convolutions $[x^{i+M-1}](A \cdot B)$ via **Index-Reflection Duality** ($P^R_k = P_{M-1-k}$).
+  2. Prove why raw Clifford–Clifford cubic wildcard matching $\sum P_j T_{i+j}(P_j - T_{i+j})^2$ overflows $998244353$ and suffers finite-field sum-of-squares cancellation, and eliminate both hazards deterministically in **1 NTT prime** using the **Degree-Reduced Indicator Form** $D_{\text{ind}}(i) \le M(|\Sigma|-1)^2 < 998244353$ or **Kalai's Randomized $\mathbb{F}_p$ Projection**.
+  3. Accelerate real-valued convolutions by $3\times$ using **Frequency-Domain Pointwise Accumulation** (1 IFFT) and **3-in-2 Conjugate-Symmetric Complex FFT Packing (`三次变两次`)**.
+  4. Master the **4-Method Hierarchy for Permutation Pair Matching (`CF 1334G`)**—distinguishing deterministic $O(N+M)$ canonical KMP when $\pi^2 = \operatorname{id}$ from 1-FFT Angle-Bisector, 2-NTT Kalai, and 3-NTT Quartic encodings for general $\pi$—alongside **First-Difference Cauchy–Schwarz Affine Matching** and **$O(N\sqrt{M\log M})$ Value-Bucket Splitting** for dominance ($P_j \le T_{i+j}$) and $L_1$ distance.
+:::
+
+---
+
+## 1. Index-Reflection Duality & The Modulo-$998244353$ Cubic Overflow Trap (`T-3B-01`)
+
+### 1.1 The Diagnostic Signal: Why Non-Transitive Compatibility Breaks Automata and Rolling Hashes
+
+In classical exact string matching, KMP, the Z-algorithm, and the Suffix Automaton (`SAM`) achieve $O(N + M)$ time by exploiting a single algebraic axiom: **character equality is transitive** ($a = b \text{ and } b = c \implies a = c$). Because equality is an equivalence relation:
+
+- Knowing that $P[0..k-1] = T[i-k..i-1]$ guarantees that any border $P[0..b-1] = P[k-b..k-1]$ also matches $T[i-b..i-1]$.
+- Knowing that two substrings have equal polynomial rolling hashes $H(U) = H(V)$ (where each position is weighted independently of the other string) tests exact equality in $O(1)$ time.
+
+Now introduce a single universal wildcard character $\texttt{'?'}$ that matches every symbol in $\Sigma \cup \{\texttt{'?'}\}$. Character compatibility $\approx$ immediately degenerates into a **non-transitive tolerance relation**:
+
+$$\texttt{'a'} \approx \texttt{'?'} \quad \text{and} \quad \texttt{'?'} \approx \texttt{'b'}, \quad \text{yet} \quad \texttt{'a'} \not\approx \texttt{'b'}.$$
+
+Whenever a problem asks to evaluate all $N - M + 1$ alignments $i \in [0, N - M]$ between a pattern $P[0..M-1]$ and a text $T[0..N-1]$ under a binary compatibility predicate $R(P_j, T_{i+j}) \in \{0, 1\}$ that is non-transitive—such as wildcards $\texttt{'?'}$, spatial tolerance $|t - (i+j)| \le k$ (`CF 528D`), permutation pairs $T_{i+j} \in \{P_j, \pi(P_j)\}$ (`CF 1334G`), affine scaling $T_{i+j} = \alpha P_j + \beta$, or dominance $P_j \le T_{i+j}$—border jumping and independent rolling hashes collapse. Instead, we compile the conjunction $\bigwedge_{j=0}^{M-1} R(P_j, T_{i+j})$ into a **separable bilinear penalty** evaluated simultaneously across all shifts $i$ via polynomial multiplication.
+
+---
+
+### 1.2 The Combinatorial & Algebraic Word Invariant: Concrete Objects & Index-Reflection Cauchy Duality
+
+Fix a commutative ring $\mathcal{R}$ (such as $\mathbb{Z}$, $\mathbb{R}$, $\mathbb{C}$, or $\mathbb{F}_p$). Given pointwise feature maps $f: \Sigma_P \to \mathcal{R}$ and $g: \Sigma_T \to \mathcal{R}$, we want to compute the **alignment cross-correlation** at every shift $i \in \{0, 1, \dots, N - M\}$:
+
+$$C(i) = \sum_{j=0}^{M-1} f(P_j)\, g(T_{i+j}).$$
+
+Why does a raw polynomial product not immediately equal $C(i)$? In Cauchy polynomial multiplication $(A \cdot B)[d] = \sum_{k+t=d} A_k B_t$, paired indices have a **constant sum** $k + t = d$. In string alignment at shift $i$, pattern index $j \in [0, M-1]$ aligns with text index $t = i + j$, so paired indices have a **constant difference** $t - j = i$. Reversing the pattern array converts constant differences into constant sums.
+
+::: {.callout-note title="Lemma 18.1 (Index-Reflection Cauchy Duality)"}
+Define the reversed pattern array $P^R_k = P_{M-1-k}$ for $0 \le k \le M - 1$, and construct the two polynomials
+
+$$A(x) = \sum_{k=0}^{M-1} f(P^R_k)\, x^k = \sum_{j=0}^{M-1} f(P_j)\, x^{M-1-j}, \qquad B(x) = \sum_{t=0}^{N-1} g(T_t)\, x^t.$$
+
+Under the index substitution $k = M - 1 - j$ and $t = i + j$, the exponent sum is invariant across all pattern positions $j \in [0, M-1]$:
+
+$$\boxed{k + t = (M - 1 - j) + (i + j) = i + M - 1.}$$
+
+Consequently, for every valid alignment $i \in \{0, 1, \dots, N - M\}$, the cross-correlation $C(i)$ is the exact coefficient of $x^{i + M - 1}$ in $A(x) B(x)$:
+
+$$\boxed{C(i) = \sum_{j=0}^{M-1} f(P_j)\, g(T_{i+j}) = [x^{i + M - 1}]\bigl(A(x) B(x)\bigr).}$$
+:::
+
+```
+Alignment i:   T[0] ... T[i]     T[i+1]   ... T[i+j]   ... T[i+M-1] ... T[N-1]
+                         |        |            |            |
+Pattern P:              P[0]     P[1]     ... P[j]     ... P[M-1]
+Reversed P^R:           P^R[M-1] P^R[M-2] ... P^R[M-1-j].. P^R[0]
+Exponent sum:           i+(M-1)  (i+1)+(M-2)  (i+j)+(M-1-j) = i + M - 1 (INVARIANT!)
+```
+
+- **Exact Degree & Transform Boundary Invariant**: Because $\deg(A) \le M - 1$ and $\deg(B) \le N - 1$, their product satisfies $\deg(A \cdot B) \le N + M - 2$. Selecting a power-of-two DFT length $L = 2^{\lceil \log_2(N + M - 1) \rceil}$ prevents cyclic wrap-around modulo $x^L - 1$, and the $N - M + 1$ valid shifts $i \in [0, N - M]$ map bijectively to product indices $d = i + M - 1 \in [M - 1, N - 1]$.
+
+---
+
+### 1.3 Clifford–Clifford Sum-of-Squares Penalty & The Modulo-$p$ Overflow Trap
+
+Suppose both $P \in (\Sigma \cup \{\texttt{'?'}\})^M$ and $T \in (\Sigma \cup \{\texttt{'?'}\})^N$ may contain wildcards. Map concrete characters $c \in \Sigma$ to positive integers $\operatorname{ord}(c) \in \{1, 2, \dots, |\Sigma|\}$ and map the wildcard $\texttt{'?'}$ to $0$.
+
+Why can we not test wildcard matching via the linear sum $\sum_{j=0}^{M-1} P_j T_{i+j}(P_j - T_{i+j}) = 0$? Because a positive error $P_{j_1} - T_{i+j_1} > 0$ at one offset $j_1$ can cancel a negative error $P_{j_2} - T_{i+j_2} < 0$ at another offset $j_2$. Squaring $(P_j - T_{i+j})^2$ enforces pointwise non-negativity over $\mathbb{Z}_{\ge 0}$.
+
+In **Clifford and Clifford's (2007)** classical formulation, one defines the degree-4 discrepancy polynomial over $\mathbb{Z}$:
+
+$$D_{\text{raw}}(i) = \sum_{j=0}^{M-1} P_j T_{i+j} (P_j - T_{i+j})^2 = \sum_{j=0}^{M-1} P_j^3 T_{i+j} - 2 \sum_{j=0}^{M-1} P_j^2 T_{i+j}^2 + \sum_{j=0}^{M-1} P_j T_{i+j}^3.$$
+
+Over $\mathbb{Z}$, each summand $\Delta_j = P_j T_{i+j}(P_j - T_{i+j})^2 \ge 0$ vanishes if and only if $P_j = 0$ ($\texttt{'?'}$), $T_{i+j} = 0$ ($\texttt{'?'}$), or $P_j = T_{i+j}$. However, when competitive programmers evaluate $D_{\text{raw}}(i)$ modulo the standard NTT prime $p = 998244353$, two algebraic traps emerge:
+
+1. **The Cubic Coefficient Overflow Trap**: For $P_j = 26$ ($\texttt{'z'}$) and $T_{i+j} = 1$ ($\texttt{'a'}$), a single mismatch contributes $26 \cdot 1 \cdot (26 - 1)^2 = 16\,250$ (or up to $13 \cdot 26 \cdot 13^2 = 57\,122$ at $P_j = 13, T_{i+j} = 26$, and $\approx 1.13 \times 10^8$ per character if raw ASCII codes $97..122$ are used!). Across $M = 5 \times 10^5$ positions, $D_{\text{raw}}(i)$ reaches $5 \times 10^5 \times 57\,122 \approx 2.85 \times 10^{10} \gg 998244353$ (and $5.6 \times 10^{13}$ with raw ASCII). Any shift $i$ whose true integer discrepancy $D_{\text{raw}}(i)$ is a nonzero multiple of $998244353$ wraps around to $0 \pmod{998244353}$, creating a **deterministic false positive**!
+2. **The Finite-Field Sum-of-Squares Cancellation Trap**: In $\mathbb{F}_p$, squares are **not** ordered: whenever two offsets produce residuals summing to a multiple of $p$, they annihilate modulo $p$.
+
+---
+
+## 2. Deterministic 1-NTT Indicator Refinement, Kalai Projection & 3-in-2 Complex FFT (`T-3B-01`)
+
+### 2.1 The Degree-Reduced Indicator Refinement (100% Deterministic in 1 NTT Prime)
+
+How do we eliminate modular wrap-around in a single NTT prime $p = 998244353$ without Chinese Remainder Theorem (CRT) or randomization? Observe why $D_{\text{raw}}(i)$ grew so large: the outer factors $P_j$ and $T_{i+j}$ in $P_j T_{i+j}(P_j - T_{i+j})^2$ were only needed as **boolean zero-switches** to annihilate wildcards! Replacing the outer weights $P_j, T_{i+j}$ with binary non-wildcard indicators $u_j = \mathbf{1}[P_j \ne 0] \in \{0, 1\}$ and $w_t = \mathbf{1}[T_t \ne 0] \in \{0, 1\}$ shaves two powers of $|\Sigma|$ off the maximum value.
+
+::: {.callout-note title="Theorem 18.2 (Degree-Reduced Indicator Penalty in 1 NTT Prime)"}
+Map $\texttt{'?'} \mapsto (u = 0, v = 0)$ and each concrete symbol $c \in \Sigma$ to $(u = 1, v = \operatorname{ord}(c) \in \{1, \dots, |\Sigma|\})$. For each shift $i \in [0, N - M]$, define the indicator discrepancy over $\mathbb{Z}$:
+
+$$\boxed{D_{\text{ind}}(i) = \sum_{j=0}^{M-1} u_{P_j}\, u_{T_{i+j}}\, \bigl(v_{P_j} - v_{T_{i+j}}\bigr)^2 = \sum_{j=0}^{M-1} \bigl(u_{P_j} v_{P_j}^2\bigr) u_{T_{i+j}} - 2 \sum_{j=0}^{M-1} \bigl(u_{P_j} v_{P_j}\bigr)\bigl(u_{T_{i+j}} v_{T_{i+j}}\bigr) + \sum_{j=0}^{M-1} u_{P_j} \bigl(u_{T_{i+j}} v_{T_{i+j}}^2\bigr).}$$
+
+Then:
+
+1. **Exactness over $\mathbb{Z}$**: Every summand lies in $[0, (|\Sigma|-1)^2]$, and $D_{\text{ind}}(i) = 0 \iff P$ matches $T[i..i+M-1]$ with wildcards.
+2. **Zero Modular Wrap-Around Modulo $p = 998244353$**: Whenever $M (|\Sigma| - 1)^2 < p$ (which holds for all $M \le 1.59 \times 10^6$ at $|\Sigma| = 26$, since $5 \times 10^5 \times 25^2 = 3.125 \times 10^8 < 998244353$), the integer sum satisfies $0 \le D_{\text{ind}}(i) < p$, so
+
+$$\boxed{D_{\text{ind}}(i) \equiv 0 \pmod{998244353} \iff D_{\text{ind}}(i) = 0 \text{ over } \mathbb{Z}.}$$
+
+3. **One-Sided Wildcard Collapse (2 Convolutions)**: If wildcards appear only in $P$ ($u_{T_t} = 1$ for all $t$), then $\sum_{j=0}^{M-1} u_{P_j} v_{P_j}^2$ is a **constant scalar** independent of $i$, reducing $D_{\text{ind}}(i)$ to just **2 convolutions** ($(u_P v_P) * v_T$ and $u_P * v_T^2$)!
+:::
+
+#### Hand-Checked Trace of Theorem 18.2
+Let $T = \texttt{ab?a}$ ($N = 4$) and $P = \texttt{a?}$ ($M = 2$), with $\texttt{'?'} \mapsto (0, 0)$, $\texttt{'a'} \mapsto (1, 1)$, $\texttt{'b'} \mapsto (1, 2)$:
+
+- Pattern arrays ($P = \texttt{a?}$, reversed $P^R = \texttt{?a}$ at indices $k = 0, 1$):
+  - $A_1(x) = \sum (u_{P^R_k} v_{P^R_k}^2) x^k = 0 + 1 x = x$, $A_2(x) = \sum (u_{P^R_k} v_{P^R_k}) x^k = x$, $A_3(x) = \sum u_{P^R_k} x^k = x$.
+- Text arrays ($T = \texttt{ab?a}$ at $t = 0, 1, 2, 3$):
+  - $B_1(x) = \sum u_{T_t} x^t = 1 + x + 0x^2 + x^3$,
+  - $B_2(x) = \sum (u_{T_t} v_{T_t}) x^t = 1 + 2x + 0x^2 + x^3$,
+  - $B_3(x) = \sum (u_{T_t} v_{T_t}^2) x^t = 1 + 4x + 0x^2 + x^3$.
+- Polynomial combination $D_{\text{ind}}(x) = A_1 B_1 - 2 A_2 B_2 + A_3 B_3 = x\bigl((1 - 2 + 1) + (1 - 4 + 4)x + 0x^2 + (1 - 2 + 1)x^3\bigr) = 0x + 1x^2 + 0x^3 + 0x^4$.
+- Reading $D_{\text{ind}}(i) = [x^{i+1}]D_{\text{ind}}(x)$:
+  - $i = 0$ ($\texttt{ab}$ vs. $\texttt{a?}$): $[x^1] = 0 \implies$ **Match**.
+  - $i = 1$ ($\texttt{b?}$ vs. $\texttt{a?}$): $[x^2] = 1 \ne 0 \implies$ **Mismatch** ($\texttt{'b'} \ne \texttt{'a'}$ contributes $(2-1)^2 = 1$).
+  - $i = 2$ ($\texttt{?a}$ vs. $\texttt{a?}$): $[x^3] = 0 \implies$ **Match**.
+
+---
+
+### 2.2 Kalai's Randomized $\mathbb{F}_p$ Projection & 1-FFT Unit-Circle Encoding
+
+What if the alphabet $\Sigma$ is an integer range $[1, 10^9]$ where $M(|\Sigma|-1)^2 \ge p$, or we want even fewer NTTs? **Kalai (SODA 2002)** observed that multiplying each pattern position $j \in [0, M-1]$ by an independent uniform random weight $r_j \sim \operatorname{Unif}(\mathbb{F}_p)$ removes the need to square $(v_{P_j} - v_{T_{i+j}})$!
+
+::: {.callout-note title="Theorem 18.3 (Kalai's Randomized Linear Projection over $\mathbb{F}_p$)"}
+Draw independent random weights $r_0, r_1, \dots, r_{M-1} \stackrel{\text{i.i.d.}}{\sim} \operatorname{Unif}(\mathbb{F}_p)$:
+
+1. **One-Sided Wildcards ($P$ has $\texttt{'?'}$, $T$ has no $\texttt{'?'}$, 1 Single NTT)**: Set $r_j = 0$ whenever $P[j] = \texttt{'?'}$. Then
+
+   $$\boxed{Z_1(i) = \sum_{j=0}^{M-1} r_j (v_{P_j} - v_{T_{i+j}}) \equiv \underbrace{\left(\sum_{j=0}^{M-1} r_j v_{P_j}\right)}_{\text{scalar constant}} - \sum_{j=0}^{M-1} r_j v_{T_{i+j}} \pmod p}$$
+
+   requires **only 1 NTT** ($r^R * v_T$)!
+
+2. **Two-Sided Wildcards (both $P$ and $T$ have $\texttt{'?'}$, 2 NTTs)**:
+
+   $$\boxed{Z_2(i) = \sum_{j=0}^{M-1} r_j u_{P_j} u_{T_{i+j}} (v_{P_j} - v_{T_{i+j}}) \equiv \sum_{j=0}^{M-1} (r_j u_{P_j} v_{P_j})\, u_{T_{i+j}} - \sum_{j=0}^{M-1} (r_j u_{P_j})\, (u_{T_{i+j}} v_{T_{i+j}}) \pmod p}$$
+
+   requires **only 2 NTTs**!
+
+By the Schwartz–Zippel Lemma, at any alignment $i$ with at least one concrete mismatch $v_{P_{j^*}} \not\equiv v_{T_{i+j^*}} \pmod p$, $Z(i)$ is a nonzero linear polynomial in $r_{j^*}$, so $\Pr[Z(i) \equiv 0 \pmod p] = 1/p \approx 10^{-9}$.
+:::
+
+- **Complex Unit-Circle Encoding (1 or 2 Complex Convolutions)**: Over $\mathbb{C}$, mapping each concrete character $c \in \{0, \dots, |\Sigma|-1\}$ to $\phi(c) = \exp(2\pi i c / |\Sigma|)$ and $\texttt{'?'} \mapsto 0$ gives $\operatorname{Re}\bigl(\overline{\phi(P_j)}\phi(T_{i+j})\bigr) = \cos\bigl(\frac{2\pi(T_{i+j}-P_j)}{|\Sigma|}\bigr) \le 1$, with equality iff $P_j = T_{i+j}$. Thus $\operatorname{Re}\sum_{j=0}^{M-1} \overline{\phi(P_j)}\phi(T_{i+j}) = K(i)$ (where $K(i) = \sum u_{P_j} u_{T_{i+j}}$ is the number of active pairs) iff shift $i$ matches.
+
+---
+
+### 2.3 Frequency-Domain Accumulation & 3-in-2 Conjugate-Symmetric Complex FFT Packing (`三次变两次`)
+
+In a naive implementation of 3-convolution wildcard matching, calling `multiply(A1, B1)`, `multiply(A2, B2)`, and `multiply(A3, B3)` executes $6$ forward DFTs and $3$ inverse DFTs ($9$ transforms). Two structural properties of the DFT reduce this to **2 forward complex FFTs and 1 inverse complex FFT ($3$ transforms total)**:
+
+1. **Frequency-Domain Pointwise Accumulation (1 Single IDFT)**:
+   Because the Inverse DFT is linear, $\operatorname{IDFT}(\widehat{A}_1 \odot \widehat{B}_1) - 2\operatorname{IDFT}(\widehat{A}_2 \odot \widehat{B}_2) + \operatorname{IDFT}(\widehat{A}_3 \odot \widehat{B}_3) = \operatorname{IDFT}(\widehat{A}_1 \odot \widehat{B}_1 - 2\widehat{A}_2 \odot \widehat{B}_2 + \widehat{A}_3 \odot \widehat{B}_3)$. Always accumulate products in point-value form and call `IDFT` **once**!
+
+2. **Hermitian Conjugate-Symmetric Dual-Real Packing (`三次变两次`)**:
+   Suppose $X[0..L-1]$ and $Y[0..L-1]$ are two **real** sequences. Pack them into a single complex array $Z[n] = X[n] + i Y[n]$ and execute **one** forward complex FFT $\widehat{Z} = \operatorname{DFT}_L(Z)$. Because $X$ and $Y$ are real, their individual DFTs satisfy Hermitian conjugate symmetry:
+
+   $$\widehat{X}[k] = \overline{\widehat{X}[(L - k) \bmod L]}, \qquad \widehat{Y}[k] = \overline{\widehat{Y}[(L - k) \bmod L]}.$$
+
+   Taking the conjugate of $\widehat{Z}[(L-k)\bmod L] = \widehat{X}[(L-k)\bmod L] + i \widehat{Y}[(L-k)\bmod L]$ gives $\overline{\widehat{Z}[(L-k)\bmod L]} = \widehat{X}[k] - i \widehat{Y}[k]$, unlocking both $\widehat{X}[k]$ and $\widehat{Y}[k]$ in $O(1)$ operations per frequency $k$:
+
+   $$\boxed{\widehat{X}[k] = \frac{\widehat{Z}[k] + \overline{\widehat{Z}[(L - k) \bmod L]}}{2}, \qquad \widehat{Y}[k] = \frac{\widehat{Z}[k] - \overline{\widehat{Z}[(L - k) \bmod L]}}{2i}.}$$
+
+---
+
+## 3. Spatial Tolerance, Damaged Periodicity & The `CF 1334G` 4-Method Hierarchy (`T-3B-02`)
+
+### 3.1 Spatial Window Dilation (`CF 528D`) & Harmonic Multiple Sieving (`CF 827E`)
+
+Two recurring contest motifs combine non-transitive compatibility with spatial neighborhoods or periodicity:
+
+- **Spatial Window Dilation (`CF 528D — Fuzzy Search`)**: Suppose $P[j]$ matches at alignment $i$ iff character $P[j]$ appears in $T$ within distance $\le k$ of $i + j$, i.e., $\exists t \in [\max(0, i+j-k), \min(N-1, i+j+k)]$ with $T[t] = P[j]$. Instead of modifying $P$, **dilate $T$** for each letter $c \in \Sigma$: build the boolean indicator $B_c[r] = \mathbf{1}\bigl[\exists t \in [r-k, r+k] : T[t] = c\bigr] \in \{0, 1\}$ in $O(N)$ time via prefix sums or difference arrays, and convolve $A_c[M-1-j] = \mathbf{1}[P[j]=c]$ with $B_c[r]$.
+- **Damaged Periodicity & Harmonic Multiple Sieving (`CF 827E — Rusty String`)**: Given $S \in (\Sigma \cup \{\texttt{'?'}\})^N$, when can each $\texttt{'?'}$ be replaced by a concrete character in $\Sigma$ so that the resulting string has period $d$?
+  - *Why single-step conflict checking fails*: On $S = \texttt{V?K}$ ($N = 3$), testing $d = 1$ via adjacent pairs finds $S[0] = \texttt{V} \approx \texttt{?} = S[1]$ and $S[1] = \texttt{?} \approx \texttt{K} = S[2]$. Yet no single concrete character can replace $S[1]$ to equal both $\texttt{V}$ and $\texttt{K}$!
+  - *Exact Residue-Class Characterization*: A filled string has period $d$ iff every residue class $r \bmod d$ is monochromatic, which holds iff **no two positions $i < j$ in the same residue class ($j - i = m \cdot d$ for some integer $m \ge 1$) contain distinct concrete letters**! Thus we find all conflict distances $\delta = |j - i|$ with $S[i], S[j] \in \Sigma$ and $S[i] \ne S[j]$ via FFT, and sieve over all multiples $m \cdot d < N$ in $O(N \log N)$ harmonic time:
+    $$\boxed{d \text{ is a valid wildcard period of } S \iff \forall m \ge 1 \text{ with } m \cdot d < N,\quad \operatorname{conflict}[m \cdot d] = \text{false}.}$$
+
+---
+
+### 3.2 The `CF 1334G` 4-Method Hierarchy: Involution KMP vs. General Permutation FFT
+
+In `CF 1334G — Substring Search`, we are given a permutation $\pi: \Sigma \to \Sigma$ on $|\Sigma| = 26$ letters. Pattern $P[0..M-1]$ matches $T[i..i+M-1]$ iff $T[i+j] \in \{P_j, \pi(P_j)\}$ for every $0 \le j < M$. Depending on the cycle structure of $\pi$, four progressively sharper engines apply:
+
+| Engine | Algebraic Hypothesis on $\pi$ | Core Invariant / Polynomial Decomposition | Convolutions / Time |
+| :--- | :--- | :--- | :--- |
+| **Method 1: Canonical 2-Cycle KMP** | **Involution** ($\pi(\pi(c)) = c$ for all $c \in \Sigma$) | $\Sigma$ decomposes into disjoint 2-cycles $\{a, \pi(a)\}$ and 1-cycles; mapping each cycle to $\min(a, \pi(a))$ restores transitivity! | **0 FFTs** — deterministic **$O(N + M)$** KMP |
+| **Method 2: Angle-Bisector Unit Circle** | General permutation $\pi$ | Map $c \mapsto u_c = e^{i\theta_c}$ ($\theta_c \in [0, \pi/2]$) and $w_j = \frac{e^{-i(\theta_{P_j}+\theta_{\pi(P_j)})/2}}{\cos((\theta_{P_j}-\theta_{\pi(P_j)})/2)}$; $\operatorname{Re}(w_j u_t) = 1 \iff t \in \{P_j, \pi(P_j)\}$ | **1 Complex Convolution** (or 2 for general angles) |
+| **Method 3: Kalai Randomized Quadratic** | General permutation $\pi$ over $\mathbb{F}_p$ | $Z(i) = \sum r_j(T_{i+j} - P_j)(T_{i+j} - \pi(P_j)) = \sum r_j T_{i+j}^2 - \sum r_j(P_j+\pi(P_j))T_{i+j} + \sum r_j P_j \pi(P_j)$ | **2 NTTs** (since $\sum r_j P_j \pi(P_j)$ is constant!) |
+| **Method 4: Deterministic Quartic Expansion** | General permutation $\pi$ over $\mathbb{Z}$ / $\mathbb{F}_p$ | $\sum (T_{i+j}-P_j)^2(T_{i+j}-Q_j)^2 = \sum T^4 - 2\sum(P+Q)T^3 + \sum(P^2+4PQ+Q^2)T^2 - 2\sum PQ(P+Q)T + \sum P^2Q^2$ | **3 NTTs** ($T^4$ via prefix sums, $P^2Q^2$ constant) |
+
+::: {.callout-tip title="Why Method 1 Works for Any Involution $\pi^2 = \operatorname{id}$ in $O(N+M)$ Time"}
+When $\pi(\pi(c)) = c$, the set $\{c, \pi(c)\}$ is closed under $\pi$ and equals $\{\pi(c), \pi(\pi(c))\}$. Therefore, for every $p \in \Sigma$ and $t \in \Sigma$:
+
+$$t \in \{p, \pi(p)\} \iff \min(t, \pi(t)) = \min(p, \pi(p)).$$
+
+Replacing every character $c$ in both $P$ and $T$ with its canonical cycle representative $\operatorname{rep}(c) = \min(c, \pi(c))$ reduces `CF 1334G` to **standard exact string matching**, solvable by KMP in $O(N + M)$ time! By contrast, if $\pi$ contains a 3-cycle $(a \to b \to c \to a)$, then $p = a$ accepts $\{a, b\}$ while $p = b$ accepts $\{b, c\}$; here $t = b$ matches both $p = a$ and $p = b$, so equivalence classes overlap and FFT is genuinely required.
+:::
+
+---
+
+## 4. Affine Scale-and-Shift Matching, $\sqrt{M\log M}$ Bucket Splitting & Algorithmic Contracts (`T-3B-02`)
+
+### 4.1 First-Difference Cauchy–Schwarz Affine Matching ($T_{i+j} = \alpha P_j + \beta$)
+
+Suppose $P[0..M-1]$ and $T[0..N-1]$ are real or integer sequences ($M \ge 2$), and we want to find all alignments $i$ for which there exist constants $\alpha > 0$ (or $\alpha \ne 0$) and $\beta \in \mathbb{R}$ such that
+
+$$T_{i+j} = \alpha P_j + \beta \qquad \text{for all } j \in \{0, 1, \dots, M - 1\}.$$
+
+How do we eliminate the two unknown per-alignment parameters $(\alpha, \beta)$ using **only 1 FFT**?
+
+1. **Step 1 — Annihilate Shift $\beta$ via First Differences**: Define $\Delta P_j = P_{j+1} - P_j$ for $0 \le j \le M - 2$ and $\Delta T_t = T_{t+1} - T_t$ for $0 \le t \le N - 2$. Then $T_{i+j} = \alpha P_j + \beta$ for all $j \in [0, M-1]$ holds if and only if $\Delta T_{i+j} = \alpha \Delta P_j$ for all $j \in [0, M-2]$!
+2. **Step 2 — Annihilate Scale $\alpha$ via Cauchy–Schwarz Colinearity**: Over $\mathbb{R}$, two nonzero vectors $u = (\Delta P_0, \dots, \Delta P_{M-2})$ and $v_i = (\Delta T_i, \dots, \Delta T_{i+M-2})$ satisfy $v_i = \alpha u$ for some scalar $\alpha \ne 0$ if and only if equality holds in the Cauchy–Schwarz inequality:
+
+   $$\boxed{\left(\sum_{j=0}^{M-2} (\Delta P_j)^2\right) \left(\sum_{j=0}^{M-2} (\Delta T_{i+j})^2\right) - \left(\sum_{j=0}^{M-2} \Delta P_j\, \Delta T_{i+j}\right)^2 = 0,}$$
+
+   together with $\sum_{j=0}^{M-2} (\Delta T_{i+j})^2 > 0$ (when $\alpha \ne 0$) and $\sum_{j=0}^{M-2} \Delta P_j \Delta T_{i+j} > 0$ (when $\alpha > 0$ is required!). Here $\sum (\Delta P_j)^2$ is a scalar, $\sum_{j=0}^{M-2} (\Delta T_{i+j})^2$ is computed in $O(N)$ via sliding-window prefix sums, and $\sum_{j=0}^{M-2} \Delta P_j \Delta T_{i+j}$ requires **1 single convolution**!
+
+---
+
+### 4.2 Dominance ($\forall j, P_j \le T_{i+j}$) & $L_1$ Distance via $\sqrt{M\log M}$ Value-Bucket Splitting
+
+How do we find all alignments where $P_j \le T_{i+j}$ for all $j \in [0, M-1]$ (**Amir et al. 1995**), or compute the $L_1$ Manhattan distance $\sum_{j=0}^{M-1} |P_j - T_{i+j}|$ for all $i$, when $\le$ and $|\cdot|$ are non-polynomial over an unbounded alphabet?
+
+::: {.callout-note title="Theorem 18.4 ($\sqrt{M\log M}$ Value-Bucket Decomposition for Dominance & $L_1$ Distance)"}
+Sort the $M$ positions of $P$ by their values $P_j$ and partition them into $B = \lceil \sqrt{M / \log_2 M} \rceil$ contiguous **value buckets** $\mathcal{V}_1 \le \mathcal{V}_2 \le \dots \le \mathcal{V}_B$, each containing at most $\lceil M / B \rceil = \Theta(\sqrt{M \log M})$ pattern indices. Map each text value $T_t$ to the unique bucket $b(T_t)$ whose value interval contains $T_t$ (or a boundary gap between buckets). Then every pair $(P_j, T_{i+j})$ splits into two disjoint regimes:
+
+1. **Cross-Bucket Pairs ($b(P_j) \ne b(T_{i+j})$ — Resolved by $O(B)$ Convolutions)**:
+   Whenever $b(P_j) > b(T_{i+j})$, we are **guaranteed** that $P_j > T_{i+j}$ (a dominance violation, and $|P_j - T_{i+j}| = P_j - T_{i+j}$ has known sign!). For each bucket $b \in \{1, \dots, B\}$, convolving the pattern indicator $\mathbf{1}[b(P_j) = b]$ (and weighted $P_j \mathbf{1}[b(P_j) = b]$ for $L_1$) against the text prefix indicator $\mathbf{1}[b(T_t) < b]$ (and $T_t \mathbf{1}[b(T_t) < b]$) accounts for all cross-bucket pairs in $O(B N \log M) = O(N\sqrt{M \log M})$ time (accumulating in the DFT frequency domain so only 1 IFFT is performed).
+
+2. **Intra-Bucket Pairs ($b(P_j) = b(T_{i+j})$ — Resolved by Brute-Force Bucket Enumeration)**:
+   For each text index $t \in [0, N-1]$, iterate directly over the $\le \lceil M / B \rceil$ pattern indices $j$ belonging to the **same** bucket $b(T_t)$, and explicitly test $P_j > T_t$ (or add $|P_j - T_t|$ to shift $i = t - j$). Because each bucket contains at most $\lceil M / B \rceil$ pattern positions, this loop performs at most $N \cdot \lceil M / B \rceil = O(N\sqrt{M \log M})$ operations!
+:::
+
+---
+
+### 4.3 Reverse-Engineering Scratchpad, Algorithmic Contract & Boundary Pitfalls (`BP-18` / `BP-18-01`–`BP-18-02` / `BP-3B-01`–`BP-3B-04`)
+
+::: {.callout-note icon=false}
+## Algorithm Contract: 1-NTT Indicator Wildcard Matcher & 3-in-2 Complex FFT
+
+- **Preconditions**: Pattern $P[0..M-1]$ and text $T[0..N-1]$ ($1 \le M \le N$) over concrete alphabet $\Sigma$ ($|\Sigma| \ge 1$) plus wildcard $\texttt{'?'}$. For single-prime deterministic NTT ($p = 998244353$), require $M(|\Sigma|-1)^2 < 998244353$.
+- **Index & Encoding Invariant**:
+  - Concrete $c \in \Sigma \mapsto (u = 1, v = \operatorname{ord}(c) \in [1, |\Sigma|])$; wildcard $\texttt{'?'} \mapsto (u = 0, v = 0)$.
+  - Reversed pattern polynomials use index $k = M - 1 - j \in [0, M-1]$; text polynomials use $t \in [0, N-1]$.
+  - Transform length $L = 2^{\lceil \log_2(N + M - 1) \rceil}$; shift $i \in [0, N-M]$ is read at coefficient index $d = i + M - 1 \in [M-1, N-1]$.
+- **Complexity**: $O((N+M)\log(N+M))$ time and $O(L)$ space, executing $6$ forward NTTs and $1$ inverse NTT (or $4$ forward + $1$ inverse NTT for one-sided wildcards; $1$ or $2$ NTTs with Kalai randomization).
+:::
+
+::: {.callout-warning title="Pitfall BP-18 / BP-18-01 / BP-3B-01: Mapping a Concrete Character to 0 or Using Raw ASCII Codes Modulo 998244353"}
+
+- **The Bug**:
+  1. Mapping `'a'..'z'` to $0..25$ in $\sum P_j T_{i+j}(P_j - T_{i+j})^2$, which assigns $v_{\texttt{'a'}} = 0$ and turns every `'a'` into a universal wildcard!
+  2. Passing raw ASCII codes $97..122$ into $D_{\text{raw}}(i) = \sum P_j T_{i+j}(P_j - T_{i+j})^2 \bmod 998244353$, where a single mismatch reaches $122 \cdot 97 \cdot 25^2 = 7.39 \times 10^6$ and sums exceed $998244353$ after just $135$ mismatches.
+- **The Exact Fix**: Always reserve $0$ exclusively for $\texttt{'?'}$, map concrete characters to $1..|\Sigma|$, and use the indicator form $D_{\text{ind}}(i) = \sum u_{P_j} u_{T_{i+j}}(v_{P_j} - v_{T_{i+j}})^2 \le M(|\Sigma|-1)^2 < 998244353$.
+:::
+
+::: {.callout-warning title="Pitfall BP-18-02 / BP-3B-02: Missing the Sign and Zero Checks in Cauchy–Schwarz Affine Matching"}
+
+- **The Bug**: Concluding that $T_{i+j} = \alpha P_j + \beta$ with $\alpha > 0$ holds whenever $(\sum \Delta P_j^2)(\sum \Delta T_{i+j}^2) = (\sum \Delta P_j \Delta T_{i+j})^2$.
+- **Exact Counterexample**:
+  1. If $T[i..i+M-1] = (c, c, \dots, c)$ is constant, then $\Delta T_{i+j} = 0$ for all $j$, making both sides of Cauchy–Schwarz equal to $0$ ($\alpha = 0$ degeneration!).
+  2. If $\Delta T_{i+j} = -\Delta P_j$ ($\alpha = -1 < 0$), squaring $(\sum \Delta P_j \Delta T_{i+j})^2$ erases the negative sign of $\alpha$!
+- **The Exact Fix**: Handle constant patterns ($\sum \Delta P_j^2 = 0$) separately via prefix sums; when $\sum \Delta P_j^2 > 0$, require $\sum \Delta T_{i+j}^2 > 0$ (for $\alpha \ne 0$) and $\sum \Delta P_j \Delta T_{i+j} > 0$ (when $\alpha > 0$).
+:::
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Problem Ladder (`Ch 18`)
+
+Every problem below includes a self-contained mathematical statement, exact input constraints, three progressive hints, and a complete 4-step derivation.
+
+---
+
+### Tier 1 — Stepping Stone (`W3B-01`, `W3B-03`)
+
+#### Problem 18.1 (`W3B-01`) — `CF 528D — Fuzzy Search`
+
+- **Mathematical Statement**: Given a text $T[0..N-1]$ and a pattern $P[0..M-1]$ over the DNA alphabet $\Sigma = \{\texttt{A}, \texttt{C}, \texttt{G}, \texttt{T}\}$ along with a spatial threshold $k \ge 0$, pattern position $j \in [0, M-1]$ is satisfied at alignment $i \in [0, N-M]$ if there exists at least one text index $t \in [\max(0, i+j-k), \min(N-1, i+j+k)]$ such that $T[t] = P[j]$. Count the number of valid alignments $i \in [0, N-M]$ where all $M$ pattern positions are satisfied.
+- **Constraints**: $1 \le M \le N \le 2 \times 10^5$, $0 \le k \le 2 \times 10^5$, $|\Sigma| = 4$, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Spatial tolerance $|t - (i+j)| \le k$ is non-transitive, so KMP fails. However, $|\Sigma| = 4$ is tiny and all $N - M + 1$ alignments are queried simultaneously.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Instead of letting $P[j]$ search $\pm k$ steps in $T$, **dilate $T$ first**: for each character $c \in \Sigma$, mark every index $r \in [0, N-1]$ that lies within distance $\le k$ of at least one $c$ in $T$ as $B_c[r] = 1$ (and $0$ otherwise). What does $\sum_{c \in \Sigma} \sum_{j=0}^{M-1} \mathbf{1}[P[j]=c]\, B_c[i+j]$ count?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Compute $B_c[0..N-1] \in \{0, 1\}$ in $O(N)$ via a difference array, set $A_c[M-1-j] = \mathbf{1}[P[j]=c]$, accumulate $\sum_{c \in \Sigma} \widehat{A}_c \odot \widehat{B}_c$ in the frequency domain, run 1 inverse FFT, and check which shifts $i$ have total score equal to $M$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-01`)"}
+
+1. **Diagnostic Signal**: Non-transitive spatial window $|t - (i+j)| \le k$ over a 4-letter alphabet across all shifts $i \in [0, N-M]$.
+2. **Combinatorial Word Invariant**: For each $c \in \{\texttt{A}, \texttt{C}, \texttt{G}, \texttt{T}\}$ and $r \in [0, N-1]$, define the dilated boolean mask
+   $$B_c[r] = \mathbf{1}\bigl[\exists t \in [\max(0, r-k), \min(N-1, r+k)] : T[t] = c\bigr] \in \{0, 1\}.$$
+   Since each pattern index $j$ has exactly one character $P[j] = c$, the sum $\sum_{c \in \Sigma} \sum_{j=0}^{M-1} \mathbf{1}[P[j]=c]\, B_c[i+j] \in [0, M]$ counts the exact number of satisfied pattern positions at shift $i$, reaching $M$ if and only if shift $i$ is valid.
+
+3. **Algorithmic Compilation**:
+   - For each $c \in \Sigma$, build $B_c[0..N-1]$ in $O(N)$ time by adding $+1$ at $\max(0, t-k)$ and $-1$ at $\min(N, t+k+1)$ whenever $T[t] = c$, taking prefix sums, and clamping `B_c[r] = (pref[r] > 0 ? 1 : 0)`.
+   - Set $A_c[M-1-j] = \mathbf{1}[P[j]=c]$, compute the $4$ forward DFTs of $A_c$ and $B_c$, accumulate $\widehat{S} = \sum_{c \in \Sigma} \widehat{A}_c \odot \widehat{B}_c$, run **1 inverse DFT**, and count $i \in [0, N-M]$ with $S[i+M-1] = M$. Total time: $O(N \log N)$.
+4. **Broken-Invariant Counterexample**: Never use the un-clamped count of $c$'s in $[r-k, r+k]$ as $B_c[r]$! If $B_c[i+j_1] = 2$ and $B_c[i+j_2] = 0$, their sum is $2 = 1 + 1$, falsely masking the mismatch at $j_2$.
+:::
+
+---
+
+#### Problem 18.2 (`W3B-03`) — `[BZOJ 4503 / LOJ 6073] 两个串 (Two Strings)`
+
+- **Mathematical Statement**: Given a text $T[0..N-1]$ consisting purely of lowercase English letters `'a'`–`'z'` (no wildcards) and a pattern $P[0..M-1]$ consisting of lowercase letters plus the wildcard character `'?'`, find all starting alignments $i \in [0, N-M]$ where $P$ matches $T[i..i+M-1]$.
+- **Constraints**: $1 \le M \le N \le 10^5$, $|\Sigma| = 26$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Unlike two-sided wildcard matching, here wildcards `'?'` appear **only in $P$**, never in $T$ ($u_{T_t} = 1$ for every $t \in [0, N-1]$).
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 18.2(3)**, setting $u_{T_t} = 1$ in $D_{\text{ind}}(i)$ turns $\sum_{j=0}^{M-1} u_{P_j}(v_{P_j} - v_{T_{i+j}})^2$ into $\sum u_{P_j} v_{P_j}^2 - 2\sum (u_{P_j} v_{P_j}) v_{T_{i+j}} + \sum u_{P_j} v_{T_{i+j}}^2$, where the first sum is a **constant scalar** independent of $i$! Or by **Theorem 18.3(1)**, Kalai's randomized projection needs only 1 NTT!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Compute the scalar $C_0 = \sum_{j=0}^{M-1} u_{P_j} v_{P_j}^2$, run 2 convolutions for $(u_P v_P)^R * v_T$ and $u_P^R * v_T^2$ (3 forward DFTs, 1 inverse DFT since $v_T$ and $v_T^2$ can be combined in frequency domain), and output all $i$ where $D_{\text{ind}}(i) = 0$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-03`)"}
+
+1. **Diagnostic Signal**: One-sided wildcards ($P$ has `'?'`, $T$ has only `'a'`–`'z'`). Running 3 full convolutions wastes work because $u_{T_t} \equiv 1$.
+2. **Combinatorial Word Invariant**: Let $u_j = \mathbf{1}[P[j] \ne \texttt{'?'}]$, $v_{P_j} \in \{0, 1, \dots, 26\}$, and $v_{T_t} = \operatorname{ord}(T[t]) \in \{1, \dots, 26\}$. Then
+   $$D_{\text{ind}}(i) = \sum_{j=0}^{M-1} u_j \bigl(v_{P_j} - v_{T_{i+j}}\bigr)^2 = \underbrace{\sum_{j=0}^{M-1} u_j v_{P_j}^2}_{\text{constant } C_0} - 2 \sum_{j=0}^{M-1} (u_j v_{P_j})\, v_{T_{i+j}} + \sum_{j=0}^{M-1} u_j\, v_{T_{i+j}}^2.$$
+   Since $0 \le D_{\text{ind}}(i) \le 10^5 \times 25^2 = 6.25 \times 10^7 < 998244353$, evaluating $D_{\text{ind}}(i) \bmod 998244353$ is 100% exact and deterministic in **2 convolutions** (or **1 NTT** via Kalai projection $Z_1(i) = \sum r_j v_{P_j} - \sum r_j v_{T_{i+j}} \pmod{998244353}$).
+
+3. **Algorithmic Compilation**:
+   - Reverse $A_1[M-1-j] = 2 u_j v_{P_j}$ and $A_2[M-1-j] = u_j$; set $B_1[t] = v_{T_t}$ and $B_2[t] = v_{T_t}^2$.
+   - Compute forward NTTs of $A_1, A_2, B_1, B_2$, invert $\widehat{A}_2 \odot \widehat{B}_2 - \widehat{A}_1 \odot \widehat{B}_1$ in 1 IDFT, add $C_0$, and collect all $i \in [0, N-M]$ with $D_{\text{ind}}(i) \equiv 0 \pmod{998244353}$.
+4. **Broken-Invariant Counterexample (`BP-3B-01`)**: Omitting $u_j$ in $\sum u_j v_{T_{i+j}}^2$ (treating $\sum v_{T_{i+j}}^2$ as a sliding-window prefix sum) fails whenever $P[j] = \texttt{'?'}$ because a wildcard at $P[j]$ must contribute $0 \cdot v_{T_{i+j}}^2 = 0$, not $v_{T_{i+j}}^2$!
+:::
+
+---
+
+### Tier 2 — Intermediate (`W3B-02`, `W3B-04`)
+
+#### Problem 18.3 (`W3B-02`) — `CF 827E — Rusty String`
+
+- **Mathematical Statement**: Given a string $S[0..N-1]$ over $\{\texttt{V}, \texttt{K}, \texttt{?}\}$, find all candidate period lengths $d \in \{1, 2, \dots, N\}$ such that each `'?'` in $S$ can be replaced by `'V'` or `'K'` to make $d$ a period of the resulting concrete string.
+- **Constraints**: $\sum N \le 5 \times 10^5$, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+In a concrete string, $d$ is a period iff $S[i] = S[i+d]$ for all $0 \le i < N - d$. Why does checking only $|i - j| = d$ fail when $S$ contains `'?'`?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In $S = \texttt{V?K}$ ($N = 3$), distance $d = 1$ has no direct `'V'` vs. `'K'` clash at $|i - j| = 1$, yet $S[0] = \texttt{V}$ and $S[2] = \texttt{K}$ both belong to residue class $0 \bmod 1$ (separated by $2 = 2 \cdot 1$) and force $S[1]$ to be both `'V'` and `'K'`! Thus $d$ is valid iff **no multiple $m \cdot d < N$** separates a `'V'` and a `'K'`.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Convolve $A[i] = \mathbf{1}[S[i]=\texttt{V}]$ with $B[N-1-j] = \mathbf{1}[S[j]=\texttt{K}]$ in **1 FFT** to find all distances $\delta = |i - j| \in [1, N-1]$ with a `'V'`–`'K'` clash, then run an $O(N \log N)$ harmonic sieve `for (int m = d; m < N; m += d) bad[d] |= clash[m];`.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-02`)"}
+
+1. **Diagnostic Signal**: Wildcard instantiation couples all positions in the same residue class $r \bmod d$; testing all pairs in each residue class naively takes $\Theta(N^2)$.
+2. **Combinatorial Word Invariant**: A concrete assignment to the `'?'` positions has period $d$ if and only if for every residue class $r \in \{0, \dots, d-1\}$, the set of concrete characters $\{S[i] : i \equiv r \pmod d,\, S[i] \in \{\texttt{V}, \texttt{K}\}\}$ contains at most one distinct letter. This holds if and only if there is **no** pair $(i, j)$ with $S[i] = \texttt{V}$, $S[j] = \texttt{K}$, and $|i - j| = m \cdot d$ for some integer $m \ge 1$.
+3. **Algorithmic Compilation**:
+   - Build $A[i] = \mathbf{1}[S[i]=\texttt{V}]$ and $B[N-1-j] = \mathbf{1}[S[j]=\texttt{K}]$ for $0 \le i, j < N$.
+   - Compute $C = A \cdot B$ in **1 NTT/FFT** of size $L = 2^{\lceil \log_2(2N-1) \rceil}$.
+   - For each distance $\delta \in [1, N-1]$, set `clash[delta] = (C[N - 1 + delta] > 0) || (C[N - 1 - delta] > 0)`.
+   - For $d = 1 \dots N$, mark $d$ invalid if `clash[m * d]` is true for any multiple $m \cdot d < N$. Total time: $O(N \log N)$.
+4. **Broken-Invariant Counterexample**: Omitting the harmonic multiple loop fails on $S = \texttt{V?K}$ at $d = 1$, where `clash[1] = false` but `clash[2 * 1] = true`.
+:::
+
+---
+
+#### Problem 18.4 (`W3B-04`) — `CF 1334G — Substring Search`
+
+- **Mathematical Statement**: Given a permutation $\pi$ of `'a'`–`'z'`, a pattern $P[0..M-1]$, and a text $T[0..N-1]$, output a binary string of length $N - M + 1$ indicating for each alignment $i \in [0, N-M]$ whether $T[i+j] \in \{P[j], \pi(P[j])\}$ for all $0 \le j < M$. Solve both (Part A) the special case where $\pi$ is an involution ($\pi(\pi(c)) = c$) in deterministic $O(N+M)$ time, and (Part B) general permutations $\pi$ in $O((N+M)\log(N+M))$ time.
+- **Constraints**: $1 \le M \le N \le 2 \times 10^5$, $|\Sigma| = 26$, time limit $1.25\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+For general $\pi$, each pattern position $j$ accepts a 2-element set $\{P_j, \pi(P_j)\}$. Why does KMP work when $\pi^2 = \operatorname{id}$ but fail when $\pi$ has a cycle of length $\ge 3$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial & Algebraic Invariant"}
+In Part A ($\pi^2 = \operatorname{id}$), $\{c, \pi(c)\}$ partitions $\Sigma$ into disjoint 2-cycles and 1-cycles, so mapping $c \mapsto \min(c, \pi(c))$ makes compatibility transitive. In Part B, $\Delta_j = (T_{i+j} - P_j)(T_{i+j} - \pi(P_j)) = 0 \iff T_{i+j} \in \{P_j, \pi(P_j)\}$. How many NTTs are needed if we weight $\Delta_j$ by random $r_j \in \mathbb{F}_p$ (or square $\Delta_j^2$ deterministically)?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Use the **4-Method Hierarchy (§3.2)**: for general $\pi$, either evaluate Kalai's randomized quadratic form $Z(i) = \sum r_j T_{i+j}^2 - \sum r_j(P_j + \pi(P_j))T_{i+j} + \sum r_j P_j \pi(P_j) \pmod{998244353}$ in **2 NTTs**, or use the Angle-Bisector unit-circle projection in **1 Complex FFT**, or the deterministic quartic expansion in **3 NTTs**.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-04`)"}
+
+1. **Diagnostic Signal**: Tight $1.25\text{ s}$ time limit for $N, M \le 2 \times 10^5$ makes a naive 5-convolution quartic expansion too slow.
+2. **Combinatorial & Algebraic Invariant (§3.2)**:
+   - **Part A ($\pi^2 = \operatorname{id}$, 0 FFTs)**: Replace every character $c$ in $P$ and $T$ with $\min(c, \pi(c))$ and run standard KMP in $O(N + M)$ time.
+   - **Part B (General $\pi$, 2-NTT Kalai or 1-FFT Angle Bisector or 3-NTT Quartic)**:
+     - *2-NTT Kalai Engine*: Draw random $r_j \in \mathbb{F}_p$ ($p = 998244353$). Then
+       $$Z(i) = \sum_{j=0}^{M-1} r_j (T_{i+j} - P_j)(T_{i+j} - \pi(P_j)) = \sum_{j=0}^{M-1} r_j T_{i+j}^2 - \sum_{j=0}^{M-1} r_j(P_j + \pi(P_j))T_{i+j} + \underbrace{\sum_{j=0}^{M-1} r_j P_j \pi(P_j)}_{\text{scalar } C_0} \pmod p.$$
+
+     - *3-NTT Deterministic Quartic Engine*: Map `'a'`–`'z'` to $1..26$ (or random elements in $\mathbb{F}_p$). In $\sum (T_{i+j}-P_j)^2(T_{i+j}-Q_j)^2$, the degree-4 term $\sum_{j=0}^{M-1} T_{i+j}^4$ is computed in $O(N)$ via prefix sums and $\sum P_j^2 Q_j^2$ is a scalar, leaving only $T^3, T^2, T^1$ (**3 convolutions**).
+3. **Algorithmic Compilation (2-NTT Kalai Kernel)**:
+   - Set $A_1[M-1-j] = r_j$, $A_2[M-1-j] = p - r_j(P_j + Q_j) \bmod p$, $B_1[t] = T_t^2$, $B_2[t] = T_t$.
+   - Execute forward NTTs on $A_1, A_2, B_1, B_2$, invert $\widehat{A}_1 \odot \widehat{B}_1 + \widehat{A}_2 \odot \widehat{B}_2$ in **1 IFFT**, add $C_0$, and check $\equiv 0 \pmod p$.
+4. **Broken-Invariant Counterexample**: Applying the canonical $\min(c, \pi(c))$ KMP trick when $\pi$ is **not** an involution (e.g., 3-cycle $a \to b \to c \to a$) falsely equates $\{a, b\}$ and $\{b, c\}$.
+:::
+
+---
+
+### Tier 3 — Advanced (`W3B-18`, `W3B-21`)
+
+#### Problem 18.5 (`W3B-18`) — `Affine Scale-and-Shift Pattern Matching`
+
+- **Mathematical Statement**: Given two integer arrays $P[0..M-1]$ and $T[0..N-1]$ ($M \ge 2$), find all alignments $i \in [0, N-M]$ for which there exist real constants $\alpha > 0$ and $\beta \in \mathbb{R}$ such that $T[i+j] = \alpha P[j] + \beta$ for every $0 \le j < M$.
+- **Constraints**: $2 \le M \le N \le 2 \times 10^5$, $|P[j]|, |T[t]| \le 10^4$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At each alignment $i$, the scaling factor $\alpha > 0$ and shift $\beta$ are unknown and can vary with $i$. How do we eliminate $\beta$ first?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial & Algebraic Invariant"}
+Take adjacent first differences $\Delta P_j = P_{j+1} - P_j$ and $\Delta T_t = T_{t+1} - T_t$ (§4.1). Now $T_{i+j} = \alpha P_j + \beta$ for $j \in [0, M-1]$ holds iff $\Delta T_{i+j} = \alpha \Delta P_j$ for $j \in [0, M-2]$! How does Cauchy–Schwarz test whether $\Delta T[i..i+M-2]$ is a positive scalar multiple of $\Delta P[0..M-2]$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+If $\Delta P \equiv 0$, $P$ is constant and every $i$ is valid (by picking $\alpha = 1, \beta = T_i - P_0$ if $T[i..i+M-1]$ is also constant). Otherwise, check $(\sum \Delta P_j^2)(\sum \Delta T_{i+j}^2) = (\sum \Delta P_j \Delta T_{i+j})^2$ and $\sum \Delta P_j \Delta T_{i+j} > 0$ using **1 convolution** and $O(N)$ prefix sums!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-18`)"}
+
+1. **Diagnostic Signal**: Two free parameters $(\alpha > 0, \beta)$ per alignment $i$ prevent direct difference squaring $(T_{i+j} - P_j)^2$.
+2. **Combinatorial & Algebraic Invariant (§4.1)**:
+   - First differences $\Delta P_j = P_{j+1} - P_j$ ($0 \le j \le M-2$) and $\Delta T_t = T_{t+1} - T_t$ ($0 \le t \le N-2$) annihilate $\beta$: $\exists \beta \text{ s.t. } T_{i+j} = \alpha P_j + \beta \iff \forall j \in [0, M-2],\; \Delta T_{i+j} = \alpha \Delta P_j$.
+   - If $S_P = \sum_{j=0}^{M-2} (\Delta P_j)^2 = 0$, then $P$ is constant, so $T[i..i+M-1]$ matches iff $\sum_{j=0}^{M-2} (\Delta T_{i+j})^2 = 0$.
+   - If $S_P > 0$, then by Cauchy–Schwarz over $\mathbb{R}$, $\Delta T_{i..i+M-2} = \alpha \Delta P$ for some $\alpha > 0$ if and only if
+     $$S_P \cdot \left(\sum_{j=0}^{M-2} (\Delta T_{i+j})^2\right) = \left(\sum_{j=0}^{M-2} \Delta P_j\, \Delta T_{i+j}\right)^2 \quad \text{and} \quad \sum_{j=0}^{M-2} \Delta P_j\, \Delta T_{i+j} > 0.$$
+
+3. **Algorithmic Compilation**:
+   - Compute $S_T(i) = \sum_{j=0}^{M-2} (\Delta T_{i+j})^2$ in $O(N)$ via prefix sums of $(\Delta T_t)^2$.
+   - Compute $C(i) = \sum_{j=0}^{M-2} \Delta P_j \Delta T_{i+j}$ across all $i$ via **1 exact convolution** (using `__int128` or 2-prime NTT since $S_P \cdot S_T(i) \le (M \cdot 4\times 10^8)^2 \approx 6.4 \times 10^{27}$). Total time: $O(N \log N)$.
+4. **Broken-Invariant Counterexample (`BP-3B-02`)**: Omitting the sign check $C(i) > 0$ accepts inverted patterns with $\alpha < 0$ (e.g., $P = [1, 2, 4]$ matching $T = [4, 3, 1]$ with $\alpha = -1$), and omitting the $S_P = 0$ check accepts non-constant windows when $P$ is constant!
+:::
+
+---
+
+#### Problem 18.6 (`W3B-21`) — `Multi-Constraint Character Merge & Symmetric Subsequence Convolutions (CF 954I & Luogu P4199)`
+
+- **Mathematical Statement**:
+  - **Part A (`CF 954I — Yet Another String Matching Problem`)**: Given $T[0..N-1]$ and $P[0..M-1]$ over $\Sigma = \{\texttt{a}..\texttt{f}\}$ ($|\Sigma| = 6$), find for each alignment $i \in [0, N-M]$ the minimum number of global character-merge operations needed to make $P$ equal to $T[i..i+M-1]$.
+  - **Part B (`Luogu P4199 — 万径人踪灭`)**: Given $S[0..N-1] \in \{\texttt{a}, \texttt{b}\}^N$, count the number of non-contiguous palindromic subsequences of $S$ whose chosen indices are symmetric about some center $c \in \{0, \frac{1}{2}, 1, \dots, N-1\}$, modulo $10^9 + 7$.
+- **Constraints**: Part A: $M \le N \le 1.25 \times 10^5$; Part B: $N \le 10^5$; time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+In Part A, merging characters at alignment $i$ connects pairs $(P_j, T_{i+j})$ into connected components of a 6-vertex graph $G_i$. In Part B, indices $(p, q)$ are symmetric about center $c = d/2$ iff their **sum** $p + q = d$ is constant—a standard Cauchy auto-convolution without reversing $S$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial & Algebraic Invariant"}
+In Part A, undirected edge $\{u, v\}$ exists in $G_i$ iff $[x^{i+M-1}](A_u B_v + A_v B_u) > 0$; compute the $6$ forward DFTs of $A_c$ and $6$ forward DFTs of $B_c$ **once** ($12$ forward FFTs, not $72$!). In Part B, if $f(d)$ is the number of symmetric pairs $\{p, q\}$ ($p \le q, p+q=d$) with $S[p] = S[q]$, any non-empty subset of these $f(d)$ pairs forms a valid symmetric subsequence, giving $2^{f(d)} - 1$ total subsequences minus contiguous palindromic substrings counted by Manacher's algorithm!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+In Part B, note that off-diagonal pairs $(p, q)$ and $(q, p)$ ($p < q$) are counted **twice** in $(A_{\texttt{a}}^2 + A_{\texttt{b}}^2)[d]$ while a center element $(p, p)$ at $d = 2p$ is counted **once**; therefore $f(d) = \bigl\lfloor \frac{(A_{\texttt{a}}^2 + A_{\texttt{b}}^2)[d] + 1}{2} \bigr\rfloor$ handles both even and odd $d$ uniformly!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-21`)"}
+
+1. **Diagnostic Signal**: Part A couples polynomial indicator cross-correlations with a per-alignment DSU; Part B contrasts cross-correlation (constant index difference, requiring reversal) against **auto-correlation** (constant index sum $p + q = d$, requiring **no** reversal).
+2. **Combinatorial & Algebraic Invariant**:
+   - **Part A (`CF 954I`)**: At shift $i$, making $P[j] = T[i+j]$ for all $j$ requires merging every pair $(P[j], T[i+j])$, costing $|\Sigma_{\text{active}}| - \operatorname{cc}(G_i) = 6 - \operatorname{cc}(G_i)$ merges.
+   - **Part B (`Luogu P4199`)**: For center $c = d / 2$ ($d \in [0, 2N-2]$), let $f(d) = \#\bigl\{\{p, q\} : 0 \le p \le q < N,\; p + q = d,\; S[p] = S[q]\bigr\}$. Since $[x^d]\bigl(A_{\texttt{a}}(x)^2 + A_{\texttt{b}}(x)^2\bigr)$ counts ordered pairs $(p, q)$ (counting $p < q$ twice and $p = q$ once), we have
+     $$f(d) = \left\lfloor \frac{[x^d]\bigl(A_{\texttt{a}}(x)^2 + A_{\texttt{b}}(x)^2\bigr) + 1}{2} \right\rfloor.$$
+3. **Algorithmic Compilation**:
+   - **Part A**: Compute $\widehat{A}_u$ ($u \in [0, 5]$) and $\widehat{B}_v$ ($v \in [0, 5]$) in **12 forward FFTs**, then for the $\binom{6}{2} = 15$ unordered pairs $u < v$ invert $\widehat{A}_u \odot \widehat{B}_v + \widehat{A}_v \odot \widehat{B}_u$ and union $(u, v)$ in shift $i$'s 6-vertex DSU whenever the coefficient is $> 0$.
+   - **Part B**: Sum $\bigl(2^{f(d)} - 1\bigr)$ over $d \in [0, 2N-2]$ and subtract the total number of contiguous palindromic substrings (found in $O(N)$ by Manacher's algorithm) to obtain the exact answer in $O(N \log N)$ time.
+4. **Broken-Invariant Counterexample**: Reversing $S$ in Part B computes constant-difference matches $q - p = d$ instead of constant-sum reflections $p + q = d$; calling forward FFTs inside the $\binom{6}{2}$ pair loop in Part A executes $60$ forward FFTs instead of $12$ and TLEs.
+:::
+
+---
+
+### Tier 4 — Mastery (`W3B-24`, `W3B-37`)
+
+#### Problem 18.7 (`W3B-24`) — `Dominance (P[j] <= T[i+j]) & L1 Manhattan String Matching via Value-Bucket Splitting`
+
+- **Mathematical Statement**: Given integer arrays $P[0..M-1]$ and $T[0..N-1]$, compute across all alignments $i \in [0, N-M]$:
+  1. **Dominance Matching**: Determine whether $P[j] \le T[i+j]$ holds for every $0 \le j < M$.
+  2. **$L_1$ Manhattan Distance**: Compute $D_{L_1}(i) = \sum_{j=0}^{M-1} \bigl|P[j] - T[i+j]\bigr|$.
+- **Constraints**: $1 \le M \le N \le 10^5$, $1 \le P[j], T[t] \le 10^9$, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Both $\mathbf{1}[P_j > T_{i+j}]$ and $|P_j - T_{i+j}|$ are piecewise non-polynomial functions over a huge alphabet $\le 10^9$, so no constant-degree identity like $(P_j - T_{i+j})^2$ exists.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial & Algebraic Invariant"}
+Apply **Theorem 18.4 ($\sqrt{M\log M}$ Value-Bucket Splitting)**: sort the $M$ indices of $P$ by value $P_j$ and partition them into $B = \lceil \sqrt{M / \log_2 M} \rceil$ buckets of size $\le \lceil M / B \rceil$. Why must we bucket by **index count in $P$** rather than uniform value intervals?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Bucketing by index count in $P$ guarantees that every bucket contains at most $\lceil M/B \rceil = \Theta(\sqrt{M\log M})$ positions of $P$, even if the values in $P$ are heavily clustered! Resolve cross-bucket pairs ($b(P_j) \ne b(T_{i+j})$) in $O(B)$ convolutions and intra-bucket pairs ($b(P_j) = b(T_{i+j})$) by iterating over the $\le \lceil M/B \rceil$ pattern indices in $b(T_t)$ for each $t \in [0, N-1]$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-24`)"}
+
+1. **Diagnostic Signal**: Unbounded alphabet $\le 10^9$ + asymmetric / piecewise-linear comparison predicates $\mathbf{1}[P_j > T_{i+j}]$ and $|P_j - T_{i+j}|$.
+2. **Combinatorial & Algebraic Invariant (Theorem 18.4)**:
+   - Sort the $M$ pairs $(P_j, j)$ by value and partition them into $B = \lceil \sqrt{M / \log_2 M} \rceil \approx 250$ buckets $\mathcal{V}_1, \dots, \mathcal{V}_B$, each containing at most $S = \lceil M / B \rceil \approx 400$ pattern indices, with strictly increasing boundary values $v_{\max}(\mathcal{V}_1) < v_{\min}(\mathcal{V}_2) \le \dots$ (placing any tied values into the same bucket or splitting ties consistently by rank while handling equal values in $O(1)$).
+   - For each $t \in [0, N-1]$, binary search the bucket intervals to assign $T_t$ to the bucket $b(T_t)$ containing it (or mark it as falling strictly between bucket $b$ and $b+1$).
+   - **Cross-Bucket Contribution ($b(P_j) \ne b(T_{i+j})$)**:
+     - For **Dominance**, $b(P_j) > b(T_{i+j}) \implies P_j > T_{i+j}$. Sum $\sum_{b=1}^B \mathbf{1}[b(P^R) = b] * \mathbf{1}[T < v_{\min}(\mathcal{V}_b)]$ in the frequency domain and invert with **1 IFFT**.
+     - For **$L_1$ Distance**, when $b(P_j) > b(T_{i+j})$, $|P_j - T_{i+j}| = P_j - T_{i+j}$, and when $b(P_j) < b(T_{i+j})$, $|P_j - T_{i+j}| = T_{i+j} - P_j$. Both are linear combinations of bucket indicator convolutions $\bigl(P \mathbf{1}[b(P)=b]\bigr)^R * \mathbf{1}[b(T) < b]$ and $\mathbf{1}[b(P)=b]^R * \bigl(T \mathbf{1}[b(T) < b]\bigr)$, accumulated in the DFT domain!
+   - **Intra-Bucket Contribution ($b(P_j) = b(T_{i+j})$)**: For each $t \in [0, N-1]$ that falls inside bucket $b$, loop over the $\le S$ pattern indices $j \in \mathcal{V}_b$ with $0 \le t - j \le N - M$ and add $\mathbf{1}[P_j > T_t]$ (or $|P_j - T_t|$) to `ans[t - j]`.
+3. **Algorithmic Compilation & Complexity**: Accumulate the $B$ cross-bucket indicator convolutions in the DFT frequency domain (inverting with 1 IFFT) and sweep the $\le S$ intra-bucket indices per text position $t \in [0, N-1]$ in $O(B N \log N + N \frac{M}{B}) = O(N\sqrt{M \log M})$ time and $O(N + M)$ space.
+4. **Broken-Invariant Counterexample**: Partitioning the value range $[\min P, \max P]$ into $B$ equal-width intervals instead of equal-cardinality quantiles of $P$ degrades to $\Theta(NM)$ whenever all values of $P$ cluster inside a single interval!
+:::
+
+---
+
+#### Problem 18.8 (`W3B-37`) — `Subset, Supermask & Bitmask Compatibility Matching via Bit-Splitting & SOS-DP + FFT`
+
+- **Mathematical Statement**: Each position in pattern $P[0..M-1]$ and text $T[0..N-1]$ is a $B$-bit mask ($0 \le P_j, T_t < 2^B$). Solve two compatibility regimes across all alignments $i \in [0, N-M]$:
+  - **Regime A (Submask Compatibility, $B \le 20$)**: Find all $i$ such that $P_j \subseteq T_{i+j}$ (i.e., $(P_j \mathbin{\&} T_{i+j}) = P_j$) for all $0 \le j < M$.
+  - **Regime B (Disjointness / Non-Empty Intersection Counting, $B \le 16$)**: For each alignment $i$, count how many offsets $j \in [0, M-1]$ satisfy $P_j \cap T_{i+j} = \emptyset$ (i.e., $(P_j \mathbin{\&} T_{i+j}) = 0$) when $N, M \le 10^5$ and $B \le 16$.
+- **Constraints**: $N, M \le 10^5$, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+In Regime A, $P_j \subseteq T_{i+j}$ holds for **all** $j$ iff the total number of bit violations $\operatorname{bit}_b(P_j) = 1 \land \operatorname{bit}_b(T_{i+j}) = 0$ summed over $b \in [0, B-1]$ and $j \in [0, M-1]$ is **zero**. Why does this simple bit-sum fail for Regime B (counting how many $j$ have $P_j \cap T_{i+j} = \emptyset$)?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial & Algebraic Invariant"}
+In Regime B, if $P_{j_1} \cap T_{i+j_1}$ shares **two** bits ($|P_{j_1} \cap T_{i+j_1}| = 2$) while $P_{j_2} \cap T_{i+j_2} = \emptyset$ shares **zero** bits, the bit-by-bit dot product $\sum_{b=0}^{B-1} \operatorname{bit}_b(P_j)\operatorname{bit}_b(T_{i+j})$ sums to $2 + 0 = 2$, conflating multi-bit overlaps with single-bit overlaps! How can we use Inclusion–Exclusion / Möbius inversion on the Boolean lattice $\{0, 1\}^B$ or $\sqrt{2^B}$ bit-half splitting to count $\mathbf{1}[(P_j \mathbin{\&} T_{i+j}) = 0]$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Split each $B = 16$-bit mask into its upper $8$ bits and lower $8$ bits: $P_j = (P_j^{\text{hi}}, P_j^{\text{lo}})$ and $T_t = (T_t^{\text{hi}}, T_t^{\text{lo}})$ ($2^{B/2} = 256$ values each), or use heavy–light mask frequency splitting + SOS-DP! With $B/2 = 8$, $(P_j \mathbin{\&} T_t) = 0 \iff (P_j^{\text{hi}} \mathbin{\&} T_t^{\text{hi}} = 0) \land (P_j^{\text{lo}} \mathbin{\&} T_t^{\text{lo}} = 0)$, or by Möbius inversion $\mathbf{1}[P_j \mathbin{\&} T_t = 0] = \sum_{S \subseteq P_j \cap T_t} (-1)^{|S|}$, where frequent masks $S$ run FFT and infrequent masks $S$ use SOS-enumerated index lists!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-37`)"}
+
+1. **Diagnostic Signal**: Regime A tests universal conjunction ($\forall j, \forall b$), whereas Regime B counts per-position mask disjointness $\sum_{j=0}^{M-1} \mathbf{1}[(P_j \mathbin{\&} T_{i+j}) = 0]$ where bit-level sums overcount positions with $|P_j \cap T_{i+j}| \ge 2$.
+2. **Combinatorial & Algebraic Invariant**:
+   - **Regime A (Bit-Splitting FFT in $O(B N \log N)$)**: Since $\operatorname{bit}_b(P_j)(1 - \operatorname{bit}_b(T_{i+j})) \in \{0, 1\}$, we have
+     $$V(i) = \sum_{b=0}^{B-1} \sum_{j=0}^{M-1} \operatorname{bit}_b(P_j)\bigl(1 - \operatorname{bit}_b(T_{i+j})\bigr) = 0 \iff \forall j \in [0, M-1],\; P_j \subseteq T_{i+j}.$$
+   - **Regime B (Boolean Möbius Inversion + Heavy–Light Submask Split)**: By Inclusion–Exclusion on the subset lattice,
+     $$\mathbf{1}\bigl[(P_j \mathbin{\&} T_{i+j}) = 0\bigr] = \sum_{S \subseteq (P_j \cap T_{i+j})} (-1)^{|S|} = \sum_{S=0}^{2^B-1} (-1)^{\operatorname{popcount}(S)}\, \mathbf{1}[S \subseteq P_j]\, \mathbf{1}[S \subseteq T_{i+j}].$$
+3. **Algorithmic Compilation**:
+   - **Regime A**: Compute $B$ forward FFTs on each side, accumulate in the frequency domain, and run **1 IFFT**.
+   - **Regime B**: For each submask $S \in [0, 2^B-1]$, let $\mathcal{I}_P(S) = \{j : S \subseteq P_j\}$ and $\mathcal{I}_T(S) = \{t : S \subseteq T_t\}$ (their sizes are computed for all $S$ in $O(B 2^B)$ via **Sum-Over-Subsets (SOS) DP**). If $\min(|\mathcal{I}_P(S)|, |\mathcal{I}_T(S)|) \ge \tau$ (heavy submask $S$), accumulate $(-1)^{|S|} (\mathbf{1}_{S \subseteq P^R} * \mathbf{1}_{S \subseteq T})$ in the DFT frequency domain; if light, iterate directly over $(j, t) \in \mathcal{I}_P(S) \times \mathcal{I}_T(S)$ and add $(-1)^{|S|}$ to `ans[t - j]`!
+4. **Broken-Invariant Counterexample**: Using $\sum_{b=0}^{B-1} \operatorname{bit}_b(P_j)\operatorname{bit}_b(T_{i+j}) == 0$ at shift $i$ only tells us whether **all** $M$ positions are disjoint ($= 0$), never *how many* positions $j$ are disjoint when the sum is $> 0$!
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Decision Checklist: Choosing the Optimal Polynomial / FFT Engine
+
+| Matching Predicate $R(P_j, T_{i+j})$ | Optimal Algebraic Engine | Convolutions / Time |
+| :--- | :--- | :--- |
+| **Binary Hamming Distance** ($\Sigma = \{0, 1\}$) | $P_j \oplus T_{i+j} = P_j + T_{i+j} - 2P_j T_{i+j}$ (prefix sums + $P^R * T$) | **1 NTT** — $O(N \log N)$ |
+| **One-Sided Wildcards** ($\texttt{'?'}$ only in $P$) | Degree-reduced $\sum u_j(v_{P_j}-v_{T_{i+j}})^2$ (**2 NTTs**) or Kalai $\sum r_j(v_{P_j}-v_{T_{i+j}})$ (**1 NTT**) | **1 or 2 NTTs** — $O(N \log N)$ |
+| **Two-Sided Wildcards** ($\texttt{'?'}$ in both $P, T$) | Indicator $\sum u_{P_j} u_{T_{i+j}}(v_{P_j}-v_{T_{i+j}})^2$ (**3 NTTs** in 1 prime!) or Kalai (**2 NTTs**) | **2 or 3 NTTs** — $O(N \log N)$ |
+| **Wildcard Periodicity** (`CF 827E`) | 1-NTT `'V'`–`'K'` conflict polynomial + $O(N \log N)$ harmonic multiple sieve | **1 NTT** — $O(N \log N)$ |
+| **Involution Pair Matching** ($\pi^2 = \operatorname{id}$) | Canonical cycle representative $\operatorname{rep}(c) = \min(c, \pi(c))$ + standard KMP | **0 FFTs** — **$O(N + M)$** |
+| **General Permutation Pair** (`CF 1334G`) | Angle-bisector (**1 FFT**), Kalai quadratic (**2 NTTs**), or Quartic (**3 NTTs**) | **1–3 FFTs** — $O(N \log N)$ |
+| **Affine Scale-and-Shift** ($T_{i+j} = \alpha P_j + \beta$) | First differences $\Delta P, \Delta T$ + Cauchy–Schwarz $(\sum \Delta P^2)(\sum \Delta T^2) = (\sum \Delta P \Delta T)^2$ | **1 FFT** — $O(N \log N)$ |
+| **Dominance ($P_j \le T_{i+j}$) / $L_1$ Distance** | $\sqrt{M / \log M}$ quantile value buckets of $P$: cross-bucket FFT + intra-bucket loop | $O(N\sqrt{M \log M})$ |
+
+### 6.2 What Comes Next in Part V
+What if our pattern $P$ has **no** wildcards, or has an alphabet of size $|\Sigma| \le 10^5$, and we want to find all alignments where $P$ and $T[i..i+M-1]$ differ in **at most $k$ positions** ($k$-mismatch) or have Levenshtein edit distance $\le k$ ($k$-edit)? In **[Chapter 19: $k$-Mismatch & $k$-Edit String Matching: Kangaroo Jumps, Wavefront DP, and the $O(N\sqrt{k\log k})$ $2k$-Period Dichotomy](ch19-kmismatch-wavefront-period-dichotomy.qmd)**, we combine $O(1)$ LCE Kangaroo jumps with Abrahamson's heavy–light alphabet split and the Clifford–Gawrychowski–Uznański $2k$-period structural dichotomy.

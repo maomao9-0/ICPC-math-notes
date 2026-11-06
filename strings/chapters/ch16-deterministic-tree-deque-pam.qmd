@@ -1,0 +1,640 @@
+---
+title: "Unamortized Deterministic PAM (quick_link / slink-Skip), Persistent Tree PAM, and 4-Way Double-Ended Deque PAM (双向 PAM)"
+subtitle: "Chapter 16 · Part IV: Internal Pattern Matching (IPM) & Advanced Palindromic Structures"
+---
+
+::: {.callout-important title="Prerequisites, Assumed Library & Learning Objectives"}
+
+- **Assumed Library Primitives**: Standard single-ended Palindromic Automaton (`Eertree` / `PAM` with odd root $r_{-1}$ of length $-1$, even root $r_0$ of length $0$, `len[u]`, `fail[u]`, and `tr[u][c]`), plus [Chapter 04](ch04-series-link-dp-kmp-pam.qmd) series-link pointers (`diff[u]`, `slink[u]`). See [Notation & Conventions](../notation.qmd) for 1-based closed indexing.
+- **Strict Prerequisite Chapters**:
+  - [Chapter 04: Series-Link (`slink` / `diff`) DP on KMP & PAM](ch04-series-link-dp-kmp-pam.qmd) (`T-1A-04`, `T-1A-05`)
+- **Assigned Technique IDs**: `T-3A-01` (Unamortized Deterministic `quick_link`, Alphabet-Free $O(\log N)$ `slink`-Skip & Shared-Trie Tree PAM), `T-3A-02` (4-Way Double-Ended Deque PAM, Unique Vanishing Palindrome & Non-Cascading Lazy Surface Push-Down).
+- **Learning Objectives**:
+  1. Construct the **Star-Branched Broom-Tree Counterexample** ($\texttt{a}^{N/2}$ stem with $N/2$ leaf branches labeled $\texttt{b}$) that forces standard amortized PAM `fail` walks into $\Theta(N^2)$ time.
+  2. Prove the **Intrinsic Preceding-Character Lemma** for worst-case $O(1)$ `quick_link[u][c]` transitions and the **Uniform Preceding-Character Lemma** for alphabet-free worst-case $O(\log N)$ `slink`-skipping fail walks in $O(1)$ space per node.
+  3. Prove **Shared Global PAM Trie Persistence (`[钟知闲 2017]`)**: why `fail[u]`, `slink[u]`, and `quick_link[u][c]` are intrinsic to the palindrome $P_u$ and require **zero persistent Trie node copying** across a version tree or character-labeled tree (`树上 PAM`).
+  4. Derive the **4-Way Double-Ended (`Deque`) PAM (`双向回文自动机`)** supporting `push_front`, `push_back`, `pop_front`, and `pop_back` in worst-case $O(1)$ time via **Dual-Pointer Whole-String Crossover**, the **Unique Vanishing Palindrome Theorem**, **Non-Cascading Lazy Surface Push-Down**, and **Permanent Trie Node Reuse**.
+:::
+
+---
+
+## 1. Diagnostic Signal: Why Star-Branched Trees & Deques Break Amortized PAM (`T-3A-01`)
+
+### 1.1 The Potential Function of Standard Append-Only PAM
+
+In a standard append-only Palindromic Automaton over $S[1..N]$, appending character $c = S[r]$ at right endpoint $r$ starts at $u = \text{last}[r - 1]$ (the longest palindromic suffix of $S[1..r-1]$) and repeatedly walks the failure link $u \gets \operatorname{fail}[u]$ until the character immediately preceding $u$ in $S$ matches $c$:
+$$S\bigl[r - 1 - \operatorname{len}[u]\bigr] = S[r].$$
+Why does this `while` loop run in $O(N)$ total time on a single linear string? Define the potential $\Phi(r) = \operatorname{depth}_{\text{fail}}(\text{last}[r])$. Each `u = fail[u]` step strictly decreases $\operatorname{depth}_{\text{fail}}(u)$ by $1$, while taking the Trie edge $\operatorname{tr}[u][c]$ increases the depth by at most $+1$. Across $N$ sequential appends, the total number of failure steps is bounded by $N$.
+
+### 1.2 The $\Theta(N^2)$ Broom-Tree & Rollback Collapse
+
+Now suppose a problem requires **any** of the following three non-linear operations:
+
+1. **Rollback / Undo Queries**: Append a character, query the PAM, and roll back the append $Q$ times;
+2. **Version-Tree / Tree PAM (`树上 PAM`, `[国家集训队论文 2017 — 钟知闲]`)**: Build a PAM over all root-to-node paths of a character-labeled tree $T$ of $N$ vertices;
+3. **Double-Ended (`Deque`) PAM (`双向 PAM`)**: Support `push_front(c)`, `push_back(c)`, `pop_front()`, and `pop_back()` on a dynamic deque $S[L..R]$.
+
+```
+Broom-Tree Counterexample (N = 2k + 1 vertices):
+                                     /-- (k+2) 'b'  [walks k fail links!]
+  (1) --'a'--> (2) --'a'--> ... --'a'--> (k+1) ---- (k+3) 'b'  [walks k fail links!]
+  |-------------- Stem: a^k --------------|      \-- (2k+1) 'b' [walks k fail links!]
+```
+
+On the **Broom Tree** above, walking down the stem $\texttt{a}^k$ builds $\text{last} = u_k$ (palindrome $\texttt{a}^k$) at fail-tree depth $k$ using $k$ units of work. Then, at each of the $k$ leaf children of vertex $k+1$ labeled $\texttt{'b'}$, the standard `while (S[r - 1 - len[u]] != 'b') u = fail[u]` loop walks through $\texttt{a}^k \to \texttt{a}^{k-1} \to \dots \to \texttt{a}^1 \to r_0 \to r_{-1}$, taking **$k + 1$ steps per leaf** and reverting to $\text{last} = u_k$ upon backtracking! Total work across $k$ leaves is $k(k + 1) = \Theta(N^2)$.
+
+To eliminate this $\Theta(N^2)$ bottleneck, we must replace the amortized `while` loop with a **deterministic unamortized fail transition**.
+
+---
+
+## 2. Core Combinatorial Word Invariants: The Intrinsic & Uniform Preceding-Character Lemmas (`T-3A-01`)
+
+### 2.1 Concrete Objects: Where Does the Preceding Character $S[r - 1 - \operatorname{len}[v]]$ Live?
+
+Suppose $u$ is a PAM state ($\operatorname{len}[u] \ge 1$) representing the palindrome $P_u[1..\operatorname{len}[u]]$, and suppose $u$ occurs as a suffix of $S[1..r-1]$, so $S[r - \operatorname{len}[u] .. r - 1] = P_u[1..\operatorname{len}[u]]$.
+Now consider any proper failure ancestor $v$ of $u$ with $\operatorname{len}[v] \ge 0$ ($0 \le \operatorname{len}[v] < \operatorname{len}[u]$). When we test whether $v$ can be extended by $S[r]$ into $S[r]\,P_v\,S[r]$, we inspect the character at index $p_v = r - 1 - \operatorname{len}[v]$ in $S$.
+
+> **Key Structural Question**: *Does the character $S[r - 1 - \operatorname{len}[v]]$ depend on where $u$ occurs in $S$, or is it already locked inside the palindrome $P_u$ itself?*
+
+::: {.callout-important title="Lemma 16.1 (The Intrinsic Preceding-Character Lemma & $O(1)$ `quick_link[u][c]`)"}
+For any PAM state $u$ with $\operatorname{len}[u] \ge 1$ and any proper failure ancestor $v$ of $u$ with $0 \le \operatorname{len}[v] < \operatorname{len}[u]$, whenever $P_u$ occurs as a suffix of $S[1..r-1]$, the character $S[r - 1 - \operatorname{len}[v]]$ immediately preceding the suffix copy of $P_v$ lies **strictly inside $P_u$** and equals:
+$$\boxed{S\bigl[r - 1 - \operatorname{len}[v]\bigr] = P_u\bigl[\operatorname{len}[u] - \operatorname{len}[v]\bigr] = P_u\bigl[\operatorname{len}[v] + 1\bigr].}$$
+In particular, $S[r - 1 - \operatorname{len}[v]]$ is an **intrinsic constant of the pair $(u, v)$** that never depends on the external prefix of $S$ before $P_u$!
+Consequently, if we define $\operatorname{quick\_link}[u][c]$ (also written $\operatorname{anc}[u][c]$) as the longest proper failure ancestor $v$ of $u$ satisfied by $P_u[\operatorname{len}[u] - \operatorname{len}[v]] = c$ (so $S[r' - 1 - \operatorname{len}[v]] = c$ whenever $P_u$ ends at $r' - 1$, or $r_{-1}$ if none exists), then upon creating node $u$ at right endpoint $r$ (where $P_u = S[r - \operatorname{len}[u] + 1 .. r]$ ends at $r$) with $f = \operatorname{fail}[u]$ and preceding character $c_0 = P_u[\operatorname{len}[u] - \operatorname{len}[f]] = S\bigl[r - \operatorname{len}[f]\bigr]$, we have the exact $O(1)$-difference recurrence:
+$$\boxed{\operatorname{quick\_link}[u][c] = \begin{cases} f = \operatorname{fail}[u], & \text{if } c = S\bigl[r - \operatorname{len}[f]\bigr], \\[4pt] \operatorname{quick\_link}\bigl[\operatorname{fail}[u]\bigr][c], & \text{if } c \ne S\bigl[r - \operatorname{len}[f]\bigr]. \end{cases}}$$
+:::
+
+```
+Palindrome P_u = S[r' - len[u] .. r' - 1] (ending at r' - 1 during query at r'):
+  [========== P_v ==========][c_0] ................. [c_0][========== P_v ==========]
+  |<-------- len[v] ------->|  ^                            ^  |<------ len[v] ----->|
+  r' - len[u]            P_u[len[v]+1]             r' - 1 - len[v]                r' - 1
+```
+
+#### Proof of Lemma 16.1
+Since $0 \le \operatorname{len}[v] \le \operatorname{len}[u] - 1$, the index $p_v = r - 1 - \operatorname{len}[v]$ satisfies $r - \operatorname{len}[u] \le p_v \le r - 1$. Relative to the 1-based start of $P_u = S[r - \operatorname{len}[u] .. r - 1]$, position $p_v$ is the $(\operatorname{len}[u] - \operatorname{len}[v])$-th character of $P_u$. Because $P_u$ is a palindrome, its $(\operatorname{len}[u] - \operatorname{len}[v])$-th character equals its $(\operatorname{len}[v] + 1)$-st character from the left: $P_u[\operatorname{len}[u] - \operatorname{len}[v]] = P_u[\operatorname{len}[v] + 1]$.
+Finally, the proper failure ancestors of $u$ are $\{f\} \cup \{\text{proper failure ancestors of } f\}$ where $f = \operatorname{fail}[u]$. When $u$ is created at right endpoint $r$ ($P_u = S[r - \operatorname{len}[u] + 1 .. r]$), the top candidate $f$ is preceded inside $P_u$ by $c_0 = P_u[\operatorname{len}[u] - \operatorname{len}[f]] = S[r - \operatorname{len}[f]]$; for any character $c \ne c_0$, the longest valid ancestor of $u$ is identical to the longest valid ancestor of $f$, namely $\operatorname{quick\_link}[f][c]$. $\blacksquare$
+
+With `quick_link[u][c]`, finding the failure ancestor of $u$ that extends by $c = S[r]$ requires **at most one jump**:
+$$u' = \begin{cases} u, & \text{if } S[r - 1 - \operatorname{len}[u]] = c, \\ \operatorname{quick\_link}[u][c], & \text{otherwise.} \end{cases}$$
+Every character insertion now runs in **strict worst-case $O(1)$ time**!
+
+---
+
+### 2.2 Alphabet-Free $O(\log N)$ Fail Walking via `slink`-Skip (`Lemma 16.2`)
+
+What if the alphabet $\Sigma$ is large ($|\Sigma| = O(N)$, e.g. $\Sigma \subseteq [1..10^9]$) and we want **$O(1)$ memory per PAM node** without storing a $26$-element array or $O(\log |\Sigma|)$ persistent BST for `quick_link[u]`?
+
+Recall from [Chapter 04](ch04-series-link-dp-kmp-pam.qmd) that every PAM node $u$ maintains $\operatorname{diff}[u] = \operatorname{len}[u] - \operatorname{len}[\operatorname{fail}[u]]$ and $\operatorname{slink}[u]$ (the highest ancestor in $u$'s arithmetic progression with the same step $\operatorname{diff}$, or more precisely the first ancestor where $\operatorname{diff}$ changes: $\operatorname{slink}[u] = \operatorname{diff}[u] == \operatorname{diff}[\operatorname{fail}[u]] \ ? \ \operatorname{slink}[\operatorname{fail}[u]] : \operatorname{fail}[u]$).
+
+::: {.callout-important title="Lemma 16.2 (The Uniform Preceding-Character Lemma for `slink` Chains)"}
+Let $u_1 \to u_2 \to \dots \to u_k$ ($k \ge 2$) be a failure chain in PAM where $u_{j+1} = \operatorname{fail}[u_j]$ for $1 \le j < k$ and $\operatorname{diff}[u_1] = \operatorname{diff}[u_2] = \dots = \operatorname{diff}[u_{k-1}] = d$, so $u_k = \operatorname{slink}[u_1]$ and $\operatorname{len}[u_j] = \operatorname{len}[u_1] - (j - 1)d$ for all $1 \le j \le k$.
+Then whenever $u_1$ occurs as a suffix of $S[1..r-1]$, **every ancestor $u_2, u_3, \dots, u_k$ is preceded by the exact same character in $S$**:
+$$\boxed{S\bigl[r - 1 - \operatorname{len}[u_2]\bigr] = S\bigl[r - 1 - \operatorname{len}[u_3]\bigr] = \dots = S\bigl[r - 1 - \operatorname{len}[u_k]\bigr].}$$
+Consequently, during a fail walk from $u$, if $S[r - 1 - \operatorname{len}[u]] \ne S[r]$ **and** $S[r - 1 - \operatorname{len}[\operatorname{fail}[u]]] \ne S[r]$, then every intermediate node in $(\operatorname{slink}[u],\, \operatorname{fail}[u])$ is guaranteed to fail as well, allowing an immediate jump $u \gets \operatorname{slink}[u]$ in **worst-case $O(\log N)$ steps and $O(1)$ space per node**!
+:::
+
+```
+Palindrome P_{u_1} has period d = diff[u_1]:
+  r - len[u_1]                                                      r - 1
+  [================================ P_{u_1} ================================]
+        [c*] [====================== P_{u_k} ======================]
+              |<-- d -->| [c*] [=============== P_{u_3} ===============]
+                                |<-- d -->| [c*] [======== P_{u_2} ========]
+```
+
+#### Proof of Lemma 16.2
+By Period–Border Duality ([Theorem 1.1](ch01-fine-wilf-periodicity-orbits.qmd)), since $u_2 = \operatorname{fail}[u_1]$ is a border of $P_{u_1}$ of length $\operatorname{len}[u_1] - d$, the palindrome $P_{u_1} = S[r - \operatorname{len}[u_1] .. r - 1]$ has period $d$.
+For every $j \in \{2, 3, \dots, k\}$, we have $\operatorname{len}[u_k] \le \operatorname{len}[u_j] \le \operatorname{len}[u_2] = \operatorname{len}[u_1] - d$. Note that $\operatorname{len}[u_k] \ge 0$ because $u_k = \operatorname{slink}[u_1]$ is a member of the progression with $\operatorname{len}[u_k] \ge \operatorname{len}[\operatorname{fail}[u_{k-1}]] \ge 0$ (even if $u_k = r_0$ has length $0$). Therefore, for every $j \in \{2, \dots, k\}$, the index $p_j = r - 1 - \operatorname{len}[u_j]$ satisfies
+$$r - \operatorname{len}[u_1] \le p_2 < p_3 < \dots < p_k \le r - 1,$$
+so **all $k - 1$ indices $p_2, p_3, \dots, p_k$ lie inside the interval $[r - \operatorname{len}[u_1],\, r - 1]$ covered by $P_{u_1}$**!
+Furthermore, consecutive indices satisfy $p_{j+1} - p_j = \operatorname{len}[u_j] - \operatorname{len}[u_{j+1}] = d$. Because $P_{u_1}$ has period $d$, shifting by $+d$ inside $P_{u_1}$ preserves characters: $S[p_2] = S[p_3] = \dots = S[p_k]$. $\blacksquare$
+
+```cpp
+// Alphabet-free worst-case O(log N) fail-finding using only fail[] and slink[] (O(1) space/node):
+int get_fail_unamortized_log(int u, int r) {
+    char c = S[r];
+    while (S[r - 1 - len[u]] != c) {
+        if (S[r - 1 - len[fail[u]]] == c) return fail[u];
+        u = slink[u]; // Skips the entire arithmetic progression in O(1)!
+    }
+    return u;
+}
+```
+
+---
+
+## 3. Shared Global PAM Trie Persistence & Tree PAM (`树上 PAM`, `[钟知闲 2017]`)
+
+Suppose we are given a tree (or version tree of `append(v, c)` operations) of $N$ vertices where each vertex $x$ extends its parent $p = \operatorname{parent}(x)$ by character $c_x$, forming the root-to-$x$ string $W_x$. How do we build a Persistent PAM across all $N$ vertices?
+
+::: {.callout-note title="Theorem 16.3 (Shared Global PAM Trie Invariance — `[国家集训队论文 2017 — 钟知闲]`)"}
+In a Palindromic Automaton, every state $u$ represents a unique concrete palindrome $P_u \in \Sigma^*$. Its length $\operatorname{len}[u]$, failure link $\operatorname{fail}[u]$, series link $\operatorname{slink}[u]$, and deterministic shortcut table $\operatorname{quick\_link}[u][c]$ are **100% determined by the string $P_u$ alone** and are completely independent of the path prefix preceding $P_u$!
+Therefore, across any branched tree or persistent version history:
+
+1. **Zero Persistent Trie Node Copying**: All versions share a **single global mutable PAM Trie** (`tr[u][c]`, `fail[u]`, `slink[u]`, `quick_link[u][c]`) of at most $N + 2$ states total! If two sibling branches from vertex $p$ (at PAM state $u$) both append character $c$, they both transition to the **exact same global PAM node** $\operatorname{tr}[u][c]$.
+2. **Version State**: Each tree vertex $x$ only needs to store its active suffix pointer $\text{last}[x] = u_x$ and a mechanism to read the character at any ancestor depth $d$ along the path $\text{root} \leadsto x$:
+   - **Offline Tree DFS**: Maintain a global array `dep_char[dep]` on the DFS recursion stack to read any ancestor character in $O(1)$ time.
+   - **Online Dynamic Leaf Additions**: Maintain a binary-lifting table `up[x][0..18]` on the tree $T$ to read `kth_ancestor(x, len[u] + 1)` in $O(\log N)$ time (or $O(1)$ via HLD / ladder decomposition).
+:::
+
+---
+
+## 4. 4-Way Double-Ended (`Deque`) PAM (`双向回文自动机`, `T-3A-02`)
+
+### 4.1 Concrete Objects & The Four Deque Operations
+
+We now solve the general dynamic maintenance problem (`[国家集训队论文 2014 — 徐毅]`): maintain a string $S[L..R]$ inside a centering array $S[1..2Q+10]$ (initialized with $L = Q + 5, R = Q + 4$ so $S[L..R] = \varepsilon$) under four online operations:
+
+- `push_back(c)`: Decrement/increment $R \gets R + 1$, set $S[R] = c$;
+- `push_front(c)`: Set $L \gets L - 1$, $S[L] = c$;
+- `pop_back()`: Remove $S[R]$ and set $R \gets R - 1$;
+- `pop_front()`: Remove $S[L]$ and set $L \gets L + 1$;
+while reporting in **worst-case $O(1)$ time** after every operation: (1) the number of **distinct** non-empty palindromes in $S[L..R]$, (2) the **total** number of palindromic substrings (with multiplicity), and (3) the longest palindromic prefix $\text{first}$ and suffix $\text{last}$ of $S[L..R]$.
+
+---
+
+### 4.2 Palindrome Reversal Self-Duality & Dual-Pointer Crossover (2-Way Push-Only Deque PAM)
+
+Because every palindrome satisfies $P = P^R$, a single PAM represents both palindromic suffixes and palindromic prefixes of $S[L..R]$!
+If we only need `push_front(c)` and `push_back(c)` (no deletions), we maintain two active state pointers on our single PAM:
+
+- $\text{last}$: the longest palindromic **suffix** of $S[L..R]$;
+- $\text{first}$: the longest palindromic **prefix** of $S[L..R]$.
+
+When `push_back(c)` appends $S[R] = c$:
+
+1. Find the longest failure ancestor $u$ of $\text{last}$ such that $r_{\text{mirror}} = R - 1 - \operatorname{len}[u] \ge L$ and $S[R - 1 - \operatorname{len}[u]] = c$, and transition $\text{last} \gets \operatorname{tr}[u][c]$.
+2. **Whole-String Crossover Synchronization**: If the new suffix palindrome covers the **entire active deque** ($\operatorname{len}[\text{last}] == R - L + 1$), then $S[L..R]$ is itself a palindrome, so the longest palindromic prefix of $S[L..R]$ has also grown to $S[L..R]$! We **must** synchronize:
+   $$\text{if } \bigl(\operatorname{len}[\text{last}] == R - L + 1\bigr) \quad \text{first} \gets \text{last}.$$
+   Symmetrically, on `push_front(c)` at $L$, we check $L + 1 + \operatorname{len}[u] \le R$ and $S[L + 1 + \operatorname{len}[u]] = c$, update $\text{first} \gets \operatorname{tr}[u][c]$, and if $\operatorname{len}[\text{first}] == R - L + 1$, synchronize $\text{last} \gets \text{first}$.
+
+---
+
+### 4.3 Supporting `pop_front` and `pop_back`: The Unique Vanishing Palindrome Theorem
+
+Why are deletions (`pop_front` / `pop_back`) harder than insertions? When `pop_back()` removes $S[R]$, two things must be updated in $O(1)$ time:
+
+1. What is the new longest palindromic suffix $\text{last}$ at $R - 1$?
+2. Which distinct palindromes in $S[L..R]$ disappear when $S[R]$ is removed, and what happens to `first` if $S[L..R]$ was a palindrome?
+
+::: {.callout-important title="Theorem 16.4 (Unique Vanishing Palindrome & Non-Cascading Lazy Surface Push-Down)"}
+Suppose $S[L..R]$ is non-empty and we execute `pop_back()`, removing index $R$. Let $u = \operatorname{max\_suff}[R]$ be the longest palindromic suffix of $S[L..R]$.
+
+1. **Unique Vanishing Palindrome**: For **every** proper failure ancestor $v$ of $u$ ($0 < \operatorname{len}[v] < \operatorname{len}[u]$), $P_v$ is a proper border of the palindrome $P_u = S[R - \operatorname{len}[u] + 1 .. R]$, so $P_v$ also occurs as the **prefix of $P_u$**, namely at
+   $$S\bigl[R - \operatorname{len}[u] + 1 \mathrel{..} R - \operatorname{len}[u] + \operatorname{len}[v]\bigr] \;\subseteq\; S[L .. R - 1]!$$
+   Because its right endpoint is $R - \operatorname{len}[u] + \operatorname{len}[v] \le R - 1$, **no proper ancestor $v$ of $u$ can vanish from $S[L..R-1]$ during `pop_back()`**! At most the **single node $u = \operatorname{max\_suff}[R]$** can lose its last occurrence in the deque.
+
+2. **Non-Cascading Lazy Endpoint Surface Maintenance**: Instead of maintaining every internal occurrence of every palindrome, store at each active index $i \in [L, R]$ two pointers:
+   - $\operatorname{max\_pref}[i]$: the longest palindrome starting at $i$ that has been pushed down to the surface of $S[L..R]$;
+   - $\operatorname{max\_suff}[i]$: the longest palindrome ending at $i$ that has been pushed down to the surface of $S[L..R]$;
+   and store for each PAM node $w$ ($\operatorname{len}[w] > 0$):
+
+   - $\operatorname{surf\_cnt}[w]$: the number of active surface pointers ($\operatorname{max\_pref}[i]$ or $\operatorname{max\_suff}[i]$ for $i \in [L, R]$) currently equal to $w$;
+   - $\operatorname{deg}[w]$: the number of **active** PAM children $z$ with $\operatorname{fail}[z] = w$.
+   Then a PAM node $w$ ($\operatorname{len}[w] > 0$) occurs in $S[L..R]$ **if and only if** $\operatorname{surf\_cnt}[w] + \operatorname{deg}[w] > 0$!
+   When `pop_back()` removes $R$: let $u = \operatorname{max\_suff}[R]$, $l_u = R - \operatorname{len}[u] + 1$ (the start of $u$), and $f = \operatorname{fail}[u]$ (clipped so $\operatorname{len}[f] \ge 0$).
+
+   - Because any palindrome starting at $l_u$ inside $S[L..R-1]$ has length $< R - l_u + 1 = \operatorname{len}[u]$, it is a proper palindromic prefix (and by reflection, a proper border) of $P_u$, so its length is at most $\operatorname{len}[f]$. Thus the prefix copy of $f$ at $S[l_u .. l_u + \operatorname{len}[f] - 1]$ is now exposed as the **exact** longest palindrome starting at $l_u$ in $S[L..R-1]$! We overwrite $\operatorname{max\_pref}[l_u] \gets f$ and update $\operatorname{max\_suff}[l_u + \operatorname{len}[f] - 1] \gets \arg\max_{\operatorname{len}}(\operatorname{max\_suff}[l_u + \operatorname{len}[f] - 1],\, f)$.
+   - Because $f$ gains a surface reference at $\operatorname{max\_pref}[l_u]$ **before** $u$ potentially becomes inactive and decrements $\operatorname{deg}[f]$, $\operatorname{surf\_cnt}[f] + \operatorname{deg}[f]$ remains strictly positive—**deletions never cascade**!
+:::
+
+```
+Before pop_back() at R:
+  l_u = R - len[u] + 1                                              R
+  [============================== P_u ==============================]
+  [======== P_f ========]                     [======== P_f ========]
+  ^                     ^
+  l_u            r_f = l_u + len[f] - 1
+
+After pop_back() removes R:
+  1. P_u at [l_u .. R] is destroyed.
+  2. Its prefix border P_f at [l_u .. r_f] becomes the new max_pref[l_u]
+     and competes to become max_suff[r_f]!
+```
+
+---
+
+### 4.4 Reverse-Engineering Scratchpad & Algorithmic Implementation Contract: Worst-Case $O(1)$ 4-Way Deque PAM
+
+```cpp
+struct DequePAM {
+    static constexpr int ALPHA = 26;
+    int tr[MAXM][ALPHA], quick[MAXM][ALPHA], fail[MAXM], len[MAXM], dep[MAXM];
+    int surf_cnt[MAXM], deg[MAXM];
+    int s[MAXQ * 2 + 20], max_pref[MAXQ * 2 + 20], max_suff[MAXQ * 2 + 20];
+    int tot, L, R, active_distinct;
+    long long total_pal_substr;
+
+    void init(int Q_bound) {
+        tot = 1; // 0: even root (len 0), 1: odd root (len -1)
+        len[0] = 0; fail[0] = 1; dep[0] = 0;
+        len[1] = -1; fail[1] = 1; dep[1] = 0;
+        for (int c = 0; c < ALPHA; ++c) quick[0][c] = quick[1][c] = 1;
+        L = Q_bound + 5; R = L - 1;
+        active_distinct = 0; total_pal_substr = 0;
+    }
+
+    bool is_active(int u) const { return u >= 2 && (surf_cnt[u] + deg[u] > 0); }
+
+    void set_pref(int pos, int u) {
+        int old = max_pref[pos];
+        if (old >= 2) --surf_cnt[old];
+        max_pref[pos] = u;
+        if (u >= 2) ++surf_cnt[u];
+    }
+    void set_suff(int pos, int u) {
+        int old = max_suff[pos];
+        if (old >= 2) --surf_cnt[old];
+        max_suff[pos] = u;
+        if (u >= 2) ++surf_cnt[u];
+    }
+
+    void activate_if_needed(int u) {
+        if (u >= 2 && !is_active(u)) {
+            ++active_distinct;
+            if (fail[u] >= 2) ++deg[fail[u]];
+        }
+    }
+    void deactivate_if_needed(int u) {
+        if (u >= 2 && !is_active(u)) {
+            --active_distinct;
+            if (fail[u] >= 2) --deg[fail[u]];
+        }
+    }
+
+    void push_back(int c) {
+        s[++R] = c; max_pref[R] = max_suff[R] = 0;
+        int p = (R - 1 >= L) ? max_suff[R - 1] : 0;
+        if (R - 1 - len[p] < L || s[R - 1 - len[p]] != c) p = quick[p][c];
+        if (R - 1 - len[p] < L) p = 1;
+        int u = tr[p][c];
+        if (!u) {
+            int f_cand = (p == 1) ? 0 : ((R - 1 - len[fail[p]] >= L && s[R - 1 - len[fail[p]]] == c)
+                                         ? tr[fail[p]][c] : tr[quick[fail[p]][c]][c]);
+            u = ++tot; len[u] = len[p] + 2; fail[u] = f_cand; dep[u] = dep[f_cand] + 1;
+            memcpy(quick[u], quick[f_cand], sizeof(quick[u]));
+            if (len[f_cand] >= 0) quick[u][s[R - len[f_cand]]] = f_cand;
+            tr[p][c] = u;
+        }
+        activate_if_needed(u);
+        set_suff(R, u);
+        int l_u = R - len[u] + 1;
+        if (len[u] > len[max_pref[l_u]]) set_pref(l_u, u);
+        total_pal_substr += dep[u];
+    }
+
+    void push_front(int c) {
+        s[--L] = c; max_pref[L] = max_suff[L] = 0;
+        int p = (L + 1 <= R) ? max_pref[L + 1] : 0;
+        if (L + 1 + len[p] > R || s[L + 1 + len[p]] != c) p = quick[p][c];
+        if (L + 1 + len[p] > R) p = 1;
+        int u = tr[p][c];
+        if (!u) {
+            int f_cand = (p == 1) ? 0 : ((L + 1 + len[fail[p]] <= R && s[L + 1 + len[fail[p]]] == c)
+                                         ? tr[fail[p]][c] : tr[quick[fail[p]][c]][c]);
+            u = ++tot; len[u] = len[p] + 2; fail[u] = f_cand; dep[u] = dep[f_cand] + 1;
+            memcpy(quick[u], quick[f_cand], sizeof(quick[u]));
+            if (len[f_cand] >= 0) quick[u][s[L + len[f_cand]]] = f_cand;
+            tr[p][c] = u;
+        }
+        activate_if_needed(u);
+        set_pref(L, u);
+        int r_u = L + len[u] - 1;
+        if (len[u] > len[max_suff[r_u]]) set_suff(r_u, u);
+        total_pal_substr += dep[u];
+    }
+
+    void pop_back() {
+        int u = max_suff[R], l_u = R - len[u] + 1, f = fail[u];
+        total_pal_substr -= dep[u];
+        // Push down f to prefix at l_u and suffix at l_u + len[f] - 1 BEFORE checking deactivation of u
+        if (l_u < R && len[f] > 0) {
+            int r_f = l_u + len[f] - 1;
+            if (max_pref[l_u] == u) set_pref(l_u, f);
+            if (len[f] > len[max_suff[r_f]]) set_suff(r_f, f);
+        } else if (max_pref[l_u] == u) {
+            set_pref(l_u, 0);
+        }
+        set_suff(R, 0);
+        deactivate_if_needed(u);
+        --R;
+    }
+
+    void pop_front() {
+        int u = max_pref[L], r_u = L + len[u] - 1, f = fail[u];
+        total_pal_substr -= dep[u];
+        if (r_u > L && len[f] > 0) {
+            int l_f = r_u - len[f] + 1;
+            if (max_suff[r_u] == u) set_suff(r_u, f);
+            if (len[f] > len[max_pref[l_f]]) set_pref(l_f, f);
+        } else if (max_suff[r_u] == u) {
+            set_suff(r_u, 0);
+        }
+        set_pref(L, 0);
+        deactivate_if_needed(u);
+        ++L;
+    }
+};
+```
+
+### 4.5 Summary of Boundary Pitfalls (`BP-16` / `BP-16-01` to `BP-16-04`)
+
+1. **`BP-16` / `BP-16-01` / `BP-3A-01` (Amortized Fail Walk on Version Trees / Deques)**: Never use the standard `while (s[r - 1 - len[u]] != c) u = fail[u]` loop when branching, rolling back, or popping—use `quick_link[u][c]` ($O(1)$) or `slink`-skip ($O(\log N)$).
+2. **`BP-16-02` / `BP-3A-02` (Missing Whole-String Crossover Synchronization)**: When a new palindrome at $R$ has $\operatorname{len}[u] == R - L + 1$ (`l_u == L`), `max_pref[L]` (or `first` in a 2-way PAM) **must** be updated to $u$! In `DequePAM::push_back`, `if (len[u] > len[max_pref[l_u]]) set_pref(l_u, u);` automatically handles both `l_u == L` and interior surface seeding!
+3. **`BP-16-03` / `BP-3A-03` (Physically Unlinking `tr[p][c]` on `pop`)**: Never zero out `tr[p][c]` when `surf_cnt[u] + deg[u] == 0`. Why? Because another active palindrome $w$ elsewhere in the deque might still have $u$ as a **Trie ancestor** (`len[w] = len[u] + 2k`) even if $u$ itself is not a failure ancestor of $w$! Keeping PAM Trie nodes permanent (`Permanent Trie Node Reuse`) and tracking active status via `surf_cnt[u] + deg[u] > 0` prevents orphaned Trie subtrees.
+4. **`BP-16-04` / `BP-3A-04` (Deactivating $u$ Before Pushing Down $f = \operatorname{fail}[u]$)**: During `pop_back()`, always assign `set_pref(l_u, f)` **before** calling `deactivate_if_needed(u)` so $\operatorname{surf\_cnt}[f]$ is incremented before $\operatorname{deg}[f]$ is decremented.
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Ladder (`Ch 16`)
+
+### Tier 1 — Stepping Stone (`W3A-07`, `W3A-18`)
+
+#### Problem 16.1 (`W3A-07`) — `Rollback PAM & Short-Append Queries with Worst-Case O(1) quick_link` (Analogue of `CF 1721E`)
+
+- **Mathematical Statement**: Given a base string $S[1..N]$ and $Q$ independent queries, each query Either (Type 1) temporarily appends a short string $T_q$ ($|T_q| \le 10$) to $S$, or (Type 2) rolls back the last character of a dynamic stack string, asking after each step for the length and fail-tree depth of the longest palindromic suffix and the total number of distinct palindromes.
+- **Constraints**: $1 \le N \le 5 \times 10^5$, $1 \le Q \le 2 \times 10^5$, $|\Sigma| = 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+If $S = \texttt{a}^N$ and each query appends $\texttt{'b'}$ and rolls back, standard amortized PAM walks $N$ failure links per query ($\Theta(N Q)$ time).
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Lemma 16.1 (The Intrinsic Preceding-Character Lemma)**, precomputing `quick_link[u][c]` at node creation allows jumping directly to the longest failure ancestor $v$ preceded by $c$ in **worst-case $O(1)$ time**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Maintain a global PAM Trie (`tr[u][c]` and `quick_link[u][c]`) and a stack of active suffix pointers `last[r]` and `distinct_cnt[r]`. Appending at depth $r$ checks `S[r - 1 - len[u]] == c ? u : quick_link[u][c]` in $O(1)$ time, and rolling back simply decrements the stack pointer $r \gets r - 1$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-07`)"}
+
+1. **Diagnostic Signal**: Repeated append-and-undo operations at the end of $\texttt{a}^N$ destroy the linear potential function $\Phi(r) = \operatorname{depth}_{\text{fail}}(\text{last}[r])$.
+2. **Combinatorial Word Invariant**:
+   - By **Lemma 16.1**, for any PAM node $u$ and failure ancestor $v$, the character preceding the suffix copy of $v$ inside $P_u$ is $P_u[\operatorname{len}[v] + 1]$. Thus `quick_link[u][c]` is invariant across all branches and rollbacks.
+   - By **Theorem 16.3**, we do not even need to delete newly created PAM Trie nodes on rollback if we track each node's `first_created_depth[u]` (or decrement `tot` via a 1-entry undo log of `(parent_p, char_c)`).
+3. **Algorithmic Compilation**:
+   - When creating node $u$ with `f = fail[u]`, copy `memcpy(quick[u], quick[f], sizeof(quick[u]))` and overwrite `quick[u][S[r - len[f]]] = f`.
+   - Each append takes $O(|\Sigma|)$ when allocating a new node (or $O(1)$ if reusing) and $O(1)$ transition time; each rollback takes $O(1)$ time. Total time: $O((N + Q|\Sigma|))$.
+4. **Broken-Invariant Counterexample (`BP-16-01`)**: Never fall back to a `while (S[r - 1 - len[u]] != c) u = fail[u];` loop before or after consulting `quick_link`: if `S[r - 1 - len[u]] != c`, jump **immediately** in a single $O(1)$ assignment `u = quick_link[u][c]`!
+:::
+
+---
+
+#### Problem 16.2 (`W3A-18`) — `2-Way Push-Only Deque PAM: push_front & push_back` (`HDU 5421` / `BZOJ 4976 — Victor and String`)
+
+- **Mathematical Statement**: Maintain an initially empty string $S[L..R]$ under $Q$ online operations:
+  1. `1 c`: Prepend character $c$ to the front of $S$ (`push_front(c)`);
+  2. `2 c`: Append character $c$ to the back of $S$ (`push_back(c)`);
+  3. `3`: Output the number of distinct non-empty palindromic substrings in $S$;
+  4. `4`: Output the total number of non-empty palindromic substrings (with multiplicity) in $S$.
+- **Constraints**: $1 \le Q \le 2 \times 10^5$, $|\Sigma| = 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Without deletions (`pop`), no palindrome ever vanishes from $S[L..R]$. How do we maintain both front and back extensions on a single PAM?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Because every palindrome satisfies $P = P^R$, a single PAM serves both ends! Maintain $\text{first}$ (the longest palindromic prefix of $S[L..R]$) and $\text{last}$ (the longest palindromic suffix of $S[L..R]$). When does a `push_back(c)` affect $\text{first}$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Whenever `push_back(c)` updates $\text{last}$ such that $\operatorname{len}[\text{last}] == R - L + 1$, the entire string $S[L..R]$ has become a palindrome, so $\text{first} \gets \text{last}$! Symmetrically, on `push_front(c)`, if $\operatorname{len}[\text{first}] == R - L + 1$, set $\text{last} \gets \text{first}$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-18`)"}
+
+1. **Diagnostic Signal**: Extending at both $L$ and $R$ requires tracking both boundary palindromes on a unified state space.
+2. **Combinatorial Word Invariant**:
+   - Any palindrome created at the front $S[L .. L + \ell - 1] = c P c$ is identical as a string to the palindrome $c P c$ created at the back, so both share the same PAM node in $\operatorname{tr}[p][c]$.
+   - By the Droubay–Pirillo argument, `push_back(c)` adds $\operatorname{dep}[\text{last}]$ new palindromic substring occurrences (all palindromic suffixes of $S[L..R]$) and at most $1$ new distinct palindrome (`tot - 1`), while `push_front(c)` adds $\operatorname{dep}[\text{first}]$ new palindromic prefixes.
+   - **Whole-String Crossover (§4.2)**: $\text{first}$ changes during `push_back(c)` iff the new palindromic suffix spans all of $S[L..R]$, i.e., $\operatorname{len}[\text{last}] == R - L + 1$.
+3. **Algorithmic Compilation**:
+   - Place $S$ in the center of `char S[2 * MAXQ + 10]` with $L = Q + 5, R = Q + 4$, and set dynamic out-of-bounds sentinels $S[L - 1] = -1, S[R + 1] = -2$ before each fail walk.
+   - Update `total_pal += dep[last]` (or `dep[first]`) and synchronize `first`/`last` when `len == R - L + 1`. Time: $O(Q)$.
+4. **Broken-Invariant Counterexample (`BP-16-02`)**: On `push_back('a')` from $\varepsilon$, $\text{last}$ becomes node `'a'` ($\operatorname{len} = 1 = R - L + 1$). If you forget `if (len[last] == R - L + 1) first = last;`, then $\text{first}$ remains $0$, and a subsequent `push_front('a')` fails to see $S[R] = \texttt{'a'}$ and creates `'a'` instead of `'aa'`!
+:::
+
+---
+
+### Tier 2 — Intermediate (`W3A-15`, `W3A-23`)
+
+#### Problem 16.3 (`W3A-15`) — `Persistent PAM on a Version Tree with Large Alphabet via Alphabet-Free slink-Skip`
+
+- **Mathematical Statement**: You are given a version tree of $Q$ operations over an unbounded integer alphabet $\Sigma = \{1, 2, \dots, 10^9\}$. Operation $i$ appends integer $c_i \in \Sigma$ to prior version $v_i \in \{0, \dots, i - 1\}$ to create version $i$. After each operation, output the length of the longest palindromic suffix of version $i$ and the sum of lengths of all palindromic suffixes of version $i$.
+- **Constraints**: $1 \le Q \le 3 \times 10^5$, $1 \le c_i \le 10^9$, memory limit $256\text{ MB}$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Because $|\Sigma| = 10^9$ and memory is $256\text{ MB}$, we cannot store a flat array `quick_link[u][c]` at every PAM node. How do we jump failure links in $O(\log N)$ worst-case time with **$O(1)$ space per PAM node**?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Invoke **Lemma 16.2 (The Uniform Preceding-Character Lemma)**: along any `slink` chain $u_1 \to u_2 \to \dots \to u_k = \operatorname{slink}[u_1]$, every ancestor $u_2, \dots, u_k$ is preceded by the **exact same character** in $S$! Thus testing $u$ and $\operatorname{fail}[u]$ suffices to either match $\operatorname{fail}[u]$ or skip directly to $u \gets \operatorname{slink}[u]$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Read the operations offline and run a DFS over the version tree (maintaining the current root-to-node string in `S[1..dep]`), or maintain binary lifting on the version tree online. At each step, use `get_fail_unamortized_log(u, dep)` (§2.2) in $O(\log Q)$ worst-case time and a small hash/sorted-vector map for `tr[u][c]`!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-15`)"}
+
+1. **Diagnostic Signal**: Unbounded alphabet $|\Sigma| = 10^9$ + version-tree branching forbids both amortized fail walks and $O(|\Sigma|)$-width `quick_link` tables.
+2. **Combinatorial Word Invariant**:
+   - By **Lemma 16.2**, for any state $u$, all nodes in $(\operatorname{slink}[u], \operatorname{fail}[u]]$ share the same preceding character at offset $r - 1 - \operatorname{len}[v]$.
+   - Therefore, checking $S[r - 1 - \operatorname{len}[u]] == c$ and $S[r - 1 - \operatorname{len}[\operatorname{fail}[u]]] == c$ before jumping $u \gets \operatorname{slink}[u]$ visits at most $\lceil \log_2 r \rceil$ states in the worst case while storing only two integers (`diff[u]`, `slink[u]`) per PAM node!
+3. **Algorithmic Compilation**:
+   - Traverse the version tree via DFS (or binary lifting `kth_anc(x, k)` if strictly online), maintaining a single global PAM Trie (`Theorem 16.3`) where `tr[u]` is stored as a light hash table or `std::map<int, int>`.
+   - Maintain `sum_len[u] = sum_len[fail[u]] + len[u]` on each PAM node to report the sum of palindromic suffix lengths in $O(1)$. Total time: $O(Q \log Q)$, space: $O(Q)$.
+4. **Broken-Invariant Counterexample**: In `get_fail_unamortized_log`, you **must** test `S[r - 1 - len[fail[u]]] == c` *before* jumping `u = slink[u]`, because `u` itself ($u_1$) is NOT preceded by the same character as $u_2, \dots, u_k$ ($r - 1 - \operatorname{len}[u_1]$ lies 1 character to the left of $P_{u_1}$!).
+:::
+
+---
+
+#### Problem 16.4 (`W3A-23`) — `Queue-Like Sliding Window Palindrome Maintenance: push_back + pop_front` (`LOJ #6070` / `BZOJ 4082 — 基因 Gene`)
+
+- **Mathematical Statement**: Maintain a sliding window string $S[L..R]$ under $Q$ online operations:
+  1. `push_back(c)`: Append character $c$ to the right end $R$ of the window;
+  2. `pop_front()`: Remove the leftmost character at $L$ from the window;
+  Output after each operation the number of **distinct** palindromic substrings in $S[L..R]$ and the length of the longest palindromic prefix and suffix of $S[L..R]$.
+
+- **Constraints**: $1 \le Q \le 5 \times 10^5$, $|\Sigma| = 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+In a FIFO queue window (`push_back` at $R$, `pop_front` at $L$), deletions only happen at $L$ and insertions only happen at $R$. How does **Theorem 16.4** specialize here?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+When `pop_front()` removes $S[L]$, at most the single palindrome $u = \operatorname{max\_pref}[L]$ can vanish from $S[L+1..R]$. Its longest proper border $f = \operatorname{fail}[u]$ has a suffix copy inside $u$ ending at $r_u = L + \operatorname{len}[u] - 1$, which starts at $l_f = r_u - \operatorname{len}[f] + 1 > L$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Use the `push_back` and `pop_front` methods of `DequePAM` (§4.4): on `pop_front()`, push $f = \operatorname{fail}[u]$ down to `max_pref[l_f]` (and `max_suff[r_u]` if $r_u == R$), then decrement `surf_cnt[u]` and check if `surf_cnt[u] + deg[u] == 0`.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-23`)"}
+
+1. **Diagnostic Signal**: Sliding-window problems (`push_back` + `pop_front`) cannot use LIFO rollback stacks because the oldest character $S[L]$ is removed while recent characters $S[L+1..R]$ remain.
+2. **Combinatorial Word Invariant**:
+   - By **Theorem 16.4**, maintaining `max_pref[L..R]` and `max_suff[L..R]` with `surf_cnt[u]` and `deg[u]` tracks the exact active set of distinct palindromes in $S[L..R]$.
+   - Specifically, when `push_back(c)` finds the longest palindromic suffix $u$ at $R$, it sets `max_suff[R] = u` and updates `max_pref[R - len[u] + 1]` if $\operatorname{len}[u]$ is larger.
+   - When `pop_front()` pops $L$ with $u = \operatorname{max\_pref}[L]$, $r_u = L + \operatorname{len}[u] - 1$, and $f = \operatorname{fail}[u]$, the suffix copy of $f$ at $[r_u - \operatorname{len}[f] + 1 .. r_u]$ is lazily pushed down to `max_pref[r_u - len[f] + 1]` and `max_suff[r_u]`.
+3. **Algorithmic Compilation**:
+   - Directly invoke `DequePAM::push_back(c)` and `DequePAM::pop_front()` from §4.4. Every operation runs in worst-case $O(1)$ time and $O(Q)$ total memory.
+4. **Broken-Invariant Counterexample (`BP-16-03` & `BP-16-04`)**: If $S[L..R] = \texttt{"aba"}$ and we call `pop_front()` leaving $\texttt{"ba"}$, $u = \texttt{"aba"}$ ($\operatorname{len}=3$) has $f = \operatorname{fail}[u] = \texttt{"a"}$ ($\operatorname{len}=1$) at $r_u = L + 2 = R$, so $l_f = R$. Pushing $f = \texttt{"a"}$ down to `max_pref[R]` and `max_suff[R]` ensures $\text{last} = \operatorname{max\_suff}[R]$ is correctly updated from $\texttt{"aba"}$ to $\texttt{"a"}$!
+:::
+
+---
+
+### Tier 3 — Advanced (`W3A-29`, `W3A-36`)
+
+#### Problem 16.5 (`W3A-29`) — `[国家集训队论文 2017 — 钟知闲] Shared-Trie Tree-Path Palindrome Queries` (Also `[BJWC2018] 词韵`)
+
+- **Mathematical Statement**: Given a rooted tree $T$ of $N$ vertices with character-labeled edges, let $W_x$ denote the string formed by the simple path from the root $1$ to vertex $x$. For every vertex $x \in \{1, \dots, N\}$ and $Q$ online queries $(x, L_{\text{cap}})$:
+  1. Compute the number of distinct palindromic substrings occurring on the root-to-$x$ path $W_x$;
+  2. Given $(x, L_{\text{cap}})$, find the longest palindromic suffix of $W_x$ of length $\le L_{\text{cap}}$, and count how many times that palindrome occurs as a substring of $W_x$.
+- **Constraints**: $1 \le N, Q \le 2 \times 10^5$, $|\Sigma| = 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+By **Theorem 16.3**, all $N$ root-to-$x$ paths share a single global PAM Trie of size $\le N + 2$ built in $O(N)$ worst-case time via `quick_link[u][c]` during a tree DFS. How do we count the distinct palindromes on $W_x$ and occurrences of a target palindrome $u^*$ along $W_x$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Every prefix $W_y$ ($y$ an ancestor of $x$ on $1 \leadsto x$) ends with its longest palindromic suffix $u_y = \text{last}[y]$.
+
+- A palindrome $u^*$ occurs at right endpoint $y$ along $1 \leadsto x$ iff $u_y$ lies in the **PAM `fail`-tree subtree** of $u^*$ ($\operatorname{dfn}_{\text{fail}}[u^*] \le \operatorname{dfn}_{\text{fail}}[u_y] \le \operatorname{out}_{\text{fail}}[u^*]$) **and** $\operatorname{dep}_T[y] \ge \operatorname{len}[u^*]$!
+- The number of *distinct* palindromes on $W_x$ equals the number of PAM nodes in the **union of paths to the root** of $\{u_y : y \in \text{path}(1 \leadsto x)\}$ in the PAM `fail` tree!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+To find $u^*$ (the highest ancestor of $u_x$ with $\operatorname{len}[u^*] \le L_{\text{cap}}$), use binary lifting on the PAM `fail` tree (or `slink` ceiling division from [Chapter 17](ch17-range-palindromes-rich-words.qmd)). To count ancestors $y$ of $x$ with $\operatorname{dep}_T[y] \ge \operatorname{len}[u^*]$ and $u_y \in \text{subtree}_{\text{fail}}(u^*)$, maintain a Fenwick Tree over the PAM `fail`-tree Euler tour during a second DFS on $T$ (subtracting counts at the ancestor $z$ of $x$ at tree depth $\operatorname{len}[u^*] - 1$)!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-29`)"}
+
+1. **Diagnostic Signal**: Tree paths branch arbitrarily, and a palindrome $u^*$ matched at ancestor $y$ of $x$ is valid inside $W_x$ only if $y$'s tree depth is at least $\operatorname{len}[u^*]$.
+2. **Combinatorial Word Invariant**:
+   - **Pass 1 (Shared-Trie Tree PAM Construction)**: Run DFS on $T$ with `dep_char[dep]` and `quick_link[u][c]` (`Lemma 16.1` & `Theorem 16.3`) to compute $u_x = \text{last}[x]$ for every tree vertex $x \in [1..N]$ in $O(N |\Sigma|)$ time.
+   - **Pass 2 (Path Occurrence & Distinct Queries)**: Compute the Euler tour $[\operatorname{dfn}[u], \operatorname{out}[u]]$ of the global PAM `fail` tree.
+     - For Query (2) $(x, L_{\text{cap}})$: lift $u_x$ on the PAM `fail` tree to $u^*$ with $\operatorname{len}[u^*] \le L_{\text{cap}}$. An occurrence of $u^*$ inside $W_x$ corresponds to an ancestor $y$ on $1 \leadsto x$ with $\operatorname{dep}_T[y] \in [\operatorname{len}[u^*],\, \operatorname{dep}_T[x]]$ such that $u_y \in \text{subtree}_{\text{fail}}(u^*)$. Letting $z = \operatorname{kth\_ancestor}_T(x,\, \operatorname{dep}_T[x] - \operatorname{len}[u^*] + 1)$, this is the difference of `fail`-subtree counts between $x$ and $z$!
+3. **Algorithmic Compilation**:
+   - Park queries at $x$ and at its cutoff ancestor $z$, and run a single DFS over $T$ maintaining a Fenwick Tree over $\operatorname{dfn}_{\text{fail}}[1..\text{tot}]$ ( adding $+1$ at $\operatorname{dfn}[u_x]$ upon entering $x$ and $-1$ upon leaving $x$). Total time: $O((N + Q)\log N)$, space $O(N)$.
+4. **Broken-Invariant Counterexample**: Notice a subtle simplification for root-to-$x$ paths $1 \leadsto x$: because $u_y = \text{last}[y]$ for $y$ on $1 \leadsto x$ was constructed using only characters of $W_y$ (so $\operatorname{len}[u_y] \le \operatorname{dep}_T[y]$ always!), **no ancestor $y$ at depth $< \operatorname{len}[u^*]$ can ever have $\operatorname{len}[u_y] \ge \operatorname{len}[u^*]$**! Thus $u_y \in \text{subtree}_{\text{fail}}(u^*)$ *automatically* implies $\operatorname{dep}_T[y] \ge \operatorname{len}[u_y] \ge \operatorname{len}[u^*]$ without even needing the cutoff ancestor $z$; the cutoff ancestor $z$ is only required when querying a mid-tree subpath $v \leadsto x$ where $v \ne \text{root}$!
+:::
+
+---
+
+#### Problem 16.6 (`W3A-36`) — `Dynamic Sliding-Window Distinct, Multiplicity & Richness Palindrome Queries`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ and an integer $K \in [1, N]$, slide a window of width $\le K$ (or find for every right endpoint $r \in [1..N]$ the longest rich suffix $S[l..r]$ and the window $[r - K + 1, r]$ statistics): output for every $r \in [K..N]$ the number of distinct palindromes and total palindromic substrings in $S[r - K + 1 .. r]$, and find the maximum distinct palindrome count across all length-$K$ substrings.
+- **Constraints**: $1 \le K \le N \le 10^6$, $|\Sigma| = 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At $N = 10^6$, an $O(N \log^2 N)$ range-distinct-palindrome solver (`Ch 17`) uses too much time and memory. Here the query intervals $[r - K + 1, r]$ have **monotonically advancing left and right endpoints**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Because both $L = r - K + 1$ and $R = r$ advance monotonically by $+1$, the sliding window is a sequence of $N$ `push_back(S[r])` and $N - K$ `pop_front()` operations on our **4-Way Deque PAM (`Theorem 16.4`)**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Run `DequePAM` (§4.4) across $r = 1 \dots N$: call `push_back(S[r])`, and if $r > K$, call `pop_front()`. Read `active_distinct` and `total_pal_substr` in $O(1)$ time after each step!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-36`)"}
+
+1. **Diagnostic Signal**: Monotonic two-pointer windows $[l_r, r]$ ($l_1 \le l_2 \le \dots \le l_N$) do not require random-access range data structures.
+2. **Combinatorial Word Invariant**:
+   - By **Theorem 16.4**, each `push_back` and `pop_front` updates `active_distinct` and `total_pal_substr` in worst-case $O(1)$ time.
+3. **Algorithmic Compilation**:
+   - Initialize `DequePAM` of capacity $N$. Loop $r = 1 \dots N$: call `push_back(S[r] - 'a')`; if $r > K$, call `pop_front()`; if $r \ge K$, record `(active_distinct, total_pal_substr)`. Total time: $O(N)$, space: $O(N)$.
+4. **Broken-Invariant Counterexample**: In `DequePAM::pop_front()`, `total_pal_substr` decreases by `dep[max_pref[L]]` (the number of palindromic prefixes starting at $L$ inside $S[L..R]$), because `max_pref[L]` is guaranteed to be the longest palindrome starting at $L$ inside $S[L..R]$!
+:::
+
+---
+
+### Tier 4 — Mastery (`W3A-35`, `W3A-40`)
+
+#### Problem 16.7 (`W3A-35`) — `Full 4-Way Double-Ended Deque PAM: push_front, push_back, pop_front, pop_back` (`[国家集训队论文 2014 — 徐毅]` / `Universal Cup`)
+
+- **Mathematical Statement**: Maintain an initially empty deque string $S[L..R]$ under $Q$ online operations:
+  1. `push_front(c)`
+  2. `push_back(c)`
+  3. `pop_front()`
+  4. `pop_back()`
+  After each operation, output: (a) the number of distinct non-empty palindromes in $S[L..R]$, (b) the total number of palindromic substrings (with multiplicity), (c) the length of the longest palindromic prefix, and (d) the length of the longest palindromic suffix.
+
+- **Constraints**: $1 \le Q \le 5 \times 10^5$, $|\Sigma| = 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+This is the complete 4-Way Double-Ended Deque PAM of §4.3–§4.4. Let us verify the subtle interaction when `pop_back()` and `pop_front()` alternate!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Why must `push_back(c)` update `max_pref[R - len[u] + 1]` and `pop_back()` update `max_suff[l_u + len[f] - 1]`? Because a palindrome born at the right end $R$ may later touch the left boundary $L$ as `pop_front()` advances $L$, and a border $f = \operatorname{fail}[u]$ exposed by `pop_back()` at $[l_u .. r_f]$ may later touch the right boundary $R$ as `pop_back()` retreats $R$ to $r_f$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Deploy `struct DequePAM` from §4.4 verbatim: after each operation, if $L > R$, all four answers are `0`; otherwise output `active_distinct`, `total_pal_substr`, `len[max_pref[L]]`, and `len[max_suff[R]]`.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-35`)"}
+
+1. **Diagnostic Signal**: Alternating insertions and deletions at both ends requires bidirectional surface synchronization between `max_pref` and `max_suff`.
+2. **Combinatorial Word Invariant**:
+   - **Surface Completeness Invariant**: At all times, for every maximal palindrome interval $[l, r] \subseteq [L, R]$ that is not a proper sub-interval of another palindrome in $[L, R]$ with the same left or right endpoint, `max_pref[l]` and `max_suff[r]` store the longest surface palindrome starting at $l$ and ending at $r$.
+   - Specifically, at the left boundary $L$, `max_pref[L]` is ALWAYS the exact longest palindromic prefix of $S[L..R]$, and at the right boundary $R$, `max_suff[R]` is ALWAYS the exact longest palindromic suffix of $S[L..R]$!
+3. **Algorithmic Compilation**:
+   - Use `struct DequePAM` (§4.4). Time: worst-case $O(1)$ per operation, $O(Q)$ total; space: $O(Q |\Sigma|)$.
+4. **Broken-Invariant Counterexample (`BP-16-04`)**: Trace $S = \texttt{"aba"}$ under `pop_back()`: $u = \texttt{"aba"}$ ($l_u = L$), $f = \texttt{"a"}$ ($r_f = L$). Updating `set_pref(L, f)` and `if (len[f] > len[max_suff[L]]) set_suff(L, f)` before `set_suff(R, 0)` keeps `surf_cnt[f] >= 1` throughout, preventing any spurious deactivation of `'a'`.
+:::
+
+---
+
+#### Problem 16.8 (`W3A-40`) — `Persistent 4-Way Deque PAM on Version Trees`
+
+- **Mathematical Statement**: Starting from version $0$ (the empty deque $\varepsilon$), process $Q$ online version-tree operations where operation $i$ applies one of `{push_front(c), push_back(c), pop_front(), pop_back()}` to version $v_i \in \{0, \dots, i - 1\}$ to produce version $i$, and outputs `(active_distinct, total_pal_substr, max_pref_len, max_suff_len)` for version $i$.
+- **Constraints**: $1 \le Q \le 2 \times 10^5$, $|\Sigma| = 26$, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Can we combine **Theorem 16.3 (Shared Global PAM Trie)** with **Theorem 16.4 (Worst-Case $O(1)$ 4-Way Deque PAM)**?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Yes! Because every operation in `DequePAM` (§4.4) runs in **strict worst-case $O(1)$ time** and modifies only $O(1)$ array entries (`s[pos]`, `max_pref[pos]`, `max_suff[pos]`, `surf_cnt[u]`, `deg[u]`), while the PAM Trie (`tr[p][c]`, `fail[u]`, `quick[u][c]`) is **globally shared and append-only** (`Permanent Trie Node Reuse`), `DequePAM` is 100% compatible with both **Offline Version-Tree DFS** (with an $O(1)$ undo log per step) and **Online Functional Persistence** (via Persistent Arrays / Persistent Segment Trees)!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+
+- **If unencrypted (Offline Version-Tree DFS)**: Build the version tree, run DFS calling `push/pop` upon entering a version edge, and record the $O(1)$ modified cells `(array_ptr, old_val)` on a rollback stack to restore state in $O(1)$ upon backtracking!
+- **If encrypted (Strictly Online)**: Store `s`, `max_pref`, `max_suff`, and `ref_sum[u] = surf_cnt[u] + deg[u]` in a Persistent Segment Tree (`O(log Q)` per operation) while keeping `tr`, `fail`, `quick` in a single flat global array!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3A-40`)"}
+
+1. **Diagnostic Signal**: Persistent deques with amortized structures suffer $\Theta(Q^2)$ blowup; worst-case $O(1)$ transitions and non-cascading deletions make persistence possible.
+2. **Combinatorial Word Invariant**:
+   - **Why `Permanent Trie Node Reuse` (§4.4) is the Key to Persistence**: In `DequePAM`, `tr[p][c]`, `len[u]`, `fail[u]`, `dep[u]`, and `quick[u][c]` are **write-once** mathematical invariants of the palindrome $P_u$ (`Theorem 16.3`). They never need to be rolled back or persisted!
+   - Only the dynamic deque state (`L`, `R`, `active_distinct`, `total_pal_substr`, and the $O(1)$ touched indices in `s[]`, `max_pref[]`, `max_suff[]`, `surf_cnt[]`, `deg[]`) changes between versions.
+3. **Algorithmic Compilation**:
+   - **Offline Version-Tree DFS**: Wrap every assignment to `s[]`, `max_pref[]`, `max_suff[]`, `surf_cnt[]`, `deg[]`, `L`, `R`, `active_distinct`, and `total_pal_substr` in `write(&var, new_val)` which pushes `(&var, old_val)` onto an undo stack; roll back to checkpoint size upon exiting each DFS child. Total time: $O(Q)$, space: $O(Q |\Sigma|)$.
+   - **Online Persistent Mode**: Replace the dynamic arrays with persistent segment trees (each operation modifies $\le 6$ indices), running in $O(Q \log Q)$ time and space.
+4. **Broken-Invariant Counterexample**: Do not roll back `tot`, `tr[p][c]`, or `quick[u][c]` during the version-tree DFS! Leaving all discovered PAM Trie nodes allocated with `surf_cnt[u] = deg[u] = 0` when inactive is both valid and avoids reallocating the same palindrome on sibling branches.
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Decision Checklist: When to Apply Chapter 16 Machinery
+
+| Contest Signal / Query Structure | Invariant & Engine to Invoke | Complexity |
+| :--- | :--- | :--- |
+| Rollback PAM or Tree PAM (`树上 PAM`) with small $|\Sigma| \le 26$ | `quick_link[u][c]` (**Lemma 16.1**) + Shared Global PAM Trie (**Theorem 16.3**) | Worst-case $O(1)$ / step |
+| Persistent / Tree PAM with huge alphabet $|\Sigma| \le 10^9$ | Alphabet-free `slink`-skip fail walk (**Lemma 16.2**) in $O(1)$ node space | Worst-case $O(\log N)$ / step |
+| 2-Way insertions (`push_front` & `push_back`, no `pop`) | Dual pointers `(first, last)` + crossover `len == R - L + 1` (§4.2) | $O(1)$ / step |
+| Sliding window (`push_back` + `pop_front`, `LOJ #6070`) | Queue PAM with Lazy Surface Push-Down (**Theorem 16.4**) | Worst-case $O(1)$ / step |
+| Full 4-Way Deque (`push/pop_front/back`) or Version-Tree Deque | `DequePAM` (§4.4) with Permanent Trie Node Reuse + non-cascading push-down | Worst-case $O(1)$ / step |
+
+### 6.2 What Comes Next in Part IV
+In Chapter 16, we maintained palindromes on dynamic trees and 4-way deques. What if the string $S[1..N]$ is static and we are given $Q$ arbitrary **2-sided substring range queries $[l, r]$**—such as finding the Longest Palindromic Substring of $S[l..r]$ in **true $O(1)$ time**, counting **Range Distinct Palindromes** (`[国家集训队论文 2014 — 徐毅]`, `LOJ #6071`), or testing whether $S[l..r]$ is a **Rich Word**? We solve all of these in **[Chapter 17: Substring Palindrome Range Queries ($O(1)$ Range LPS & `slink` Telescoping), Rich Words, and Palindrome Factorizations](ch17-range-palindromes-rich-words.qmd)**.

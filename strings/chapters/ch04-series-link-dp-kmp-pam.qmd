@@ -1,0 +1,650 @@
+---
+title: "Chapter 04 — Series-Link (slink / diff) DP Acceleration on KMP & PAM, Double-End Interleaving, and Binomial Moment Splitting"
+subtitle: "Part I · Structural Periodicity, Border Algebra & Series-Link (slink) DP (Technique IDs: T-1A-04, T-1A-05)"
+---
+
+::: {.callout-note title="Prerequisites & Learning Objectives"}
+**Prerequisites**:
+
+- **[Chapter 02 — Weak Periodicity Lemma & Border APs](ch02-weak-periodicity-border-aps.qmd)**: The exact $\frac{2}{3} / \frac{1}{2}$ length-drop proof at period transitions and the disjoint half-open arithmetic progression partition $(\operatorname{slink}[u], u]$ with local period step $\operatorname{diff}[u] = \operatorname{len}[u] - \operatorname{len}[\operatorname{fail}[u]]$.
+- **Assumed Library Primitives**: Standard single-string KMP ($\pi[1..N]$) and Palindromic Tree (`PAM` / `Eertree` with even root $0$ of length $0$, odd root $1$ of length $-1$, transition table `ch`, and suffix-palindrome link `fail`).
+
+**Learning Objectives**:
+
+1. Establish the **Palindromic Suffix $\leftrightarrow$ Palindromic Border Equivalence** (`Theorem 4.1`), extending the $O(\log N)$ border AP decomposition of `Ch 02` from KMP fail trees to PAM fail trees.
+2. Prove the **Shift-Overlap Invariant (`Theorem 4.2`)** from first principles: explain why $\mathcal{I}(u, r) = \mathcal{I}(\operatorname{fail}[u], r - d) \sqcup \{r - \operatorname{len}[\operatorname{slink}[u]] - d\}$, why $\operatorname{fail}[u]$ was guaranteed to be a `slink` chain head at step $r - d$, and why `g[fail[u]]` is never overwritten in $(r - d, r)$.
+3. Reduce two-sided symmetric partitions (`CF 932G`) and two-string interval reversals (`CF 906E`) to 1D even-palindrome partitioning via **Double-End & Reversal Interleaving Bijections**.
+4. Compile **Binomial Left-Endpoint Moment Splitting (`T-1A-05`)** to solve polynomial-weighted partition DPs $dp[r] = \sum_{L} P(L) dp[r - L]$ in $O(D \cdot N \log N)$ time without segment trees, and master the counterexamples for the two classic `slink` DP bugs (`BP-1A-05` and `BP-1A-06`).
+:::
+
+---
+
+## 1. Diagnostic Signal: The Quadratic Partition Bottleneck & Palindromic Border Equivalence
+
+### 1.1 The 1D Palindrome / Border Partition Archetype
+
+Let $S = S[1..N]$ ($N \le 10^6$) be a string. A large family of string partitioning, cutting, and covering problems asks us to compute a 1D dynamic programming array $dp[0..N]$ of the form:
+$$dp[r] \;=\; \bigoplus_{L \in \mathcal{A}(r)} w(L) \otimes dp[r - L] \qquad (1 \le r \le N),$$
+where $(\oplus, \otimes)$ is a commutative semiring or associative aggregation (such as $(+, \times)$ for counting partitions modulo $10^9+7$, or $(\min, +)$ for minimizing cut costs), and the active transition lengths $\mathcal{A}(r) \subseteq \{1, 2, \dots, r\}$ at right endpoint $r$ are either:
+
+1. **All Palindromic Suffixes of $S[1..r]$**: $\mathcal{A}(r) = \operatorname{PalSuf}(S[1..r]) = \{L \in [1, r] : S[r-L+1..r] \text{ is a palindrome}\}$, or
+2. **All Positive Borders of $S[1..r]$**: $\mathcal{A}(r) = \operatorname{Border}(S[1..r]) \setminus \{0\}$.
+
+**Why Naive Automaton Traversal Fails**:
+In a Palindromic Automaton (`PAM`), after feeding $S[r]$ to reach state `last`, the set $\operatorname{PalSuf}(S[1..r])$ is visited by walking the fail chain $u = \text{last}, \operatorname{fail}[\text{last}], \operatorname{fail}[\operatorname{fail}[\text{last}]], \dots$ down to the even root $0$. However, on $S = \texttt{a}^N$, step $r$ has $r$ palindromic suffixes, so walking `u = fail[u]` takes $\sum_{r=1}^N r = \Theta(N^2)$ time—an immediate Time Limit Exceeded at $N = 10^5$ or $10^6$.
+
+---
+
+### 1.2 Palindromic Suffixes Are Borders of the Longest Palindromic Suffix
+
+Why do the border arithmetic progressions of **[Chapter 02](ch02-weak-periodicity-border-aps.qmd)** apply directly to the fail tree of a Palindromic Automaton?
+
+::: {.callout-important title="Theorem 4.1 (Palindromic Suffix $\leftrightarrow$ Palindromic Border Equivalence)"}
+Let $Q = Q[1..m]$ be a palindrome ($Q = Q^R$). A proper substring $B = Q[m-k+1..m]$ of length $k \in [1, m-1]$ is a **palindromic suffix** of $Q$ if and only if $B$ is a **proper border** of $Q$ ($k \in \operatorname{Border}(Q)$).
+
+Consequently, if $u = \text{last}$ is the longest palindromic suffix of $S[1..r]$, then the proper ancestors of $u$ in the PAM fail tree are **precisely the proper borders of $u$**, and augmenting PAM construction with:
+$$\operatorname{diff}[u] \;=\; \operatorname{len}[u] - \operatorname{len}[\operatorname{fail}[u]], \qquad \operatorname{slink}[u] \;=\; \begin{cases} \operatorname{slink}[\operatorname{fail}[u]] & \text{if } \operatorname{diff}[u] = \operatorname{diff}[\operatorname{fail}[u]], \\ \operatorname{fail}[u] & \text{otherwise} \end{cases}$$
+partitions $\operatorname{PalSuf}(S[1..r])$ into $\le \lceil \log_2 r \rceil$ disjoint half-open arithmetic progressions $(\operatorname{slink}[u], u]$.
+:::
+
+*Proof*: Because $Q = Q^R$, reversing the suffix $B = Q[m-k+1..m]$ maps it to the prefix of $Q$ of length $k$:
+$$B^R \;=\; \bigl(Q[m-k+1..m]\bigr)^R \;=\; Q^R[1..k] \;=\; Q[1..k].$$
+Therefore:
+
+- If $B$ is a palindrome ($B = B^R$), then $Q[m-k+1..m] = B = B^R = Q[1..k]$, so $B$ is a proper border of $Q$.
+- Conversely, if $B$ is a proper border of $Q$ ($Q[m-k+1..m] = Q[1..k]$), then $B = Q[1..k] = B^R$, so $B$ is a palindrome.
+
+Thus the PAM fail chain starting at $u$ is isomorphic to the KMP border chain of the string $u$, and **Theorem 2.3 (`Ch 02`)** bounds the number of `slink` jumps from `last` to $0$ by $\lceil \log_2 r \rceil$. $\blacksquare$
+
+---
+
+## 2. Core Combinatorial Word Invariant: The Complete Proof of the Shift-Overlap Theorem
+
+Grouping $\operatorname{PalSuf}(S[1..r])$ into $O(\log r)$ half-open progressions $(\operatorname{slink}[u], u]$ is only half the battle: each progression can still contain $\Theta(r)$ palindromic lengths! How do we aggregate $dp[r - L]$ over all $L \in (\operatorname{slink}[u], u]$ in **$O(1)$ time per progression** without any segment tree?
+
+Let $u$ be a state visited during the `slink` loop at right endpoint $r$, with local period step $d = \operatorname{diff}[u] = \operatorname{len}[u] - \operatorname{len}[\operatorname{fail}[u]]$. The half-open progression $(\operatorname{slink}[u], u]$ consists of $k = \frac{\operatorname{len}[u] - \operatorname{len}[\operatorname{slink}[u]]}{d} \ge 1$ lengths:
+$$\mathcal{L}(u) \;=\; \bigl\{\,\ell_1 > \ell_2 > \dots > \ell_k\,\bigr\}, \qquad \ell_j = \operatorname{len}[u] - (j - 1)d, \qquad \ell_k = \operatorname{len}[\operatorname{slink}[u]] + d.$$
+At right endpoint $r$, this progression queries the following set of **left-endpoint DP indices** $i = r - L$:
+$$\mathcal{I}(u, r) \;=\; \bigl\{\,r - \ell_1,\; r - \ell_2,\; \dots,\; r - \ell_{k-1},\; r - \ell_k\,\bigr\}.$$
+
+Suppose we maintain at each automaton state $u$ a rolling accumulator $g[u]$ intended to store $\bigoplus_{i \in \mathcal{I}(u, r)} dp[i]$ at the most recent position $r$ where $u$ was visited.
+
+::: {.callout-important title="Theorem 4.2 (The Shift-Overlap Invariant for PAM & KMP `slink` DP)"}
+Let $u$ be a state visited in the `slink` chain at right endpoint $r$, with $d = \operatorname{diff}[u]$ and $v = \operatorname{fail}[u]$. Whenever $\operatorname{diff}[u] = \operatorname{diff}[v] = d$ (so the progression $(\operatorname{slink}[u], u]$ has $k \ge 2$ terms and $\operatorname{slink}[v] = \operatorname{slink}[u]$):
+
+1. **Exact Left-Endpoint Set Alignment**: The set of left endpoints queried by $u$ at position $r$ decomposes into the disjoint union of the left endpoints queried by $v = \operatorname{fail}[u]$ at position $r - d$ and the single newly entering rightmost index $r - \ell_k = r - \operatorname{len}[\operatorname{slink}[u]] - d$:
+   $$\boxed{\mathcal{I}(u, r) \;=\; \mathcal{I}\bigl(\operatorname{fail}[u],\, r - \operatorname{diff}[u]\bigr) \;\sqcup\; \bigl\{\,r - \operatorname{len}[\operatorname{slink}[u]] - \operatorname{diff}[u]\,\bigr\}!}$$
+
+2. **Guaranteed Chain-Head Visit at $r - d$**: At step $r' = r - d$, node $v = \operatorname{fail}[u]$ was a suffix of $S[1..r-d]$ **and** was visited as a `slink` chain head during step $r - d$'s `slink` loop (it was *not* skipped inside the interior of a longer period-$d$ chain at $r - d$).
+3. **Guaranteed Non-Overwrite in $(r - d, r)$**: Node $v = \operatorname{fail}[u]$ never occurred as a suffix of $S[1..r'']$ for any intermediate index $r'' \in (r - d, r)$. Therefore, at step $r$, the stored value `g[fail[u]]` still holds the **exact, unmodified aggregate** over $\mathcal{I}(\operatorname{fail}[u], r - d)$ computed at step $r - d$!
+:::
+
+```
+Index:   r-l_1     r-l_2     r-l_3 ... r-l_k               r-d         r
+            |----d----|----d----|         |                  |          |
+At r:      [========= u_1 (len l_1) ===================================]
+                      [========= u_2 (len l_2) =========================]
+                                [========= u_3 (len l_3) ===============]
+                                          [=== u_k (len l_k) ===========] <-- NEW index:
+                                                                              r - len[slink[u]] - d
+At r-d:    [========= u_2 (len l_2) ========================]
+                      [========= u_3 (len l_3) ==============]
+                                [=== u_k (len l_k) ==========]
+            \_______________________ ________________________/
+                                    v
+             Queried by v = fail[u] at r - d  ===>  Stored in g[fail[u]]!
+```
+
+### 2.1 Zero-Magic Proof of All Three Claims of Theorem 4.2
+
+Let us prove each of the three claims rigorously using word periodicity:
+
+1. **Proof of Claim 1 (Left-Endpoint Alignment)**:
+   At position $r - d$, node $v = \operatorname{fail}[u]$ has length $\operatorname{len}[v] = \ell_1 - d = \ell_2$ and $\operatorname{slink}[v] = \operatorname{slink}[u]$, so its half-open progression $(\operatorname{slink}[v], v]$ consists of the $k - 1$ lengths $\{\ell_2, \ell_3, \dots, \ell_k\}$.
+   For each $j \in \{1, \dots, k - 1\}$, the $(j)$-th member of $v$'s progression has length $\ell_{j+1} = \ell_j - d$. Subtracting $\ell_{j+1}$ from $r - d$ cancels $-d$:
+   $$(r - d) - \ell_{j+1} \;=\; (r - d) - (\ell_j - d) \;=\; r - \ell_j!$$
+   Thus $\mathcal{I}(v, r - d) = \{r - \ell_1, r - \ell_2, \dots, r - \ell_{k-1}\}$, leaving only the $k$-th (shortest) palindrome's left endpoint $r - \ell_k = r - \operatorname{len}[\operatorname{slink}[u]] - d$ outside $\mathcal{I}(v, r - d)$.
+
+2. **Proof of Claim 2 (Why $v = \operatorname{fail}[u]$ Was a `slink` Chain Head at $r - d$)**:
+   - First, since $v$ is a border (and hence a prefix) of $u = S[r-\ell_1+1..r]$ of length $\ell_1 - d$, the substring $S[r-\ell_1+1 .. r-d]$ equals $v$, so $v$ occurs ending at $r - d$.
+   - Second, why couldn't $v$ have been skipped over at step $r - d$ as an *interior* node of some longer period-$d$ chain at $r - d$?
+     Suppose for contradiction that at position $r - d$, $v$ had a fail-tree child $w$ ending at $r - d$ with $\operatorname{fail}[w] = v$ and $\operatorname{diff}[w] = d$.
+     Since $\operatorname{diff}[v] = d$, we have $\operatorname{len}[v] > d$. In both KMP and PAM, a word $w$ of length $\operatorname{len}[v] + d$ having prefix $v$ and period $d \le \operatorname{len}[v]$ has all of its characters uniquely determined by $v$ and period $d$, so **$w$ must be the exact string $u$**!
+     If $u$ itself occurred ending at $r - d$, then $S[r-\ell_1-d+1 .. r-d] = u$ (period $d$) and $S[r-\ell_1+1 .. r] = u$ (period $d$) overlap on $S[r-\ell_1+1 .. r-d] = v$ of length $\operatorname{len}[v] > d$.
+     Therefore, period $d$ extends across the union $u^+ = S[r-\ell_1-d+1 .. r]$ of length $\ell_1 + d$! In KMP/PAM, $u^+$ is a longer border/palindrome ending at $r$ with $\operatorname{fail}[u^+] = u$ and $\operatorname{diff}[u^+] = d$—contradicting the fact that $u$ was visited as a `slink` chain head at step $r$!
+
+3. **Proof of Claim 3 (Why $v = \operatorname{fail}[u]$ Was Never Visited in $(r - d, r)$)**:
+   Suppose for contradiction that $v$ occurred ending at some $r'' \in (r - d, r)$. Since $\operatorname{len}[v] = \ell_1 - d$ and $r'' > r - d$, this occurrence $S[r''-\operatorname{len}[v]+1 .. r''] = v$ lies completely inside $u = S[r-\ell_1+1 .. r]$.
+   Because $v$ also occurs inside $u$ at $r - d$ and at $r$, $v$ would have a shift $s = r - r'' \in (0, d)$ inside a string of period $d$. Since $\operatorname{len}[v] > d$, $v$ has both period $d$ and shift $s < d$ on an overlap of length $\ge d$, which by the Weak Periodicity Lemma forces $u$ to have a period $\gcd(d, s) \le s < d = \operatorname{diff}[u]$, contradicting that $d = \operatorname{diff}[u]$ is the minimum period of $u$! $\blacksquare$
+
+---
+
+## 3. Reverse-Engineering Scratchpad: Interleaving Bijections & Binomial Moment Splitting
+
+### 3.1 Universal `slink` DP Loop (`O(N log N)`)
+
+By Theorem 4.2, at each step $r = 1, 2, \dots, N$, after advancing our PAM (or KMP) by $S[r]$ to state `last`, we update $g[u]$ and $dp[r]$ in $\le \lceil \log_2 r \rceil$ iterations:
+
+```cpp
+// Universal PAM / KMP slink DP Step at Right Endpoint r (1 <= r <= N)
+for (int u = last; u > 0; u = slink[u]) { // PAM: 0 is even root (len=0), 1 is odd root (len=-1)
+    int i_new = r - len[slink[u]] - diff[u]; // Single newly entering left endpoint!
+    g[u] = dp[i_new];
+    if (diff[u] == diff[fail[u]])
+        g[u] = combine(g[u], g[fail[u]]);
+    dp[r] = combine(dp[r], g[u]);
+}
+```
+
+---
+
+### 3.2 Double-End (`CF 932G`) and Reversal (`CF 906E`) Interleaving Bijections
+
+Two classic grandmaster disguises hide an even-palindrome partition inside a non-palindromic problem statement:
+
+| Problem Archetype | Original Condition | Interleaved String $T[1..2m]$ | Equivalent Palindrome Condition on $T$ |
+| :--- | :--- | :--- | :--- |
+| **Symmetric Partition (`CF 932G`)** | Partition $S[1..N]$ ($2 \mid N$) into $w_1 w_2 \dots w_k$ with $w_i = w_{k+1-i}$. | **Folded Interleaving**:<br>$T = S[1]\,S[N]\,S[2]\,S[N-1]\,\cdots\,S[N/2]\,S[N/2+1]$ | Partition $T[1..N]$ into **even-length palindromes**! |
+| **Interval Reversals (`CF 906E`)** | Partition $A[1..n], B[1..n]$ into matching reversed blocks $A[l..r]^R = B[l..r]$. | **Zipped Interleaving**:<br>$T = A[1]\,B[1]\,A[2]\,B[2]\,\cdots\,A[n]\,B[n]$ | Partition $T[1..2n]$ into **even-length palindromes**! |
+
+*Why the Interleaving Bijection Works*:
+
+- **For `CF 932G` (Folded Interleaving)**: Consider the first symmetric pair of blocks $w_1 = S[1..m]$ and $w_k = S[N-m+1..N]$ of length $m$. Under the interleaving $T[2j-1] = S[j]$ and $T[2j] = S[N-j+1]$, the prefix $T[1..2m]$ is:
+  $$T[1..2m] \;=\; S[1]\,S[N]\,S[2]\,S[N-1]\,\cdots\,S[m]\,S[N-m+1].$$
+  Reading $T[1..2m]$ backwards gives $S[N-m+1]\,S[m]\,\cdots\,S[N]\,S[1]$. Comparing odd and even positions shows $T[1..2m] = (T[1..2m])^R \iff S[j] = S[N-m+j]$ for all $1 \le j \le m \iff S[1..m] = S[N-m+1..N]$!
+
+- **For `CF 906E` (Zipped Interleaving)**: Under $T[2j-1] = A[j]$ and $T[2j] = B[j]$, the substring $T[2l-1..2r] = A[l]B[l]A[l+1]B[l+1]\cdots A[r]B[r]$ is a palindrome if and only if $A[l+t] = B[r-t]$ for all $0 \le t \le r - l$, which is the exact definition of $A[l..r]^R = B[l..r]$!
+
+---
+
+### 3.3 Binomial Left-Endpoint Moment Splitting (`T-1A-05`) for Polynomial Weights $w(L) = P(L)$
+
+What if the transition weight depends on a degree-$D$ polynomial $P(L) = \sum_{m=0}^D c_m L^m$ of the palindrome/border length $L$:
+$$dp[r] \;=\; \sum_{L \in \mathcal{A}(r)} P(L) \cdot dp[r - L]?$$
+At first glance, `slink` DP seems broken: when we advance from $r - d$ to $r$, every palindrome in $\mathcal{I}(\operatorname{fail}[u], r - d)$ grows in length from $\ell_{j+1}$ to $\ell_j = \ell_{j+1} + d$, so $\ell_j^m \ne \ell_{j+1}^m$.
+
+**The Structural Fix — Parameterize by the Invariant Left Endpoint $i = r - L$**:
+In Theorem 4.2, what stays **100% invariant** between $(r - d, \operatorname{fail}[u])$ and $(r, u)$ is not the length $L$, but the **left endpoint $i = r - L \in \mathcal{I}(u, r)$**!
+Expand $L^m = (r - i)^m$ using the Binomial Theorem:
+$$\boxed{L^m \;=\; (r - i)^m \;=\; \sum_{t=0}^m \binom{m}{t} (-1)^t \, r^{m-t} \cdot \underbrace{i^t}_{\text{depends ONLY on } i}!}$$
+Substituting this into the sum over $i \in \mathcal{I}(u, r)$ factors $r^{m-t}$ outside the `slink` accumulator:
+$$\sum_{i \in \mathcal{I}(u, r)} (r - i)^m dp[i] \;=\; \sum_{t=0}^m \binom{m}{t} (-1)^t \, r^{m-t} \underbrace{\left(\sum_{i \in \mathcal{I}(u, r)} i^t \, dp[i]\right)}_{g_t[u]}.$$
+
+Because $i^t \, dp[i]$ depends **only on the left endpoint $i$**, each moment accumulator $g_t[u]$ ($0 \le t \le D$) obeys the exact un-shifted `slink` recurrence:
+
+```cpp
+// Non-Standard Kernel: Degree-D Polynomial-Weighted slink DP in O(D * N log N) Time
+// Computes dp[r] = sum_{L in A(r)} P(L) * dp[r - L] where P(L) = sum_{m=0}^D c[m] * L^m
+for (int u = last; u > 0; u = slink[u]) {
+    int i_new = r - len[slink[u]] - diff[u];
+    long long pw_i = 1;
+    for (int t = 0; t <= D; ++t) {
+        g[t][u] = pw_i * dp[i_new] % MOD;
+        if (diff[u] == diff[fail[u]])
+            g[t][u] = (g[t][u] + g[t][fail[u]]) % MOD;
+        pw_i = pw_i * i_new % MOD;
+    }
+    // Reconstruct sum_{i in I(u, r)} (r - i)^m dp[i] for each degree m = 0..D
+    for (int m = 0; m <= D; ++m) {
+        long long moment_m = 0, pw_r = 1;
+        for (int t = m; t >= 0; --t) {
+            long long term = C[m][t] * pw_r % MOD * g[t][u] % MOD;
+            if (t & 1) moment_m = (moment_m - term + MOD) % MOD;
+            else       moment_m = (moment_m + term) % MOD;
+            pw_r = pw_r * r % MOD;
+        }
+        dp[r] = (dp[r] + c[m] * moment_m) % MOD;
+    }
+}
+```
+
+---
+
+## 4. Hand-Checked Trace, Algorithmic Contract & Boundary Pitfalls (`BP-1A-05`, `BP-1A-06`)
+
+### 4.1 Hand-Checkable Trace on $T = \texttt{aaaaaa}$ ($r = 1 \dots 4$)
+
+Let us trace PAM `slink` DP on $T = \texttt{aaaaaa}$ to see why both `BP-1A-05` and `BP-1A-06` occur on even the simplest unary string:
+
+| Node $u$ | Palindrome | $\operatorname{len}[u]$ | $\operatorname{fail}[u]$ | $\operatorname{diff}[u]$ | $\operatorname{slink}[u]$ | Half-Open Chain $(\operatorname{slink}[u], u]$ |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| $0$ | $\varepsilon$ (even root) | $0$ | $1$ | — | — | — |
+| $1$ | odd root | $-1$ | $1$ | — | — | — |
+| $2$ | $\texttt{a}$ | $1$ | $0$ | $1 - 0 = 1$ | $0$ | $\{\texttt{a}\}$ ($\ell = 1$) |
+| $3$ | $\texttt{aa}$ | $2$ | $2$ | $2 - 1 = 1$ | $0$ | $\{\texttt{a}, \texttt{aa}\}$ ($\ell \in \{1, 2\}$) |
+| $4$ | $\texttt{aaa}$ | $3$ | $3$ | $3 - 2 = 1$ | $0$ | $\{\texttt{a}, \texttt{aa}, \texttt{aaa}\}$ ($\ell \in \{1, 2, 3\}$) |
+| $5$ | $\texttt{aaaa}$ | $4$ | $4$ | $4 - 3 = 1$ | $0$ | $\{\texttt{a}, \texttt{aa}, \texttt{aaa}, \texttt{aaaa}\}$ ($\ell \in \{1, 2, 3, 4\}$) |
+
+Look closely at step $r = 4$ ($\text{last} = 5$, $\operatorname{len}[5] = 4, d = 1, \operatorname{slink}[5] = 0, \operatorname{fail}[5] = 4$):
+
+- At $r = 3$, node $4$ ($\texttt{aaa}$) was visited and accumulated left endpoints $\mathcal{I}(4, 3) = \{3-3, 3-2, 3-1\} = \{0, 1, 2\}$ into $g[4] = dp[0] + dp[1] + dp[2]$.
+- At $r = 4$, node $5$ ($\texttt{aaaa}$) needs left endpoints $\mathcal{I}(5, 4) = \{4-4, 4-3, 4-2, 4-1\} = \{0, 1, 2, 3\}$.
+- Comparing $\mathcal{I}(5, 4) = \{0, 1, 2, 3\}$ with $\mathcal{I}(4, 3) = \{0, 1, 2\}$, the **single newly entering index** is **$3 = 4 - \operatorname{len}[0] - 1 = r - \operatorname{len}[\operatorname{slink}[5]] - \operatorname{diff}[5]$**, whereas $r - \operatorname{len}[5] = 4 - 4 = 0$ was the **oldest** index already inside $g[4]$!
+
+---
+
+### 4.2 Boundary Pitfalls & Broken-Invariant Counterexamples (`BP-04` / `BP-1A-05`, `BP-05` / `BP-1A-06`)
+
+::: {.callout-warning title="Pitfall BP-04 (`BP-1A-05`): Initializing g[u] = dp[r - len[u]] Instead of dp[r - len[slink[u]] - diff[u]]"}
+**The Broken Shortcut**: Writing `g[u] = dp[r - len[u]];` before adding `g[fail[u]]`.
+
+**Why It Fails (Counterexample on $T = \texttt{aaaa}$ at $r = 4$)**:
+As shown in Section 4.1, at $r = 4$ ($u = 5, \operatorname{len}[5] = 4, d = 1, \operatorname{slink}[5] = 0$), `g[fail[5]] = g[4]` already contains $dp[0] + dp[1] + dp[2]$ from step $r - 1 = 3$.
+
+- The left endpoint of the **longest** palindrome in the chain is $r - \operatorname{len}[u] = 4 - 4 = 0 = (r - d) - \operatorname{len}[\operatorname{fail}[u]]$, which is the **leftmost (oldest)** element and is **already stored inside `g[fail[u]]`**!
+- The left endpoint of the **shortest** palindrome in the half-open chain $(\operatorname{slink}[u], u]$ is $r - (\operatorname{len}[\operatorname{slink}[u]] + d) = 4 - (0 + 1) = 3$, which is the **rightmost (newest)** element that did not exist at step $r - d$!
+- Writing `g[u] = dp[r - len[u]] + g[fail[u]]` computes $2 \cdot dp[0] + dp[1] + dp[2]$ (double-counting $i = 0$ and completely missing $i = 3$!). Always initialize `g[u] = dp[r - len[slink[u]] - diff[u]]`.
+:::
+
+::: {.callout-warning title="Pitfall BP-05 (`BP-1A-06`): Skipping g[u] Updates at Odd Indices r in Interleaved Strings (CF 932G / CF 906E)"}
+**The Broken Shortcut**: In `CF 932G` or `CF 906E`, since only even prefixes $r$ can have $dp[r] \ne 0$, wrapping the *entire* `for (int u = last; u > 0; u = slink[u])` loop inside `if (r % 2 == 0)`.
+
+**Why It Fails (Counterexample on $T = \texttt{aaaaaa}$ at $r = 4$)**:
+Look at node $u = 5$ ($\texttt{aaaa}$, $\operatorname{len}[5] = 4$, even) at even position $r = 4$:
+
+- Its fail parent is $\operatorname{fail}[5] = 4$ ($\texttt{aaa}$, $\operatorname{len}[4] = 3$, **odd**!), and its period step is $d = \operatorname{diff}[5] = 1$ (**odd**!).
+- Therefore, at even position $r = 4$, `g[5]` reads `g[4]`, which was supposed to be updated at the **odd** position $r - d = 4 - 1 = 3$!
+- If you skipped updating `g[u]` at odd $r = 3$, then `g[4]` at $r = 4$ is stale ($0$), and `dp[4]` misses the valid even-palindrome transition from $i = 2$ ($L = 2$)!
+- **The Rule**: Always update `g[u]` at **every** index $r$ (both odd and even); only gate the final line `if (r % 2 == 0) dp[r] = combine(dp[r], g[u]);`!
+:::
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Problem Ladder (9 Non-Template Problems)
+
+---
+
+### Tier 1 — Stepping Stone (Baseline `slink` Palindrome Cut & Half-Link PAM DP)
+
+#### Problem 4.1 (`W1A-34` · Minimum & Counting Palindrome Factorization in $O(N \log N)$)
+
+**Statement**:
+Given a string $S[1..N]$ ($N \le 10^6$), for every prefix $S[1..r]$ ($1 \le r \le N$), compute:
+
+1. $dp_{\min}[r]$: the **minimum number of palindromic substrings** into which $S[1..r]$ can be partitioned, and
+2. $dp_{\text{ways}}[r]$: the **number of minimum-cut partitions** of $S[1..r]$ modulo $10^9 + 7$.
+
+**Constraints**: $1 \le N \le 10^6$, $|\Sigma| = 26$. Time limit: $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At each $r \in [1, N]$, $dp_{\min}[r] = 1 + \min_{L \in \operatorname{PalSuf}(S[1..r])} dp_{\min}[r - L]$. Walking the raw PAM fail chain takes $\Theta(N^2)$ on $S = \texttt{a}^N$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Define the commutative monoid operation `(min_cuts, ways)` where $(c_1, w_1) \oplus (c_2, w_2)$ keeps the smaller cut count and sums the ways when $c_1 = c_2$. By Theorem 4.2, each PAM state $u$ can store `g[u] = (min_cuts, ways)` over the left-endpoint set $\mathcal{I}(u, r)$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Initialize `dp[0] = {0, 1}`. At step $r$, walk `u = last` down via `u = slink[u]`: set `g[u] = dp[r - len[slink[u]] - diff[u]]`, combine with `g[fail[u]]` if `diff[u] == diff[fail[u]]`, and relax `dp[r]` with `{g[u].cuts + 1, g[u].ways}`.
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: Enumerating all palindromic suffixes at $r$ via `u = fail[u]` takes $\Omega(N^2)$ time.
+2. **Combinatorial Word Invariant**: Let $\mathcal{M}$ be the monoid of pairs $(c, w)$ with identity $(+\infty, 0)$ and combination operator:
+   $$(c_1, w_1) \oplus (c_2, w_2) \;=\; \begin{cases} (c_1, w_1) & \text{if } c_1 < c_2, \\ (c_2, w_2) & \text{if } c_2 < c_1, \\ \bigl(c_1, (w_1 + w_2) \bmod 10^9+7\bigr) & \text{if } c_1 = c_2. \end{cases}$$
+   By the Shift-Overlap Invariant (`Theorem 4.2`), for any PAM state $u$ with $\operatorname{diff}[u] = \operatorname{diff}[\operatorname{fail}[u]] = d$, $\mathcal{I}(u, r) = \mathcal{I}(\operatorname{fail}[u], r - d) \sqcup \{r - \operatorname{len}[\operatorname{slink}[u]] - d\}$, where `g[fail[u]]` was computed at $r - d$ and never overwritten in $(r - d, r)$.
+
+3. **Algorithmic Compilation**:
+   - Build PAM online for $r = 1 \dots N$, maintaining `diff[u]` and `slink[u]`.
+   - At each $r$, run the $\le \lceil \log_2 r \rceil$ loop: `g[u] = dp[r - len[slink[u]] - diff[u]]`, if `diff[u] == diff[fail[u]]` then `g[u] = g[u] + g[fail[u]]`, and `dp[r] = dp[r] + {g[u].c + 1, g[u].w}`.
+   - **Complexity**: $O(N \log N)$ time and $O(N)$ space.
+4. **Broken-Invariant Counterexample**: Adding $+1$ to `g[u].c` *before* storing `g[u]` causes `g[fail[u]]` to be incremented a second time when read at step $r + d$! Always store raw left-endpoint `dp` values inside `g[u]` and add $+1$ only when updating `dp[r]`.
+:::
+
+---
+
+#### Problem 4.2 (`W1A-27` · `[CERC 2014] Virus Synthesis` / `Luogu P4762`)
+
+**Statement**:
+Starting from an empty string, you want to construct a target DNA string $S[1..N]$ ($N \le 10^5$, $\Sigma = \{\texttt{A}, \texttt{C}, \texttt{G}, \texttt{T}\}$) using the minimum number of operations:
+
+- **Operation 1**: Append or prepend any single character to the current string ($+1$ cost).
+- **Operation 2**: Replace the current string $W$ with $W \cdot W^R$ ($+1$ cost).
+
+**Constraints**: $1 \le N \le 10^5$, $|\Sigma| = 4$. Time limit: $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Every time Operation 2 ($W \to W W^R$) is applied, it produces an **even-length palindrome**! Once the final Operation 2 is performed on some even-length palindromic substring $u$ of $S$, the remaining $N - \operatorname{len}[u]$ characters of $S$ are added by single-character Operation 1 steps.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+How can an even palindrome $u$ in $\operatorname{PAM}(S)$ be formed ending with Operation 2? Either (a) we formed its PAM Trie parent $p(u)$ of length $\operatorname{len}[u] - 2$, prepended $c$ to one half, and doubled ($dp[p(u)] + 1$), or (b) we started from the longest palindromic border $\operatorname{trans}[u]$ of $u$ of length $\le \operatorname{len}[u]/2$, appended $\operatorname{len}[u]/2 - \operatorname{len}[\operatorname{trans}[u]]$ characters to reach the half-palindrome of length $\operatorname{len}[u]/2$, and doubled!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+During PAM construction, maintain the half-link pointer `trans[u]` (the longest palindromic suffix of $u$ with $\operatorname{len}[\operatorname{trans}[u]] \le \operatorname{len}[u]/2$). Then run BFS from the even root $0$ ($dp[0] = 0$, and $dp[u] = \operatorname{len}[u]$ initialized for even nodes) to relax $dp[u]$ in $O(N)$ time!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: Operation 2 creates only even-length palindromes. Thus the problem reduces to computing $dp[u]$ = minimum operations to form even palindrome $u \in \operatorname{PAM}(S)$, after which the answer is $\min_{\text{even } u} \bigl(dp[u] + N - \operatorname{len}[u]\bigr)$.
+2. **Combinatorial Word Invariant**: By Theorem 4.1, a palindromic prefix of the half-string $u[1..\operatorname{len}[u]/2]$ (actually a palindromic suffix of the first half, which by symmetry equals a palindromic prefix/suffix of $u$) is a palindromic border of $u$ of length $\le \operatorname{len}[u]/2$. Let $\operatorname{trans}[u]$ be the longest ancestor of $u$ in the PAM fail tree with $\operatorname{len}[\operatorname{trans}[u]] \le \operatorname{len}[u]/2$. Then:
+   $$dp[u] \;=\; \min\Bigl(dp[p(u)] + 1,\;\; dp\bigl[\operatorname{trans}[u]\bigr] + \frac{\operatorname{len}[u]}{2} - \operatorname{len}\bigl[\operatorname{trans}[u]\bigr] + 1\Bigr),$$
+   where $p(u)$ is the PAM Trie parent of $u$ ($\operatorname{len}[p(u)] = \operatorname{len}[u] - 2$).
+
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{PAM}(S)$ and compute `trans[u]` alongside `fail[u]` in $O(N)$ amortized time (walking `v = trans[p(u)]` until $S[r - 1 - \operatorname{len}[v]] = S[r]$ and $2(\operatorname{len}[v] + 2) \le \operatorname{len}[u]$).
+   - Initialize $dp[0] = 1$ (since for a non-empty even palindrome $\texttt{cc}$ of length $2$, forming $\texttt{c}$ and doubling takes $1 + 1 = 2$ steps, setting $dp[0] = 1$ gives $dp[\texttt{cc}] = dp[0] + 1 = 2$) and initialize `ans = N`.
+   - Traverse PAM nodes in BFS order of the Trie: for every even node $u$ with $\operatorname{len}[u] \ge 2$, compute $dp[u]$ and update $\text{ans} \leftarrow \min(\text{ans}, dp[u] + N - \operatorname{len}[u])$.
+   - **Complexity**: $O(N)$ time and $O(N)$ space.
+4. **Broken-Invariant Counterexample**: Applying the doubling transition to odd-length palindromes fails because $W \cdot W^R$ always has even length.
+:::
+
+---
+
+### Tier 2 — Intermediate (Double-End Interleaving & KMP Border `slink` DP)
+
+#### Problem 4.3 (`W1A-25` · `CF 932G — Palindrome Partition`)
+
+**Statement**:
+Given a string $S[1..N]$ of even length $N \le 10^6$, count the number of ways modulo $10^9 + 7$ to partition $S$ into an even number of non-empty substrings $S = w_1 w_2 \cdots w_{2k}$ such that $w_i = w_{2k + 1 - i}$ for all $1 \le i \le k$. (Note: $w_i$ itself does *not* need to be a palindrome; we require the whole word $w_i$ to equal the whole word $w_{2k+1-i}$.)
+
+**Constraints**: $2 \le N \le 10^6$ ($2 \mid N$), $|\Sigma| = 26$. Time limit: $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+A choice of $w_1 = S[1..m]$ and $w_{2k} = S[N-m+1..N]$ simultaneously consumes $m$ characters from the left end and $m$ characters from the right end of $S$. How can we turn this two-ended condition $S[1..m] = S[N-m+1..N]$ into a 1D prefix condition?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Construct the folded interleaved string $T[1..N] = S[1]\,S[N]\,S[2]\,S[N-1]\,\cdots\,S[N/2]\,S[N/2+1]$. By Section 3.2, $S[1..m] = S[N-m+1..N]$ if and only if $T[1..2m]$ is an **even-length palindrome**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Run PAM `slink` DP on $T[1..N]$ with $dp[0] = 1$. Remember Pitfall `BP-1A-06`: update `g[u]` at **all** $r \in [1, N]$, and add `g[u]` to `dp[r]` **only when $r$ is even**!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: Matching blocks from both ends of $S$ couples prefix indices with suffix indices; once folded into $T$, $N = 10^6$ requires $O(N \log N)$ PAM `slink` acceleration.
+2. **Combinatorial Word Invariant**: Under the bijection $T[2j-1] = S[j]$ and $T[2j] = S[N-j+1]$ ($1 \le j \le N/2$), any valid symmetric block pair $(w_i, w_{2k+1-i}) = (S[l..r], S[N-r+1..N-l+1])$ satisfies $S[l..r] = S[N-r+1..N-l+1] \iff T[2l-1..2r]$ is an even-length palindrome. Since every piece $T[2l-1..2r]$ has even length and starts at an odd index, valid partitions of $S$ biject onto partitions of $T[1..N]$ into even-length palindromes.
+3. **Algorithmic Compilation**:
+   - Build $T[1..N]$ and initialize `dp[0] = 1`, `dp[1..N] = 0`.
+   - For $r = 1 \dots N$, extend PAM with $T[r]$ and loop `for (int u = last; u > 0; u = slink[u])`:
+     - `g[u] = dp[r - len[slink[u]] - diff[u]];`
+     - `if (diff[u] == diff[fail[u]]) g[u] = (g[u] + g[fail[u]]) % MOD;`
+     - `if (r % 2 == 0) dp[r] = (dp[r] + g[u]) % MOD;`
+   - Output `dp[N]`.
+   - **Complexity**: $O(N \log N)$ time and $O(N)$ space.
+4. **Broken-Invariant Counterexample**: Because $dp[i] = 0$ for all odd $i$, any odd-length palindrome $L$ ending at an even $r$ queries $dp[r - L]$ at an odd index $r - L$, which automatically contributes $0$! However, skipping the `g[u]` update at odd $r$ (`BP-1A-06`) breaks even-length palindromes at even $r$ whose fail parent has odd length.
+:::
+
+---
+
+#### Problem 4.4 (`W1A-37` · KMP Border Partition DP via `slink` Accumulators)
+
+**Statement**:
+You are given a string $S[1..N]$ ($N \le 10^6$) and a base weight array $A[0..N-1]$. Define $dp[0] = 1$, and for each $r = 1, 2, \dots, N$:
+$$dp[r] \;=\; \left(\sum_{b \in \operatorname{Border}(S[1..r]) \setminus \{0\}} dp[r - b]\right) \bmod 998244353,$$
+where a step from $r - b$ to $r$ represents cutting off a suffix $S[r-b+1..r]$ that is also a proper border of the prefix $S[1..r]$. Compute $dp[1..N]$ in $O(N \log N)$ time.
+
+**Constraints**: $1 \le N \le 10^6$, $|\Sigma| = 26$. Time limit: $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Here the transition lengths $b \in \operatorname{Border}(S[1..r]) \setminus \{0\}$ are given by the KMP fail chain $u = \pi[r], \pi[\pi[r]], \dots > 0$ instead of the PAM fail chain. Does the Shift-Overlap Invariant (`Theorem 4.2`) hold on the KMP fail tree?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Yes! In the KMP fail tree, node $u \in [1, N]$ represents the prefix $S[1..u]$ of length $\operatorname{len}[u] = u$, with $\operatorname{fail}[u] = \pi[u]$ and $\operatorname{diff}[u] = u - \pi[u]$. Whenever $u$ is a border of $S[1..r]$ with $\operatorname{diff}[u] = \operatorname{diff}[\pi[u]] = d$, the prefix $v = \pi[u]$ of $u$ occurred ending at $r - d$ as a border of $S[1..r-d]$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+In PAM, a node $u$ is only visited when $u$ actually occurs as a palindromic suffix at $r$, whereas in KMP node $u = r$ is born at index $r$ and can be visited again as a proper border at $r' > r$. Verify that Claim 2 and Claim 3 of Theorem 4.2 still hold for KMP proper borders: if $u \le \pi[r]$ is a `slink` chain head in the proper border chain of $r$ with $\operatorname{diff}[u] = \operatorname{diff}[\pi[u]] = d$, then $v = \pi[u] < r - d$ was a `slink` chain head in the proper border chain of $r - d$ and never occurred as a border in $(r - d, r)$.
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: Walking $b = \pi[r], \pi[\pi[r]], \dots$ at each $r$ takes $\Theta(N^2)$ on $S = \texttt{a}^N$.
+2. **Combinatorial Word Invariant**: Let $\operatorname{diff}[u] = u - \pi[u]$ and $\operatorname{slink}[u] = (\operatorname{diff}[u] == \operatorname{diff}[\pi[u]] \text{ ? } \operatorname{slink}[\pi[u]] : \pi[u])$ for $u \ge 1$.
+   Why does walking only proper borders $u = \pi[r], \operatorname{slink}[\pi[r]], \dots$ never read an uninitialized `g[r - d]`?
+   Because any proper border $u \le \pi[r]$ of $S[1..r]$ with $\operatorname{diff}[u] = \operatorname{diff}[\pi[u]] = d$ has $v = \pi[u] = u - d \le \pi[r] - d < r - d$. Thus $v = \pi[u]$ is **strictly shorter than $r - d$**, meaning $v$ was a **proper border** of $S[1..r-d]$ and was already visited in the proper-border loop at step $r - d$!
+   Let us trace $S = \texttt{aaaa}$:
+
+   - At $r = 1$ ($\pi[1] = 0$), $\operatorname{diff}[1] = 1, \operatorname{slink}[1] = 0$. At $r = 2$, $u = \pi[2] = 1$ has $\operatorname{diff}[1] = 1 \ne \operatorname{diff}[0]$, updating `g[1]`.
+   - At $r = 3$, $u = \pi[3] = 2$ has $\operatorname{diff}[2] = 1 = \operatorname{diff}[1]$, so `g[2]` at $r = 3$ reads `g[1]` from $r - 1 = 2$, where $1 = \pi[2]$ was already updated!
+3. **Algorithmic Compilation**:
+   - Compute $\pi[r]$, $\operatorname{diff}[r] = r - \pi[r]$, and $\operatorname{slink}[r]$ online for $r = 1 \dots N$.
+   - For each $r = 1 \dots N$, loop `for (int u = pi[r]; u > 0; u = slink[u])`:
+     - `g[u] = dp[r - slink[u] - diff[u]];`
+     - `if (diff[u] == diff[pi[u]]) g[u] = (g[u] + g[pi[u]]) % MOD;`
+     - `dp[r] = (dp[r] + g[u]) % MOD;`
+   - **Complexity**: $O(N \log N)$ time and $O(N)$ space.
+4. **Broken-Invariant Counterexample**: If the problem instead summed over $b \in \operatorname{Border}(S[1..r]) \cup \{r\}$ (including the full prefix $b = r$), then the loop starts at `u = r` instead of `u = pi[r]`. Mixing the two (starting at `u = pi[r]` when $v = r - d$ is needed) fails if and only if $u = r$ is included.
+:::
+
+---
+
+### Tier 3 — Advanced (`CF 906E`, Parity-Filtered & Lex-Optimal Reconstruction)
+
+#### Problem 4.5 (`W1A-26` · `CF 906E — Reverses`)
+
+**Statement**:
+You are given two strings $A[1..n]$ and $B[1..n]$ of equal length $n \le 5 \times 10^5$. You may choose any set of **pairwise disjoint** intervals $[l_1, r_1], [l_2, r_2], \dots, [l_k, r_k]$ ($r_i - l_i + 1 \ge 2$) and reverse each substring $A[l_i..r_i]$ in place. Find the **minimum number of interval reversals $k$** required to make $A = B$, and output the $k$ intervals $[l_i, r_i]$ (or report $-1$ if impossible).
+
+**Constraints**: $1 \le n \le 5 \times 10^5$, $|\Sigma| = 26$. Time limit: $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Form the zipped interleaved string $T[1..2n] = A[1]\,B[1]\,A[2]\,B[2]\,\cdots\,A[n]\,B[n]$. As proved in Section 3.2, $A[l..r]^R = B[l..r]$ if and only if $T[2l-1..2r]$ is an even-length palindrome!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+What corresponds to an index $j$ where $A[j] = B[j]$ and we do **not** reverse across $j$? In $T$, $T[2j-1] = A[j] = B[j] = T[2j]$ is a length-$2$ palindrome of **cost $0$**, whereas any reversed interval $[l, r]$ ($l < r$) is an even-length palindrome $T[2l-1..2r]$ of length $\ge 4$ and **cost $+1$**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Maintain `pair<int, int> dp[0..2n]` = `(min_cost, prev_even_r)` and `pair<int, int> g[u]` = `(min_cost, argmin_left_endpoint)`. At every index $r \in [1, 2n]$, update `g[u]` along `u = slink[u]`. When $2 \mid r$: first check if $T[r-1] == T[r]$ to relax `dp[r] = min(dp[r], {dp[r-2].first, r-2})` with cost $+0$; then relax `dp[r] = min(dp[r], {g[u].first + 1, g[u].second})` from each `slink` chain!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: Explicit interval DP over $A[l..r]^R = B[l..r]$ takes $\Theta(n^2)$ time. Furthermore, we must reconstruct the exact optimal intervals $[l_i, r_i]$.
+2. **Combinatorial Word Invariant**: On $T[1..2n] = A[1]B[1]\cdots A[n]B[n]$, every even prefix $r = 2j$ transitions either from $r - 2$ with cost $0$ (if $T[r-1] = T[r]$) or from $i = r - L$ with cost $+1$ for any even-length palindromic suffix $L \in \operatorname{PalSuf}(T[1..r])$. By Theorem 4.2, storing `g[u] = min_{i in I(u, r)} {dp[i].cost, i}` preserves the exact argmin left endpoint $i$ across `slink` shifts because $i$ itself is invariant under $r - d \to r$!
+3. **Algorithmic Compilation**:
+   - Build $T[1..2n]$ ($N = 2n$). Set `dp[0] = {0, -1}` and `dp[1..N] = {INF, -1}`.
+   - For $r = 1 \dots N$, advance PAM on $T[r]$:
+     - If $r$ is even and $T[r-1] == T[r]$, set `dp[r] = {dp[r-2].first, r-2}`.
+     - Loop `for (int u = last; u > 0; u = slink[u])`:
+       - `int i_new = r - len[slink[u]] - diff[u];`
+       - `g[u] = {dp[i_new].first, i_new};`
+       - `if (diff[u] == diff[fail[u]]) g[u] = min(g[u], g[fail[u]]);`
+       - `if (r % 2 == 0) dp[r] = min(dp[r], {g[u].first + 1, g[u].second});`
+   - If `dp[N].first >= INF`, output `-1`. Otherwise, backtrack `r = N` via `prev = dp[r].second`: whenever `r - prev > 2`, output the 1-based interval $(\text{prev}/2 + 1,\; r/2)$.
+   - **Complexity**: $O(n \log n)$ time and $O(n)$ space.
+4. **Broken-Invariant Counterexample**: Outputting an interval when `r - prev == 2` and `dp[r]` came from `g[u]` (a length-$2$ palindrome $T[r-1..r]$) prints a degenerate reversal of length $1$ ($l = r$), which the problem statement forbids ($r_i - l_i + 1 \ge 2$). Checking `r - prev > 2` (and relaxing $T[r-1] == T[r]$ with cost $0$) avoids all length-$1$ reversals.
+:::
+
+---
+
+#### Problem 4.6 (`W1A-40` · Parity-Restricted Palindrome Partitioning with Active Odd & Even Prefixes)
+
+**Statement**:
+You are given a string $S[1..N]$ ($N \le 10^6$). Count the number of ways modulo $10^9 + 7$ to partition $S$ into substrings $S = w_1 w_2 \cdots w_k$ such that every piece $w_j$ is a palindrome of **length at least $2$** and **odd length** ($|w_j| \ge 3$ and $2 \nmid |w_j|$), OR every piece has **even length**—more generally, you are given two allowed parity masks for $|w_j|$ and $r$, so both odd and even prefix indices $r$ can have $dp[r] \ne 0$, and you must sum only over palindromic suffixes $L \in \operatorname{PalSuf}(S[1..r])$ with **$L \equiv 1 \pmod 2$ and $L \ge 3$**.
+
+**Constraints**: $1 \le N \le 10^6$, $|\Sigma| = 26$. Time limit: $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Unlike `CF 932G` (where $dp[i] = 0$ for all odd $i$, which automatically killed odd-length palindromes at even $r$), here each piece has odd length $L \ge 3$, so $dp[r]$ is non-zero at BOTH odd and even $r$! What happens when an AP chain $(\operatorname{slink}[u], u]$ has an **even** step $d = \operatorname{diff}[u]$ vs. an **odd** step $d$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Look at the invariant left endpoint $i = r - L \in \mathcal{I}(u, r)$:
+$$L \equiv 1 \pmod 2 \iff i = r - L \;\equiv\; (r - 1) \pmod 2!$$
+Because the parity of the left endpoint $i$ is **100% invariant** when shifting from $r - d \to r$, splitting `g[u]` into two accumulators `g[0][u]` (sum over **even** left endpoints $i \in \mathcal{I}(u, r)$) and `g[1][u]` (sum over **odd** left endpoints $i \in \mathcal{I}(u, r)$) allows us to query only $L \equiv 1 \pmod 2$ at step $r$ by reading `g[(r - 1) & 1][u]`!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+What about excluding $L = 1$ (requiring $L \ge 3$)? At step $r$, the single palindrome of length $L = 1$ has left endpoint $i = r - 1$. Simply subtract `dp[r - 1]` after the `slink` loop!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: When $\operatorname{diff}[u]$ is odd, a single `slink` chain $(\operatorname{slink}[u], u]$ contains both odd-length and even-length palindromes, and since both $dp[\text{odd}]$ and $dp[\text{even}]$ are active, a single scalar `g[u]` mixes valid and invalid transition lengths.
+2. **Combinatorial Word Invariant (Left-Endpoint Parity Splitting)**:
+   For any $i \in \mathcal{I}(u, r)$, the palindrome length is $L = r - i$, so:
+   $$L \bmod 2 \;=\; (r - i) \bmod 2 \iff i \bmod 2 \;=\; (r - L) \bmod 2.$$
+   Since $i$ does not change when $\mathcal{I}(\operatorname{fail}[u], r - d)$ is reused inside $\mathcal{I}(u, r)$, we maintain two accumulators per PAM state $u$:
+   $$g_p[u] \;=\; \sum_{\substack{i \in \mathcal{I}(u, r) \\ i \equiv p \pmod 2}} dp[i] \qquad (p \in \{0, 1\}).$$
+   At right endpoint $r$, the sum over odd-length palindromes $L \in (\operatorname{slink}[u], u]$ is simply $g_{(r - 1) \bmod 2}[u]$ (and the sum over even-length palindromes is $g_{r \bmod 2}[u]$)!
+
+3. **Algorithmic Compilation**:
+   - At each $r = 1 \dots N$, for `u = last` down to $0$ via `slink[u]`:
+     - Let $i_{\text{new}} = r - \operatorname{len}[\operatorname{slink}[u]] - \operatorname{diff}[u]$ and $p = i_{\text{new}} \bmod 2$.
+     - Set $g_p[u] = dp[i_{\text{new}}]$ and $g_{1-p}[u] = 0$.
+     - If $\operatorname{diff}[u] == \operatorname{diff}[\operatorname{fail}[u]]$, add $g_0[\operatorname{fail}[u]]$ to $g_0[u]$ and $g_1[\operatorname{fail}[u]]$ to $g_1[u]$.
+     - Add $g_{(r - 1) \bmod 2}[u]$ to $dp[r]$.
+   - Finally, subtract $dp[r - 1]$ from $dp[r]$ (modulo $10^9 + 7$) to remove the length-$1$ palindrome $S[r..r]$.
+   - **Complexity**: $O(N \log N)$ time and $O(N)$ space.
+4. **Broken-Invariant Counterexample**: Splitting `g[u]` by the parity of **length $L$** instead of the parity of **left endpoint $i$** fails whenever $d = \operatorname{diff}[u]$ is odd, because shifting from $r - d \to r$ increases every length in `g[fail[u]]` by $+d$ (flipping its length parity!), whereas the left endpoint parity $i \bmod 2$ never flips (or if you split by length parity, you must swap `g_len[0]` and `g_len[1]` when $d$ is odd).
+:::
+
+---
+
+#### Problem 4.7 (`W1A-42` · Lexicographically Optimal Minimum Palindrome Cut)
+
+**Statement**:
+Given $S[1..N]$ ($N \le 5 \times 10^5$), among all partitions of $S$ into the **minimum possible number $K = dp_{\min}[N]$** of palindromic substrings $S = S[1..r_1] \, S[r_1+1..r_2] \cdots S[r_{K-1}+1..N]$, find the one whose cut-position vector $(r_1, r_2, \dots, r_{K-1})$ is **lexicographically smallest**.
+
+**Constraints**: $1 \le N \le 5 \times 10^5$, $|\Sigma| = 26$. Time limit: $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+In a forward DP $dp[1..N]$, choosing the smallest $r_{K-1}$ at the end makes the *last* cut small, not the *first* cut $r_1$! How do we make greedy choices from left to right ($r_1$, then $r_2$, etc.)?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Run the PAM `slink` DP on the **reversed string $S^R$** (from right to left)! Since a substring $S[l..r]$ is a palindrome if and only if its reversal in $S^R$ is a palindrome, running `slink` DP backwards computes for every $l \in [1, N+1]$ the minimum number of palindromic pieces $dp_{\text{suf}}[l]$ needed to partition the suffix $S[l..N]$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Moreover, at each position $l$ (corresponding to prefix $r' = N - l + 1$ of $S^R$), wanting the **smallest** next cut $r_1 \ge l$ with $dp_{\text{suf}}[r_1 + 1] = dp_{\text{suf}}[l] - 1$ is equivalent in $S^R$ to choosing the **shortest** valid palindrome (largest left endpoint $i'$ in $S^R$, or minimum $r_1$)! Track `pair<int, int>` = `(min_cuts, min_next_cut_r)` in `g[u]`!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: Lexicographical minimization on $(r_1, r_2, \dots, r_{K-1})$ requires choosing the minimum valid $r_1$ first, which depends on suffix reachability $dp_{\text{suf}}[r_1 + 1]$.
+2. **Combinatorial Word Invariant**: Let $S^R[1..N]$ be the reversal of $S$, where index $r' \in [1, N]$ of $S^R$ corresponds to suffix start $l = N - r' + 1$ of $S$, and a palindromic suffix of $S^R[1..r']$ of length $L$ corresponds to the palindromic prefix $S[l .. l + L - 1]$ ending at $r_1 = l + L - 1 = N - (r' - L)$ in $S$.
+   Notice that $i' = r' - L$ is the invariant left endpoint in $S^R$, so $r_1 = N - i'$ depends **only on $i'$**!
+   Therefore, storing the pair `(dp_suf_cuts, N - i')` inside `g[u]` on $\operatorname{PAM}(S^R)$ and taking the lexicographical minimum automatically selects the minimum cut count tie-broken by the **smallest cut index $r_1 = N - i'$** in $S$!
+
+3. **Algorithmic Compilation**:
+   - Run PAM `slink` DP on $S^R[1..N]$ with state `(cuts, next_r_in_S)`:
+     - At step $r'$ of $S^R$ ($i_{\text{new}} = r' - \operatorname{len}[\operatorname{slink}[u]] - \operatorname{diff}[u]$), seed `g[u] = {dp[i_new].cuts, N - i_new}`.
+     - Combine with `g[fail[u]]` via `std::min` on pairs.
+     - Relax `dp[r'] = min(dp[r'], {g[u].cuts + 1, g[u].next_r})`.
+   - Reconstruct $(r_1, \dots, r_{K-1})$ in $O(K)$ steps by following `next_r` from $r' = N$ ($l = 1$).
+   - **Complexity**: $O(N \log N)$ time and $O(N)$ space.
+4. **Broken-Invariant Counterexample**: Running forward DP on $S$ and breaking ties at $r$ by smallest previous cut $i$ minimizes $r_{K-1}$ first (reverse-lexicographical order) instead of $r_1$ first; for $S = \texttt{abaaba}$ ($K$ under restricted cuts), forward tie-breaking picks the wrong first cut.
+:::
+
+---
+
+### Tier 4 — Mastery (Binomial Moment Splitting & Length-Windowed `slink` Queues)
+
+#### Problem 4.8 (`W1A-39` · Polynomial-Weighted Palindrome Partition DP via Binomial Moment Splitting)
+
+**Statement**:
+Given a string $S[1..N]$ ($N \le 2 \times 10^5$) and a polynomial $P(L) = \sum_{m=0}^D c_m L^m$ of degree $D \le 5$, define $dp[0] = 1$ and for $1 \le r \le N$:
+$$dp[r] \;=\; \left(\sum_{L \in \operatorname{PalSuf}(S[1..r])} P(L) \cdot dp[r - L]\right) \bmod 998244353.$$
+Compute $dp[1..N]$.
+
+**Constraints**: $1 \le N \le 2 \times 10^5$, $0 \le D \le 5$, $0 \le c_m < 998244353$. Time limit: $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+When advancing from $r - d$ to $r$, each palindrome length $L$ in `g[fail[u]]` increases by $+d$, so $P(L)$ changes for every element in the chain. Why don't we need a segment tree or multipoint evaluation?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By Section 3.3 (`T-1A-05`), write $L = r - i$ where $i = r - L \in \mathcal{I}(u, r)$ is the **invariant left endpoint**:
+$$L^m \;=\; (r - i)^m \;=\; \sum_{t=0}^m \binom{m}{t} (-1)^t \, r^{m-t} \cdot i^t.$$
+Now $i^t$ is completely invariant under the shift $r - d \to r$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Even faster than reconstructing each $m \in [0, D]$ separately: rewrite $\sum_{m=0}^D c_m (r - i)^m$ directly as a polynomial in $(-i)$!
+$$\sum_{m=0}^D c_m (r - i)^m \;=\; \sum_{t=0}^D (-1)^t \underbrace{\left(\sum_{m=t}^D c_m \binom{m}{t} r^{m-t}\right)}_{A_t(r)} \cdot i^t!$$
+Precomputing $A_0(r), \dots, A_D(r)$ once at the start of step $r$ reduces the inner `slink` loop to a simple dot product $\sum_{t=0}^D (-1)^t A_t(r) g_t[u]$ in $O(D)$ operations per `slink` step!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: Length-dependent weights $P(L)$ appear to break `slink` accumulators because $L = r - i$ depends on $r$.
+2. **Combinatorial Word Invariant**: Expanding $P(r - i)$ in powers of $i$ around $r$ (Taylor / Binomial expansion) separates $r$ from the invariant left endpoint $i \in \mathcal{I}(u, r)$:
+   $$P(r - i) \;=\; \sum_{m=0}^D c_m \sum_{t=0}^m \binom{m}{t} r^{m-t} (-i)^t \;=\; \sum_{t=0}^D \left(\sum_{m=t}^D c_m \binom{m}{t} r^{m-t}\right) (-1)^t i^t \;=\; \sum_{t=0}^D A_t(r) \cdot i^t.$$
+   Define $g_t[u] = \sum_{i \in \mathcal{I}(u, r)} i^t dp[i] \bmod 998244353$ for $0 \le t \le D$. By Theorem 4.2, $g_t[u]$ satisfies the exact shift-overlap recurrence:
+   $$g_t[u] \;=\; i_{\text{new}}^t \, dp[i_{\text{new}}] + [\operatorname{diff}[u] == \operatorname{diff}[\operatorname{fail}[u]]] \cdot g_t[\operatorname{fail}[u]].$$
+
+3. **Algorithmic Compilation**:
+   - At step $r$, compute $A_t(r) = (-1)^t \sum_{m=t}^D c_m \binom{m}{t} r^{m-t} \bmod 998244353$ for $0 \le t \le D$ in $O(D^2)$ time.
+   - Loop `for (int u = last; u > 0; u = slink[u])`:
+     - Update $g_0[u], \dots, g_D[u]$ in $O(D)$ time and add $\sum_{t=0}^D A_t(r) g_t[u]$ to $dp[r]$ in $O(D)$ time.
+   - **Complexity**: $O(D \cdot N \log N)$ time and $O(D \cdot N)$ space.
+4. **Broken-Invariant Counterexample**: Defining $g_t[u] = \sum L^t dp[r-L]$ and trying to shift $g_t[\operatorname{fail}[u]]$ by $+d$ via binomial expansion inside the `slink` loop takes $O(D^2 \cdot N \log N)$ time and is far more error-prone than keeping the left endpoint $i^t$ invariant ($O(D \cdot N \log N)$).
+:::
+
+---
+
+#### Problem 4.9 (`W1A-43` · Length-Windowed $L \in [L_{\min}, L_{\max}]$ Monotonic-Deque `slink` DP)
+
+**Statement**:
+You are given a string $S[1..N]$ ($N \le 3 \times 10^5$), an array of transition costs $C[0..N]$, and a length window $[L_{\min}, L_{\max}]$ ($1 \le L_{\min} \le L_{\max} \le N$). Compute $dp[0..N]$ where $dp[0] = 0$ and for $1 \le r \le N$:
+$$dp[r] \;=\; \min_{\substack{L \in \operatorname{PalSuf}(S[1..r]) \\ L_{\min} \le L \le L_{\max}}} \bigl(dp[r - L] + C[r - L]\bigr).$$
+
+**Constraints**: $1 \le N \le 3 \times 10^5$, $1 \le L_{\min} \le L_{\max} \le N$. Time limit: $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Unlike pure sum DP (where we could subtract out-of-window elements if we knew which node held them), here the aggregation is $\min$, which has no inverse! Moreover, the length constraint $L_{\min} \le r - i \le L_{\max}$ clips the left-endpoint set $\mathcal{I}(u, r)$ to the interval $i \in [r - L_{\max},\, r - L_{\min}]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Look at how left endpoints enter a `slink` chain in Theorem 4.2: at each step $r$, the newly entering left endpoint is $i_{\text{new}} = r - \operatorname{len}[\operatorname{slink}[u]] - \operatorname{diff}[u]$. All elements of $\mathcal{I}(u, r)$ are values of $i_{\text{new}}$ pushed along the period-$d$ chain of $u$. Can two different branches in the same period-$d$ component of the PAM fail tree ever split?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Recall the proof of Claim 2 of Theorem 4.2 (Section 2.1): in the PAM fail tree, any node $v$ with $\operatorname{diff}[v] = d$ can have **at most ONE child $u$ with $\operatorname{fail}[u] = v$ and $\operatorname{diff}[u] = d$** (because $d = \operatorname{diff}[v] < \operatorname{len}[v]$ uniquely determines all characters of $u$)!
+That means the subgraphs of equal $\operatorname{diff}$ in the PAM fail tree are **unbranched directed paths (chains)**, NOT trees! And on each chain, left endpoints $i_{\text{new}}$ are appended in **strictly increasing order**!
+:::
+
+::: {.callout-tip collapse="true" title="Full 4-Step Derivation & Solution"}
+
+1. **Diagnostic Signal**: Under $(\min, +)$ with a two-sided length window $L \in [L_{\min}, L_{\max}]$, we cannot subtract expired prefix sums, and building a segment tree over every `slink` chain would take $O(N \log^2 N)$ time.
+2. **Combinatorial Word Invariant (Unbranched Period-$d$ Chains & Monotonic Left Endpoints)**:
+   By Claim 2 of Theorem 4.2, for any node $v$ with $\operatorname{diff}[v] = d$, a palindrome $u$ of length $\operatorname{len}[v] + d$ with border $v$ has period $d \le \operatorname{len}[v]$, which uniquely fixes every character of $u$. Thus **every constant-$\operatorname{diff}$ component in the PAM fail tree (excluding its bottom node $v_c$ where $\operatorname{diff}[v_c]$ first equals $d$) is a simple unbranched path**:
+   $$v_c \gets u_2 \gets u_3 \gets \dots \gets u_{\max}.$$
+   Even better: for a node $u$ at position $r$, the set of left endpoints $\mathcal{I}(u, r)$ is:
+   $$\mathcal{I}(u, r) \;=\; \bigl\{\,r - \operatorname{len}[u],\; r - \operatorname{len}[u] + d,\; \dots,\; r - \operatorname{len}[\operatorname{slink}[u]] - d\,\bigr\}.$$
+   The condition $L_{\min} \le r - i \le L_{\max}$ is equivalent to restricting $i \in \mathcal{I}(u, r)$ to the window:
+   $$\max\bigl(r - \operatorname{len}[u],\; r - L_{\max}\bigr) \;\le\; i \;\le\; \min\bigl(r - \operatorname{len}[\operatorname{slink}[u]] - d,\; r - L_{\min}\bigr)!$$
+   Notice that inside $\mathcal{I}(u, r)$, all indices $i$ share the **same residue $i \equiv (r - \operatorname{len}[u]) \pmod d$** and form a contiguous block of steps of $+d$!
+
+3. **Algorithmic Compilation**:
+   Because each `slink` chain is an unbranched path where node $u_k$ (at depth $k$ above $\operatorname{slink}[u]$) pushes $i_{\text{new}} = r - \operatorname{len}[\operatorname{slink}[u]] - d$ in strictly increasing order of $i_{\text{new}}$ whenever visited, and at query time $r$ we only want the minimum of $dp[i] + C[i]$ over $i \in \mathcal{I}(u, r) \cap [r - L_{\max}, r - L_{\min}]$:
+
+   - **Delayed Lower-Bound Activation ($i_{\text{new}} > r - L_{\min}$)**: Whenever $i_{\text{new}} = r - \operatorname{len}[\operatorname{slink}[u]] - d > r - L_{\min}$ (i.e., $\operatorname{len}[\operatorname{slink}[u]] + d < L_{\min}$), the newest (rightmost) endpoints in $\mathcal{I}(u, r)$ have length $< L_{\min}$ and are **not yet valid** at step $r$, though they *will* become valid at a later step $r + t \cdot d$ when their palindrome grows to length $\ge L_{\min}$!
+
+   - Specifically, at step $r$, the longest palindrome in $(\operatorname{slink}[u], u]$ that has length $\le L_{\max}$ has left endpoint $i_{\text{low}} = \max(r - \operatorname{len}[u],\, r - \ell_{\max})$, and the shortest palindrome in $(\operatorname{slink}[u], u]$ that has length $\ge L_{\min}$ corresponds to the ancestor $w \in (\operatorname{slink}[u], u]$ visited at step $r' = r - (\operatorname{len}[u] - \operatorname{len}[w])$!
+   - Thus, on each constant-`diff` chain (identified by its bottom-most node $\operatorname{slink}[u]$ and step $d$, or per chain head), maintaining a monotonic queue (or a delayed insertion queue that inserts $i_{\text{new}}$ once $r - i_{\text{new}} \ge L_{\min}$ and pops $i$ from the front once $r - i > L_{\max}$) answers each chain query in amortized $O(1)$ time!
+   - **Complexity**: $O(N \log N)$ time and $O(N)$ space.
+4. **Broken-Invariant Counterexample**: Discarding $i_{\text{new}}$ permanently at step $r$ when $\operatorname{len}[\operatorname{slink}[u]] + d < L_{\min}$ loses that left endpoint at step $r + t \cdot d$ when the palindrome starting at $i_{\text{new}}$ grows to length $\operatorname{len}[\operatorname{slink}[u]] + (t+1)d \ge L_{\min}$! It must be held in a pending queue and pushed into the active monotonic deque as soon as $r_{\text{curr}} - i \ge L_{\min}$.
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 When to Reach for `slink` DP Acceleration (`Ch 04`)
+
+- [ ] **Symptom 1 — 1D Partition DP over Palindromic Suffixes or Borders**: Does $dp[r]$ aggregate over all $L \in \operatorname{PalSuf}(S[1..r])$ or $L \in \operatorname{Border}(S[1..r])$ at $N \ge 10^5$?
+- [ ] **Symptom 2 — Two-Ended Symmetry (`CF 932G`) or Interval Reversal (`CF 906E`)**: Can the condition be converted into even-length palindromes by interleaving $T = S[1]S[N]S[2]S[N-1]\dots$ or $T = A[1]B[1]A[2]B[2]\dots$?
+- [ ] **Invariant Check 1 — Newly Entering Left Endpoint (`BP-1A-05`)**: Did you initialize `g[u] = dp[r - len[slink[u]] - diff[u]]` (the **shortest** member of the half-open chain), and **never** `dp[r - len[u]]`?
+- [ ] **Invariant Check 2 — Odd-Index `g[u]` Updates (`BP-1A-06`)**: In even-palindrome partition DPs (`CF 932G`, `CF 906E`), did you update `g[u]` at **every** index $r$ (both odd and even), gating **only** `if (r % 2 == 0) dp[r] = combine(dp[r], g[u]);`?
+- [ ] **Invariant Check 3 — Left-Endpoint Parameterization (`T-1A-05`)**: When weights or constraints depend on length $L$ (such as polynomial weights $P(L)$ or length parity $L \bmod 2$), did you rewrite $L = r - i$ in terms of the **invariant left endpoint $i$** so `g[fail[u]]` remains valid without modification?
+
+---
+
+### 6.2 Chapter 04 Revision & Part I Transition Table
+
+| Technique / Invariant | Exact Formula / Rule | Complexity | Where to Go Next |
+| :--- | :--- | :--- | :--- |
+| **Palindromic Border Equivalence** | $B \sqsubset_{\text{suf}} Q$ is a palindrome $\iff B \in \operatorname{Border}(Q)$ | $\le \lceil \log_2 r \rceil$ chains | [`Ch 16`](ch16-deterministic-tree-deque-pam.qmd) (Tree & Deque PAM) |
+| **Shift-Overlap Invariant (`T-1A-04`)** | $\mathcal{I}(u, r) = \mathcal{I}(\operatorname{fail}[u], r - d) \sqcup \{r - \operatorname{len}[\operatorname{slink}[u]] - d\}$ | $O(N \log N)$ | [`Ch 17`](ch17-range-palindromes-rich-words.qmd) (Range Palindromes) |
+| **Folded / Zipped Interleaving** | $S[1]S[N]S[2]S[N-1]\dots$ / $A[1]B[1]A[2]B[2]\dots \leftrightarrow$ even palindromes | $O(N)$ transform | [`CP-I`](../checkpoints/cp01-part1-periodicity-borders-slink.qmd) (Blind Checkpoint I) |
+| **Binomial Moment Split (`T-1A-05`)** | $(r - i)^m = \sum_{t=0}^m \binom{m}{t}(-1)^t r^{m-t} i^t$ decouples $r$ from $g_t[u]$ | $O(D \cdot N \log N)$ | [`CP-I`](../checkpoints/cp01-part1-periodicity-borders-slink.qmd) (Blind Checkpoint I) |

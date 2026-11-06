@@ -1,0 +1,654 @@
+---
+title: "Subsequence Automata (DASG), Arch Factorization, Simon's Congruence, and Invertible Subsequence Matrices"
+subtitle: "Chapter 22 · Part VI: Subsequence Algebra, Tiskin's Seaweed Matrices, Cluster Generating Functions & DP套DP"
+---
+
+::: {.callout-important title="Prerequisites, Assumed Library & Learning Objectives"}
+- **Assumed Library Primitives**: Single-string Suffix Automaton ($\operatorname{SAM}$ with $\operatorname{len}, \operatorname{link}, \operatorname{ch}$), persistent Segment Trees, binary lifting (`up[k][u]`), and standard modular arithmetic (`mint`). See [Notation & Conventions](../notation.qmd) for 1-based closed indexing $S[1..N]$.
+- **Strict Prerequisite Chapters**: [Chapter 09: Suffix Automaton Duality & 3-Case Trie-BFS Generalized SAM](ch09-sam-duality-gsam-trie-bfs.qmd).
+- **Assigned Technique IDs**: `T-4B-01` (Directed Acyclic Subsequence Graph $\operatorname{DASG}(S)$, Four-Comb Product Automaton & $O(|A||B|)$ Predecessor Rectangles), `T-4B-02` (Hébrard's Arch Factorization, $O(\log N)$ Range Shortest Absent Subsequence & Simon's Congruence $\sim_k$), `T-4B-03` (Determinant-1 Subsequence Automaton Matrices & Matrix-Free $O((N+Q)\sigma)$ Range Queries).
+- **Learning Objectives**:
+  1. Prove the **Leftmost-Prefix Dominance Bijection** on $\operatorname{DASG}(S)$, build the **Four-Combination Product Automaton** over $\{\operatorname{SAM}, \operatorname{DASG}\}^2$ (`[HEOI2015] 最短不公共子串`), and accelerate distinct common subsequence counting on $\operatorname{DASG}(A) \times \operatorname{DASG}(B)$ from $O(|A||B|\sigma)$ to **alphabet-independent $O(|A||B|)$** via 2D predecessor rectangles.
+  2. Derive **Hébrard's Arch Factorization** $S = A_1 \cdots A_k \cdot R$, establish the duality $\operatorname{len}(\operatorname{SAS}(S)) = \iota(S) + 1$ with explicit bottleneck witness $m_1 \cdots m_k m_{k+1}$, answer **Range Shortest Absent Subsequence (`Range SAS`)** queries in $O(\log N)$ time via binary lifting, and characterize **Simon's Congruence ($U \sim_k V$)** via the $O(|U|+|V|)$ Simon-Tree.
+  3. Prove that the distinct-subsequence DP transition matrix $M_c = I_{\sigma+1} + \mathbf{e}_c \sum_{j \ne c} \mathbf{e}_j^T$ is an elementary transvection with **$\det(M_c) = 1$ over every commutative ring $\mathcal{R}$** and $O(1)$-sparse inverse $M_c^{-1} = I_{\sigma+1} - \mathbf{e}_c \sum_{j \ne c} \mathbf{e}_j^T$, alongside the local algebraic unit hypothesis $\alpha_c \in \mathcal{R}^\times$ for weighted subsequences.
+  4. Compile the **Matrix-Free $O((N+Q)\sigma)$ Range Distinct Subsequence Engine** using the two-term forward recurrence $\mathbf{u}_i^T = 2\mathbf{u}_{i-1}^T - \mathbf{u}_{\text{last}[S[i]]-1}^T$ and lazy column offset $\mathbf{g}^{(i)}$ ($\text{Ans}(l, r) = \mathbf{u}_r^T \cdot \mathbf{v}_{l-1} - 1$), and distinguish invertible DP matrices from singular gap-$\ge 2$ (`ABC 214F`) and tropical $(\min, +)$ (`CF 750E`) matrices (`BP-21`).
+:::
+
+---
+
+## 1. Directed Acyclic Subsequence Graph (`序列自动机` / DASG), Arch Factorization, Simon's Congruence & Product Automata (`T-4B-01`, `T-4B-02`)
+
+### 1.1 The Diagnostic Signal: Why Suffix Structures Fail on Scattered Subsequences
+
+A Suffix Automaton ($\operatorname{SAM}$) or Suffix Tree of $S[1..N]$ compresses all $\Theta(N^2)$ **contiguous substrings** into $O(N)$ states because every occurrence of a contiguous factor shifts rigidly by $+1$ under right-extension. By contrast, $S[1..N]$ contains up to $2^N$ **scattered subsequences**: a word $P[1..m]$ is a subsequence of $S[1..N]$ (written $P \preceq_{\text{subseq}} S$, or $P \in \operatorname{Subseq}(S)$) if there exist strictly increasing indices $1 \le i_1 < i_2 < \dots < i_m \le N$ such that $S[i_r] = P[r]$ for all $1 \le r \le m$. A single subsequence $P$ can embed into $S$ at exponentially many index tuples $(i_1, \dots, i_m)$.
+
+Whenever a problem asks to:
+
+- Recognize whether $P$ is a subsequence of $S[l..r]$, or count distinct subsequences $P \in \operatorname{Subseq}(S)$ (each string $P$ counted **once** regardless of how many index tuples realize it);
+- Find a **Shortest Absent Subsequence (`SAS` / `最短缺失子序列`)**—a minimum-length string $W \in \Sigma^* \setminus \operatorname{Subseq}(S)$—or the **Universality Index $\iota(S[l..r])$**;
+- Test **Simon's Congruence ($U \sim_k V$)**—whether two strings $U$ and $V$ share the exact same set of subsequences of length $\le k$—or find their shortest distinguishing subsequence;
+- Compare two strings $A, B$ across **contiguous substrings vs. scattered subsequences** (`[HEOI2015] 最短不公共子串` / `Luogu P4112`);
+
+we must collapse the $2^N$ subset states of the subsequence NFA into $N + 1$ deterministic states by assigning every subsequence $P \in \operatorname{Subseq}(S)$ a **unique canonical occurrence** inside $S$.
+
+---
+
+### 1.2 The Combinatorial Word Invariant: Leftmost-Prefix Dominance, $\operatorname{DASG}(S)$, and $O(|A||B|)$ Predecessor Rectangles
+
+#### Concrete Object: The Canonical Greedy Match Position
+
+Let $S[1..N]$ be a word over an alphabet $\Sigma$ of size $\sigma = |\Sigma|$. For any candidate subsequence $P \in \Sigma^*$, define its **canonical greedy match position** $\operatorname{first\_end}_S(P) \in \{0, 1, \dots, N\} \cup \{\infty\}$ inductively from the empty word $\varepsilon$:
+$$\operatorname{first\_end}_S(\varepsilon) = 0, \qquad \operatorname{first\_end}_S(P \cdot c) = \min\bigl\{\, j \in [\operatorname{first\_end}_S(P) + 1,\, N] \;\big|\; S[j] = c \,\bigr\},$$
+with the convention $\min \emptyset = \infty$. In words, $\operatorname{first\_end}_S(P)$ is the earliest prefix length $i$ such that $P$ embeds as a subsequence of $S[1..i]$.
+
+::: {.callout-note title="Theorem 22.1 (Leftmost-Prefix Dominance & Bijection of the DASG)"}
+For any word $S[1..N]$, any prefix $P \in \Sigma^*$, and any continuation word $W \in \Sigma^*$:
+$$\boxed{P \cdot W \in \operatorname{Subseq}(S[1..N]) \iff \operatorname{first\_end}_S(P) \le N \quad\text{and}\quad W \in \operatorname{Subseq}\bigl(S[\operatorname{first\_end}_S(P) + 1 .. N]\bigr).}$$
+Consequently, the Myhill–Nerode right-congruence class of $P \in \Sigma^*$ with respect to the language $\operatorname{Subseq}(S)$ depends **only** on the integer $\operatorname{first\_end}_S(P) \in \{0, 1, \dots, N, \infty\}$. The resulting minimal deterministic automaton—the **Directed Acyclic Subsequence Graph ($\operatorname{DASG}(S)$ / `序列自动机`)**—has state set $\{0, 1, \dots, N\}$ (plus dead sink $\infty$), root $0$, transition function
+$$\delta_{\operatorname{DASG}}(i, c) = \operatorname{nxt}[i][c] := \min\bigl\{\, j \in [i + 1,\, N] \;\big|\; S[j] = c \,\bigr\} \qquad (0 \le i \le N,\; c \in \Sigma),$$
+and maps the set of all distinct subsequences $\operatorname{Subseq}(S)$ **bijectively** onto the set of all directed paths starting at root $0$ in $\operatorname{DASG}(S)$.
+:::
+
+#### Proof of Theorem 22.1 (Exchange Argument)
+
+- **($\Leftarrow$)**: If $i = \operatorname{first\_end}_S(P) \le N$, then $P$ embeds into $S[1..i]$. Any embedding of $W$ into $S[i+1..N]$ uses indices strictly greater than $i$, so concatenating the two embeddings yields a valid subsequence embedding of $P \cdot W$ into $S[1..N]$.
+- **($\Rightarrow$)**: Suppose $P \cdot W$ embeds into $S[1..N]$ at indices $1 \le j_1 < \dots < j_m < k_1 < \dots < k_{|W|} \le N$, where $S[j_r] = P[r]$ and $S[k_r] = W[r]$. We prove by induction on $r \in \{1, \dots, m\}$ that $\operatorname{first\_end}_S(P[1..r]) \le j_r$. For $r = 1$, $\operatorname{first\_end}_S(P[1]) = \min\{j \ge 1 : S[j] = P[1]\} \le j_1$. For the inductive step $r - 1 \to r$, the hypothesis gives $\operatorname{first\_end}_S(P[1..r-1]) \le j_{r-1} < j_r$, so $j_r \ge \operatorname{first\_end}_S(P[1..r-1]) + 1$ with $S[j_r] = P[r]$. Thus $j_r$ belongs to the candidate set minimized by $\operatorname{first\_end}_S(P[1..r])$, proving $\operatorname{first\_end}_S(P[1..r]) \le j_r$. At $r = m$, we obtain $\operatorname{first\_end}_S(P) \le j_m < k_1$, so $k_1, \dots, k_{|W|} \in [\operatorname{first\_end}_S(P) + 1, N]$, which witnesses $W \in \operatorname{Subseq}(S[\operatorname{first\_end}_S(P) + 1 .. N])$.
+- **Path Bijection**: Every directed path $0 \xrightarrow{c_1} i_1 \xrightarrow{c_2} \dots \xrightarrow{c_m} i_m$ in $\operatorname{DASG}(S)$ spells a unique string $P = c_1 \cdots c_m$ with $i_m = \operatorname{first\_end}_S(P) \le N$, and distinct strings cannot share the same edge-labeled path from $0$ because $\operatorname{DASG}(S)$ is deterministic. $\blacksquare$
+
+#### Three Canonical DASG Representations by Alphabet Regime
+
+| Alphabet Regime | Representation | Build Time & Space | Transition $\operatorname{nxt}[i][c]$ | Out-Edge Aggregation |
+| :--- | :--- | :--- | :--- | :--- |
+| **Small Alphabet** ($\sigma \le 62$) | Flat 2D table `nxt[N+1][sigma]` swept backwards $i = N-1 \downarrow 0$ | $O(N\sigma)$ time & space | $O(1)$ | $O(\sigma)$ loop |
+| **Large Alphabet, Point Queries** ($\sigma \le N$) | Per-character sorted occurrence vectors `pos[c]` | $O(N)$ time & space | $O(\log |S|_c)$ via `upper_bound` | N/A |
+| **Large Alphabet, Full Out-Edges** ($\sigma \le N$) | **Persistent Segment Tree** over $[1, \sigma]$ (`rt[i]` updates leaf $S[i+1] \leftarrow i+1$ from `rt[i+1]`) | $O(N \log \sigma)$ time & space | $O(\log \sigma)$ | $O(1)$ at root / $O(\log \sigma)$ binary search |
+
+#### Hand-Checkable Trace of $\operatorname{DASG}(\texttt{abac})$
+Let $S[1..4] = \texttt{abac}$ over $\Sigma = \{\texttt{a}, \texttt{b}, \texttt{c}\}$:
+
+| State $i$ | $S[i]$ | $\operatorname{nxt}[i][\texttt{a}]$ | $\operatorname{nxt}[i][\texttt{b}]$ | $\operatorname{nxt}[i][\texttt{c}]$ | $dp[i]$ (# Subsequences of $S[i+1..4]$ incl. $\varepsilon$) | SAS Distance $d[i]$ |
+| :---: | :---: | :---: | :---: | :---: | :--- | :--- |
+| $4$ | $\texttt{c}$ | $\infty$ | $\infty$ | $\infty$ | $1$ ($\varepsilon$) | $1$ ($\texttt{a}, \texttt{b}, \texttt{c}$) |
+| $3$ | $\texttt{a}$ | $\infty$ | $\infty$ | $4$ | $1 + dp[4] = 2$ | $1$ ($\texttt{a}, \texttt{b}$) |
+| $2$ | $\texttt{b}$ | $3$ | $\infty$ | $4$ | $1 + dp[3] + dp[4] = 4$ | $1$ ($\texttt{b}$) |
+| $1$ | $\texttt{a}$ | $3$ | $2$ | $4$ | $1 + dp[3] + dp[2] + dp[4] = 8$ | $2$ ($1 + \min(1, 1, 1)$) |
+| $0$ | (root) | $1$ | $2$ | $4$ | $1 + dp[1] + dp[2] + dp[4] = 14$ | $2$ (e.g., $\texttt{bb}, \texttt{ca}$) |
+
+#### Alphabet-Independent $O(|A||B|)$ Distinct Common Subsequences via 2D Predecessor Rectangles
+
+Given $A[1..M]$ and $B[1..N]$, a string $P \in \Sigma^*$ is a common subsequence of $A$ and $B$ ($P \in \operatorname{Subseq}(A) \cap \operatorname{Subseq}(B)$) if and only if $P$ labels a directed path from $(0, 0)$ in the product DAG $\operatorname{DASG}(A) \times \operatorname{DASG}(B)$ with transitions $(i, j) \xrightarrow{c} (\operatorname{nxt}_A[i][c], \operatorname{nxt}_B[j][c])$. Summing over all $c \in \Sigma$ at every state $(i, j)$ costs $O(MN\sigma)$ time, which TLEs when $\sigma = O(N)$.
+
+Why does $\sigma$ disappear? Fix a target state $(i', j') \in [1, M] \times [1, N]$. Since every incoming edge to $i'$ in $\operatorname{DASG}(A)$ is labeled $c = A[i']$ and every incoming edge to $j'$ in $\operatorname{DASG}(B)$ is labeled $B[j']$, the pair $(i', j')$ is reachable only if **$A[i'] = B[j'] = c$**. Furthermore, for a predecessor state $(i, j)$, when does $\operatorname{nxt}_A[i][c] = i'$ and $\operatorname{nxt}_B[j][c] = j'$? By definition of $\operatorname{nxt}$, $i'$ is the first occurrence of $c$ after $i$ in $A$ if and only if $i < i'$ and $i$ is at or after the **previous occurrence** $\operatorname{prev}_A[i'] = \max(\{0\} \cup \{p < i' : A[p] = A[i']\})$! Thus:
+$$\bigl(\operatorname{nxt}_A[i][c],\, \operatorname{nxt}_B[j][c]\bigr) = (i', j') \iff A[i'] = B[j'] \quad\text{and}\quad (i, j) \in \bigl[\operatorname{prev}_A[i'],\, i' - 1\bigr] \times \bigl[\operatorname{prev}_B[j'],\, j' - 1\bigr].$$
+Hence, in forward DP where $dp[i'][j']$ counts canonical common subsequences ending at $(i', j')$ (with $dp[0][0] = 1$), every matching cell $(i', j')$ with $A[i'] = B[j']$ simply sums $dp[i][j]$ over the **2D predecessor rectangle** $[\operatorname{prev}_A[i'], i' - 1] \times [\operatorname{prev}_B[j'], j' - 1]$ using a 2D prefix-sum array in $O(1)$ time—reducing $O(MN\sigma)$ to **alphabet-independent $O(MN)$ time**!
+
+---
+
+### 1.3 Hébrard's Arch Factorization, $O(\log N)$ Range SAS & Simon's Congruence ($\sim_k$)
+
+#### Concrete Objects: $k$-Universality, Arches, and Shortest Absent Subsequences
+
+A word $S \in \Sigma^*$ over an alphabet $\Sigma$ of size $\sigma = |\Sigma|$ is called **$k$-universal** if every word $W \in \Sigma^k$ of length $k$ appears as a subsequence of $S$ ($\Sigma^k \subseteq \operatorname{Subseq}(S)$).
+
+- The **universality index** $\iota(S) := \max\{k \ge 0 : \Sigma^k \subseteq \operatorname{Subseq}(S)\}$ is the maximum $k$ for which $S$ is $k$-universal.
+- A **Shortest Absent Subsequence (`SAS`)** of $S$ is a minimum-length word $W \in \Sigma^* \setminus \operatorname{Subseq}(S)$, and we write $\operatorname{sas}(S) = |W| = \iota(S) + 1$.
+
+::: {.callout-note title="Theorem 22.2 (Hébrard's Arch Factorization & Range SAS Binary Lifting)"}
+Partition $S[1..N]$ greedily from left to right into minimal $1$-universal contiguous blocks (**arches**):
+$$S = A_1 A_2 \cdots A_k \cdot R,$$
+where $l_1 = 1$, each arch $A_r = S[l_r .. r_r]$ ($l_r = r_{r-1} + 1$) is the **shortest** non-empty prefix of $S[l_r .. N]$ containing all $\sigma$ characters of $\Sigma$, and the **remainder (rest)** $R = S[l_{k+1} .. N]$ misses at least one character of $\Sigma$ ($\operatorname{alph}(R) \subsetneq \Sigma$). Then:
+
+1. **Exact Universality & SAS Length**: $\iota(S) = k$ and $\operatorname{sas}(S) = k + 1$.
+2. **Bottleneck Witness Construction**: Let $m_r = S[r_r]$ be the final character of arch $A_r$ for $1 \le r \le k$, and pick any $m_{k+1} \in \Sigma \setminus \operatorname{alph}(R)$. Then $M = m_1 m_2 \cdots m_k m_{k+1}$ is a Shortest Absent Subsequence of $S$ of length $k + 1$.
+3. **$O(\log N)$ Range SAS via Arch Binary Lifting**: Define the single-arch jump function
+   $$\operatorname{arch\_end}[i] := \max_{c \in \Sigma} \operatorname{nxt}[i][c] \qquad (0 \le i \le N).$$
+   For any substring query $S[l..r]$, $\iota(S[l..r])$ equals the maximum number of steps $k$ such that the $k$-th iterate $\operatorname{arch\_end}^{(k)}(l - 1) \le r$, computable together with an absent witness endpoint in **$O(\log N)$ time** via binary lifting on $\operatorname{arch\_end}[\cdot]$.
+:::
+
+#### Proof of Theorem 22.2
+
+1. **Every $W \in \Sigma^k$ is a subsequence of $S$**: Since each arch $A_r$ ($1 \le r \le k$) contains all $\sigma$ letters of $\Sigma$, we can greedily match $W[r]$ inside $A_r$ for $r = 1, \dots, k$. Thus $\Sigma^k \subseteq \operatorname{Subseq}(S)$, giving $\iota(S) \ge k$ and $\operatorname{sas}(S) \ge k + 1$.
+2. **Witness $M = m_1 \cdots m_k m_{k+1} \notin \operatorname{Subseq}(S)$**: Because $A_r = S[l_r .. r_r]$ is the *shortest* prefix of $S[l_r .. N]$ containing all $\sigma$ letters, its final character $m_r = S[r_r]$ occurs **nowhere** in $S[l_r .. r_r - 1]$. By induction on $r = 1, \dots, k$, $\operatorname{first\_end}_S(m_1 \cdots m_r) = r_r = l_{r+1} - 1$. After matching $m_1 \cdots m_k$ at index $r_k = l_{k+1} - 1$, the remaining suffix is $R = S[l_{k+1} .. N]$. Since $m_{k+1} \notin \operatorname{alph}(R)$, $\operatorname{first\_end}_S(M) = \infty$, so $M \notin \operatorname{Subseq}(S)$ and $\iota(S) = k$.
+3. **Range Binary Lifting**: Starting after index $i = l - 1$, a substring $S[i+1 .. j]$ contains all $\sigma$ letters if and only if $j \ge \operatorname{nxt}[i][c]$ for every $c \in \Sigma$, i.e., $j \ge \max_{c \in \Sigma} \operatorname{nxt}[i][c] = \operatorname{arch\_end}[i]$. Since Hébrard's arch decomposition of $S[l..r]$ depends only on the suffix $S[l..N]$ truncated at $r$, binary lifting `up[k][u]` from $u = l - 1$ while `up[k][u] <= r` counts the exact number of arches $\iota(S[l..r])$ inside $[l, r]$ in $O(\log N)$ time. $\blacksquare$
+
+#### Simon's Congruence ($U \sim_k V$) & The $O(|U|+|V|)$ Simon-Tree
+
+Two words $U, V \in \Sigma^*$ are **Simon-congruent at level $k$** (Simon 1975), written $U \sim_k V$, if they possess the exact same set of subsequences of length at most $k$:
+$$U \sim_k V \iff \operatorname{Subseq}_{\le k}(U) = \operatorname{Subseq}_{\le k}(V).$$
+A **Shortest Distinguishing Subsequence (`SDS`)** between $U$ and $V$ is a word $W \in \operatorname{Subseq}(U) \triangle \operatorname{Subseq}(V)$ of minimum length $|W| = k^* + 1$, where $k^* = \max\{k \ge 0 : U \sim_k V\}$ is the **Simon similarity level** of $U$ and $V$.
+
+::: {.callout-note title="Theorem 22.3 (Simon's Congruence Characterization & Simon-Tree Equivalence)"}
+1. **Product Automaton Symmetric-Difference BFS ($O(|U||V|\sigma)$)**: In $\operatorname{DASG}(U) \times \operatorname{DASG}(V)$, $W$ is a shortest distinguishing subsequence of $U$ and $V$ if and only if $W$ labels a shortest path from $(0, 0)$ to a state $(u, v)$ where **exactly one** of $u, v$ equals $\infty$ (i.e., $(u \le |U| \land v = \infty)$ or $(u = \infty \land v \le |V|)$).
+2. **X-Coordinates & Simon-Tree ($O(|U| + |V|)$, Barker et al. 2020 / Gawrychowski et al. 2021)**: For each position $i \in \{1, \dots, |U|\}$, let its **distinguishing rank** $x_U[i]$ be the minimum length of a subsequence ending at $U[i]$ that does *not* appear in $U[1..i-1]$ (equivalently, $1$ plus the backward arch universality index from $i$ to the previous occurrence of $U[i]$). The laminar hierarchy of backward arch intervals forms the **Simon-Tree** $T_U$ in $O(|U|)$ time; matching nodes of $T_U$ and $T_V$ via synchronized P-tree splitting computes $k^*$ and reconstructs a lexicographically smallest Shortest Distinguishing Subsequence in **$O(|U| + |V|)$ time independent of $\sigma$**.
+:::
+
+---
+
+### 1.4 The Four-Combination $\operatorname{SAM} / \operatorname{DASG}$ Product Automaton (`[HEOI2015] 最短不公共子串`)
+
+Given two strings $A[1..M]$ and $B[1..N]$, suppose we want the shortest non-empty string $W \in \Sigma^+$ that belongs to a language of $A$ (either $\operatorname{Substr}(A)$ or $\operatorname{Subseq}(A)$) and **does not** belong to a language of $B$ (either $\operatorname{Substr}(B)$ or $\operatorname{Subseq}(B)$):
+
+| Subproblem (`Luogu P4112`) | $W$ in $A$ ($\mathcal{A}^+(A)$) | $W$ not in $B$ ($\mathcal{A}^-(B)$) | Product Automaton $\mathcal{A}^+(A) \times \mathcal{A}^-(B)$ | Optimal Complexity |
+| :--- | :--- | :--- | :--- | :--- |
+| **Type 1** | $\operatorname{Substr}(A)$ | $\notin \operatorname{Substr}(B)$ | $\operatorname{SAM}(A) \times \operatorname{SAM}(B)$ (or streaming match length $L_i$ on $\operatorname{SAM}(B)$) | **$O(M + N)$** via $\operatorname{SAM}(B)$ |
+| **Type 2** | $\operatorname{Substr}(A)$ | $\notin \operatorname{Subseq}(B)$ | $\operatorname{SAM}(A) \times \operatorname{DASG}(B)$ (or sliding window on $\operatorname{DASG}(B)$) | $O(MN\sigma)$ BFS / $O(MN)$ |
+| **Type 3** | $\operatorname{Subseq}(A)$ | $\notin \operatorname{Substr}(B)$ | $\operatorname{DASG}(A) \times \operatorname{SAM}(B)$ | $O(MN\sigma)$ BFS |
+| **Type 4** | $\operatorname{Subseq}(A)$ | $\notin \operatorname{Subseq}(B)$ | $\operatorname{DASG}(A) \times \operatorname{DASG}(B)$ | $O(MN\sigma)$ BFS |
+
+In all four cases, we run an unweighted BFS from $(q_0^+, q_0^-)$ in $\mathcal{A}^+(A) \times \mathcal{A}^-(B)$. At BFS depth $d$, the first transition $(u, v) \xrightarrow{c} (\delta^+(u, c), \delta^-(v, c))$ satisfying $\delta^+(u, c) \ne \bot$ and $\delta^-(v, c) = \bot$ witnesses a shortest uncommon string of length $d + 1$.
+
+---
+
+## 2. Invertible Subsequence Automaton Matrices (`子序列 DP 矩阵可逆性`, `T-4B-03`)
+
+### 2.1 The Diagnostic Signal: Why Segment Trees of $(\sigma+1)\times(\sigma+1)$ Matrices TLE
+
+Given a string $S[1..N]$ over an alphabet of size $\sigma = |\Sigma|$ (e.g., $\sigma = 26$) and $Q$ range queries $[l, r]$ ($N, Q \le 2 \cdot 10^5$ or $10^6$), we must compute the number of **distinct subsequences** of $S[l..r]$ modulo $m$ (e.g., $10^9 + 7$, or even a composite modulus $m$).
+
+- A Segment Tree storing $(\sigma+1)\times(\sigma+1)$ DP transition matrices costs $O(N \sigma^3 + Q \sigma^2 \log N)$ time—for $\sigma = 26$, $\sigma^3 \approx 1.97 \times 10^4$ operations per node, causing severe TLE and MLE.
+- **Why Naive Intuition Thinks the DP Is Non-Invertible**: In the classic 1D recurrence $w_c \leftarrow 1 + \sum_{a \in \Sigma} w_a$, the old value $w_c$ appears to be overwritten and lost.
+- **The Algebraic Breakthrough**: The old value $w_c$ is **included inside the sum $\sum_{a \in \Sigma} w_a$ with coefficient $+1$**! Thus the linear map $M_c$ is an **elementary row transvection with determinant $\det(M_c) = 1$**, invertible over **every commutative ring $\mathcal{R}$** with $O(1)$ non-zero off-diagonal entries!
+
+---
+
+### 2.2 Elementary Transvection Proof ($\det M_c = 1$) & Local Ring Unit Criterion
+
+#### Concrete Objects: Last-Character Subsequence Partition
+
+For any string $T \in \Sigma^*$, partition $\operatorname{Subseq}(T)$ by the **last character** of each subsequence: let $w_a(T)$ ($a \in \{1, \dots, \sigma\}$) be the number of distinct non-empty subsequences of $T$ ending in character $a$, and set $w_{\sigma+1}(T) = 1$ to represent the empty word $\varepsilon$. Write the state column vector $\mathbf{w}(T) = (w_1(T), \dots, w_\sigma(T), w_{\sigma+1}(T))^T \in \mathcal{R}^{\sigma+1}$.
+
+When character $c \in \{1, \dots, \sigma\}$ is appended to $T$:
+
+- Every distinct subsequence $U \in \operatorname{Subseq}(T)$ (including $U = \varepsilon$) bijectively forms a distinct non-empty subsequence $U \cdot c \in \operatorname{Subseq}(T \cdot c)$ ending in $c$ (corresponding to grouping subsequences of $T \cdot c$ by their **last** occurrence of $c$, dual to Theorem 22.1). Thus $w_c(T \cdot c) = \sum_{j=1}^{\sigma+1} w_j(T)$.
+- Every distinct non-empty subsequence of $T \cdot c$ ending in $a \ne c$ does not use the new final character $c$, so $w_a(T \cdot c) = w_a(T)$ for all $a \ne c$, and $w_{\sigma+1}(T \cdot c) = w_{\sigma+1}(T) = 1$.
+
+::: {.callout-note title="Theorem 22.4 (Determinant-1 Elementary Subsequence Matrix & Universal Inverse)"}
+In the basis $\mathbf{w}(T) = (w_1(T), \dots, w_\sigma(T), 1)^T$, appending character $c \in \{1, \dots, \sigma\}$ acts by left-multiplication $\mathbf{w}(T \cdot c) = M_c \mathbf{w}(T)$, where $M_c \in \mathbb{Z}^{(\sigma+1)\times(\sigma+1)}$ is the identity matrix $I_{\sigma+1}$ except that **row $c$ is all $1$s**:
+$$\boxed{M_c = I_{\sigma+1} + \mathbf{e}_c \sum_{j \ne c} \mathbf{e}_j^T, \qquad (M_c)_{r, j} = \begin{cases} 1 & \text{if } r = c \text{ or } r = j, \\ 0 & \text{otherwise.} \end{cases}}$$
+Over **any commutative ring $\mathcal{R}$** (including rings $\mathbb{Z}/m\mathbb{Z}$ with zero divisors and characteristic $2$), $M_c$ is a product of $\sigma$ elementary row-addition matrices, so **$\det(M_c) = 1 \in \mathcal{R}^\times$**, and its exact inverse $M_c^{-1}$ is $I_{\sigma+1}$ except that **row $c$ has $-1$ in every off-diagonal column $j \ne c$**:
+$$\boxed{M_c^{-1} = I_{\sigma+1} - \mathbf{e}_c \sum_{j \ne c} \mathbf{e}_j^T, \qquad (M_c^{-1})_{r, j} = \begin{cases} 1 & \text{if } r = j, \\ -1 & \text{if } r = c \text{ and } j \ne c, \\ 0 & \text{otherwise.} \end{cases}}$$
+:::
+
+#### Proof of Theorem 22.4
+Write $N_c := \mathbf{e}_c \sum_{j \ne c} \mathbf{e}_j^T$. Since $\mathbf{e}_j^T \mathbf{e}_c = 0$ for every $j \ne c$, we have $N_c^2 = \mathbf{e}_c \bigl(\sum_{j \ne c} \mathbf{e}_j^T \mathbf{e}_c\bigr) \sum_{k \ne c} \mathbf{e}_k^T = 0$. Therefore, in any ring $\mathcal{R}$:
+$$(I_{\sigma+1} + N_c)(I_{\sigma+1} - N_c) = I_{\sigma+1} + N_c - N_c - N_c^2 = I_{\sigma+1}.$$
+Because $N_c$ is strictly nilpotent of index $2$, $\det(M_c) = 1$ and $M_c^{-1} = I_{\sigma+1} - N_c$ require **zero divisions** in $\mathcal{R}$. $\blacksquare$
+
+#### Weighted Generalization & Local Commutative Ring Unit Hypothesis
+
+Suppose each character $c \in \Sigma$ carries a multiplicative weight $\alpha_c \in \mathcal{R}$ so that a subsequence $W$ contributes weight $\prod_{k=1}^{|W|} \alpha_{W[k]}$ (or $\alpha_c = x$ to track subsequence lengths). Then $w_c(T \cdot c) = \alpha_c \sum_{j=1}^{\sigma+1} w_j(T)$, so row $c$ of $M_c(\alpha_c)$ is filled with $\alpha_c$, giving:
+$$\det\bigl(M_c(\alpha_c)\bigr) = \alpha_c.$$
+
+- **Local Algebraic Hypothesis**: $M_c(\alpha_c)$ is invertible over the commutative ring $\mathcal{R}$ **if and only if $\alpha_c \in \mathcal{R}^\times$ is a unit** (e.g., $\gcd(\alpha_c, m) = 1$ in $\mathbb{Z}/m\mathbb{Z}$, or $\alpha_c \not\equiv 0 \pmod p$ in a field $\mathbb{F}_p$). When $\alpha_c \in \mathcal{R}^\times$, its exact inverse $M_c(\alpha_c)^{-1}$ has $\alpha_c^{-1}$ at diagonal entry $(c, c)$ and $-1$ at off-diagonal entries $(c, j)$ for $j \ne c$.
+- **Basis Choice Warning**: An alternative basis used in some blogs stores the total sum $S_{\text{tot}} = \sum_{j=1}^{\sigma+1} w_j$ in coordinate $\sigma + 1$, where $S_{\text{tot}}' = 2 S_{\text{tot}} - w_c$; that basis has $\det = 2$ and requires $2 \in \mathcal{R}^\times$ (failing modulo even integers!). Always use the $(w_1, \dots, w_\sigma, 1)^T$ basis of Theorem 22.4, where $\det(M_c) = 1$ is 100% division-free.
+
+---
+
+## 3. Matrix-Free $O((N+Q)\sigma)$ Range Distinct Subsequence Queries & Structural Variants (`T-4B-03`)
+
+### 3.1 The Two-Term Vector Recurrence $\mathbf{u}_i^T$ & Lazy Column Offset $\mathbf{g}^{(i)}$
+
+Define the prefix matrix product $P_i = M_{S[i]} M_{S[i-1]} \cdots M_{S[1]}$ with $P_0 = I_{\sigma+1}$. For any substring $S[l..r]$, the transition matrix across $S[l..r]$ is $M_{S[r]} \cdots M_{S[l]} = P_r P_{l-1}^{-1}$. Starting from the empty-string initial vector $\mathbf{w}(\varepsilon) = \mathbf{e}_{\sigma+1}$ and summing all coordinates at the end via $\mathbf{1}^T = (1, 1, \dots, 1)$, the number of distinct subsequences of $S[l..r]$ (including $\varepsilon$) factors as a **1D dot product of two vectors of length $\sigma + 1$**:
+$$\operatorname{Ans}(l, r) = \mathbf{1}^T \bigl(M_{S[r]} \cdots M_{S[l]}\bigr) \mathbf{e}_{\sigma+1} = \underbrace{\bigl(\mathbf{1}^T P_r\bigr)}_{\mathbf{u}_r^T \in \mathcal{R}^{1 \times (\sigma+1)}} \cdot \underbrace{\bigl(P_{l-1}^{-1} \mathbf{e}_{\sigma+1}\bigr)}_{\mathbf{v}_{l-1} \in \mathcal{R}^{(\sigma+1) \times 1}} = \sum_{k=1}^{\sigma+1} u_r[k] \cdot v_{l-1}[k].$$
+
+How do we precompute $\mathbf{u}_i^T$ and $\mathbf{v}_i$ for all $0 \le i \le N$ in $O(N\sigma)$ time and space **without ever storing the $(\sigma+1)\times(\sigma+1)$ matrices $P_i$**?
+
+::: {.callout-note title="Theorem 22.5 (Matrix-Free $O(N\sigma)$ Recurrences for $\mathbf{u}_i^T$ and $\mathbf{v}_i$)"}
+1. **Two-Term Forward Row-Sum Recurrence for $\mathbf{u}_i^T = \mathbf{1}^T P_i$**:
+   Left-multiplying $P_{i-1}$ by $M_c$ ($c = S[i]$) leaves all rows $r \ne c$ of $P_{i-1}$ unchanged and replaces row $c$ by the sum of all rows of $P_{i-1}$, which is $\mathbf{1}^T P_{i-1} = \mathbf{u}_{i-1}^T$. Since the old row $c$ of $P_{i-1}$ was set at the previous occurrence $p = \operatorname{last}[c]$ of character $c$ to $\mathbf{u}_{p-1}^T$ (or equals row $c$ of $P_0 = I_{\sigma+1}$, namely $\mathbf{e}_c^T$, if $p = 0$), the row-sum vector $\mathbf{u}_i^T$ obeys the matrix-free recurrence:
+   $$\boxed{\mathbf{u}_i^T = 2 \mathbf{u}_{i-1}^T - \begin{cases} \mathbf{u}_{\operatorname{last}[c] - 1}^T & \text{if } \operatorname{last}[c] \ge 1, \\ \mathbf{e}_c^T & \text{if } \operatorname{last}[c] = 0. \end{cases}}$$
+2. **Lazy Column Offset Maintenance for $\mathbf{v}_i = P_i^{-1} \mathbf{e}_{\sigma+1}$**:
+   Since $P_i^{-1} = P_{i-1}^{-1} M_c^{-1}$, right-multiplying by $M_c^{-1} = I_{\sigma+1} - \mathbf{e}_c \sum_{k \ne c} \mathbf{e}_k^T$ leaves column $c$ of $P_{i-1}^{-1}$ unchanged and **subtracts column $c$ from every other column $k \ne c$**. Representing each column $k \in \{1, \dots, \sigma + 1\}$ of $P_i^{-1}$ as $\mathbf{c}_k = \tilde{\mathbf{c}}_k + \mathbf{g}$ with a shared lazy offset vector $\mathbf{g} \in \mathcal{R}^{\sigma+1}$ (initially $\mathbf{g} = \mathbf{0}, \tilde{\mathbf{c}}_k = \mathbf{e}_k$), step $i$ ($c = S[i]$) reads $\mathbf{w} = \tilde{\mathbf{c}}_c + \mathbf{g}$ and performs
+   $$\mathbf{g} \leftarrow \mathbf{g} - \mathbf{w}, \qquad \tilde{\mathbf{c}}_c \leftarrow \tilde{\mathbf{c}}_c + \mathbf{w}, \qquad \boxed{\mathbf{v}_i = \mathbf{c}_{\sigma+1}^{(i)} = \mathbf{e}_{\sigma+1} + \mathbf{g}^{(i)}}$$
+   in $O(\sigma)$ operations per step!
+:::
+
+#### Hand-Checkable Trace of $\mathbf{u}_i^T$ and $\mathbf{v}_i$ on $S = \texttt{aba}$ ($\sigma = 2$)
+Let $S[1..3] = \texttt{aba}$ over $\Sigma = \{\texttt{a}=1, \texttt{b}=2\}$, so $\sigma + 1 = 3$ (coordinates: $1=\texttt{a}, 2=\texttt{b}, 3=\varepsilon$):
+
+| Step $i$ | $S[i]$ | $\operatorname{last}[c]$ | $\mathbf{u}_i^T = \mathbf{1}^T P_i$ | True Column $\mathbf{w} = \mathbf{c}_{S[i]}^{(i-1)}$ | Lazy Offset $\mathbf{g}^{(i)}$ | $\mathbf{v}_i = \mathbf{e}_3 + \mathbf{g}^{(i)}$ |
+| :---: | :---: | :---: | :--- | :--- | :--- | :--- |
+| $0$ | — | $(0, 0)$ | $(1, 1, 1)$ | — | $(0, 0, 0)^T$ | $(0, 0, 1)^T$ |
+| $1$ | $\texttt{a}$ ($1$) | $0$ | $2(1,1,1) - (1,0,0) = (1, 2, 2)$ | $(1, 0, 0)^T$ | $(-1, 0, 0)^T$ | $(-1, 0, 1)^T$ |
+| $2$ | $\texttt{b}$ ($2$) | $0$ | $2(1,2,2) - (0,1,0) = (2, 3, 4)$ | $(-1, 1, 0)^T$ | $(0, -1, 0)^T$ | $(0, -1, 1)^T$ |
+| $3$ | $\texttt{a}$ ($1$) | $1$ | $2(2,3,4) - \mathbf{u}_0^T = (3, 5, 7)$ | $(1, -1, 0)^T$ | $(-1, 0, 0)^T$ | $(-1, 0, 1)^T$ |
+
+Check query $[l, r] = [2, 3]$ ($S[2..3] = \texttt{ba}$, distinct non-empty subsequences $\{\texttt{b}, \texttt{a}, \texttt{ba}\}$, count $= 3$):
+$$\mathbf{u}_3^T \cdot \mathbf{v}_1 - 1 = (3, 5, 7) \cdot (-1, 0, 1)^T - 1 = (-3 + 0 + 7) - 1 = 3. \quad \checkmark$$
+
+---
+
+### 3.2 Upper-Unitriangular Fixed-Pattern Matrices, Gap-$\ge 2$ Singularity & Tropical Matrices
+
+#### 1. Upper-Unitriangular Fixed-Pattern Subsequence Multiplicity (`CF 1426F`)
+To count occurrences of a fixed pattern $T[1..K]$ as a subsequence in $S[l..r]$ (with multiplicity), track prefix match lengths $dp[0..K]$ ($dp[0] = 1$). Reading $c = S[i]$ updates $dp[j] \leftarrow dp[j] + dp[j-1]$ for all $j \in \{1, \dots, K\}$ with $T[j] = c$.
+In matrix form, $\mathbf{dp}^{(i)} = \mathbf{dp}^{(i-1)} A_c$, where $A_c$ is **$(K+1)\times(K+1)$ upper-unitriangular**:
+$$A_c = I_{K+1} + N_c, \qquad N_c = \sum_{j \,:\, T[j] = c} E_{j-1, j}.$$
+Since $N_c$ is strictly upper-triangular ($N_c^{K+1} = 0$), $\det(A_c) = 1$ over every ring $\mathcal{R}$, and its exact inverse is the finite nilpotent series:
+$$\boxed{A_c^{-1} = \sum_{m=0}^{K} (-1)^m N_c^m.}$$
+*(Note: If $c$ appears at no two adjacent positions of $T$, $N_c^2 = 0$ so $A_c^{-1} = I_{K+1} - N_c$; if $T$ has adjacent identical characters $T[j] = T[j+1] = c$, the higher powers $(-1)^m N_c^m$ up to the maximum run length of $c$ in $T$ are non-zero!)*
+
+#### 2. Singular Rank-Loss Counterexample: Gap-$\ge 2$ Subsequences (`ABC 214F`, `BP-21`)
+In `AtCoder ABC 214F`, we count distinct subsequences $S[i_1] \cdots S[i_k]$ with non-adjacent indices $i_r - i_{r-1} \ge 2$.
+
+- **Whole-String O(N) DASG**: In $\operatorname{DASG}_{\text{gap}=2}(S)$, state $i \ge 1$ jumps to $\operatorname{nxt}[i+1][c]$ (while root $0$ jumps to $\operatorname{nxt}[0][c]$). Pulling backwards gives $dp[i] = \sum_{j = \max(0, \operatorname{prev}[i]-1)}^{i-2} dp[j]$ in $O(N)$ time.
+- **Why Range Queries Break Matrix Invertibility (`BP-21`)**: Because step $i$ sets the new count for character $c = S[i]$ using the delayed sum from step $i - 2$ (`f'[c] = sum_delayed`) and **overwrites the old `f[c]` without including `f[c]` in the sum**, the row corresponding to `f[c]` in the buffered $(\sigma+2)\times(\sigma+2)$ transition matrix becomes zero—yielding **$\det = 0$ (singular)**! Thus Range Gap-$2$ Distinct Subsequences cannot use prefix-matrix inversion and requires Divide-and-Conquer or a Segment Tree of transfer matrices in $O((N+Q)\sigma \log N)$ time.
+
+#### 3. Tropical $(\min, +)$ Subsequence Matrices (`CF 750E`, `CF 1609E`)
+When a range query $[l, r]$ asks for the **minimum character deletions** in $S[l..r]$ to avoid or force a pattern (such as forcing $\texttt{"2017"}$ while avoiding $\texttt{"2016"}$ in `CF 750E`), the transition matrix $T_{S[i]}$ operates over the **tropical semiring $(\mathbb{Z} \cup \{\infty\}, \min, +)$**:
+$$(A \otimes_{\min, +} B)_{x, z} = \min_{y} \bigl(A_{x, y} + B_{y, z}\bigr).$$
+Because $\min$ is idempotent ($\min(a, a) = a$) and has **no additive inverse**, tropical matrices are never invertible; range queries are answered on a Segment Tree by propagating a $1 \times K$ row vector across $O(\log N)$ nodes in **$O(K^2 \log N)$ time per query**.
+
+---
+
+## 4. Reverse-Engineering Scratchpad, Algorithmic Contracts & Boundary Pitfalls (`BP-21` / `BP-22-01`–`BP-22-04`)
+
+### 4.1 Implementation Contract: Matrix-Free $O((N+Q)\sigma)$ Range Distinct Subsequences
+
+```cpp
+// Precomputes u[0..N][sigma+1] and v[0..N][sigma+1] in O(N * sigma) time & space,
+// answering range distinct non-empty subsequence queries on S[l..r] in O(sigma) time.
+struct RangeDistinctSubseq {
+    int n, sigma;
+    long long mod;
+    vector<vector<int>> u, v;
+
+    RangeDistinctSubseq(const vector<int>& S, int sig, long long m)
+        : n((int)S.size() - 1), sigma(sig), mod(m),
+          u(n + 1, vector<int>(sig + 2, 0)),
+          v(n + 1, vector<int>(sig + 2, 0)) {
+        for (int k = 1; k <= sigma + 1; ++k) u[0][k] = 1;
+        v[0][sigma + 1] = 1;
+
+        vector<int> last(sigma + 1, 0);
+        vector<long long> g(sigma + 2, 0);
+        vector<vector<long long>> c_tilde(sigma + 2, vector<long long>(sigma + 2, 0));
+        for (int k = 1; k <= sigma + 1; ++k) c_tilde[k][k] = 1;
+
+        for (int i = 1; i <= n; ++i) {
+            int c = S[i]; // 1-indexed alphabet: c in [1, sigma]
+            int p = last[c];
+            for (int k = 1; k <= sigma + 1; ++k) {
+                long long old_row_c = (p == 0) ? (k == c ? 1 : 0) : u[p - 1][k];
+                long long val = (2LL * u[i - 1][k] - old_row_c) % mod;
+                if (val < 0) val += mod;
+                u[i][k] = (int)val;
+            }
+            last[c] = i;
+
+            for (int r = 1; r <= sigma + 1; ++r) {
+                long long w_r = (c_tilde[c][r] + g[r]) % mod;
+                g[r] = (g[r] - w_r + mod) % mod;
+                c_tilde[c][r] = (c_tilde[c][r] + w_r) % mod;
+                v[i][r] = (int)((g[r] + (r == sigma + 1 ? 1 : 0)) % mod);
+            }
+        }
+    }
+
+    // Returns number of distinct non-empty subsequences of S[l..r] mod m in O(sigma)
+    long long query(int l, int r) const {
+        long long ans = 0;
+        for (int k = 1; k <= sigma + 1; ++k) {
+            ans = (ans + 1LL * u[r][k] * v[l - 1][k]) % mod;
+        }
+        return (ans - 1 + mod) % mod;
+    }
+};
+```
+
+### 4.2 Boundary Pitfalls & Broken-Invariant Counterexamples (`BP-21` / `BP-22-01`–`BP-22-04` / `BP-4B-01`–`BP-4B-04`)
+
+1. **`BP-21` / `BP-22-01` (`BP-4B-01`) — Attempting Prefix-Matrix Inversion on Gap-$\ge 2$ (`ABC 214F`) or Tropical (`CF 750E`) Subsequence DP**:
+   - Prefix-matrix inversion $P_r P_{l-1}^{-1}$ works if and only if every single-character matrix $M_c$ satisfies $\det(M_c) \in \mathcal{R}^\times$. In gap-$\ge 2$ subsequence DP (`ABC 214F`) or adjacent-distinct subsequence DP ($W[r] \ne W[r-1]$), the transition overwrites the old character state $w_c$ without adding $+1 \cdot w_c$, setting the $(c, c)$ diagonal contribution to $0$ and forcing $\det = 0$. Always check whether the old $w_c$ survives with a unit coefficient before inverting!
+2. **`BP-22-02` (`BP-4B-02`) — Product Automaton Suffix-Link Fallacy (`[HEOI2015] 最短不公共子串`)**:
+   - During BFS on $\mathcal{A}^+(A) \times \operatorname{SAM}(B)$, when $\delta_{\operatorname{SAM}(B)}(v, c) = \bot$, **never** follow `link[v]`! Following `link[v]` drops characters from the front of the current word $W$, testing whether a proper suffix of $W \cdot c$ occurs in $B$. Recognizing $W \cdot c \in \operatorname{Substr}(B)$ requires walking $\operatorname{SAM}(B)$ as a pure forward DAG from its root without ever falling off.
+3. **`BP-22-03` (`BP-4B-03`) — Forward Greedy Tie-Breaking Failure on Lexicographically Smallest SAS (`ARC 081 E`)**:
+   - Jumping greedily to $\arg\max_{c \in \Sigma} \operatorname{nxt}[u][c]$ finds the correct SAS *length* $\iota(S) + 1$, but fails to find the **lexicographically smallest** SAS! On $S = \texttt{bacb}$ ($\Sigma = \{\texttt{a}, \texttt{b}, \texttt{c}\}$), at $u = 0$ we have $\operatorname{nxt}[0] = (\texttt{a} \to 2, \texttt{b} \to 1, \texttt{c} \to 3)$. Both $\texttt{a}$ (leading to absent $\texttt{aa}$) and $\texttt{c}$ (leading to absent $\texttt{ca}$) achieve the minimum absent length $2$, so $\texttt{aa} <_{\text{lex}} \texttt{ca}$ wins even though $\operatorname{nxt}[0][\texttt{a}] = 2 < \operatorname{nxt}[0][\texttt{c}] = 3$. Always compute backward shortest-path distances $d[u]$ first, then step to the smallest character $c$ with $d[\operatorname{nxt}[u][c]] = d[u] - 1$.
+4. **`BP-22-04` (`BP-4B-04`) — Initial Row Subtraction Bug when $\operatorname{last}[c] = 0$ in Theorem 22.5**:
+   - In $\mathbf{u}_i^T = 2\mathbf{u}_{i-1}^T - \text{old\_row}_c$, when character $c = S[i]$ appears for the **first time** ($\operatorname{last}[c] = 0$), the old row $c$ of $P_{i-1}$ is still row $c$ of $P_0 = I_{\sigma+1}$, which is the unit vector $\mathbf{e}_c^T$ (NOT $\mathbf{0}^T$ and NOT $\mathbf{u}_0^T$!). Subtracting $\mathbf{0}^T$ or $\mathbf{u}_0^T$ when $\operatorname{last}[c] = 0$ corrupts every subsequent $\mathbf{u}_i^T$.
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Ladder (9 Non-Template Problems)
+
+### Tier 1 — Stepping Stone (`W4B-02`, `W4B-12`)
+
+#### Problem 22.1 (`W4B-02`) — `AtCoder ARC 081 E (ABC 081 / ARC 081 C) — Don't Be a Subsequence`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ over $\Sigma = \{\texttt{'a'}, \dots, \texttt{'z'}\}$, find the shortest non-empty string $P \in \Sigma^+$ that is **not** a subsequence of $S$. If multiple such strings have the minimum length, output the lexicographically smallest one.
+- **Constraints**: $1 \le N \le 2 \times 10^5$, $\sigma = 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+By **Theorem 22.1**, $P \notin \operatorname{Subseq}(S)$ if and only if walking $P$ from root $0$ in $\operatorname{DASG}(S)$ reaches the dead sink $\infty$. Thus the minimum length is the unweighted shortest-path distance from $0$ to $\infty$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Let $d[i]$ ($0 \le i \le N$) be the minimum length of a word $W \in \Sigma^+$ that is absent from the suffix $S[i+1..N]$, with $d[\infty] = 0$. Since every transition $\operatorname{nxt}[i][c]$ moves strictly forward ($> i$), $d[i]$ satisfies the DAG shortest-path equation $d[i] = 1 + \min_{c \in \Sigma} d[\operatorname{nxt}[i][c]]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Sweep $i = N$ down to $0$ computing $\operatorname{nxt}[i][c]$ and $d[i]$ in $O(N\sigma)$ time. Then reconstruct $P$ from $u = 0$ by repeatedly picking the smallest character $c \in \texttt{'a'}..\texttt{'z'}$ satisfying $d[\operatorname{nxt}[u][c]] = d[u] - 1$ and advancing $u \leftarrow \operatorname{nxt}[u][c]$ until $u = \infty$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-02`)"}
+1. **Diagnostic Signal**: Enumerating candidate strings takes $O(\sigma^{\operatorname{sas}(S)})$ time, while forward greedy $\arg\max_c \operatorname{nxt}[u][c]$ fails lexicographical tie-breaking (`§4.2`).
+2. **Combinatorial Word Invariant**: By Theorem 22.1, $W \in \operatorname{Subseq}(S[i+1..N]) \iff \delta_{\operatorname{DASG}}^*(i, W) \le N$. Defining $d[\infty] = 0$ and $d[i] = 1 + \min_{c \in \Sigma} d[\operatorname{nxt}[i][c]]$ for $0 \le i \le N$ computes the exact length $d[i] = \operatorname{sas}(S[i+1..N]) = \iota(S[i+1..N]) + 1$.
+3. **Algorithmic Compilation**:
+   - Initialize `nxt[N + 1][0..25] = N + 1` (representing $\infty$) and `d[N + 1] = 0`.
+   - For $i = N$ down to $0$:
+     - If $i < N$, copy `nxt[i][c] = nxt[i + 1][c]` and set `nxt[i][S[i + 1] - 'a'] = i + 1`.
+     - Set `d[i] = 1 + min_{c=0..25} d[nxt[i][c]]`.
+   - Starting at $u = 0$, while $u \le N$, find the first $c \in [0, 25]$ with `d[nxt[u][c]] == d[u] - 1`, append `'a' + c`, and set $u \leftarrow \operatorname{nxt}[u][c]$. Total time and space: $O(N\sigma)$.
+4. **Broken-Invariant Counterexample**: On $S = \texttt{bacb}$ ($\Sigma = \{\texttt{a}, \texttt{b}, \texttt{c}\}$), forward arch-bottleneck greedy picks $c = \texttt{c}$ at $u = 0$ ($\operatorname{nxt}[0][\texttt{c}] = 3$) and produces $\texttt{ca}$, missing the lexicographically smaller absent string $\texttt{aa}$ ($\operatorname{nxt}[0][\texttt{a}] = 2$, $\operatorname{nxt}[2][\texttt{a}] = \infty$).
+:::
+
+---
+
+#### Problem 22.2 (`W4B-12`) — `Codeforces 1149B — Three Religions`
+
+- **Mathematical Statement**: Given a universe string $S[1..N]$ and three initially empty strings $W_1, W_2, W_3$ subject to $Q$ online operations—each either appending a character $c$ to the end of $W_r$ or popping the last character of $W_r$ ($r \in \{1, 2, 3\}$)—determine after each operation whether $W_1, W_2, W_3$ can be embedded as three **pairwise index-disjoint subsequences** of $S[1..N]$.
+- **Constraints**: $1 \le N \le 10^5$, $1 \le Q \le 1000$, $|W_r| \le L = 250$ at all times, $\sigma = 26$, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Three subsequences $W_1, W_2, W_3$ are pairwise disjoint in $S$ if and only if some interleaving of $W_1, W_2, W_3$ is a subsequence of $S$. A naive DP tracking $(i \in [0, N], a, b, c)$ takes $O(N L^3)$ per query.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Exchange the value and state axes via **Theorem 22.1**: for any prefix lengths $(a, b, c)$ of $(W_1, W_2, W_3)$, any valid disjoint embedding of $W_1[1..a], W_2[1..b], W_3[1..c]$ into $S[1..i]$ can be canonically replaced by the **minimum** prefix length $dp[a][b][c] \in \{0, 1, \dots, N, \infty\}$ of $S$ that admits such an embedding!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+The transition is $dp[a][b][c] = \min\bigl(\operatorname{nxt}_S[dp[a-1][b][c]][W_1[a]],\; \operatorname{nxt}_S[dp[a][b-1][c]][W_2[b]],\; \operatorname{nxt}_S[dp[a][b][c-1]][W_3[c]]\bigr)$. When a character is appended to $W_1$ (increasing $|W_1|$ to $a$), only the single 2D slice $dp[a][0..|W_2|][0..|W_3|]$ of size $\le 251^2$ needs to be computed!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-12`)"}
+1. **Diagnostic Signal**: $N = 10^5$ must be absorbed into a static precomputation so that online updates on $W_1, W_2, W_3$ depend only on $L \le 250$.
+2. **Combinatorial Word Invariant**: By Theorem 22.1 applied to the set of all interleavings of $W_1[1..a], W_2[1..b], W_3[1..c]$, the minimal ending index $dp[a][b][c]$ in $\operatorname{DASG}(S)$ dominates all larger ending indices. In the final step of an optimal interleaving, the last matched character belongs to $W_1[a]$, $W_2[b]$, or $W_3[c]$, yielding:
+   $$dp[a][b][c] = \min\begin{cases} \operatorname{nxt}_S\bigl[dp[a-1][b][c]\bigr]\bigl[W_1[a]\bigr] & (a \ge 1), \\ \operatorname{nxt}_S\bigl[dp[a][b-1][c]\bigr]\bigl[W_2[b]\bigr] & (b \ge 1), \\ \operatorname{nxt}_S\bigl[dp[a][b][c-1]\bigr]\bigl[W_3[c]\bigr] & (c \ge 1), \end{cases}$$
+   with $dp[0][0][0] = 0$.
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{DASG}(S)$ (`nxt[0..N+1][26]`) in $O(N\sigma)$ time, setting `nxt[N][c] = nxt[N+1][c] = N + 1` ($\infty$).
+   - On `+ r ch`: append `ch` to $W_r$ and iterate over the 2D slice where coordinate $r$ is fixed to $|W_r|$ and the other two coordinates run from $0$ to their current lengths ($\le 250 \times 250$ states).
+   - On `- r`: simply decrement $|W_r|$ in $O(1)$ time.
+   - Output `YES` iff $dp[|W_1|][|W_2|][|W_3|] \le N$. Total time: $O(N\sigma + Q L^2)$.
+4. **Broken-Invariant Counterexample**: Failing to set $\operatorname{nxt}_S[\infty][c] = \infty$ (`nxt[N+1][c] = N + 1`) causes out-of-bounds memory reads or false transitions back into $S$ when $dp[a-1][b][c] = \infty$.
+:::
+
+---
+
+### Tier 2 — Intermediate (`W4B-11`, `W4B-15`)
+
+#### Problem 22.3 (`W4B-11`) — `[HEOI2015] 最短不公共子串` (`Luogu P4112` / `BZOJ 4032`)
+
+- **Mathematical Statement**: Given two lowercase strings $A[1..M]$ and $B[1..N]$, solve four independent subproblems: find the minimum length of a non-empty string $W \in \Sigma^+$ (or `-1` if none exists) such that:
+  1. $W$ is a contiguous substring of $A$, and **not** a contiguous substring of $B$;
+  2. $W$ is a contiguous substring of $A$, and **not** a subsequence of $B$;
+  3. $W$ is a subsequence of $A$, and **not** a contiguous substring of $B$;
+  4. $W$ is a subsequence of $A$, and **not** a subsequence of $B$.
+- **Constraints**: $1 \le M, N \le 2000$, $\sigma = 26$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Contiguous substrings of $X$ are recognized by $\operatorname{SAM}(X)$ ($O(|X|)$ states), while subsequences of $X$ are recognized by $\operatorname{DASG}(X)$ ($|X| + 1$ states).
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In each subproblem $k \in \{1, 2, 3, 4\}$, we want the shortest string $W \in L(\mathcal{A}^+(A)) \setminus L(\mathcal{A}^-(B))$, where $\mathcal{A}^+, \mathcal{A}^- \in \{\operatorname{SAM}, \operatorname{DASG}\}$. Since both $\operatorname{SAM}$ and $\operatorname{DASG}$ are deterministic, $W$ corresponds to a shortest path in the product DAG $\mathcal{A}^+(A) \times \mathcal{A}^-(B)$ from $(q_0^+, q_0^-)$ to a transition $(u, v) \xrightarrow{c} (\delta^+(u, c) \ne \bot,\; \delta^-(v, c) = \bot)$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Build $\operatorname{SAM}(A), \operatorname{SAM}(B), \operatorname{DASG}(A), \operatorname{DASG}(B)$ once. Run a single unified BFS function `solve(A_plus, B_minus)` over state pairs $(u, v)$ for all four combinations in $O(MN\sigma)$ time and $O(MN)$ memory.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-11`)"}
+1. **Diagnostic Signal**: $M, N \le 2000$ allows $O(MN\sigma)$ product-automaton BFS (at most $4001 \times 4001$ pairs, with typically $\ll 10^6$ reachable states).
+2. **Combinatorial Word Invariant**: Let $\mathcal{A}^+(A)$ and $\mathcal{A}^-(B)$ be the deterministic automata ($\operatorname{SAM}$ for substrings, $\operatorname{DASG}$ for subsequences) where every state of $\mathcal{A}^+(A)$ (and $\mathcal{A}^-(B)$) is accepting and missing transitions go to $\bot$. A string $W = c_1 \cdots c_d \cdot c_{d+1}$ is a shortest element of $L(\mathcal{A}^+(A)) \setminus L(\mathcal{A}^-(B))$ if and only if $c_1 \cdots c_d$ reaches a valid pair $(u, v)$ at BFS depth $d$ such that $\delta^+(u, c_{d+1}) \ne \bot$ and $\delta^-(v, c_{d+1}) = \bot$.
+3. **Algorithmic Compilation**:
+   - Normalize both $\operatorname{SAM}$ and $\operatorname{DASG}$ to use root index $1$ and dead transition $0$ ($\bot$): for $\operatorname{DASG}(S)$, shift state indices by $+1$ so states are $1 \dots |S|+1$ with root $1$.
+   - For each of the 4 pairs $(\mathcal{A}^+(A), \mathcal{A}^-(B)) \in \{\operatorname{SAM}, \operatorname{DASG}\}^2$:
+     - Push $(1, 1)$ at distance $0$ into a BFS queue.
+     - Pop $(u, v)$ at distance $d$; for $c \in 0..25$:
+       - Let $nu = \delta^+(u, c)$ and $nv = \delta^-(v, c)$.
+       - If $nu == 0$, continue. If $nv == 0$, return $d + 1$ immediately!
+       - If $(nu, nv)$ is unvisited, mark visited and push at distance $d + 1$.
+     - If the queue empties without finding $nv == 0$, return `-1`.
+4. **Broken-Invariant Counterexample**: In Subproblems 1 and 3 ($\mathcal{A}^-(B) = \operatorname{SAM}(B)$), **never** follow suffix links `link[v]` when $\delta_{\operatorname{SAM}(B)}(v, c) = 0$ (`§4.2`). Walking `link[v]` checks whether a *suffix* of $W$ is in $B$, whereas $W \in \operatorname{Substr}(B)$ requires $W$ to trace a path from the root of $\operatorname{SAM}(B)$ without ever dropping a prefix.
+:::
+
+---
+
+#### Problem 22.4 (`W4B-15`) — `CF 1426F (Range Version) — Fixed-Pattern Subsequence Multiplicity with Wildcards`
+
+- **Mathematical Statement**: Given a string $S[1..N] \in \{\texttt{'a'}, \texttt{'b'}, \texttt{'c'}, \texttt{'?'}\}^N$ and $Q$ range queries $[l_q, r_q]$, each `'?'` in $S[l_q .. r_q]$ can be independently replaced by `'a'`, `'b'`, or `'c'`. For each query, compute the sum, over all $3^{k_q}$ replacements of the $k_q$ wildcards in $S[l_q .. r_q]$, of the number of index triples $l_q \le i < j < k \le r_q$ forming the subsequence $\texttt{"abc"}$, modulo $10^9 + 7$.
+- **Constraints**: $1 \le N, Q \le 2 \times 10^5$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+A Segment Tree of $4 \times 4$ matrices takes $O((N + Q \log N) \cdot 4^3)$ time. Can we answer each query in $O(1)$ time with zero Segment Trees?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Track the row vector $\mathbf{dp} = (dp_0, dp_1, dp_2, dp_3)$ representing the sum over all wildcard assignments of $(1, \#\texttt{"a"}, \#\texttt{"ab"}, \#\texttt{"abc"})$. For $c \in \{\texttt{'a'}, \texttt{'b'}, \texttt{'c'}\}$, the transition matrix $A_c$ is $4 \times 4$ upper-unitriangular ($\det(A_c) = 1$). For `'?'`, the transition matrix is $A_{\texttt{?}} = A_{\texttt{a}} + A_{\texttt{b}} + A_{\texttt{c}} = 3 I_4 + E_{0,1} + E_{1,2} + E_{2,3}$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Notice that $\det(A_{\texttt{?}}) = 3^4 = 81 \not\equiv 0 \pmod{10^9 + 7}$! By factoring $A_{\texttt{?}} = 3(I_4 + \frac{1}{3}N)$ where $N = E_{0,1} + E_{1,2} + E_{2,3}$ satisfies $N^4 = 0$, the exact inverse is $A_{\texttt{?}}^{-1} = 3^{-1}(I_4 - 3^{-1}N + 3^{-2}N^2 - 3^{-3}N^3)$. Precompute prefix products $P_i = P_{i-1} A_{S[i]}$ and $Q_i = A_{S[i]}^{-1} Q_{i-1}$ to answer $[l, r]$ in $O(1)$ via $(Q_{l-1} P_r)_{0, 3}$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-15`)"}
+1. **Diagnostic Signal**: Fixed-pattern subsequence counting over a field $\mathbb{F}_p$ produces upper-triangular transition matrices with invertible diagonals.
+2. **Combinatorial Word Invariant**: Let $E_{r, c}$ be the $4 \times 4$ elementary matrix with $1$ at $(r, c)$ ($0 \le r, c \le 3$). Then:
+   - $A_{\texttt{a}} = I_4 + E_{0,1}$, $A_{\texttt{b}} = I_4 + E_{1,2}$, $A_{\texttt{c}} = I_4 + E_{2,3}$, with $A_{\texttt{a}}^{-1} = I_4 - E_{0,1}$, $A_{\texttt{b}}^{-1} = I_4 - E_{1,2}$, $A_{\texttt{c}}^{-1} = I_4 - E_{2,3}$.
+   - $A_{\texttt{?}} = A_{\texttt{a}} + A_{\texttt{b}} + A_{\texttt{c}} = 3 I_4 + N$ where $N = E_{0,1} + E_{1,2} + E_{2,3}$.
+   - **Local Algebraic Hypothesis**: Because $3 \in \mathbb{F}_{10^9+7}^\times$ is a unit ($3^{-1} \equiv 333333336 \pmod{10^9+7}$) and $N^4 = 0$, $A_{\texttt{?}}$ is invertible with:
+     $$A_{\texttt{?}}^{-1} = 3^{-1}\bigl(I_4 - 3^{-1} N + 3^{-2} N^2 - 3^{-3} N^3\bigr) = \begin{pmatrix} 3^{-1} & -3^{-2} & 3^{-3} & -3^{-4} \\ 0 & 3^{-1} & -3^{-2} & 3^{-3} \\ 0 & 0 & 3^{-1} & -3^{-2} \\ 0 & 0 & 0 & 3^{-1} \end{pmatrix}.$$
+3. **Algorithmic Compilation**:
+   - Precompute $P_i = P_{i-1} A_{S[i]}$ and $Q_i = A_{S[i]}^{-1} Q_{i-1}$ ($P_0 = Q_0 = I_4$) for $1 \le i \le N$ in $O(N)$ time.
+   - For query $[l, r]$, the transition matrix is $Q_{l-1} P_r$, and we need entry $(0, 3)$:
+     $$\operatorname{Ans}(l, r) = \bigl(Q_{l-1} P_r\bigr)_{0, 3} = \sum_{k=0}^{3} (Q_{l-1})_{0, k} \cdot (P_r)_{k, 3} \pmod{10^9 + 7},$$
+     evaluated in **4 multiplications ($O(1)$ time)** per query!
+4. **Broken-Invariant Counterexample**: If a fixed pattern $T$ has adjacent identical characters (e.g., $T = \texttt{"aab"}$), $N_{\texttt{a}} = E_{0,1} + E_{1,2}$ satisfies $N_{\texttt{a}}^2 = E_{0,2} \ne 0$, so $A_{\texttt{a}}^{-1} = I_4 - N_{\texttt{a}} + N_{\texttt{a}}^2$; omitting the $+N_{\texttt{a}}^2$ term fails to invert $A_{\texttt{a}}$.
+:::
+
+---
+
+### Tier 3 — Advanced (`W4B-07`, `W4B-24`, `W4B-27`)
+
+#### Problem 22.5 (`W4B-07`) — `Large-Alphabet Distinct Common Subsequences in O(|A||B|) Time`
+
+- **Mathematical Statement**: Given two integer arrays $A[1..M]$ and $B[1..N]$ over a potentially huge alphabet $\Sigma = \{1, 2, \dots, 10^9\}$, compute the number of **distinct** common subsequences of $A$ and $B$ (each unique sequence $P \in \operatorname{Subseq}(A) \cap \operatorname{Subseq}(B)$ counted once regardless of how many index pairs realize it), modulo $998244353$.
+- **Constraints**: $1 \le M, N \le 4000$, $1 \le A[i], B[j] \le 10^9$, time limit $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Because $|\Sigma|$ can be up to $M + N = 8000$, iterating over $c \in \Sigma$ at every state $(i, j) \in \operatorname{DASG}(A) \times \operatorname{DASG}(B)$ takes $O(MN|\Sigma|) \approx 1.28 \times 10^{11}$ operations.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Use the **2D Predecessor Rectangle Bijection (`§1.2`)**: a pair $(i', j') \in [1, M] \times [1, N]$ is the canonical transition target $(\operatorname{nxt}_A[i][c], \operatorname{nxt}_B[j][c])$ from state $(i, j)$ if and only if $A[i'] = B[j'] = c$ and $(i, j) \in [\operatorname{prev}_A[i'], i' - 1] \times [\operatorname{prev}_B[j'], j' - 1]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Let $dp[i'][j']$ be the number of distinct common subsequences whose canonical greedy match in $\operatorname{DASG}(A) \times \operatorname{DASG}(B)$ ends at $(i', j')$, with $dp[0][0] = 1$ (for $\varepsilon$) and $dp[i'][j'] = 0$ whenever $A[i'] \ne B[j']$. Maintain the 2D prefix sums $S[i][j] = \sum_{x=0}^i \sum_{y=0}^j dp[x][y]$ so each matching cell $(i', j')$ computes $dp[i'][j']$ in $O(1)$ time!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-07`)"}
+1. **Diagnostic Signal**: Contrast this with `AtCoder ABC 130 E` (which counts equal index-subset pairs $(I, J)$). Counting *distinct strings* $P \in \operatorname{Subseq}(A) \cap \operatorname{Subseq}(B)$ requires counting directed paths from $(0, 0)$ in $\operatorname{DASG}(A) \times \operatorname{DASG}(B)$ without paying $O(|\Sigma|)$ per node.
+2. **Combinatorial Word Invariant**: By Theorem 22.1, every $P \in \operatorname{Subseq}(A) \cap \operatorname{Subseq}(B)$ maps bijectively to its sequence of canonical states $(0, 0) \to (i_1, j_1) \to \dots \to (i_m, j_m)$ in $\operatorname{DASG}(A) \times \operatorname{DASG}(B)$. For any non-empty $P$ ending at $(i', j')$, we must have $A[i'] = B[j']$, and its immediate predecessor $(i, j) = (i_{m-1}, j_{m-1})$ satisfies $\operatorname{nxt}_A[i][A[i']] = i' \iff \operatorname{prev}_A[i'] \le i \le i' - 1$ and $\operatorname{nxt}_B[j][B[j']] = j' \iff \operatorname{prev}_B[j'] \le j \le j' - 1$. Therefore:
+   $$dp[i'][j'] = \begin{cases} \displaystyle\sum_{i = \operatorname{prev}_A[i']}^{i' - 1} \;\sum_{j = \operatorname{prev}_B[j']}^{j' - 1} dp[i][j] & \text{if } A[i'] = B[j'], \\ 0 & \text{if } A[i'] \ne B[j']. \end{cases}$$
+3. **Algorithmic Compilation**:
+   - Coordinate-compress or hash $A$ and $B$ to compute $\operatorname{prev}_A[1..M] \in [0, M-1]$ and $\operatorname{prev}_B[1..N] \in [0, N-1]$ in $O((M+N)\log(M+N))$ time.
+   - Initialize $dp[0][0] = 1$ and 2D prefix sum `pref[0][0..N] = pref[0..M][0] = 1`.
+   - For $i' = 1 \dots M$ and $j' = 1 \dots N$:
+     - If $A[i'] == B[j']$, query the 2D rectangle $[\operatorname{prev}_A[i'], i'-1] \times [\operatorname{prev}_B[j'], j'-1]$ in `pref` in $O(1)$ time to get $dp[i'][j']$.
+     - Update `pref[i'][j']`.
+   - Return `pref[M][N]` (or `pref[M][N] - 1` for non-empty subsequences). Total time: **$O(MN)$**, completely independent of $|\Sigma|$!
+4. **Broken-Invariant Counterexample**: Using $0$ instead of $\operatorname{prev}_A[i']$ as the lower rectangle bound counts index-pair multiplicity (`ABC 130 E`) instead of distinct strings!
+:::
+
+---
+
+#### Problem 22.6 (`W4B-24`) — `Range Universality Index & O(log N) Range Shortest Absent Subsequence`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ over an alphabet $\Sigma = \{1, \dots, \sigma\}$ and $Q$ range queries $[l_q, r_q]$, output for each query: (1) the length $\operatorname{sas}(S[l_q .. r_q])$ of a Shortest Absent Subsequence of $S[l_q .. r_q]$, and (2) the smallest character $c \in \{1, \dots, \sigma\}$ that can serve as the **first** character of a Shortest Absent Subsequence of $S[l_q .. r_q]$.
+- **Constraints**: $1 \le N, Q \le 2 \times 10^5$, $1 \le \sigma \le 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Running backward DP on $S[l_q .. r_q]$ per query takes $O(Q N \sigma)$ time. We must use **Theorem 22.2 (Hébrard's Arch Factorization)** to jump across arches in $O(\log N)$ time.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Define $\operatorname{arch\_end}[i] = \max_{c \in \Sigma} \operatorname{nxt}[i][c]$ for $0 \le i \le N$. For any starting state $u \in [0, r_q]$, the number of complete arches in $S[u+1 .. r_q]$ is the maximum $k \ge 0$ such that $\operatorname{up}[0]^{(k)}(u) \le r_q$, so $\operatorname{sas}(S[u+1 .. r_q]) = k + 1$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+**Key Observation**: A character $c \in \Sigma$ can be the **first** character of a Shortest Absent Subsequence of $S[l_q .. r_q]$ if and only if stepping to $v = \operatorname{nxt}[l_q - 1][c]$ leaves at most $\iota(S[l_q .. r_q]) - 1$ complete arches inside $S[v+1 .. r_q]$! Equivalently, for $k = \iota(S[l_q .. r_q])$, $c$ is valid iff either $v > r_q$ (when $k = 0$) or the $(k-1)$-th arch jump from $v$ exceeds $r_q$: $\operatorname{up\_exact}(v,\, k - 1) > r_q$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-24`)"}
+1. **Diagnostic Signal**: We need both the range SAS length $\iota(S[l..r]) + 1$ and the lexicographically smallest valid first character $c$ in $O(\log N + \sigma)$ time per query.
+2. **Combinatorial Word Invariant**: By Theorem 22.1 and Theorem 22.2:
+   - $\iota(S[l..r]) = k$ is the unique integer such that $\operatorname{arch\_end}^{(k)}(l - 1) \le r < \operatorname{arch\_end}^{(k+1)}(l - 1)$, giving $\operatorname{sas}(S[l..r]) = k + 1$.
+   - Choosing $c \in \Sigma$ as the first character of a candidate absent word transitions from $l - 1$ to $v = \operatorname{nxt}[l - 1][c]$. The shortest absent continuation from $v$ inside $S[l..r]$ has length $1 + \iota(S[v+1 .. r])$ (or $0$ if $v > r$).
+   - Thus $c$ starts a Shortest Absent Subsequence of $S[l..r]$ if and only if:
+     $$\begin{cases} \operatorname{nxt}[l-1][c] > r & \text{if } k = 0, \\ \operatorname{arch\_end}^{(k-1)}\bigl(\operatorname{nxt}[l-1][c]\bigr) > r & \text{if } k \ge 1. \end{cases}$$
+     Even better: because $v \mapsto \operatorname{arch\_end}^{(k-1)}(v)$ is **monotonically non-decreasing** in $v$, if we let $u^*$ be the minimum index such that $\operatorname{arch\_end}^{(k-1)}(u^*) > r$ (found in $O(\log N)$ by binary lifting from $l - 1$!), then $c$ is valid if and only if $\operatorname{nxt}[l - 1][c] \ge u^*$!
+3. **Algorithmic Compilation**:
+   - Build `nxt[0..N][sigma]` and `up[0][i] = max_{c} nxt[i][c]` (capped at $N + 1$), then fill `up[b][i] = up[b-1][up[b-1][i]]` for $1 \le b \le 18$ in $O(N(\sigma + \log N))$ time.
+   - For query $[l, r]$:
+     - Lift $u = l - 1$ while `up[b][u] <= r` to find $k = \iota(S[l..r])$.
+     - If $k == 0$, find the smallest $c$ with `nxt[l-1][c] > r`.
+     - If $k \ge 1$, find the smallest $c$ whose $(k-1)$-th jump from `nxt[l-1][c]` exceeds $r$ (or binary lift $w = l - 1$ while jumping $w$ plus $k-1$ arches stays $\le r$ to get threshold $u^* = w + 1$, then scan $c \in 1..\sigma$ for `nxt[l-1][c] >= u*` in $O(\sigma)$ time!).
+   - Total time: **$O((N + Q)(\sigma + \log N))$**.
+4. **Broken-Invariant Counterexample**: Simply picking the character $c$ that maximizes $\operatorname{nxt}[l-1][c]$ (the bottleneck of the first arch $A_1$) fails to find the smallest valid $c$ whenever multiple characters jump far enough to prevent $k - 1$ remaining arches from fitting before $r$.
+:::
+
+---
+
+#### Problem 22.7 (`W4B-27`) — `QOJ / Universal Cup / CodeChef DISTSUBS — Matrix-Free O((N+Q)|\Sigma|) Range Distinct Subsequences`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ over an alphabet of size $\sigma \le 26$ and $Q$ range queries $[l_q, r_q]$, output for each query the number of **distinct non-empty subsequences** of the substring $S[l_q .. r_q]$ modulo $10^9 + 7$.
+- **Constraints**: $1 \le N, Q \le 2.5 \times 10^5$, $\sigma = 26$, time limit $1.5\text{ s}$, memory limit $256\text{ MB}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At $N, Q = 2.5 \times 10^5$ and $\sigma = 26$, storing a $(\sigma+1)\times(\sigma+1)$ matrix at each prefix $i$ takes $2.5 \times 10^5 \times 729 \times 4 \approx 730\text{ MB}$ (MLE!), and a Segment Tree takes $O(Q\sigma^2 \log N)$ (TLE!).
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Apply **Theorem 22.4** and **Theorem 22.5**: $\operatorname{Ans}(l, r) = \mathbf{1}^T P_r P_{l-1}^{-1} \mathbf{e}_{\sigma+1} - 1 = \mathbf{u}_r^T \cdot \mathbf{v}_{l-1} - 1$, where $\mathbf{u}_r^T$ and $\mathbf{v}_{l-1}$ are $(\sigma+1)$-dimensional vectors!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Use the two-term forward recurrence $\mathbf{u}_i^T = 2\mathbf{u}_{i-1}^T - \text{old\_row}_c$ and the lazy column offset $\mathbf{g}^{(i)}$ from `§4.1` (`RangeDistinctSubseq`) to precompute `u[0..N][27]` and `v[0..N][27]` in $54\text{ MB}$ and $O(N\sigma)$ time, then answer each query via a 27-term dot product in $O(\sigma)$ time.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-27`)"}
+1. **Diagnostic Signal**: Both time ($1.5\text{ s}$) and memory ($256\text{ MB}$) forbid storing prefix $(\sigma+1)\times(\sigma+1)$ matrices $P_i$ and $P_i^{-1}$; only $O(N\sigma)$ vectors may be stored.
+2. **Combinatorial Word Invariant**: By Theorem 22.4, $M_c = I_{\sigma+1} + \mathbf{e}_c \sum_{j \ne c} \mathbf{e}_j^T$ satisfies $\det(M_c) = 1$ and $M_c^{-1} = I_{\sigma+1} - \mathbf{e}_c \sum_{j \ne c} \mathbf{e}_j^T$. By Theorem 22.5:
+   - $\mathbf{u}_i^T = \mathbf{1}^T P_i$ updates in $O(\sigma)$ time via $\mathbf{u}_i^T = 2\mathbf{u}_{i-1}^T - \mathbf{u}_{\operatorname{last}[S[i]]-1}^T$ (with $\mathbf{e}_{S[i]}^T$ subtracted if $\operatorname{last}[S[i]] = 0$).
+   - $\mathbf{v}_i = P_i^{-1} \mathbf{e}_{\sigma+1}$ updates in $O(\sigma)$ time via the lazy column offset $\mathbf{g}^{(i)}$ on a single sliding $(\sigma+1)\times(\sigma+1)$ workspace `c_tilde`.
+3. **Algorithmic Compilation**: Instantiate `RangeDistinctSubseq` from `§4.1`. Memory usage is two $(N+1) \times 27$ `int` arrays ($\approx 54\text{ MB}$), precomputation takes $27 N \approx 6.75 \times 10^6$ operations, and $Q$ queries take $27 Q \approx 6.75 \times 10^6$ operations ($\le 0.08\text{ s}$ in C++).
+4. **Broken-Invariant Counterexample**: When $\operatorname{last}[c] = 0$, subtracting $\mathbf{0}^T$ instead of $\mathbf{e}_c^T$ fails because row $c$ of $P_0 = I_{\sigma+1}$ starts as $\mathbf{e}_c^T$, not $\mathbf{0}^T$.
+:::
+
+---
+
+### Tier 4 — Mastery (`W4B-33`, `W4B-41`)
+
+#### Problem 22.8 (`W4B-33`) — `Two-Stack Deque Distinct Subsequence Maintenance in Amortized O(|\Sigma|)` (`CF 1810G` / `Universal Cup`)
+
+- **Mathematical Statement**: Maintain a dynamic string $S$ (initially empty) under $Q$ online operations of five types:
+  1. `push_front(c)`: prepend character $c$ to the front of $S$;
+  2. `push_back(c)`: append character $c$ to the back of $S$;
+  3. `pop_front()`: remove the first character of $S$;
+  4. `pop_back()`: remove the last character of $S$;
+  5. `query(l, r)`: given 1-based indices $1 \le l \le r \le |S|$ in the current deque, output the number of distinct non-empty subsequences of $S[l..r]$ modulo $998244353$.
+- **Constraints**: $1 \le Q \le 3 \times 10^5$, $\sigma \le 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+**Key Observation**: Do we even need two-stack rebuilding when a stack empties, or does the invertibility of $M_c$ allow **signed deque coordinates** $i \in [L_{\text{cur}}, R_{\text{cur}}]$ anchored at origin $0$ in **worst-case $O(\sigma)$ time** without ever rebuilding?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Assign the characters of the deque absolute signed coordinates $S[L_{\text{cur}} .. R_{\text{cur}}]$ around a fixed origin $0$ (initially $L_{\text{cur}} = 1, R_{\text{cur}} = 0$). Define $P_0 = I_{\sigma+1}$ and require that for **every** $i \in [L_{\text{cur}} - 1, R_{\text{cur}}]$:
+$$P_i = M_{S[i]} P_{i-1} \iff P_{i-1} = M_{S[i]}^{-1} P_i \quad\text{and}\quad P_{i-1}^{-1} = P_i^{-1} M_{S[i]}!$$
+Then for **any** $L_{\text{cur}} \le l \le r \le R_{\text{cur}}$ (even when $l \le 0 < r$ or $l \le r \le 0$!), the transition product $M_{S[r]} \cdots M_{S[l]}$ is identically $P_r P_{l-1}^{-1}$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Specifically, how do we maintain $\mathbf{u}_i^T = \mathbf{1}^T P_i$ and $\mathbf{v}_i = P_i^{-1} \mathbf{e}_{\sigma+1}$ when pushing/popping at both $R_{\text{cur}}$ and $L_{\text{cur}}$?
+
+- **Method A (Signed-Origin Prefix/Inverse Stacks — Worst-Case $O(\sigma)$ per update)**: Maintain the $(\sigma+1)\times(\sigma+1)$ matrix $P_i$ on the back via column/row lazy offsets and $P_{i-1} = M_{S[i]}^{-1} P_i$ on the front (where left-multiplying by $M_c^{-1}$ replaces row $c$ of $P_i$ by $2 \cdot \text{row}_c(P_i) - \mathbf{u}_i^T$, and right-multiplying $P_i^{-1}$ by $M_c$ adds column $c$ to all other columns via lazy offset!).
+- **Method B (Classic Two-Stack Deque)**: Even simpler if only whole-deque or standard stack operations are needed, both the back stack ($i > 0$) and front stack ($i \le 0$) update $\mathbf{u}_i^T$ and $\mathbf{v}_i$ in **worst-case $O(\sigma)$** with $O(1)$ rollback on `pop`!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-33`)"}
+1. **Diagnostic Signal**: Because $M_c$ is invertible ($\det M_c = 1$), a deque over the group $GL_{\sigma+1}(\mathcal{R})$ does **not** even need amortized two-stack rebuilding—every `push_front`, `push_back`, `pop_front`, `pop_back`, and `query(l, r)` runs in **worst-case $O(\sigma)$ time**!
+2. **Combinatorial Word Invariant**: Anchor origin $0$ with $P_0 = P_0^{-1} = I_{\sigma+1}$, and maintain active deque indices $[L, R]$ (where the $k$-th 1-based character of the current deque is at signed index $L + k - 1$). Enforce the invariant $P_i = M_{S[i]} P_{i-1}$ for all $L \le i \le R$:
+   - **`push_back(c)` ($R \leftarrow R + 1, S[R] = c$)**:
+     $$P_R = M_c P_{R-1}, \qquad P_R^{-1} = P_{R-1}^{-1} M_c^{-1}.$$
+     - In $P_R = M_c P_{R-1}$, only row $c$ changes (becomes $\mathbf{u}_{R-1}^T = \mathbf{1}^T P_{R-1}$), so $\mathbf{u}_R^T = 2\mathbf{u}_{R-1}^T - \text{row}_c(P_{R-1})$.
+     - In $P_R^{-1} = P_{R-1}^{-1} M_c^{-1}$, column $c$ is subtracted from all columns $k \ne c$ via lazy offset $\mathbf{g}_R$.
+   - **`push_front(c)` ($S[L-1] = c$, then $L \leftarrow L - 1$)**:
+     Since $P_L = M_{S[L]} P_{L-1}$, we have:
+     $$P_{L-1} = M_c^{-1} P_L, \qquad P_{L-1}^{-1} = P_L^{-1} M_c.$$
+     - In $P_{L-1} = M_c^{-1} P_L$, left-multiplying by $M_c^{-1} = I - \mathbf{e}_c \sum_{r \ne c} \mathbf{e}_r^T$ leaves all rows $r \ne c$ of $P_L$ unchanged and replaces row $c$ by $\text{row}_c(P_L) - \sum_{r \ne c} \text{row}_r(P_L) = 2 \cdot \text{row}_c(P_L) - \mathbf{u}_L^T$! Consequently, the new row-sum vector $\mathbf{u}_{L-1}^T = \mathbf{1}^T P_{L-1}$ is simply:
+       $$\boxed{\mathbf{u}_{L-1}^T = \mathbf{row}_c(P_L)!}$$
+     - In $P_{L-1}^{-1} = P_L^{-1} M_c$, right-multiplying by $M_c$ leaves column $c$ unchanged and **adds** column $c$ to all other columns $k \ne c$ via the front lazy offset $\mathbf{g}_L$!
+3. **Algorithmic Compilation**:
+   - Maintain a back stack ($i \ge 0$) and a front stack ($i \le 0$). On each stack, modifying a single row of $P_i$ and a single column + lazy offset of $P_i^{-1}$ takes $O(\sigma)$ time and records a single $O(\sigma)$ undo frame for $O(\sigma)$ (or $O(1)$ pointer) `pop_front` / `pop_back`.
+   - For `query(l_1based, r_1based)`, convert to signed indices $l = L + l_{\text{1based}} - 1$ and $r = L + r_{\text{1based}} - 1$, and return $\mathbf{u}_r^T \cdot \mathbf{v}_{l-1} - 1 \pmod{998244353}$ in $O(\sigma)$ time!
+4. **Broken-Invariant Counterexample**: On `push_front(c)`, accidentally setting $P_{L-1} = P_L M_c^{-1}$ (right-multiplying instead of left-multiplying $M_c^{-1} P_L$) reverses the matrix multiplication order and fails whenever a query $[l, r]$ crosses the origin $0$.
+:::
+
+---
+
+#### Problem 22.9 (`W4B-41`) — `Simon's Congruence (\sim_k) & Shortest Distinguishing Subsequence` (`Universal Cup` / `STACS 2021`)
+
+- **Mathematical Statement**: Given two strings $U[1..M]$ and $V[1..N]$ over $\Sigma = \{\texttt{'a'}, \dots, \texttt{'z'}\}$:
+  - **Subtask A ($M, N \le 3000$)**: Find the maximum integer $k^* \ge 0$ such that $U \sim_{k^*} V$ (i.e., $\operatorname{Subseq}_{\le k^*}(U) = \operatorname{Subseq}_{\le k^*}(V)$), and output the lexicographically smallest **Shortest Distinguishing Subsequence (`SDS`)** $W \in \operatorname{Subseq}(U) \triangle \operatorname{Subseq}(V)$ of length $k^* + 1$ (or `EQUAL` if $U = V$).
+  - **Subtask B ($M, N \le 2 \times 10^5$)**: Explain how the backward arch **Simon-Tree** reduces the complexity to $O(M + N)$ time.
+- **Constraints**: Subtask A: $1 \le M, N \le 3000$; Subtask B: $1 \le M, N \le 2 \times 10^5$; time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Unlike `[HEOI2015]` Subproblem 4 (which tests the asymmetric difference $\operatorname{Subseq}(U) \setminus \operatorname{Subseq}(V)$), Simon's Congruence requires the **symmetric difference** $\operatorname{Subseq}(U) \triangle \operatorname{Subseq}(V)$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In $\operatorname{DASG}(U) \times \operatorname{DASG}(V)$ (with dead sinks $\infty_U = M + 1, \infty_V = N + 1$), a word $W$ belongs to $\operatorname{Subseq}(U) \triangle \operatorname{Subseq}(V)$ if and only if walking $W$ from $(0, 0)$ reaches a state $(u, v)$ where **exactly one** of $u = \infty_U$ or $v = \infty_V$ holds!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For Subtask A, run a single BFS from $(0, 0)$ on $\operatorname{DASG}(U) \times \operatorname{DASG}(V)$ exploring transitions $c = \texttt{'a'}..\texttt{'z'}$ in alphabetical order; stop at the first transition $(u, v) \xrightarrow{c} (nu, nv)$ where $(nu \le M) \ne (nv \le N)$. For Subtask B, invoke **Theorem 22.3** (Barker et al. 2020 / Gawrychowski et al. 2021): construct the backward arch Simon-Trees $T_U, T_V$ in $O(M + N)$ time and split blocks top-down until a coordinate mismatch occurs at depth $k^* + 1$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W4B-41`)"}
+1. **Diagnostic Signal**: $U \sim_k V \iff \operatorname{Subseq}_{\le k}(U) = \operatorname{Subseq}_{\le k}(V)$. If $U \ne V$, since a string of length $L$ is uniquely determined by its subsequence of length $L$, there is always a finite distinguishing subsequence of length $\le \max(M, N)$.
+2. **Combinatorial Word Invariant**:
+   - **Subtask A ($O(MN\sigma)$ Product Automaton)**: By Theorem 22.1 and Theorem 22.3(1), for any prefix $W$ with $\operatorname{first\_end}_U(W) = u \le M$ and $\operatorname{first\_end}_V(W) = v \le N$, $W \cdot c$ distinguishes $U$ and $V$ if and only if $(\operatorname{nxt}_U[u][c] \le M) \oplus (\operatorname{nxt}_V[v][c] \le N) = 1$. Since BFS visits lengths in non-decreasing order and tests $c = 0..25$ in increasing alphabetical order, the first distinguishing transition found along the lexicographically canonical BFS tree yields both $k^* = d$ and the lexicographically smallest SDS $W$ of length $k^* + 1$.
+   - **Subtask B ($O(M + N)$ Simon-Tree)**: In $U[1..M]$ (read right-to-left), each block at level $k$ of the **Simon-Tree** $T_U$ represents a maximal contiguous interval of $U$ whose suffixes cannot be distinguished by subsequences of length $\le k$. Constructing $T_U$ and $T_V$ via a monotone stack of backward arch ranks and synchronously partitioning blocks of $T_U \sqcup T_V$ finds the deepest level $k^*$ where the root block of $U$ and $V$ remain coupled in $O(M + N)$ time.
+3. **Algorithmic Compilation (Subtask A)**:
+   - Build `nxtU[0..M][26]` (missing $= M+1$) and `nxtV[0..N][26]` (missing $= N+1$).
+   - Run BFS from $(0, 0)$ storing parent pointers `par[u][v]` and `pch[u][v]`.
+   - When popping $(u, v)$ at depth $d$, iterate $c = 0 \dots 25$: let $nu = \operatorname{nxt}_U[u][c], nv = \operatorname{nxt}_V[v][c]$.
+   - If $(nu \le M) \ne (nv \le N)$, backtrack from $(u, v)$ to $(0, 0)$, append $c$, and return $k^* = d$ and $W$.
+4. **Broken-Invariant Counterexample**: Testing only $nu \le M \land nv == N + 1$ misses witnesses $W \in \operatorname{Subseq}(V) \setminus \operatorname{Subseq}(U)$ (for example, when $U$ is a proper subsequence of $V$, $\operatorname{Subseq}(U) \setminus \operatorname{Subseq}(V) = \emptyset$!). Always test the symmetric condition `(nu <= M) != (nv <= N)`.
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Decision Checklist: When to Apply Chapter 22 Machinery
+
+| Contest Signal / Query Structure | Invariant / Engine to Invoke | Complexity |
+| :--- | :--- | :--- |
+| Shortest absent subsequence (`SAS`) + lex-smallest witness | Backward DAG shortest path $d[u] = 1 + \min_c d[\operatorname{nxt}[u][c]]$ on $\operatorname{DASG}(S)$ (**Theorem 22.1**) | $O(N\sigma)$ |
+| $k$-universality test $\Sigma^k \subseteq \operatorname{Subseq}(S)$ (`CF 1925C`) | Hébrard's Arch Factorization $S = A_1 \cdots A_k R$ + bottleneck witness $m_1 \cdots m_k m_{k+1}$ (**Theorem 22.2**) | $O(N)$ |
+| Range $[l, r]$ Shortest Absent Subsequence (`Range SAS`) | Binary lifting on $\operatorname{arch\_end}[i] = \max_c \operatorname{nxt}[i][c]$ (**Theorem 22.2(3)**) | $O((N+Q)\log N)$ |
+| Substring vs. subsequence uncommon witness (`[HEOI2015]`) | Four-Comb Product Automaton BFS over $\{\operatorname{SAM}, \operatorname{DASG}\}^2$ (`§1.4`) | $O(MN\sigma)$ |
+| Distinct common subsequences on large alphabet $\sigma = O(N)$ | 2D Predecessor Rectangle $[\operatorname{prev}_A[i'], i'-1] \times [\operatorname{prev}_B[j'], j'-1]$ (`§1.2`) | **$O(|A||B|)$** |
+| Range $[l, r]$ distinct subsequences mod $m$ (no updates / deque) | $\det(M_c) = 1$ matrix-free $\mathbf{u}_r^T \cdot \mathbf{v}_{l-1} - 1$ (**Theorem 22.4 & 22.5**) | **$O((N+Q)\sigma)$** |
+| Range $[l, r]$ fixed-pattern $T[1..K]$ multiplicity (`CF 1426F`) | Upper-unitriangular nilpotent inverse $A_c^{-1} = \sum_{m=0}^K (-1)^m N_c^m$ (`§3.2.1`) | **$O(NK + QK)$** |
+| Range $[l, r]$ gap-$\ge 2$ (`ABC 214F`) or tropical $(\min, +)$ (`CF 750E`) | Non-invertible (`BP-21`, $\det = 0$ or tropical) $\implies$ **Segment Tree / Divide-and-Conquer** | $O(Q\sigma \log N)$ / $O(Q K^2 \log N)$ |
+| Simon's Congruence $U \sim_k V$ & distinguishing subsequence | Symmetric-difference product BFS ($O(MN\sigma)$) or **Simon-Tree** ($O(M+N)$, **Theorem 22.3**) | $O(MN\sigma)$ / $O(M+N)$ |
+
+### 6.2 What Comes Next in Part VI
+In this chapter, we mastered single-string subsequence automata ($\operatorname{DASG}$), arch factorizations, and invertible $(\sigma+1)\times(\sigma+1)$ subsequence matrices. What happens when we align **two** strings $A[1..M]$ and $B[1..N]$ and need either ultra-fast $O(MN/w)$ Longest Common Subsequence / Edit Distance at $N = 10^5$, or $O(\log N)$ queries for **All-Pairs Interval LCS** $\operatorname{LCS}(A, B[l..r])$ (`[THUPC 2021] 区间 LCS`) and **$O(N \log^2 N)$ Range LIS**? In **[Chapter 23: Bit-Parallel Alignment (`Allison–Dix` & `Myers`), Tiskin's Seaweed Matrices (`海草矩阵`), and $O(N \log^2 N)$ Range LIS](ch23-bit-parallel-lcs-seaweed-matrices.qmd)**, we prove the 4-instruction hardware borrow identity $V' = X \mathbin{\&} \sim(X - Y)$ and Tiskin's planar wire-uncrossing permutation algebra.

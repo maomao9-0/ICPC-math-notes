@@ -1,0 +1,607 @@
+---
+title: "Locally Consistent Parsing, Jeż Recompression SLPs, String Attractors γ(S), and LZ77/SLP 2D Indexing"
+subtitle: "Chapter 21 · Part V: Algebraic, Approximate, Structural-Isomorphism & Grammar-Compressed Matching"
+---
+
+::: {.callout-important title="Prerequisites, Assumed Library & Learning Objectives"}
+
+- **Assumed Library Primitives**: $O(N)$ KMP prefix function, Suffix Array + LCP RMQ, Suffix Automaton (`SAM`) with link tree and $\operatorname{minlen}(q) = \operatorname{len}(\operatorname{link}(q)) + 1$, and 2D Wavelet Tree / Persistent Segment Tree orthogonal range counting. See [Notation & Conventions](../notation.qmd).
+- **Strict Prerequisite Chapters**: [Chapter 02: Weak Periodicity & Border APs](ch02-weak-periodicity-border-aps.qmd), [Chapter 08: The Runs Theorem & Squares](ch08-runs-theorem-squares-sweep.qmd), [Chapter 09: SAM Duality & GSAM](ch09-sam-duality-gsam-trie-bfs.qmd), [Chapter 15: Internal Pattern Matching & Borders](ch15-internal-pattern-matching-borders.qmd).
+- **Assigned Technique IDs**: `T-3B-05` (Locally Consistent Parsing, Cole–Vishkin 6-Coloring, Jeż's Recompression & SLP Seam Algorithms), `T-5B-05` (Kempa–Prezza String Attractors $\gamma(S)$ & Kempa–Kociumaka $\tau$-Synchronizing Sets), `T-5B-08` (Kärkkäinen–Ukkonen LZ77 / SLP Primary–Secondary 2D Orthogonal Range Indexing).
+- **Learning Objectives**:
+  1. Explain why standard balanced BSTs (such as FHQ-Treaps) suffer **shift desynchronization** when comparing identical substrings at different indices, and construct **Locally Consistent Parse Trees (`局部一致性剖析`)** using alternating Maximal Run-Length Compression (`RComp`) and Pair/Block Contraction (`PComp`) across the three canonical engines (Local Extrema, **Cole–Vishkin Deterministic 6-Coloring**, and **Jeż's Recompression**).
+  2. Prove that Locally Consistent Parsing supports dynamic `Split`, `Concat`, and `Reverse` in $O(\log N)$ time per operation (modifying only $O(1)$ boundary blocks per level) and **100% deterministic, collision-free $O(\log N)$ LCE** on strings of length up to $10^{18}$.
+  3. Compile exact pattern matching, palindrome finding, and run counting on Straight-Line Programs (`SLPs`) via **Primary-Seam Border APs** and **Jeż's Synchronized SLP-in-SLP Recompression**.
+  4. Prove **Kempa–Prezza's SAM `minlen(q)` Hitting-Set Duality** for **String Attractors $\gamma(S)$**, construct **Kempa–Kociumaka $\tau$-Synchronizing Sets**, and design **Kärkkäinen–Ukkonen 2D Wavelet Range Indexes** for LZ77 and SLP-compressed texts.
+:::
+
+---
+
+## 1. Three-Engine Alternating Contraction: Locally Consistent Parsing (`T-3B-05`)
+
+### 1.1 The Diagnostic Signal: Shift Desynchronization in Balanced BSTs
+
+Suppose we must maintain a dynamic text $S[1..N]$ (or a persistent family of strings reaching exponential length $N \le 10^{18}$ via repeated concatenations $S_k = S_a + S_b$) under four online operations: `Split(S, k)`, `Concat(A, B)`, `Reverse(S, l, r)`, and Longest Common Extension `LCE(A, i, B, j)`.
+
+Why do standard balanced binary search trees (such as FHQ-Treaps or Splay trees) fail on this workload?
+
+1. **The Shift-Desynchronization Barrier**: In a position-balanced BST, where a subtree split occurs depends on **global index positions** from the start of the string (or random heap priorities attached to individual nodes). Consequently, if the exact same substring $U = S[p_1 .. p_1 + L - 1] = S[p_2 .. p_2 + L - 1]$ appears at two different offsets $p_1 \ne p_2$, the subtree decomposition covering $S[p_1 .. p_1 + L - 1]$ and the subtree decomposition covering $S[p_2 .. p_2 + L - 1]$ have **completely unrelated tree topologies**!
+2. **The $O(\log^2 N)$ Randomized Hash Bottleneck & $N \le 10^{18}$ Memory Blowup**: Because the two subtrees are unaligned, a treap cannot compare them structurally; it must fall back to binary searching the LCE length using randomized polynomial rolling hashes in $O(\log^2 N)$ time (which can be hacked by adaptive judges or birthday collisions over $Q \log N$ queries), and a standard BST cannot represent a string of length $10^{18}$ with $O(N)$ explicit nodes without exhausting memory.
+
+To overcome shift desynchronization, **Locally Consistent Parsing (`局部一致性剖析` / Block Compression)** builds a hierarchical **Straight-Line Program (SLP) DAG** $S = S^{(0)} \to S^{(1)} \to \dots \to S^{(H)}$ of height $H = O(\log N)$ governed by two strict invariants at every level $h$:
+
+- **Constant-Radius Local Determinism**: Whether a block boundary (cut) is placed between $S^{(h)}[i]$ and $S^{(h)}[i + 1]$ depends **exclusively** on a small local neighborhood $S^{(h)}[i - \Delta .. i + 1 + \Delta]$ of radius $\Delta = O(1)$ (or $\Delta = \log^* |\Sigma| \le 4$), and **never** on the global index $i$!
+- **Constant-Factor Contraction & Global Hash-Consing**: Each level shrinks the sequence length by a constant factor $|S^{(h+1)}| \le \gamma |S^{(h)}|$ ($\gamma < 1$), and every production rule ($\operatorname{Run}(c, \ell)$ or $\operatorname{Block}(c_1, \dots, c_d)$) is **interned (hash-consed)** into a global deterministic dictionary so that two DAG nodes have the same integer ID if and only if they expand to the exact same string:
+  $$\boxed{\operatorname{id}(u) = \operatorname{id}(v) \iff \operatorname{str}(u) = \operatorname{str}(v).}$$
+
+---
+
+### 1.2 The Combinatorial Word Invariant: Why Every Level Must Alternate `RComp` (Run-Length) and `PComp` (Pair/Block)
+
+Consider the unary string $S = \texttt{a}^N = \texttt{a a a}\cdots\texttt{a}$. Inside the interior of $\texttt{a}^N$, every radius-$\Delta$ local window $S[i - \Delta .. i + \Delta] = \texttt{a}^{2\Delta + 1}$ is **100% identical**! Any purely local rule that looks only at $\Delta$ neighbors must either cut *nowhere* inside $\texttt{a}^N$ (failing to shrink the string!) or cut *everywhere* (failing to group characters!). Worse yet, if one tries to pair adjacent characters greedily by index parity $(1, 2), (3, 4), \dots$, shifting the string by $+1$ position changes every single pair to $(2, 3), (4, 5), \dots$, completely desynchronizing the parse tree!
+
+Therefore, **every level $h$ of a Locally Consistent Parser MUST execute a Two-Phase Alternating Contraction**:
+
+1. **Phase A — Maximal Run-Length Compression (`RComp`, Radius $\Delta = 1$)**:
+   Scan $S^{(h)}$ and compress every maximal contiguous unary run $c^\ell$ ($\ell \ge 1$, or $\ell \ge 2$) into a single RLE meta-symbol $x = \operatorname{Run}(c, \ell)$. Because a cut occurs between $S^{(h)}[i]$ and $S^{(h)}[i+1]$ if and only if $S^{(h)}[i] \ne S^{(h)}[i+1]$, `RComp` has local lookahead radius $\Delta = 1$.
+   **Crucial Output Guarantee**: After Phase A, the resulting sequence $W[1..m]$ is **strictly proper (repetition-free)**:
+   $$\boxed{\forall i \in \{1, 2, \dots, m - 1\},\qquad W[i] \ne W[i + 1].}$$
+
+2. **Phase B — Proper Sequence Block/Pair Contraction (`PComp`)**:
+   Now that $W[i] \ne W[i + 1]$ holds everywhere, adjacent elements are guaranteed to be distinct! We partition $W[1..m]$ into short blocks of length $\ge 2$ (or disjoint adjacent pairs) using one of three canonical engines.
+
+| Engine | Cut / Pairing Rule on Proper Sequence $W$ ($W[i] \ne W[i+1]$) | Local Radius $\Delta$ | Shrink Factor $\gamma$ | Primary Strength |
+| :--- | :--- | :---: | :---: | :--- |
+| **Engine 1: Priority Local Extrema** *(`noshi91` / Gawrychowski)* | Map symbol $x \mapsto \operatorname{prio}(x) = \operatorname{splitmix64}(x)$; cut before local minima & isolated maxima. | $\Delta = 1$ | $\approx \frac{2}{3}$ (expected) | Simplest $O(\log N)$ contest code (`split`/`concat`/`LCE`) |
+| **Engine 2: Cole–Vishkin 6-Coloring** *(Mehlhorn–Sundar–Uhrig 1997)* | Apply bit-diff reduction $c'(i) = 2\operatorname{lsb}(c(i)\oplus c(i+1)) + \operatorname{bit}_{\operatorname{lsb}}(c(i))$ $\le 4$ times to get $c[i] \in \{0..5\}$; cut into blocks of size $\{2, 3, 4\}$. | $\Delta = \log^*|\Sigma| \le 4$ | $\le \frac{1}{2}$ (deterministic) | 100% worst-case deterministic local radius |
+| **Engine 3: Jeż's Recompression** *(Jeż 2013 / JACM 2016)* | Partition alphabet $\Sigma_h = \Sigma_L \sqcup \Sigma_R$ via greedy max-cut covering $\ge \frac{1}{2}$ of adjacencies; contract all $(a, b) \in \Sigma_L \times \Sigma_R$. | $\Delta = 1$ (per level $\Sigma_L \times \Sigma_R$) | $\le \frac{3}{4}$ (deterministic) | Synchronized SLP-in-SLP matching & word equations on $N \le 10^{18}$ |
+
+---
+
+### 1.3 Zero-Magic Proofs of the Three Contraction Engines
+
+Let us prove why each of the three Phase-B engines achieves constant-factor length contraction on any proper sequence $W[1..m]$ ($W[i] \ne W[i+1]$) while preserving local boundary synchronization.
+
+#### Engine 1: Injective Priority Local Extrema ($\Delta = 1$)
+Assign each symbol ID $x$ a fixed, injective 64-bit priority $P(x) = \operatorname{splitmix64}(x)$. Because $W[i] \ne W[i + 1]$ and $P$ is injective, $P(W[i]) \ne P(W[i + 1])$ for all $i$. Call index $i \in (1, m)$ a **local minimum** if $P(W[i]) < \min\bigl(P(W[i-1]), P(W[i+1])\bigr)$.
+
+- Two local minima can never be adjacent (if $P(W[i]) < P(W[i+1])$, then $i + 1$ cannot be smaller than $i$).
+- To prevent long monotone runs $P(W[1]) < P(W[2]) < \dots < P(W[k])$ from creating an oversized block, we also cut at any **interior local maximum** $P(W[i]) > \max\bigl(P(W[i-1]), P(W[i+1])\bigr)$ that is not immediately adjacent to a selected local minimum, and split any remaining monotone run deterministically or via randomized priority. Under a random permutation of priorities, every 3-element window has probability $1/3$ of centering a local minimum, shrinking $m \mapsto \frac{2}{3}m$ per level with radius $\Delta = 1$.
+
+#### Engine 2: Cole–Vishkin Deterministic Coin Tossing & 6-Coloring ($\Delta \le 4$)
+How do we cut a proper sequence $W[1..m]$ into blocks of worst-case bounded size $\in \{2, 3, 4\}$ **deterministically** without monotone runs? If the alphabet size were small—say $c[i] \in \{0, 1, 2, 3, 4, 5\}$ with $c[i] \ne c[i+1]$—then no strictly increasing or decreasing chain could exceed length $6$! Cole and Vishkin (1986) showed how to compress an arbitrary $B$-bit proper coloring $c[i] \in [0, 2^B - 1]$ ($c[i] \ne c[i+1]$) into a $2\lceil \log_2 B \rceil$-color proper coloring in **1 local step of radius $1$**:
+
+::: {.callout-important title="Theorem 21.1 (Cole–Vishkin Deterministic Bit-Difference Coloring, 1986 / Mehlhorn–Sundar–Uhrig 1997)"}
+Let $W[1..m]$ be a proper sequence ($W[i] \ne W[i + 1]$ for all $1 \le i < m$) with $B$-bit integer labels $W[i] \in [0, 2^B - 1]$. For each $i \in \{1, \dots, m - 1\}$, let $\ell_i = \operatorname{lsb}(W[i] \oplus W[i + 1]) \in \{0, 1, \dots, B - 1\}$ be the index of the lowest bit where $W[i]$ and $W[i + 1]$ differ, and define the new color:
+$$\boxed{W'[i] = 2 \cdot \ell_i + \operatorname{bit}_{\ell_i}\bigl(W[i]\bigr) \in \{0, 1, \dots, 2B - 1\}.}$$
+Then $W'[1..m]$ is again a **strictly proper sequence** ($W'[i] \ne W'[i + 1]$ for all $i$) over an alphabet of size $2B$! Iterating this map $t \le 4$ times reduces 64-bit labels ($2^{64} \to 128 \to 14 \to 8 \to 6$) to $\{0, 1, 2, 3, 4, 5\}$ using lookahead radius $\Delta = t \le 4$.
+:::
+
+#### Proof of Theorem 21.1
+Consider any two adjacent indices $i$ and $i + 1$.
+
+- **Case 1 ($\ell_i \ne \ell_{i+1}$)**: Then $\lfloor W'[i] / 2 \rfloor = \ell_i \ne \ell_{i+1} = \lfloor W'[i+1] / 2 \rfloor$, so $W'[i] \ne W'[i + 1]$.
+- **Case 2 ($\ell_i = \ell_{i+1} = \ell$)**: By definition of $\ell_i = \operatorname{lsb}(W[i] \oplus W[i + 1]) = \ell$, the $\ell$-th bit of $W[i]$ and the $\ell$-th bit of $W[i + 1]$ are **opposite**: $\operatorname{bit}_\ell(W[i]) = 1 - \operatorname{bit}_\ell(W[i + 1])$. Therefore, $W'[i] = 2\ell + \operatorname{bit}_\ell(W[i]) \ne 2\ell + \operatorname{bit}_\ell(W[i + 1]) = W'[i + 1]$. $\blacksquare$
+
+Once $c[i] \in \{0, 1, 2, 3, 4, 5\}$ with $c[i] \ne c[i+1]$, marking every local maximum $c[i] > \max(c[i-1], c[i+1])$ (whose gap between consecutive marks is at most $6$) and marking the midpoint of any gap $\ge 4$ places cut points separated by **at least $2$ and at most $4$ positions**, guaranteeing worst-case block sizes $\in \{2, 3, 4\}$ and $|S^{(h+1)}| \le \frac{1}{2}|S^{(h)}|$!
+
+#### Engine 3: Jeż's Recompression (`RComp` + $\Sigma_L \times \Sigma_R$ `PComp`, 2013–2016)
+In **Jeż's Recompression**, instead of cutting into variable-length blocks, Phase B partitions the active alphabet $\Sigma_h$ at level $h$ into two disjoint sets $\Sigma_h = \Sigma_L \sqcup \Sigma_R$ and simultaneously replaces every adjacent pair $(a, b) \in \Sigma_L \times \Sigma_R$ with a fresh meta-symbol $c_{a, b}$.
+
+- **Why Pairs Never Overlap**: Because $\Sigma_L \cap \Sigma_R = \emptyset$, no symbol can be both the right element of one pair ($\in \Sigma_R$) and the left element of the next pair ($\in \Sigma_L$)! Thus the pairing is **100% locally determined with radius $\Delta = 1$** ($W[i] W[i+1]$ pairs iff $W[i] \in \Sigma_L$ and $W[i+1] \in \Sigma_R$).
+- **Deterministic $\le \frac{3}{4}$ Shrinkage Proof**: Build the directed adjacency multigraph on $\Sigma_h$ where edge $(W[i], W[i+1])$ has weight $1$ for each $1 \le i < m$ (total weight $m - 1$, with zero self-loops since $W[i] \ne W[i+1]$ after `RComp`). A linear-time greedy max-cut algorithm (iterating $c \in \Sigma_h$ and placing $c$ into $\Sigma_L$ or $\Sigma_R$ to maximize edges crossing between $c$ and already-placed vertices) puts **at least $\frac{1}{2}(m - 1)$** undirected edges across the cut, so either $\Sigma_L \times \Sigma_R$ or $\Sigma_R \times \Sigma_L$ contains **at least $\frac{1}{4}(m - 1)$** directed transitions! Contracting each such transition eliminates $1$ symbol, shrinking $m$ to $\le m - \frac{1}{4}(m - 1) \approx \frac{3}{4}m$ per level!
+
+---
+
+## 2. Dynamic Split/Concat/Reverse, Collision-Free $O(\log N)$ LCE & SLP Seam Algorithms (`T-3B-05`)
+
+### 2.1 Dynamic Cut, Paste, Reverse & Deterministic $O(\log N)$ LCE
+
+Because block formation at level $h$ depends only on a local neighborhood of radius $\Delta = O(1)$:
+
+1. **The $O(\Delta)$ Margin Synchronization Invariant**: Suppose $S[p_1 .. p_1 + L - 1] = S[p_2 .. p_2 + L - 1]$. At level $0$, their characters are identical. At level $1$, every block cut inside $[p_1 + \Delta, p_1 + L - 1 - \Delta]$ sees the exact same radius-$\Delta$ neighborhood in both copies and therefore produces the **exact same sequence of level-1 meta-symbols**, differing in at most $O(\Delta) = O(1)$ boundary blocks at the left and right margins! Inducting up $H = O(\log N)$ levels shows that any substring $S[l..r]$ decomposes into an $O(\log N)$-length canonical sequence of $O(1)$ margin nodes per level meeting at a single top apex node.
+2. **`Concat(A, B)`, `Split(A, k)` & `Reverse(A)` in $O(\log N)$ Time**:
+   When concatenating $A$ and $B$ (or splitting $A$ at offset $k$), only the $O(\Delta) = O(1)$ blocks within radius $\Delta$ of the seam at level $h$ can change their local decisions! At each level $h = 0 \dots H$, we unpack the $O(1)$ seam blocks around the cut, re-run `RComp` + `PComp` on that $O(1)$-sized buffer, intern the new nodes into the global hash-cons table, and pass the new $O(1)$ seam symbols up to level $h + 1$. Total work and new DAG nodes per `Concat`/`Split`: **$O(\log N)$**! (For `Reverse`, maintain the reversed node `rev_id[u]` for every interned DAG node by reversing child order on `Block` nodes and keeping `Run(c, l)` self-dual.)
+
+3. **100% Deterministic Collision-Free `LCE(A, i, B, j)` in $O(\log N)$ Time**:
+   To compute $\operatorname{LCE}(A[i..], B[j..])$, represent $A[i..]$ and $B[j..]$ as their $O(\log N)$ right-spine node lists (each node tagged with its grammar level $h$, character length $\operatorname{len}[u]$, and rule type) and walk them in lockstep (`§4.1` Contract 1):
+
+   - If the current front nodes $x, y$ have $\operatorname{id}[x] == \operatorname{id}[y]$, they represent the exact same string! Add $\operatorname{len}[x]$ to the LCE and pop both in $O(1)$ time.
+   - If $x = \operatorname{Run}(c, \ell_1)$ and $y = \operatorname{Run}(c, \ell_2)$ are level-$h$ RLE nodes of the **same** base symbol $c$: add $\min(\ell_1, \ell_2) \cdot \operatorname{len}(c)$ to the LCE. **If $\ell_1 \ne \ell_2$, we MUST terminate immediately** (or expand only the unmatched remainder of $c$ if $c$ is a composite meta-symbol, though since `RComp` is maximal at level $h$, the next level-$h$ symbol after the shorter run is $\ne c$!).
+   - Otherwise, unpack whichever of $x, y$ is at the higher grammar level (or both if at the same level) into its $O(1)$ children. Because only the $O(1)$ unaligned margin blocks at each level $h$ fail to match by identical `id`, at most $O(1)$ nodes are unpacked per level $h \in [0, H]$, running in **worst-case deterministic $O(\log N)$ time with zero modular hash collisions**!
+
+---
+
+### 2.2 Primary-Seam Pattern Matching, Palindromes & Runs on Huge SLPs ($N \le 10^{18}$)
+
+Suppose we are given an arbitrary Straight-Line Program (`SLP`) with $g$ binary production rules $X_u \to X_L X_R$ ($1 \le u \le g$) generating a string $S = X_g$ of length $N = |X_g| \le 10^{18}$. Even though $S$ has up to $10^{18}$ characters, its parse tree has only **$g$ distinct seam types** $(X_L, X_R)$!
+
+::: {.callout-important title="Theorem 21.2 (Primary-Seam Decomposition for SLPs — Lifshits / Gawrychowski / I et al.)"}
+In an SLP of $g$ rules $X_u \to X_L X_R$, every contiguous substring $W = S[l..r]$ of length $|W| \ge 2$ has a **unique lowest variable occurrence** $X_u \to X_L X_R$ in the parse tree where $W$ **straddles the seam** between $X_L$ and $X_R$ ($l$ lies inside $X_L$ and $r$ lies inside $X_R$).
+
+1. **Explicit Pattern Counting in $O(g M)$ or $O(g \log^2 M + M)$**: For an explicit pattern $P[1..M]$, occurrences of $P$ in $X_u$ satisfy the exact DP recurrence:
+   $$\boxed{\operatorname{occ}(P, X_u) = \operatorname{occ}(P, X_L) + \operatorname{occ}(P, X_R) + \operatorname{occ}_{\text{seam}}\Bigl(P,\; \operatorname{suff}_{\min(|X_L|, M-1)}(X_L) + \operatorname{pref}_{\min(|X_R|, M-1)}(X_R)\Bigr).}$$
+   When $M \le 10^4$, running KMP on the explicit seam string of length $\le 2M - 2$ takes $O(gM)$ time. When $M \le 2 \times 10^5$, any seam match splits $P = P[1..q] + P[q+1..M]$ into a suffix of $X_L$ matching $P[1..q]$ and a prefix of $X_R$ matching $P[q+1..M]$; by [Chapter 02 (Weak Periodicity Lemma)](ch02-weak-periodicity-border-aps.qmd), these form $O(\log M)$ arithmetic progressions (Border APs), intersected in $O(\log^2 M)$ time per rule!
+
+2. **Fully Compressed SLP-in-SLP Matching in $O((g_P + g_T)\log |P|)$ via Jeż's Recompression**: When **both** $P$ and $T$ are given as SLPs ($|P|, |T| \le 10^{18}$), apply Jeż's `RComp` and $\Sigma_L \times \Sigma_R$ `PComp` (`§1.3` Engine 3) **simultaneously to the grammar rules of $P$ and $T$**! At each level $h$, pop any unaligned leading/trailing partial run $a^r$ (before `RComp`) or leading symbol $P[1] \in \Sigma_R$ and trailing symbol $P[|P|] \in \Sigma_L$ (before `PComp`) from the ends of $P$, splitting those boundary symbols out of the seam of every rule $X_u \to X_L X_R$ of $T$ ($O(1)$ new symbols per rule). Now all interior runs and pairs of $P$ align 100% with those of $T$, shrinking $P$ to length $1$ in $O(\log |P|)$ levels!
+3. **Palindromes & Maximal Runs on SLPs in $O(g \log^2 N)$ Time**: Any palindrome or periodic run straddling the seam of $X_u \to X_L X_R$ is determined by $O(\log |X_u|)$ periodic/palindromic suffix APs of $X_L$ and prefix APs of $X_R$ ([Chapter 02](ch02-weak-periodicity-border-aps.qmd), [Chapter 08](ch08-runs-theorem-squares-sweep.qmd)), extended across the seam via $O(1)$ calls to our $O(\log N)$ SLP-LCE oracle!
+:::
+
+---
+
+## 3. String Attractors $\gamma(S)$, $\tau$-Synchronizing Sets & LZ77/SLP 2D Indexing (`T-5B-05`, `T-5B-08`)
+
+### 3.1 Kempa–Prezza String Attractors $\gamma(S)$ & SAM `minlen(q)` Hitting-Set Duality
+
+Why do all dictionary compressors—Lempel–Ziv (`LZ77`, $z$ phrases), Straight-Line Programs (`SLP`, $g$ rules), Run-Length BWT (`RLBWT`, $r$ runs), and Compact DAWGs (`CDAWG`, $e$ edges)—work by anchoring every repeated substring to a small set of "primary" boundary positions? In STOC 2018, Dominik Kempa and Nicola Prezza unified all dictionary compression measures under a single combinatorial object called a **String Attractor**:
+
+::: {.callout-important title="Definition & Theorem 21.3 (String Attractors $\gamma(S)$ & SAM Minimal-Representative Duality — Kempa & Prezza, STOC 2018)"}
+A subset of indices $\Gamma \subseteq \{1, 2, \dots, N\}$ is a **string attractor** of $S[1..N]$ if every non-empty contiguous substring $S[l..r]$ has **at least one** occurrence $S[l'..r'] = S[l..r]$ in $S$ that intersects $\Gamma$ ($[l', r'] \cap \Gamma \ne \emptyset$). The minimum size of a string attractor of $S$ is denoted $\gamma(S)$.
+
+1. **Universal Dictionary Lower Bound**: Because every primary occurrence of a substring in `LZ77`, `SLP`, `RLBWT`, or `CDAWG` straddles at least one phrase/rule/run boundary, placing $O(1)$ points at each boundary yields a valid string attractor:
+   $$\boxed{\gamma(S) \le \min\bigl(z_{\text{LZ77}}(S),\; g_{\text{SLP}}(S),\; r_{\text{BWT}}(S),\; e_{\text{CDAWG}}(S)\bigr).}$$
+   Furthermore, any string attractor $\Gamma$ of size $\gamma$ can be expanded into a Locally Consistent / Expander SLP of size $O(\gamma \log(N/\gamma))$ supporting $O(\log(N/\gamma))$ random access and LCE!
+
+2. **SAM Minimal-Unique Representative (`minlen(q)`) Hitting-Set Duality**: Let $\operatorname{SAM}(S)$ be the Suffix Automaton of $S[1..N]$ ([Chapter 09](ch09-sam-duality-gsam-trie-bfs.qmd)). For each state $q \ne \text{root}$, let $M_q$ be the **shortest** string in $q$'s equivalence class, which has length $\operatorname{minlen}(q) = \operatorname{len}(\operatorname{link}(q)) + 1$ and occurrence intervals $\mathcal{I}(q) = \bigl\{[r - \operatorname{minlen}(q) + 1,\, r] : r \in \operatorname{endpos}(q)\bigr\}$. Then $\Gamma \subseteq \{1, \dots, N\}$ is a string attractor of $S$ **if and only if** $\Gamma$ hits at least one interval in $\mathcal{I}(q)$ for every SAM state $q$:
+   $$\boxed{\Gamma \text{ is a string attractor of } S \iff \forall q \in \operatorname{SAM}(S)\setminus\{\text{root}\},\quad \exists r \in \operatorname{endpos}(q) \text{ s.t. } \bigl[r - \operatorname{minlen}(q) + 1,\, r\bigr] \cap \Gamma \ne \emptyset.}$$
+:::
+
+#### Proof of SAM `minlen(q)` Hitting-Set Duality (Theorem 21.3(2))
+Since every $M_q$ is a substring of $S$, any valid attractor $\Gamma$ must hit at least one occurrence of $M_q$. Conversely, suppose $\Gamma$ hits at least one occurrence of $M_q$ for every SAM state $q$, and let $W$ be **any** non-empty substring of $S$. Let $q \in \operatorname{SAM}(S)$ be the state containing $W$, so $\operatorname{minlen}(q) \le |W| \le \operatorname{len}(q)$ and $\operatorname{endpos}(W) = \operatorname{endpos}(q) = \operatorname{endpos}(M_q)$. Because $M_q$ and $W$ belong to the same $\operatorname{endpos}$-equivalence class $q$, $M_q$ is a suffix of $W$, and **every** occurrence of $M_q$ ending at $r \in \operatorname{endpos}(q)$ extends to the left to an occurrence of $W$ ending at the exact same right endpoint $r$:
+$$\bigl[r - \operatorname{minlen}(q) + 1,\; r\bigr] \subseteq \bigl[r - |W| + 1,\; r\bigr]!$$
+Therefore, any index $x \in \Gamma$ that hits the shorter interval $[r - \operatorname{minlen}(q) + 1, r]$ of $M_q$ **automatically lies inside the super-interval $[r - |W| + 1, r]$ of $W$**! Thus testing all $\binom{N+1}{2}$ substrings reduces to testing the $\le 2N - 1$ minimal representatives $M_q$ of $\operatorname{SAM}(S)$! $\blacksquare$
+
+- **Exact Attractor Sizes on Extremal Combinatorial Words**: Every prefix of length $\ge 2$ of a **Sturmian / Fibonacci word** has $\gamma(S) = 2$ (specifically, for $F_k = F_{k-1} F_{k-2}$, the two boundary indices $\Gamma = \{f_{k-1}, f_{k-1} + 1\}$ straddling the seam $F_{k-1} \mid F_{k-2}$ hit every factor of $F_k$!), and every **Thue–Morse word** $T_k$ ($k \ge 4$) has $\gamma(T_k) = 4$ (Kutsukake et al. 2020).
+
+---
+
+### 3.2 Kempa–Kociumaka $\tau$-Synchronizing Sets (`T-5B-05`)
+
+When we work on an explicit string $S[1..N]$ and want a **single flat layer** of $O(N/\tau)$ locally consistent anchor positions (rather than an $O(\log N)$-level SLP hierarchy), **Kempa and Kociumaka (STOC 2019)** introduced **$\tau$-Synchronizing Sets**:
+
+::: {.callout-note title="Theorem 21.4 (Kempa–Kociumaka $\tau$-Synchronizing Sets, STOC 2019)"}
+For any parameter $\tau \ge 1$, a subset of positions $\mathsf{S} \subseteq \{1, 2, \dots, N - 2\tau + 1\}$ is a **$\tau$-synchronizing set** of $S[1..N]$ if it satisfies three conditions:
+
+1. **Local Consistency**: For any two substrings $S[i .. i + 2\tau - 1] = S[j .. j + 2\tau - 1]$ of length $2\tau$, we have $i \in \mathsf{S} \iff j \in \mathsf{S}$.
+2. **Sparsity**: $|\mathsf{S}| = O(N / \tau)$ (and within any periodic region where $\operatorname{per}(S[i .. i + 2\tau - 1]) \le \tau / 3$, $\mathsf{S} \cap \{i\} = \emptyset$).
+3. **Aperiodic Density**: For every window $S[i .. i + 3\tau - 2]$ of length $3\tau - 1$ whose shortest period exceeds $\tau / 3$, the window contains at least one synchronizing position: $\mathsf{S} \cap [i,\, i + \tau - 1] \ne \emptyset$.
+
+**Sliding-Window Minimizer Construction**: Assign each length-$\tau$ substring $S[k .. k + \tau - 1]$ an injective rank/hash ID $R[k]$ (selecting the canonical Lyndon root rank on $\tau/3$-periodic runs). Exclude any index $i$ with $\operatorname{per}(S[i .. i + 2\tau - 1]) \le \tau / 3$, and place $i \in \mathsf{S}$ if and only if the minimum rank in the window $[i, i + \tau]$ occurs at one of its two endpoints:
+$$\boxed{i \in \mathsf{S} \iff \operatorname{per}\bigl(S[i .. i + 2\tau - 1]\bigr) > \frac{\tau}{3} \;\land\; \min_{d \in [0, \tau]} R[i + d] \in \bigl\{R[i],\; R[i + \tau]\bigr\}.}$$
+:::
+
+Why must periodic regions with period $p \le \tau / 3$ be exempted? Because inside a periodic run $u^k$ of period $p \le \tau / 3$, the minimum length-$\tau$ rank repeats every $p$ steps, which would force $\min_{d \in [0, \tau]} R[i+d]$ to hit $R[i]$ or $R[i+\tau]$ every $p$ positions ($O(N/p)$ density instead of $O(N/\tau)$!). When $\operatorname{per}(S[i .. i + 2\tau - 1]) > \tau / 3$, two occurrences of the minimum length-$\tau$ factor inside $[i, i + \tau]$ must be separated by $> \tau / 3$ positions, ensuring at most $O(1)$ synchronizing positions per $\tau$-window and $|\mathsf{S}| = O(N / \tau)$ overall!
+
+---
+
+### 3.3 Kärkkäinen–Ukkonen LZ77/SLP 2D Orthogonal Range Indexing (`T-5B-08`)
+
+Suppose a massive text $T[1..N]$ is given in **LZ77 phrase decomposition** $T = Z_1 Z_2 \cdots Z_z$ of $z$ phrases (where each phrase $Z_k = T[l_k .. r_k]$ is either a new character or copies an earlier source substring $T[s_k .. s_k + |Z_k| - 1]$ with $s_k < l_k$), or as an SLP of $g$ rules. How do we build a compressed index in $O(z \log z)$ space that finds **all $\text{occ}$ occurrences** of an online pattern $P[1..M]$ in $O(M \log z + \text{occ})$ time?
+
+Following **Kärkkäinen and Ukkonen (1996)** and **Claude and Navarro (2012)**, we partition all occurrences of $P[1..M]$ in $T$ into two classes:
+
+- **Primary Occurrences**: Occurrences $T[i .. i + M - 1] = P$ that **cross at least one phrase boundary** $Z_k \mid Z_{k+1}$. To assign each primary occurrence a **unique** canonical boundary $k \in \{1, \dots, z - 1\}$, we choose the **first** phrase boundary it crosses—meaning the non-empty prefix $P[1..j]$ ($1 \le j < M$) ends at the right endpoint $r_k$ of $Z_k$ and **lies completely inside $Z_k$** ($j \le |Z_k|$), while the remaining suffix $P[j + 1 .. M]$ is a prefix of $Z_{k+1} Z_{k+2} \cdots Z_z$!
+- **Secondary Occurrences**: Occurrences $T[i .. i + M - 1] = P$ contained **strictly inside a single phrase** $Z_k$ ($l_k \le i$ and $i + M - 1 \le r_k$). By definition of LZ77, $Z_k = T[l_k .. r_k]$ is an exact copy of its earlier source interval $T[s_k .. s_k + |Z_k| - 1]$, so $T[i .. i + M - 1]$ is copied from an earlier occurrence $T[i - (l_k - s_k) .. i - (l_k - s_k) + M - 1]$! Inductively following this source-copy DAG from every primary occurrence discovers all secondary occurrences via 1D interval stabbing in $O(\text{occ})$ time!
+
+```
+Phrase k:      [ ... Z_k ... | Z_{k+1} | Z_{k+2} ... ]
+Pattern P:         [ P[1..j] | P[j+1 .. M] ]
+                   <-- <=|Z_k| (Reversed left context X_k)
+                               (Right context Y_k) -->
+```
+
+::: {.callout-important title="Theorem 21.5 (LZ77 / SLP Primary-Seam 2D Orthogonal Range Compilation — Kärkkäinen–Ukkonen 1996)"}
+For each of the $z - 1$ LZ77 phrase boundaries $k \in \{1, \dots, z - 1\}$ (or each of the $g$ SLP rules $X_k \to X_L X_R$):
+
+1. Let $L_k = Z_k^R$ be the **reversed single phrase** $Z_k$ (of length $|Z_k|$, enforcing the uniqueness invariant $j \le |Z_k|$ so multi-boundary occurrences are counted only at their *first* boundary!), and let $R_k = Z_{k+1} Z_{k+2} \cdots Z_z$ be the suffix starting at $Z_{k+1}$.
+2. Sort $\{L_1, \dots, L_{z-1}\}$ lexicographically to assign each boundary $k$ an $X$-coordinate $x_k \in \{1, \dots, z - 1\}$, and sort $\{R_1, \dots, R_{z-1}\}$ lexicographically to assign each boundary $k$ a $Y$-coordinate $y_k \in \{1, \dots, z - 1\}$. Store the $z - 1$ points $(x_k, y_k)$ in a **2D Wavelet Tree**.
+3. Given an online query $P[1..M]$, for each split $j \in \{1, \dots, M - 1\}$, find the lexicographical range $[x_{\text{lo}}(j), x_{\text{hi}}(j)]$ of reversed phrases starting with $(P[1..j])^R$ and the lexicographical range $[y_{\text{lo}}(j), y_{\text{hi}}(j)]$ of right contexts starting with $P[j + 1 .. M]$. The primary occurrences of $P$ with first split $j$ correspond **bijectively** to the points $(x_k, y_k)$ inside the 2D orthogonal rectangle:
+   $$\boxed{\bigl[x_{\text{lo}}(j),\; x_{\text{hi}}(j)\bigr] \times \bigl[y_{\text{lo}}(j),\; y_{\text{hi}}(j)\bigr],}$$
+   counted in $O(M \log z)$ total time across all $j = 1 \dots M - 1$!
+:::
+
+---
+
+## 4. Reverse-Engineering Scratchpad, Algorithmic Contracts & Boundary Pitfalls (`BP-20` / `BP-21-01`–`BP-21-03`)
+
+### 4.1 Non-Standard Algorithmic Contract: Deterministic $O(\log N)$ SLP-LCE Kernel
+
+When implementing `LCE(u, i, v, j)` on a Locally Consistent Parse DAG (or balanced SLP with RLE nodes $\operatorname{Run}(c, \ell)$ and pair/block nodes), the traversal must respect the **RLE Early-Termination Invariant**:
+
+```cpp
+struct SLPNode {
+    int level;          // 0 = terminal, odd = RComp (Run), even = PComp (Block)
+    long long len;      // Total expanded character length in [1, 10^18]
+    int run_sym;        // For RComp node: repeated child symbol ID
+    long long run_cnt;  // For RComp node: repeat count >= 1
+    vector<int> ch;     // For PComp node: 2..4 child node IDs
+};
+
+// Extract the canonical O(log N) right-spine sequence of nodes covering S_u[offset .. end]
+// stored in reverse order so .back() is the current leading node.
+void extract_suffix_spine(int u, long long offset, const vector<SLPNode>& dag,
+                          vector<pair<int, long long>>& spine);
+
+long long slp_lce(const vector<SLPNode>& dag,
+                  vector<pair<int, long long>>& A, // pairs of (node_id, run_rem_count)
+                  vector<pair<int, long long>>& B) {
+    long long total_lce = 0;
+    while (!A.empty() && !B.empty()) {
+        auto [u, cnt_u] = A.back();
+        auto [v, cnt_v] = B.back();
+        // 1. Exact hash-consed node match (with full run count = 1)
+        if (u == v && cnt_u == 1 && cnt_v == 1) {
+            total_lce += dag[u].len;
+            A.pop_back();
+            B.pop_back();
+            continue;
+        }
+        // 2. Both are RComp runs of the SAME underlying symbol c
+        if (dag[u].level == dag[v].level && (dag[u].level & 1) &&
+            dag[u].run_sym == dag[v].run_sym) {
+            long long take = min(cnt_u, cnt_v);
+            total_lce += take * dag[dag[u].run_sym].len;
+            A.back().second -= take;
+            B.back().second -= take;
+            if (A.back().second == 0) A.pop_back();
+            if (B.back().second == 0) B.pop_back();
+            // CRITICAL INVARIANT: If one maximal run of c ended while the other still has
+            // copies of c remaining, the next symbol after the shorter run CANNOT be c!
+            // If c is a level-0 terminal character, LCE terminates immediately!
+            if (cnt_u != cnt_v && dag[dag[u].run_sym].level == 0) break;
+            continue;
+        }
+        // 3. Unpack the node at the higher grammar level (or both if equal)
+        int max_lvl = max(dag[u].level, dag[v].level);
+        if (max_lvl == 0) break; // Distinct level-0 terminals: mismatch reached!
+        auto unpack_top = [&](vector<pair<int, long long>>& S) {
+            auto [x, c] = S.back();
+            if (dag[x].level < max_lvl) return;
+            S.pop_back();
+            if (dag[x].level & 1) {
+                // Peel off 1 copy of run_sym to compare against the other side
+                if (c > 1) S.push_back({x, c - 1});
+                S.push_back({dag[x].run_sym, 1});
+            } else {
+                for (int i = (int)dag[x].ch.size() - 1; i >= 0; --i) {
+                    int child = dag[x].ch[i];
+                    if (dag[child].level & 1) S.push_back({child, dag[child].run_cnt});
+                    else S.push_back({child, 1});
+                }
+            }
+        };
+        unpack_top(A);
+        unpack_top(B);
+    }
+    return total_lce;
+}
+```
+
+---
+
+### 4.2 Broken-Invariant Counterexamples & Pitfalls
+
+::: {.callout-warning title="Pitfall BP-20 / BP-21-01 / BP-3B-09: Continuing LCE or Unpacking All Copies of an RLE Node When $\ell_1 \ne \ell_2$"}
+
+- **The Bug**:
+  1. Unpacking an RLE node $\operatorname{Run}(c, \ell)$ into $\ell$ separate copies of $c$ on the stack (which blows up to $\Theta(N) = 10^{18}$ time on $\texttt{a}^{10^{18}}$!).
+  2. When comparing $\operatorname{Run}(c, \ell_1)$ and $\operatorname{Run}(c, \ell_2)$ with $\ell_1 < \ell_2$, popping *both* nodes and continuing to compare the next nodes after adding $\min(\ell_1, \ell_2)$.
+- **Exact Counterexample**: Compare $A = \texttt{a}^3 \texttt{b c}$ and $B = \texttt{a}^5 \texttt{b c}$. At the first RLE block, $A$ has $\operatorname{Run}(\texttt{a}, 3)$ and $B$ has $\operatorname{Run}(\texttt{a}, 5)$. The true LCE is $\min(3, 5) = 3$ (mismatch at index $4$: $A[4] = \texttt{b} \ne \texttt{a} = B[4]$). If you pop both RLE nodes and continue to the next block $\texttt{b c}$, you falsely add $+2$ and report LCE $= 5$! And if $c$ is a composite meta-symbol (e.g. $c = \texttt{ab}$), only **one** copy of $c$ from the longer run may be unpacked to find the partial LCE between $c$ and the symbol following the shorter run!
+:::
+
+::: {.callout-warning title="Pitfall BP-21-02: Testing SAM `maxlen(q)` Instead of `minlen(q)` for String Attractors"}
+
+- **The Bug**: Checking whether a candidate set $\Gamma \subseteq \{1, \dots, N\}$ is a String Attractor by testing if $\Gamma$ hits at least one occurrence of the **longest** representative $L_q$ (length $\operatorname{len}(q)$) of each SAM state $q$, instead of the **shortest** representative $M_q$ (length $\operatorname{minlen}(q) = \operatorname{len}(\operatorname{link}(q)) + 1$).
+- **Exact Counterexample**: Take $S = \texttt{a b c}$ ($N = 3$) and candidate $\Gamma = \{1, 3\}$. In $\operatorname{SAM}(\texttt{abc})$, the full string state $q_{\texttt{abc}}$ contains two substrings: $M_q = \texttt{bc}$ ($\operatorname{minlen} = 2$, occurring at $[2, 3]$) and $L_q = \texttt{abc}$ ($\operatorname{len} = 3$, occurring at $[1, 3]$), while the state $q_{\texttt{ab}}$ contains $M_{q_{\texttt{ab}}} = \texttt{b}$ ($\operatorname{minlen} = 1$, occurring only at $[2, 2]$) and $L_{q_{\texttt{ab}}} = \texttt{ab}$ ($\operatorname{len} = 2$, occurring at $[1, 2]$). Notice that $\Gamma = \{1, 3\}$ hits $L_{q_{\texttt{ab}}} = \texttt{ab}$ at $[1, 2] \cap \{1, 3\} = \{1\}$, yet $\Gamma = \{1, 3\}$ **misses the substring $\texttt{b}$ at $[2, 2]$ completely**! Hitting the longer string $L_q$ does *not* imply hitting its shorter suffixes in $q$; by Theorem 21.3(2), you **must** test $\operatorname{minlen}(q)$!
+:::
+
+::: {.callout-warning title="Pitfall BP-21-03: Double-Counting Multi-Boundary LZ77 Primary Occurrences"}
+
+- **The Bug**: Defining the left context $L_k$ at LZ77 boundary $k$ as the entire reversed prefix $(Z_1 Z_2 \cdots Z_k)^R$ instead of the **single reversed phrase** $Z_k^R$ (or forgetting to enforce $j \le |Z_k|$).
+- **Exact Counterexample**: Suppose $T = \texttt{a} \mid \texttt{b} \mid \texttt{c}$ consists of three length-$1$ phrases $Z_1 = \texttt{a}, Z_2 = \texttt{b}, Z_3 = \texttt{c}$, and we query $P = \texttt{a b c}$ ($M = 3$). This single occurrence of $P$ crosses **both** boundary $k = 1$ ($\texttt{a} \mid \texttt{bc}$, split $j = 1$) and boundary $k = 2$ ($\texttt{ab} \mid \texttt{c}$, split $j = 2$). If $L_2$ is allowed to extend across $Z_1 Z_2 = \texttt{ab}$ of length $2 > |Z_2| = 1$, then $P = \texttt{abc}$ is counted at $k = 1$ (split $j = 1$) **and again** at $k = 2$ (split $j = 2$)! Restricting $L_k = Z_k^R$ (length $|Z_k|$) guarantees each primary occurrence is counted **exclusively at the first phrase boundary it crosses** ($j \le |Z_k|$).
+:::
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Problem Ladder (`Ch 21`)
+
+Every problem below includes a self-contained mathematical statement, exact constraints, three progressive hints, and a complete 4-step derivation.
+
+---
+
+### Tier 1 — Stepping Stone (`W3B-35`, `W5B-45`)
+
+#### Problem 21.1 (`W3B-35`) — `JOI / Universal Cup — Exact Pattern Occurrence Counting on Static SLPs via Primary-Seam KMP`
+
+- **Mathematical Statement**: You are given a Straight-Line Program (SLP) with $g$ variables $X_1, \dots, X_g$, where each variable is either a terminal character $X_u = c \in \Sigma$ or a concatenation $X_u = X_{L_u} + X_{R_u}$ ($1 \le L_u, R_u < u$), generating $T = X_g$ of length $|T| \le 10^{18}$. Given an explicit pattern $P[1..M]$, compute the exact number of occurrences of $P$ in $T = X_g$ modulo $10^9 + 7$.
+- **Constraints**: $1 \le g \le 1000$, $1 \le M \le 10^4$, $|X_g| \le 10^{18}$, time limit $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At $|X_g| \le 10^{18}$, expanding $X_g$ is impossible. However, any occurrence of $P[1..M]$ inside $X_u = X_L X_R$ lies either completely inside $X_L$, completely inside $X_R$, or **straddles the seam** between $X_L$ and $X_R$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 21.2(1) (Primary-Seam Decomposition)**, an occurrence of $P[1..M]$ straddling the seam of $X_u = X_L X_R$ consumes at least $1$ and at most $M - 1$ characters from the end of $X_L$ and the start of $X_R$, so it lies completely inside the seam window $J_u = \operatorname{suff}_{\min(|X_L|, M-1)}(X_L) + \operatorname{pref}_{\min(|X_R|, M-1)}(X_R)$ of length $\le 2M - 2$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For each variable $u = 1 \dots g$, explicitly maintain $\operatorname{pref}_{\min(|X_u|, M-1)}(X_u)$ and $\operatorname{suff}_{\min(|X_u|, M-1)}(X_u)$ (each of length $< M$), form $J_u$, and run KMP to count occurrences of $P$ in $J_u$ in $O(M)$ time per rule ($O(g M)$ total)!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-35`)"}
+
+1. **Diagnostic Signal**: Exponential text length $|X_g| \le 10^{18}$ with moderate pattern length $M \le 10^4$ and $g \le 1000$ rules.
+2. **Combinatorial Word Invariant**: Every occurrence of $P[1..M]$ in $X_u = X_L X_R$ has start position $s \in [1, |X_u| - M + 1]$ falling into one of three disjoint intervals:
+   - $s + M - 1 \le |X_L|$: strictly inside $X_L$ ($\operatorname{occ}(P, X_L)$).
+   - $s > |X_L|$: strictly inside $X_R$ ($\operatorname{occ}(P, X_R)$).
+   - $|X_L| - M + 2 \le s \le |X_L|$: straddles the boundary $X_L \mid X_R$, which corresponds 1-to-1 with occurrences of $P$ inside $J_u = \operatorname{suff}_{\min(|X_L|, M-1)}(X_L) + \operatorname{pref}_{\min(|X_R|, M-1)}(X_R)$!
+3. **Algorithmic Compilation**:
+   - If $M = 1$, simply run $dp[u] = (dp[L_u] + dp[R_u]) \bmod (10^9 + 7)$ with $dp[u] = [X_u == P[1]]$ at terminals.
+   - For $M \ge 2$, precompute KMP $\pi[1..M]$ on $P$. For $u = 1 \dots g$:
+     - At terminal $X_u = c$: $\text{pref}[u] = \text{suff}[u] = c$, $dp[u] = 0$.
+     - At $X_u = X_L X_R$: form $J_u = \text{suff}[L] + \text{pref}[R]$, count matches $\text{cross}_u$ of $P$ in $J_u$ via KMP in $O(|J_u|) = O(M)$ time, set $dp[u] = (dp[L] + dp[R] + \text{cross}_u) \bmod (10^9 + 7)$, and compute $\text{pref}[u]$ (first $\le M-1$ chars of $\text{pref}[L] + \text{pref}[R]$) and $\text{suff}[u]$ (last $\le M-1$ chars of $\text{suff}[L] + \text{suff}[R]$).
+   - Total time: $O(g M)$, space: $O(g M)$.
+4. **Broken-Invariant Counterexample**: Never slice $\operatorname{suff}_M(X_L)$ instead of $\operatorname{suff}_{M-1}(X_L)$—taking $M$ characters from $X_L$ includes occurrences of $P$ that lie **entirely inside $X_L$**, double-counting them in both $dp[L]$ and $\text{cross}_u$!
+:::
+
+---
+
+#### Problem 21.2 (`W5B-45`) — `STOC 2018 / QOJ — String Attractor Verification & SAM minlen(q) Hitting-Set Reduction`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ ($N \le 2 \times 10^5$) over $\Sigma = \{\texttt{a}..\texttt{z}\}$ and $Q \le 2 \times 10^5$ queries, where each query provides a candidate subset of positions $\Gamma_q \subseteq \{1, \dots, N\}$ ($\sum |\Gamma_q| \le 5 \times 10^5$) or asks whether a given dictionary boundary set is a valid **String Attractor** of $S$: determine in $O(N \log N)$ preprocessing whether all substrings of $S$ are covered by $\Gamma$, and if not, output the shortest uncovered substring of $S$.
+- **Constraints**: $1 \le N, Q \le 2 \times 10^5$, $\sum |\Gamma_q| \le 5 \times 10^5$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+$S[1..N]$ has up to $\binom{N+1}{2} \approx 2 \times 10^{10}$ distinct substrings. How do we reduce the requirement "every distinct substring has an occurrence intersecting $\Gamma$" to at most $2N - 1$ intervals?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 21.3(2) (SAM Minimal-Representative Hitting-Set Duality)**, $\Gamma$ is a string attractor of $S$ if and only if for every state $u \ne \text{root}$ of $\operatorname{SAM}(S)$, there exists $r \in \operatorname{endpos}(u)$ such that $[r - \operatorname{minlen}(u) + 1,\, r] \cap \Gamma \ne \emptyset$ (where $\operatorname{minlen}(u) = \operatorname{len}(\operatorname{link}(u)) + 1$).
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Rewriting $[r - \operatorname{minlen}(u) + 1, r] \cap \Gamma \ne \emptyset$ in terms of the maximum attractor point $\le r$ gives $\operatorname{prev}_\Gamma(r) \ge r - \operatorname{minlen}(u) + 1 \iff r - \operatorname{prev}_\Gamma(r) + 1 \le \operatorname{minlen}(u)$, which is equivalent to saying that the **minimum distance** $\min_{r \in \operatorname{endpos}(u)} (r - \operatorname{prev}_\Gamma(r) + 1)$ over $u$'s Link-Tree subtree is $\le \operatorname{minlen}(u)$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5B-45`)"}
+
+1. **Diagnostic Signal**: Checking all $O(N^2)$ substrings is impossible; even checking $\operatorname{SAM}(S)$ requires avoiding $O(|\operatorname{SAM}|)$ work per query when $|\Gamma_q|$ varies.
+2. **Combinatorial Word Invariant**: By Theorem 21.3(2), a state $u \in \operatorname{SAM}(S) \setminus \{\text{root}\}$ is covered by $\Gamma$ iff $\exists r \in \operatorname{endpos}(u)$ and $x \in \Gamma$ with $r - \operatorname{minlen}(u) + 1 \le x \le r$, or equivalently:
+   $$\operatorname{minlen}(u) \ge \min_{r \in \operatorname{endpos}(u)} \bigl(r - \max\{x \in \Gamma : x \le r\} + 1\bigr).$$
+   Dualizing from perspective of $x \in \Gamma$: each consecutive pair of attractor points $x_{k-1} < x_k$ in $\Gamma$ (with $x_0 = 0, x_{|\Gamma|+1} = N + 1$) leaves an **uncovered open gap** $(x_{k-1},\; x_k - 1]$! A substring occurrence $[l, r]$ misses $\Gamma$ completely iff $[l, r] \subseteq [x_{k-1} + 1,\, x_k - 1]$ for some gap $k$.
+   Therefore, $\Gamma$ is a valid string attractor iff **no state $u \in \operatorname{SAM}(S)$ has all of its occurrences of $M_u$ contained inside the gaps** $\bigcup_{k=1}^{|\Gamma|+1} [x_{k-1} + 1,\, x_k - 1]$!
+
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{SAM}(S)$ with Link Tree and $\operatorname{minlen}(u) = \operatorname{len}(\operatorname{link}(u)) + 1$ in $O(N)$ time.
+   - For a single attractor $\Gamma$ (or $O(1)$ queries): compute $\operatorname{prev}_\Gamma[r] = \max\{x \in \Gamma : x \le r\}$ for $r = 1 \dots N$, initialize `min_req[leaf_r] = r - prev_Gamma[r] + 1`, propagate `min_req[u] = min(min_req[u], min_req[child])` bottom-up on the SAM Link Tree in $O(N)$ time, and check if `min_req[u] <= minlen(u)` for all $u \ne \text{root}$. If any $u$ fails, the state $u$ with smallest $\operatorname{minlen}(u)$ satisfying `min_req[u] > minlen(u)` gives the shortest uncovered substring $M_u$!
+4. **Broken-Invariant Counterexample (`BP-21-02`)**: Testing `min_req[u] <= len(u)` instead of `min_req[u] <= minlen(u)` fails on $S = \texttt{abc}, \Gamma = \{1, 3\}$ (`§4.2`).
+:::
+
+---
+
+### Tier 2 — Intermediate (`W5B-46`, `W3B-36`)
+
+#### Problem 21.3 (`W5B-46`) — `CF 1043G / STOC 2019 — τ-Synchronizing Set Construction & Sublinear Anchor LCE`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ ($N \le 3 \times 10^5$) and parameter $\tau \ge 1$, construct a **Kempa–Kociumaka $\tau$-synchronizing set** $\mathsf{S} \subseteq \{1, \dots, N - 2\tau + 1\}$ in $O(N)$ time such that: (1) $i \in \mathsf{S}$ depends only on $S[i .. i + 2\tau - 1]$; (2) $|\mathsf{S}| \le \frac{6N}{\tau}$; and (3) every window $S[i .. i + 3\tau - 2]$ with minimal period $> \tau / 3$ contains at least one element of $\mathsf{S} \cap [i, i + \tau - 1]$. Use $\mathsf{S}$ to answer $Q \le 3 \times 10^5$ substring LCE / internal matching queries.
+- **Constraints**: $1 \le N, Q \le 3 \times 10^5$, $1 \le \tau \le N / 3$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+If we simply pick sliding-window minima of single characters $S[k]$ over window size $\tau + 1$, a run of identical characters $\texttt{a}^N$ either selects every position ($|\mathsf{S}| = N$) or selects zero positions! Why do we rank substrings of length $\tau$ instead of single characters?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 21.4**, ranking length-$\tau$ substrings $S[k .. k + \tau - 1]$ ensures that two identical ranks at $k_1 < k_2$ with $k_2 - k_1 \le \tau / 3$ imply $S[k_1 .. k_2 + \tau - 1]$ has period $p = k_2 - k_1 \le \tau / 3$! Thus, outside $\tau/3$-periodic runs, the minimum rank in $[i, i + \tau]$ can occur at most a bounded number of times per $\tau$-window!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Use the Suffix Array $\operatorname{rk}[1..N]$ of $S$ (or Lyndon-root ranks for runs of period $\le \tau / 3$ enumerated via [Chapter 08](ch08-runs-theorem-squares-sweep.qmd)) as $R[k]$, slide a monotonic deque of width $\tau + 1$ over $R[1 .. N - \tau + 1]$ in $O(N)$ time, and put $i \in \mathsf{S}$ iff $\operatorname{per}(S[i..i+2\tau-1]) > \tau / 3$ and $\min_{d \in [0, \tau]} R[i + d] \in \{R[i], R[i + \tau]\}$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5B-46`)"}
+
+1. **Diagnostic Signal**: Multi-level SLP parsing takes $O(\log N)$ levels; for static strings where we want $O(1)$-level anchor alignment of size $O(N/\tau)$, we need a flat $\tau$-synchronizing set.
+2. **Combinatorial Word Invariant**: Let $R[k]$ be an injective identifier of $S[k .. k + \tau - 1]$ (e.g., the earliest occurrence or SA rank of $S[k .. k + \tau - 1]$, modified on runs of period $\le \tau / 3$ so the Lyndon root has rank $0$).
+   - **Local Consistency**: Whether $\min_{d \in [0, \tau]} R[i+d] \in \{R[i], R[i+\tau]\}$ and $\operatorname{per}(S[i..i+2\tau-1]) > \tau/3$ holds depends only on $S[i .. i + 2\tau - 1]$.
+   - **Aperiodic Density**: In any window $S[i .. i + 3\tau - 2]$ without period $\le \tau/3$, let $k^* = \arg\min_{k \in [i, i + 2\tau - 1]} R[k]$ be the global minimum on $[i, i + 2\tau - 1]$: if $k^* \in [i, i + \tau - 1]$ we set $i' = k^*$ so $R[i']$ is the minimum on $[i', i'+\tau]$, while if $k^* \in [i + \tau, i + 2\tau - 1]$ we set $i' = k^* - \tau \in [i, i + \tau - 1]$ so $R[i' + \tau] = R[k^*]$ is the minimum on $[i', i' + \tau]$! Thus at least one $i' \in [i, i + \tau - 1]$ is placed into $\mathsf{S}$!
+3. **Algorithmic Compilation**:
+   - Enumerate all maximal runs of period $p \le \tau / 3$ and length $\ge 2\tau$ in $O(N)$ time ([Chapter 08](ch08-runs-theorem-squares-sweep.qmd)) to mark `is_periodic[i] = true` whenever $\operatorname{per}(S[i .. i + 2\tau - 1]) \le \tau / 3$.
+   - Assign $R[k] = \operatorname{rk}[k]$ (standard SA rank, or canonicalized by LCP $\ge \tau$ component ID + injective hash).
+   - Run a monotonic queue of window $[i, i + \tau]$ over $i = 1 \dots N - 2\tau + 1$: if `!is_periodic[i]` and `(dq.front() == R[i] || dq.front() == R[i + tau])`, add $i$ to $\mathsf{S}$. Total time: $O(N)$.
+4. **Broken-Invariant Counterexample**: Using raw $\operatorname{rk}[k]$ (which distinguishes suffixes beyond length $\tau$) violates local consistency because $S[i..i+2\tau-1] = S[j..j+2\tau-1]$ would have $\operatorname{rk}[i+d] \ne \operatorname{rk}[j+d]$! Always assign $R[k]$ as the equivalence-class ID of $S[k..k+\tau-1]$ (grouping adjacent SA entries with $\operatorname{LCP} \ge \tau$)!
+:::
+
+---
+
+#### Problem 21.4 (`W3B-36`) — `JOI / QOJ — Collision-Free O(log N) LCE & Lexicographical Sorting of SLP Variables`
+
+- **Mathematical Statement**: Given an SLP (or Locally Consistent Parse DAG) with $g \le 5 \times 10^4$ variables generating strings $X_1, \dots, X_g$ of lengths up to $10^{18}$, sort the variables $X_1, \dots, X_g$ in lexicographical order of their expanded strings $\operatorname{str}(X_u)$ (breaking ties by smaller variable index $u$), and answer $Q \le 5 \times 10^4$ queries $\operatorname{LCE}(X_u, i, X_v, j)$.
+- **Constraints**: $1 \le g, Q \le 5 \times 10^4$, $|X_u| \le 10^{18}$, time limit $2.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+On an adaptive judge, 64-bit polynomial hashes mod $2^{64}$ or single prime $P$ can be forced to collide across $\binom{g}{2}$ pairs (for instance, using the Thue–Morse SLP $T_k = T_{k-1}\overline{T_{k-1}}$ from [Chapter 30](ch30-sturmian-singular-thue-morse-morphic-2d.qmd)). How do we compare two SLP variables deterministically in $O(\log N)$ time?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Convert the given SLP into a **Locally Consistent Parse DAG** (or Jeż Recompression DAG) of height $H = O(\log N)$ where every rule is hash-consed (`§1.2`). Then $\operatorname{id}(u) == \operatorname{id}(v) \iff \operatorname{str}(u) == \operatorname{str}(v)$ is 100% deterministic, and walking two right-spine node stacks (`§4.1` Contract 1) finds $\operatorname{LCE}(X_u, i, X_v, j)$ and the mismatching character in $O(\log N)$ time!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Use `slp_lce` (`§4.1`) to find $\ell = \operatorname{LCE}(X_u, 1, X_v, 1)$ in $O(\log N)$ time: if $\ell == \min(|X_u|, |X_v|)$, the shorter string is smaller; otherwise compare the $(\ell + 1)$-th character of $X_u$ and $X_v$ (already exposed at the top of stacks `A` and `B` when `slp_lce` terminates!).
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-36`)"}
+
+1. **Diagnostic Signal**: Sorting $g$ SLP variables requires $O(g \log g)$ lexicographical comparisons; each comparison reduces to one $\operatorname{LCE}(X_u, 1, X_v, 1)$ call plus one character access at offset $\ell + 1$.
+2. **Combinatorial Word Invariant**: In a Locally Consistent / Recompressed DAG of height $H = O(\log N)$, every node $x$ has a deterministic integer ID `id[x]` assigned by a map/hash-cons table over its children `(c, run_cnt)` or `(ch_1, ..., ch_d)`. Because any suffix $X_u[i..]$ is represented by $O(\log N)$ spine nodes and at most $O(1)$ margin nodes per level can disagree without having a character mismatch, `slp_lce` (`§4.1`) executes at most $O(\log N)$ steps!
+3. **Algorithmic Compilation**:
+   - Re-parse the SLP bottom-up using Locally Consistent Parsing (`Concat` on $X_L, X_R$ at each rule $u = 1 \dots g$ in $O(g \log N)$ total time and space).
+   - Define the comparator `cmp_slp(u, v)`: run `slp_lce` on spine `A = {(root[u], 1)}` and `B = {(root[v], 1)}`. If `A` or `B` becomes empty, return $|X_u| < |X_v|$ (or $u < v$ on tie); otherwise `A.back().first` and `B.back().first` are the mismatching level-0 terminal characters $c_u \ne c_v$, so return $c_u < c_v$!
+   - Sort $1 \dots g$ with `std::sort` in $O(g \log g \log N)$ time and answer each LCE query in $O(\log N)$ time.
+4. **Broken-Invariant Counterexample (`BP-21-01`)**: When `slp_lce` encounters two RLE runs $\operatorname{Run}(c, \ell_1)$ and $\operatorname{Run}(c, \ell_2)$ with $\ell_1 < \ell_2$ where $c$ is a composite meta-symbol ($\text{level}(c) > 0$), do **not** break immediately—decrement both counts by $\ell_1$ (popping the shorter run) and let Step 3 unpack **1 copy** of $c$ from the longer run so the LCE inside that boundary copy of $c$ is accurately included!
+:::
+
+---
+
+### Tier 3 — Advanced (`W3B-29`, `W5B-50`)
+
+#### Problem 21.5 (`W3B-29`) — `国家集训队论文 / UOJ — Dynamic String Cut, Paste, Reverse & Substring Equality on N <= 10^18`
+
+- **Mathematical Statement**: Maintain a dynamic string $S$ (initially of length $N_0 \le 10^5$) under $Q \le 10^5$ online operations:
+  1. `CutPaste(l, r, k)`: Remove substring $U = S[l..r]$ and re-insert it after position $k$ (or duplicate $S[l..r]$ and insert it, allowing $|S|$ to grow up to $10^{18}$).
+  2. `Reverse(l, r)`: Reverse the substring $S[l..r]$ in place.
+  3. `LCE(i, j)`: Output the longest common prefix $\operatorname{LCE}(S[i..], S[j..])$.
+- **Constraints**: $N_0, Q \le 10^5$, $|S| \le 10^{18}$, adaptive judge (hacks randomized rolling hashes), time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Duplicating substrings grows $|S|$ to $10^{18}$ (breaking explicit BSTs), while the adaptive judge hacks randomized polynomial hashes in treaps. We must maintain $S$ as a persistent **Locally Consistent Parse DAG** (`§1.2`, `§2.1`).
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+All three update operations reduce to `Split(u, k)`, `Concat(u, v)`, and `ReverseNode(u)`. In a Locally Consistent Parse DAG (alternating `RComp` and Cole–Vishkin / Priority Local Extrema `PComp`), `Split` and `Concat` only perturb the $O(\Delta) = O(1)$ blocks within radius $\Delta$ of the cut at each of the $O(\log N)$ levels!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For every interned DAG node $u$, also intern its reversed counterpart `rev[u]` at creation time (for `Run(c, k)`, `rev[u] = Run(rev[c], k)`; for `Block(c_1, ..., c_d)`, `rev[u] = Block(rev[c_d], ..., rev[c_1])`, ensuring local cut rules are symmetric or re-synchronized at the $O(1)$ seam blocks during `Concat`). Then `Reverse(l, r)` splits $S \to (A, B, C)$, replaces $B$ with `rev[B]`, and concatenates `Concat(Concat(A, rev[B]), C)` in $O(\log N)$ time!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-29`)"}
+
+1. **Diagnostic Signal**: Persistent duplication up to $N \le 10^{18}$ + substring reversal + deterministic LCE requires a hash-consed Locally Consistent Parse DAG.
+2. **Combinatorial Word Invariant**:
+   - Use a symmetric local-extrema rule on unordered edge/triple priorities (or re-parse the $O(1)$ margin blocks during `Concat`) so that internal nodes remain locally consistent under reversal.
+   - At each level $h \in [0, H]$ ($H \le 120$), `Concat(L, R)` extracts the rightmost $\Delta + 1$ children of $L$ and leftmost $\Delta + 1$ children of $R$ at level $h$, concatenates them into a small buffer of size $\le 2\Delta + 2 \le 10$, applies `RComp` (merging adjacent runs of the same symbol $c$ by adding their repeat counts $\ell_1 + \ell_2$) and `PComp`, interns the resulting blocks, and passes the updated margin up to level $h + 1$.
+3. **Algorithmic Compilation**:
+   - Build initial root `root` from $S[1..N_0]$ level-by-level in $O(N_0)$ time.
+   - Implement `Split(u, k) -> (L, R)` by descending to the leaf/run containing offset $k$ (splitting $\operatorname{Run}(c, \ell)$ into $\operatorname{Run}(c, k_1)$ and $\operatorname{Run}(c, \ell - k_1)$ if $k$ falls inside a run!) and re-concatenating the $O(\log N)$ left and right spine pieces.
+   - Answer `LCE(i, j)` in $O(\log N)$ time using Contract 1 (`§4.1`). Total time: $O(N_0 + Q \log N)$.
+4. **Broken-Invariant Counterexample**: When `Split(u, k)` cuts *inside* an RLE node $\operatorname{Run}(c, \ell)$ where $c$ is a composite meta-symbol of length $\operatorname{len}(c) > 1$, you must first split $\operatorname{Run}(c, \ell)$ into $\operatorname{Run}(c, q)$, the single middle symbol $c$ (which is then recursively split at $k \bmod \operatorname{len}(c)$!), and $\operatorname{Run}(c, \ell - 1 - q)$!
+:::
+
+---
+
+#### Problem 21.6 (`W5B-50`) — `Kärkkäinen–Ukkonen / QOJ — LZ77 & SLP Primary–Secondary 2D Wavelet Pattern Indexing`
+
+- **Mathematical Statement**: You are given an LZ77-compressed text $T[1..N]$ consisting of $z \le 10^5$ phrases $Z_1, Z_2, \dots, Z_z$ ($N \le 10^{12}$), where phrase $Z_k$ is either a literal character $c$ or a source copy $(s_k, \ell_k)$ representing $T[l_k .. r_k] = T[s_k .. s_k + \ell_k - 1]$ ($s_k < l_k$). Build an index of size $O(z \log N)$ that answers $Q \le 10^5$ online pattern queries $P_q[1..M]$ ($\sum M \le 2 \times 10^5$): report the total number of occurrences (or all $\text{occ}$ starting positions) of $P_q$ in $T$.
+- **Constraints**: $1 \le z, Q \le 10^5$, $N \le 10^{12}$, $\sum |P_q| \le 2 \times 10^5$, time limit $2.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+By **Theorem 21.5 (Kärkkäinen–Ukkonen Primary–Secondary Split)**, every occurrence of $P[1..M]$ is either **primary** (crossing its first phrase boundary $Z_k \mid Z_{k+1}$ with prefix $P[1..j]$ inside $Z_k$, $1 \le j \le \min(M-1, |Z_k|)$) or **secondary** (contained strictly inside a phrase $Z_k = T[l_k .. r_k]$ and therefore copied from an earlier occurrence inside $T[s_k .. s_k + \ell_k - 1]$).
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+First convert the $z$ LZ77 phrases into a balanced SLP of $O(z \log N)$ rules (`Rytter 2003`: extract each phrase $Z_k = T[s_k .. s_k + \ell_k - 1]$ from the current SLP via `Split` and append via `Concat` in $O(\log N)$ time per phrase!). This gives $O(\log N)$ LCE on any reversed phrase $L_k = Z_k^R$ and right suffix $R_k = Z_{k+1}\cdots Z_z$, allowing us to sort $\{L_k\}$ and $\{R_k\}$ in $O(z \log z \log N)$ time and build the **2D Wavelet Tree** on $(x_k, y_k)$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For a query $P[1..M]$, binary-search (or use Karp–Rabin hashes + LCP trie) the lexicographical intervals $[x_{\text{lo}}(j), x_{\text{hi}}(j)]$ for $(P[1..j])^R$ and $[y_{\text{lo}}(j), y_{\text{hi}}(j)]$ for $P[j+1..M]$ ($1 \le j < M$), query the 2D Wavelet Tree to find all primary occurrences, and propagate each occurrence $[i, i + M - 1]$ through a 1D interval stabbing structure over the source intervals $[s_k, s_k + \ell_k - 1]$ with $\ell_k \ge M$ to report all secondary occurrences in $O(1)$ amortized time per occurrence!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5B-50`)"}
+
+1. **Diagnostic Signal**: Unpacking $T$ ($N \le 10^{12}$) is impossible, while searching all $z$ phrases linearly per query takes $\Theta(Qz)$.
+2. **Combinatorial Word Invariant**:
+   - **Primary Occurrences**: By Theorem 21.5, every primary occurrence of $P[1..M]$ has a unique *first* crossed phrase boundary $Z_k \mid Z_{k+1}$, characterized by a split $j \in \{1, \dots, M - 1\}$ such that $(P[1..j])^R$ is a prefix of $L_k = Z_k^R$ (which automatically enforces $j \le |Z_k|$!) and $P[j+1..M]$ is a prefix of $R_k = Z_{k+1}\cdots Z_z$.
+   - **Secondary Occurrences**: Any occurrence $[i, i + M - 1] \subseteq [l_k, r_k]$ inside phrase $Z_k$ corresponds bijectively to the earlier occurrence $[i - l_k + s_k,\; i - l_k + s_k + M - 1] \subseteq [s_k, s_k + \ell_k - 1]$.
+3. **Algorithmic Compilation**:
+   - **Step 1 (LZ77 $\to$ SLP & Context Sorting)**: Maintain the prefix $Z_1 \cdots Z_k$ as a Locally Consistent SLP (`W3B-29`) in $O(z \log N)$ time. Using $O(\log N)$ SLP-LCE (`W3B-36`), sort $L_1, \dots, L_{z-1}$ and $R_1, \dots, R_{z-1}$ and insert the $z - 1$ points $(x_k, y_k)$ into a 2D Wavelet Tree.
+   - **Step 2 (2D Primary Lookup)**: For query $P[1..M]$ ($M = 1$ is handled by $x$-range of $Z_k$ ending with $P[1]$ plus $Z_z$), find the $X$-intervals for $(P[1..j])^R$ and $Y$-intervals for $P[j+1..M]$ and query the 2D Wavelet Tree in $O(M \log z)$ time.
+   - **Step 3 (Secondary Propagation)**: Store source intervals $[s_k, s_k + \ell_k - M]$ in an interval tree / RMQ structure sorted by $s_k$; BFS from each discovered occurrence $[i, i + M - 1]$ to find all phrases $k$ with $s_k \le i \le s_k + \ell_k - M$, shifting $i \mapsto i + l_k - s_k$ in $O(\text{occ})$ total time!
+4. **Broken-Invariant Counterexample (`BP-21-03`)**: Defining $L_k = (Z_1 \cdots Z_k)^R$ instead of $Z_k^R$ double-counts every occurrence of $P$ that spans $\ge 3$ phrases!
+:::
+
+---
+
+### Tier 4 — Mastery (`W3B-40`, `W3B-43`)
+
+#### Problem 21.7 (`W3B-40`) — `ICPC WF / Gawrychowski et al. — Longest Palindrome, Squares & Maximal Runs in SLPs (|S| <= 10^18)`
+
+- **Mathematical Statement**: Given an SLP with $g \le 1000$ rules $X_u \to X_L X_R$ generating $S = X_g$ of length $|S| \le 10^{18}$, compute in $O(g \log^2 |S|)$ time: (1) the exact length of the longest palindromic substring of $S$, and (2) whether $S$ is square-free (or the total number of maximal periodic runs in $S$).
+- **Constraints**: $1 \le g \le 1000$, $|X_g| \le 10^{18}$, time limit $2.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At $|S| \le 10^{18}$, Manacher's algorithm and explicit Lyndon-Tree Runs enumeration (`Ch 08`) cannot touch individual characters. By **Theorem 21.2 (Primary-Seam Decomposition)**, every maximal palindrome or square of length $\ge 2$ has a unique rule $X_u \to X_L X_R$ where it straddles the seam $X_L \mid X_R$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Consider a maximal palindrome $W$ straddling the seam $X_L \mid X_R$. Either $W$'s center is right on the seam (radius $\operatorname{LCE}(X_L^R, X_R)$), or $W$'s center lies strictly inside $X_L$ (or symmetrically $X_R$). If $W$'s center lies inside $X_L$ and $W$ reaches across the seam into $X_R$, then the portion of $W$ inside $X_L$ reaching the seam is a **palindromic suffix of $X_L$**! By [Chapter 02 (Weak Periodicity Lemma)](ch02-weak-periodicity-border-aps.qmd), the palindromic suffixes of $X_L$ partition into **at most $\lceil \log_2 |X_L| \rceil$ arithmetic progressions**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+For each of the $O(\log |X_L|)$ palindromic suffix APs $s_1, s_2 = s_1 + d, \dots, s_k = s_1 + (k-1)d$ of $X_L$ (which share period $d$), how do we find $\max_{1 \le r \le k} \bigl(s_r + 2 \operatorname{LCE}(X_L[1 .. |X_L|-s_r]^R,\, X_R)\bigr)$ in $O(1)$ LCE calls instead of $k$ calls? First compute $\ell = \operatorname{LCE}\bigl(X_L[1..|X_L|-s_1]^R,\, X_R\bigr)$ (comparing the period-$d$ prefix against $X_R$). For every $s_r$ with $(r - 1)d \ne$ the offset where period $d$ ends in $X_R$, the LCE stops at the exact boundary of period $d$; only the **single** member $s_{r^*}$ whose shift aligns the period break in $X_L$ with the period break in $X_R$ can extend further via **one second LCE query**!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-40`)"}
+
+1. **Diagnostic Signal**: An arithmetic progression of palindromic suffixes of $X_L$ can have $k = \Theta(10^{18})$ members (e.g. on $\texttt{a}^{10^{18}}$), so we must test an entire AP in $O(1)$ SLP-LCE calls!
+2. **Combinatorial Word Invariant**:
+   - Let $\mathcal{A} = \{s_1 < s_2 < \dots < s_k\}$ ($s_r = s_1 + (r - 1)d$, $k \ge 2$) be a single half-open AP of palindromic suffixes of $X_L$ with common minimal period $d = s_2 - s_1$.
+   - Let $U = X_L^R$, so each $s_r \in \mathcal{A}$ is a palindromic prefix $U[1..s_r]$ of $U$, and the whole block $U[1 .. s_k + L_L]$ (where $L_L = \operatorname{LCE}(U[1..], U[d+1..])$) has period $d$.
+   - Compare the periodic pattern of period $d$ against $X_R$ at the seam by computing $L_R = \operatorname{LCE}\bigl(U[1..d],\, X_R\bigr)$ (or $\operatorname{LCE}(U[s_1+1..], X_R)$): this tells us how far period $d$ continues into $X_R$!
+   - For any $r \in \{1, \dots, k\}$:
+     - In $U[s_r + 1 ..]$, period $d$ continues for $e_L(r) = (k - r)d + \operatorname{LCE}(U[s_k+1..], U[s_k-d+1..])$ characters.
+     - In $X_R[1..]$, period $d$ continues for $L_R$ characters.
+     - If $e_L(r) \ne L_R$, the mismatch occurs at $\min(e_L(r), L_R)$!
+     - Only for the **at most one index** $r^* \in \{1, \dots, k\}$ where $e_L(r^*) = L_R$ (i.e. $(k - r^*)d$ matches the difference of period extensions) do both sides break period $d$ at the exact same offset, requiring **1 extra call** $\operatorname{LCE}\bigl(U[s_{r^*} + 1 + L_R ..],\, X_R[1 + L_R ..]\bigr)$!
+3. **Algorithmic Compilation**:
+   - Augment the SLP with reversed rules $X_u^R \to X_R^R X_L^R$ and build the $O(\log |S|)$ SLP-LCE structure (`W3B-36`).
+   - Maintain for each $X_u$ its $O(\log |X_u|)$ palindromic prefix APs and palindromic suffix APs (computed by filtering the APs of $X_L, X_R$ plus the newly found seam palindromes!).
+   - At each rule $X_u \to X_L X_R$, evaluate the seam-centered palindrome $2\operatorname{LCE}(X_L^R, X_R)$, plus $O(1)$ LCE calls per palindromic suffix AP of $X_L$ and prefix AP of $X_R$. Total time: $O(g \log^2 |S|)$.
+4. **Broken-Invariant Counterexample**: Iterating over all $k$ members of an AP individually takes $\Theta(N) = 10^{18}$ steps on $S = (\texttt{ab})^{10^{18}}$; the period-break alignment test $e_L(r^*) = L_R$ is essential to keep work $O(1)$ per AP!
+:::
+
+---
+
+#### Problem 21.8 (`W3B-43`) — `JACM 2016 / Universal Cup — Jeż's Synchronized Recompression for SLP-in-SLP Matching & Periodicity`
+
+- **Mathematical Statement**: You are given two Straight-Line Programs: a pattern SLP $G_P$ with $g_P \le 2000$ rules generating $P$ ($|P| \le 10^{18}$), and a text SLP $G_T$ with $g_T \le 2000$ rules generating $T$ ($|T| \le 10^{18}$). Using **Jeż's Synchronized Recompression**, compute the exact number of occurrences of $P$ in $T$ modulo $10^9 + 7$ in $O((g_P + g_T) \log |P|)$ time.
+- **Constraints**: $1 \le g_P, g_T \le 2000$, $1 \le |P| \le |T| \le 10^{18}$, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Here **both** $|P| \le 10^{18}$ and $|T| \le 10^{18}$ are exponentially large! The $O(g_T |P|)$ seam KMP (`W3B-35`) and even the $O(g_T \log^2 |P| + |P|)$ Border-AP seam method are impossible because we cannot even afford $O(|P|)$ time!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 21.2(2) (Jeż's Synchronized Recompression)**, if we apply Phase A (`RComp`: $c^\ell \to \langle c, \ell \rangle$) and Phase B (`PComp`: $(a, b) \in \Sigma_L \times \Sigma_R \to c_{a,b}$) **with the exact same alphabet partition $\Sigma_L \sqcup \Sigma_R$ to both $G_P$ and $G_T$**, why might an occurrence of $P$ inside $T$ fail to compress identically to $P$? Only at the **first and last symbol/run of $P$**, where the surrounding context in $T$ might merge $P$'s boundary run $a^r$ into a longer run $a^{r + k}$ ($k \ge 0$), or pair $P[1] \in \Sigma_R$ with the preceding character in $T$, or pair $P[|P|] \in \Sigma_L$ with the following character in $T$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Before executing `RComp` at level $h$, if $P$ is not a single unary run $a^m$, **pop the leading run $a^{\ell_1}$ and trailing run $b^{\ell_2}$ off $P$** (so $P = a^{\ell_1} P' b^{\ell_2}$ where $P'$ starts with $\ne a$ and ends with $\ne b$); then in $T$, a compressed run $\langle a, \ell \rangle$ followed by $P'$ matches the left boundary iff $\ell \ge \ell_1$! Similarly, before executing `PComp` ($\Sigma_L \times \Sigma_R$), **if $P[1] \in \Sigma_R$, pop $P[1]$ off the front of $P$, and if $P[|P|] \in \Sigma_L$, pop $P[|P|]$ off the back of $P$** (and in $G_T$, explicitly pop the first/last symbol of each variable $X_u \to X_L X_R$ into the rule seam so cross-seam pairs $(a, b) \in \Sigma_L \times \Sigma_R$ are contracted directly!).
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-43`)"}
+
+1. **Diagnostic Signal**: Fully compressed matching ($|P|, |T| \le 10^{18}$) requires shrinking $|P|$ by a constant factor $\le 3/4$ per level while spending only $O(g_P + g_T)$ work per level.
+2. **Combinatorial Word Invariant (Boundary Popping & Seam Splitting)**:
+   - At each level $h$, represent each SLP rule in $G_P$ and $G_T$ as $X_u \to w_{\text{left}} + X_L + w_{\text{mid}} + X_R + w_{\text{right}}$ (or standard Chomsky normal form where popped boundary symbols are accumulated at the root/seams).
+   - **Implementing `PComp` ($\Sigma_L \times \Sigma_R$) on an SLP**: For every non-empty variable $X_u$, record its first symbol $\operatorname{first}(X_u)$ and last symbol $\operatorname{last}(X_u)$. If $\operatorname{first}(X_u) \in \Sigma_R$, pop the first symbol out of $X_u$ so every parent rule $X_p \to \dots X_u \dots$ replaces $X_u$ by $\operatorname{first}(X_u) \cdot X_u'$; symmetrically, if $\operatorname{last}(X_u) \in \Sigma_L$, pop $\operatorname{last}(X_u)$ out to the right ($X_u \mapsto X_u'' \cdot \operatorname{last}(X_u)$). Now **no** pair $(a, b) \in \Sigma_L \times \Sigma_R$ can ever cross the boundary of any variable $X_u'$, so contracting $(a, b) \to c_{a,b}$ inside the explicit seam strings of each rule contracts **every** occurrence of $(a, b)$ in the entire $10^{18}$-length string in $O(g_P + g_T)$ time!
+   - **Implementing `RComp` ($c^\ell \to \langle c, \ell \rangle$) on an SLP**: Similarly, pop the maximal prefix run $c_1^{\ell_1}$ and suffix run $c_2^{\ell_2}$ out of each variable $X_u$ so no unary run crosses a variable boundary, then merge adjacent runs of the same symbol inside each rule's explicit seam string!
+3. **Algorithmic Compilation**:
+   - Alternate `RComp` and `PComp` (choosing $\Sigma_L \sqcup \Sigma_R$ by greedy max-cut on the adjacency graph of $P$'s seams so $|P|$ shrinks by $\le 3/4$ every level).
+   - Stop as soon as $P$ becomes a single unary run $a^m$ ($m \ge 1$): at that point, pop leading/trailing $a$-runs from all variables in $G_T$; any remaining seam run $a^\ell$ in $X_u \in G_T$ with $\ell \ge m$ (and matching boundary conditions for any popped prefix/suffix of $P$) contributes $\ell - m + 1$ occurrences to $dp[u]$!
+   - Total levels: $O(\log |P|)$, work per level: $O(g_P + g_T) \implies \boldsymbol{O((g_P + g_T) \log |P|)}$ total time!
+4. **Broken-Invariant Counterexample**: If you choose the greedy max-cut $\Sigma_L \sqcup \Sigma_R$ using the adjacency weights of $T$ instead of $P$, $T$ shrinks by $\le 3/4$ while $P$ might have zero edges in $\Sigma_L \times \Sigma_R$ and fail to shrink! Always compute the greedy max-cut on the adjacency multigraph of **$P$** so $|P|$ is guaranteed to shrink in $O(\log |P|)$ phases.
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Decision Checklist: Locally Consistent Parsing, SLPs & Compressed Indexing
+
+| Contest Signal / Workload | Canonical Engine / Invariant | Complexity |
+| :--- | :--- | :--- |
+| Dynamic `Split`, `Concat`, `Reverse` & deterministic `LCE` ($N \le 10^{18}$) | Locally Consistent Parse DAG (`RComp` + Local Extrema or Cole–Vishkin 6-Coloring, **Theorem 21.1**) | $O(\log N)$ / op |
+| Explicit pattern $P$ ($M \le 10^4$) in SLP $T$ ($g$ rules, $|T| \le 10^{18}$) | Primary-Seam KMP on $\operatorname{suff}_{\min(|X_L|,M-1)}(X_L) + \operatorname{pref}_{\min(|X_R|,M-1)}(X_R)$ (**Theorem 21.2(1)**) | $O(g M)$ |
+| Explicit pattern $P$ ($M \le 2\times 10^5$) in SLP $T$ ($g$ rules) | Primary-Seam Border AP intersection (`Ch 02`) across rules | $O(g \log^2 M + M)$ |
+| SLP pattern $P$ in SLP text $T$ (both $|P|, |T| \le 10^{18}$) | **Jeż's Synchronized Recompression** (`RComp` + $\Sigma_L \times \Sigma_R$ `PComp` with boundary popping, **Theorem 21.2(2)**) | $O((g_P + g_T)\log |P|)$ |
+| Longest Palindrome / Maximal Runs in SLP ($|S| \le 10^{18}$) | Palindromic/periodic suffix APs + period-break alignment LCE (`W3B-40`) | $O(g \log^2 |S|)$ |
+| Verifying or minimizing a **String Attractor** $\Gamma$ of $S[1..N]$ | SAM minimal-representative hitting set: $\forall q,\; \exists r \in \operatorname{endpos}(q)$ with $[r-\operatorname{minlen}(q)+1, r] \cap \Gamma \ne \emptyset$ (**Theorem 21.3**) | $O(N)$ verification |
+| Flat $O(N/\tau)$ locally consistent anchors for packed LCE / IPM | **Kempa–Kociumaka $\tau$-Synchronizing Set** via length-$\tau$ minimizers outside $\tau/3$-periodic runs (**Theorem 21.4**) | $O(N)$ construction |
+| Online pattern indexing on LZ77 ($z$ phrases) or SLP ($g$ rules) | **Kärkkäinen–Ukkonen Primary–Secondary Split** + 2D Wavelet Tree on $(Z_k^R, Z_{k+1}\cdots Z_z)$ (**Theorem 21.5**) | $O(M \log z + \text{occ})$ |
+
+### 6.2 Where Part V Leads Next
+You have now completed the four-chapter theoretical arc of **Part V: Algebraic, Approximate, Structural-Isomorphism & Grammar-Compressed Matching** ([Ch 18](ch18-fft-wildcard-involution-matching.qmd)–[Ch 21](ch21-locally-consistent-parsing-slp-attractors.qmd)):
+
+- Proceed immediately to **[Blind Checkpoint V (`CP-V`)](../checkpoints/cp05-part5-fft-isomorphism-slp-indexing.qmd)** to test your diagnostic discrimination across the **`Ch 18` vs. `Ch 19` vs. `Ch 20` vs. `Ch 21` Decoy Triad** without chapter labels.
+- In **[Part VI: Subsequence Algebra, Tiskin's Seaweed Matrices, Cluster Generating Functions & `DP套DP`](ch22-dasg-arch-simon-invertible-matrices.qmd)**, we pivot from contiguous substrings to **subsequences** (`DASG`, Hébrard's Arch Factorization, invertible $O(|\Sigma|)$ range subsequence matrices, bit-parallel Allison–Dix / Myers LCS, and Tiskin's Seaweed Matrices `海草矩阵`), and in **[Chapter 26: Word Equations & $10^{18}$ Period Folding](ch26-word-equations-signed-parallel-dsu.qmd)** we will use Jeż's Recompression from this chapter to solve huge-length word equations.

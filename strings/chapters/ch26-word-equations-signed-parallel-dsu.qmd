@@ -1,0 +1,589 @@
+---
+title: "Word Equations, Signed & Tree Binary-Lifting DSU (倍增并查集), and Huge-Length (N <= 10^18) Period Folding"
+subtitle: "Chapter 26 · Part VII: Word Equations, Inverse/Inequality Graphs, Wheeler/Tree Strings, SL2(Fp) Groups & Combinatorics on Words"
+---
+
+::: {.callout-important title="Prerequisites, Assumed Library & Learning Objectives"}
+- **Assumed Library Primitives**: Disjoint Set Union (DSU) with path compression and union by size/rank, bipartite parity/XOR-weighted DSU edges, and Lowest Common Ancestor ($\operatorname{LCA}$) + $2^k$-ancestor jump tables ($\operatorname{anc}[k][u]$) on rooted trees. See [Notation & Conventions](../notation.qmd) for 1-based closed indexing $S[1..N]$.
+- **Strict Prerequisite Chapters**: [Chapter 01: Period–Border Duality, the Fine–Wilf Theorem, and Sub-Threshold Orbit Counting](ch01-fine-wilf-periodicity-orbits.qmd) and [Chapter 21: Locally Consistent Parsing, Jeż Recompression SLPs, String Attractors & LZ77](ch21-locally-consistent-parsing-slp-attractors.qmd).
+- **Assigned Technique IDs**: `T-5A-01` (Lossless Dyadic Block Covering, Signed Binary-Lifting DSU with Root Self-Palindrome Bit `is_pal[k][r]` & Online Potential Amortization), `T-5A-02` (LCA-Split Signed Tree Binary-Lifting DSU & Huge-Length $N \le 10^{18}$ Period/Reflection Folding).
+- **Learning Objectives**:
+  1. Replace $\Theta(NM\alpha(N))$ pointwise substring merges with $O((M + N \log N)\alpha(N))$ **Binary-Lifting DSU (`倍增并查集`)** using lossless overlapping power-of-two Sparse-Table blocks (`[SCOI2016] 萌萌哒`).
+  2. Prove the $O((M + N \log N)\alpha(N))$ worst-case time bound of **Online Recursive Block Splitting** via the component-plus-palindrome potential function $\Phi = \sum_{k=0}^K (c_k + p_k) \le 2N(K + 1)$, and couple it with rollback conflict sets for online inequality rejection.
+  3. Handle orientation-reversing / palindromic equations $S[l_1..r_1] = S[l_2..r_2]^R$ via **Signed Half-Block Pushdown** and the **Root Self-Palindrome Bit `is_pal[k][r]`**, avoiding the $N = 4$ self-loop drop bug when `find(k, x) == find(k, y)` with net parity $1$.
+  4. Generalize dyadic block merging to **Signed Tree Binary-Lifting DSU (`树上倍增并查集`)** by splitting arbitrary simple paths $u \rightsquigarrow v$ at $\operatorname{LCA}(u, v)$, and contract **Huge-Length ($N \le 10^{18}$) Word Equations** via Fine–Wilf Euclidean modulo folding, Dihedral reflection-to-translation composition ($R_2 \circ R_1 = T_\Delta$), and Jeż's Recompression.
+:::
+
+---
+
+## 1. Lossless Dyadic Block Covering & Offline Binary-Lifting DSU (`倍增并查集`, `T-5A-01`)
+
+### 1.1 The Diagnostic Signal: Why Pointwise DSU and Canonical Segment Trees Fail
+
+Let $S[1..N]$ be an unknown string of length $N \le 5 \times 10^5$ over an alphabet $\Sigma$ of size $\sigma = |\Sigma|$. We are given $M \le 5 \times 10^5$ bulk **word equation constraints**, each asserting either:
+
+- **Orientation-Preserving Substring Equality ($t = 0$)**: $S[l_1 .. l_1 + L - 1] = S[l_2 .. l_2 + L - 1]$, meaning $S[l_1 + \delta] = S[l_2 + \delta]$ for every offset $0 \le \delta < L$; or
+- **Orientation-Reversing / Palindromic Substring Equality ($t = 1$)**: $S[l_1 .. l_1 + L - 1] = \bigl(S[l_2 .. l_2 + L - 1]\bigr)^R$, meaning $S[l_1 + \delta] = S[l_2 + L - 1 - \delta]$ for every offset $0 \le \delta < L$ (where $l_1 = l_2$ forces $S[l_1 .. l_1 + L - 1]$ to be a palindrome).
+
+We want to compute the connected components of the smallest equivalence relation $\sim$ on $\{1, 2, \dots, N\}$ satisfying all $M$ equations—for example, to count valid strings as $\sigma^C$ where $C$ is the number of equivalence classes (`[SCOI2016] 萌萌哒` / `Luogu P3295`). Three natural attempts fail immediately:
+
+1. **Pointwise Character DSU ($\Theta(NM\alpha(N))$ Time)**: Executing a loop `for (int d = 0; d < L; ++d) unite(l1 + d, l2 + d);` performs $\Theta(N)$ operations per equation when $L = \Theta(N)$, requiring $2.5 \times 10^{11}$ operations at $N, M = 5 \times 10^5$.
+2. **Canonical Segment Tree Range Decomposition (Misaligned Dyadic Splits)**: In graph problems with range-to-range edges (`CF 786B`), one decomposes $[l_1, r_1]$ and $[l_2, r_2]$ into $O(\log N)$ canonical Segment Tree nodes. For substring equality, however, this **completely fails**: a Segment Tree aligns blocks to multiples of $2^k$, so whenever $l_1 \not\equiv l_2 \pmod{2^k}$, the dyadic partition of $[l_1, l_1 + L - 1]$ and the dyadic partition of $[l_2, l_2 + L - 1]$ consist of blocks of **different sequence lengths at incompatible relative offsets**!
+3. **Treap / Splay Substring Sharing**: Balanced BSTs can cut and paste intervals, but equating two overlapping substrings $S[1..N-1] = S[2..N]$ requires unifying every offset simultaneously rather than copying a static reference.
+
+---
+
+### 1.2 The Combinatorial Word Invariant: Power-of-Two Sparse-Table Blocks & Lossless Covering
+
+Instead of partitioning $[l_1, l_1 + L - 1]$ into disjoint Segment Tree pieces, we cover it with **two overlapping power-of-two blocks**—the exact geometry of a Sparse Table (RMQ).
+
+Let $K = \lfloor \log_2 N \rfloor$. For each level $k \in \{0, 1, \dots, K\}$ and starting index $i \in \{1, 2, \dots, N - 2^k + 1\}$, define the **level-$k$ dyadic block**:
+$$B_k(i) := S\bigl[i .. i + 2^k - 1\bigr] \quad \text{of exact length } 2^k.$$
+At the base level $k = 0$, $B_0(i) = S[i..i]$ is the single character $S[i]$. We maintain $K + 1$ separate DSU structures $\operatorname{DSU}_0, \operatorname{DSU}_1, \dots, \operatorname{DSU}_K$, where $\operatorname{DSU}_k$ maintains equivalences among the blocks $\{B_k(1), B_k(2), \dots, B_k(N - 2^k + 1)\}$.
+
+::: {.callout-note title="Theorem 26.1 (Lossless Dyadic Block Covering Equivalence)"}
+Let $L \ge 1$ be any substring length, and let $k = \lfloor \log_2 L \rfloor$ so that $2^k \le L < 2^{k+1}$.
+
+1. **Orientation-Preserving Equality ($t = 0$)**: For any $1 \le l_1, l_2 \le N - L + 1$, the length-$L$ equation $S[l_1 .. l_1 + L - 1] = S[l_2 .. l_2 + L - 1]$ holds **if and only if** the two overlapping level-$k$ block equations hold:
+   $$\boxed{B_k(l_1) = B_k(l_2) \quad \text{and} \quad B_k(l_1 + L - 2^k) = B_k(l_2 + L - 2^k).}$$
+2. **Orientation-Reversing Equality ($t = 1$)**: The reversed length-$L$ equation $S[l_1 .. l_1 + L - 1] = \bigl(S[l_2 .. l_2 + L - 1]\bigr)^R$ holds **if and only if** the prefix block of the first interval equals the reversed **suffix** block of the second interval, and vice versa:
+   $$\boxed{B_k(l_1) = B_k(l_2 + L - 2^k)^R \quad \text{and} \quad B_k(l_1 + L - 2^k) = B_k(l_2)^R.}$$
+:::
+
+```
+Forward (t = 0), k = floor(log2 L):
+  l1:  [-------- B_k(l1) --------]
+                 [-------- B_k(l1 + L - 2^k) --------]
+       |<------------------- L --------------------->|
+  l2:  [-------- B_k(l2) --------]
+                 [-------- B_k(l2 + L - 2^k) --------]
+
+Reversed (t = 1), prefix of l1 pairs with reversed suffix of l2:
+  l1:  [-------- B_k(l1) --------]  <== rev ==>  [-------- B_k(l2 + L - 2^k) --------]^R
+                 [-------- B_k(l1 + L - 2^k) --------]  <== rev ==>  [-------- B_k(l2) --------]^R
+```
+
+#### Proof of Theorem 26.1 (Double-Inclusion of Offset Equations)
+Let $I = \{0, 1, \dots, L - 1\}$ be the set of relative offsets inside a substring of length $L$, and split $I$ into the prefix offset window $A = \{0, 1, \dots, 2^k - 1\}$ and the suffix offset window $B = \{L - 2^k, L - 2^k + 1, \dots, L - 1\}$. Because $2^k \le L < 2 \cdot 2^k$, we have $0 \le L - 2^k \le 2^k$, so $A \cup B = I$ with overlap $A \cap B = \{L - 2^k, \dots, 2^k - 1\}$.
+
+- **Case 1 ($t = 0$)**: The block equation $B_k(l_1) = B_k(l_2)$ asserts $S[l_1 + \delta] = S[l_2 + \delta]$ for all $\delta \in A$. The block equation $B_k(l_1 + L - 2^k) = B_k(l_2 + L - 2^k)$ asserts $S[(l_1 + L - 2^k) + j] = S[(l_2 + L - 2^k) + j]$ for all $0 \le j < 2^k$; substituting $\delta = (L - 2^k) + j \in B$ yields the exact same character equation $S[l_1 + \delta] = S[l_2 + \delta]$ for all $\delta \in B$. On the overlap $\delta \in A \cap B$, both blocks assert the identical equality $S[l_1 + \delta] = S[l_2 + \delta]$, so nothing is omitted and no extraneous equality is introduced.
+- **Case 2 ($t = 1$)**: The equation $B_k(l_1) = B_k(l_2 + L - 2^k)^R$ asserts that for every $\delta \in A$:
+  $$S[l_1 + \delta] = S\bigl[(l_2 + L - 2^k) + (2^k - 1 - \delta)\bigr] = S[l_2 + L - 1 - \delta].$$
+  Similarly, $B_k(l_1 + L - 2^k) = B_k(l_2)^R$ asserts that for every $\delta = (L - 2^k) + j \in B$:
+  $$S[l_1 + \delta] = S\bigl[l_2 + 2^k - 1 - (\delta - (L - 2^k))\bigr] = S[l_2 + L - 1 - \delta].$$
+  Since $A \cup B = I$, the two level-$k$ reversed block equations hold if and only if $S[l_1 + \delta] = S[l_2 + L - 1 - \delta]$ for all $\delta \in I$. $\blacksquare$
+
+---
+
+### 1.3 Offline Top-Down Level Pushdown (`[SCOI2016] 萌萌哒`)
+
+Once all $M$ input equations have been inserted into their respective levels $k = \lfloor \log_2 L \rfloor$ via $2M$ calls to `unite(k, ...)`, how do we propagate these constraints down to individual characters at level $k = 0$?
+
+At any level $k \ge 1$, a connected component $C \subseteq \{1, \dots, N - 2^k + 1\}$ in $\operatorname{DSU}_k$ with canonical root $r = \operatorname{find}_k(i)$ represents the system of $|C| - 1$ spanning equations $B_k(i) = B_k(r)$ for all $i \in C \setminus \{r\}$. Each length-$2^k$ block equality $B_k(i) = B_k(r)$ is equivalent to **two half-block equalities** of length $h = 2^{k-1}$ at level $k - 1$:
+$$\boxed{B_k(i) = B_k(r) \iff B_{k-1}(i) = B_{k-1}(r) \;\wedge\; B_{k-1}(i + 2^{k-1}) = B_{k-1}(r + 2^{k-1}).}$$
+Because equality is transitive, pushing down only the **star of spanning edges $(i, r)$ connecting each element $i$ to its level-$k$ DSU root $r = \operatorname{find}_k(i)$** preserves the exact equivalence relation at level $k - 1$: if $i \sim_k j$ via root $r$, then $B_{k-1}(i) = B_{k-1}(r) = B_{k-1}(j)$ and $B_{k-1}(i + h) = B_{k-1}(r + h) = B_{k-1}(j + h)$ are both united in $\operatorname{DSU}_{k-1}$.
+
+Sweeping $k$ from $K = \lfloor \log_2 N \rfloor$ down to $1$ performs at most $2(N - 2^k + 1)$ unions per level, yielding a total offline complexity of **$O\bigl((M + N \log N)\alpha(N)\bigr)$ time and $O(N \log N)$ space**.
+
+---
+
+## 2. Online Recursive Splitting with Potential Amortization & Rollback DSU (`T-5A-01`)
+
+### 2.1 Online Recursive `merge_block` and the Potential Function $\Phi$
+
+What if substring equality queries arrive **online**, and after *each* query we must immediately report the current number of character components $C$ at level $0$ (or check whether the query violates a forbidden inequality $S[u] \ne S[v]$)? We cannot wait to do a single offline top-down sweep at the end.
+
+Instead, when an online query equates $B_k(i)$ and $B_k(j)$ at level $k$, we invoke a recursive procedure `merge_block(k, i, j)` that **short-circuits whenever $B_k(i)$ and $B_k(j)$ are already equivalent at level $k$**:
+
+1. If $\operatorname{find}_k(i) == \operatorname{find}_k(j)$ (and in the signed setting of §3.1, no new self-palindrome flag `is_pal[k][r]` is flipped from $0 \to 1$), **return immediately**!
+2. Otherwise, unite $\operatorname{find}_k(i)$ and $\operatorname{find}_k(j)$ in $\operatorname{DSU}_k$.
+3. If $k > 0$, recursively call `merge_block(k - 1, i, j)` and `merge_block(k - 1, i + 2^{k-1}, j + 2^{k-1})`.
+
+At first sight, a single call at level $K$ could spawn $2^K = \Theta(N)$ recursive calls down a binary tree. Why does this never TLE across $M$ online queries?
+
+::: {.callout-note title="Theorem 26.2 (Online Potential Amortization for Recursive Binary-Lifting DSU)"}
+Consider any sequence of $M$ online substring equality or palindrome/reversal equations on $S[1..N]$ processed by recursive `merge_block(k, i, j, d)`. Let $c_k \in [1, N]$ denote the number of connected components in $\operatorname{DSU}_k$, and let $p_k \in [0, c_k]$ denote the number of root components $r$ at level $k$ with `is_pal[k][r] == 0`. Define the non-negative potential function:
+$$\boxed{\Phi := \sum_{k=0}^{\lfloor \log_2 N \rfloor} \bigl(c_k + p_k\bigr) \le 2N\bigl(\lfloor \log_2 N \rfloor + 1\bigr).}$$
+Then across all $M$ queries, the total number of invocations of `merge_block` (both recursive and top-level) is at most $2M + 6N(\lfloor \log_2 N \rfloor + 1)$, running in **$O\bigl((M + N \log N)\alpha(N)\bigr)$ total worst-case time**.
+:::
+
+#### Proof of Theorem 26.2
+Partition all invocations of `merge_block(k, i, j, d)` across the entire run into two disjoint classes:
+
+- **Productive Calls**: Calls where either (a) $r_i = \operatorname{find}_k(i) \ne \operatorname{find}_k(j) = r_j$, so two distinct components at level $k$ are united ($c_k$ decreases by $1$ and $p_k$ decreases by $0$ or $1$, giving $\Delta \Phi \le -1$), or (b) $r_i = r_j$ with net reversal parity $1$ while `is_pal[k][r_i]` was $0$, flipping `is_pal[k][r_i]` from $0 \to 1$ ($c_k$ is unchanged and $p_k$ decreases by $1$, giving $\Delta \Phi = -1$). Because $\Phi$ starts at $\Phi_0 \le 2N(\lfloor \log_2 N \rfloor + 1)$, never increases during any operation, and remains $\Phi \ge 0$, the total number of productive calls across all $M$ queries is bounded by:
+  $$\#(\text{Productive Calls}) \le \Phi_0 \le 2N\bigl(\lfloor \log_2 N \rfloor + 1\bigr).$$
+- **Unproductive (Short-Circuited) Calls**: Calls where $r_i = r_j$ and no `is_pal` bit changes from $0 \to 1$. Such a call performs two $\operatorname{find}_k$ operations in $O(\alpha(N))$ time and returns immediately with **zero child calls**. Every unproductive call is either one of the $2M$ top-level calls initiated by the $M$ input queries, or one of the $2$ direct children of a productive call at level $k + 1$. Therefore:
+  $$\#(\text{Unproductive Calls}) \le 2M + 2 \cdot \#(\text{Productive Calls}) \le 2M + 4N\bigl(\lfloor \log_2 N \rfloor + 1\bigr).$$
+
+Summing both classes bounds the total number of calls by $2M + 6N(\lfloor \log_2 N \rfloor + 1)$, each taking $O(\alpha(N))$ time. $\blacksquare$
+
+---
+
+### 2.2 Online Conflict Detection & Atomic Rollback with `neq[r]` Sets
+
+Suppose online queries interleave substring equalities $S[l_1..r_1] = S[l_2..r_2]$ with point inequalities $S[u] \ne S[v]$, and any query that creates a contradiction ($S[x] = S[y]$ and $S[x] \ne S[y]$) must be **rejected and rolled back atomically** without corrupting $\operatorname{DSU}_0 \dots \operatorname{DSU}_K$:
+
+1. **Small-to-Large Forbidden-Root Sets at Level $0$**: At each level-$0$ root $r$, maintain a hash set or balanced BST `neq[r]` storing all level-$0$ roots $r'$ forbidden from merging with $r$.
+2. **Conflict Check & Rollback Log**: During an online equality query, record every modification to `fa[k][r]`, `sz[k][r]`, and `is_pal[k][r]` on a rollback stack. Whenever `merge_block` reaches $k = 0$ and attempts to unite $r_u$ and $r_v$, check in $O(\log N)$ whether $r_v \in \operatorname{neq}[r_u]$.
+3. **Commit or Unwind**: If any level-$0$ merge hits a forbidden edge $r_v \in \operatorname{neq}[r_u]$, immediately abort the recursion, unwind the rollback stack to restore all levels $k \in [0, K]$ to their pre-query state, and report `CONFLICT`. Crucially, aborting on the **very first** level-$0$ conflict ensures that a rejected query performs at most $O(\log N)$ tree-descent steps before halting! If no conflict occurs across the entire query, merge `neq[r_u]` and `neq[r_v]` small-to-large in $O(\log^2 N)$ amortized time.
+
+---
+
+## 3. Signed Palindrome DSU (`带权反转倍增并查集`), Tree Binary-Lifting DSU & $N \le 10^{18}$ Period Folding (`T-5A-01`, `T-5A-02`)
+
+### 3.1 Signed Half-Block Pushdown & The Root Self-Palindrome Bit `is_pal[k][r]`
+
+When orientation-reversing equations $S[l_1..r_1] = (S[l_2..r_2])^R$ are present, two blocks $B_k(i)$ and $B_k(j)$ in the same connected component of $\operatorname{DSU}_k$ can be related either by **direct equality** ($d = 0 \implies B_k(i) = B_k(j)$) or by **reversal** ($d = 1 \implies B_k(i) = B_k(j)^R$).
+
+We augment $\operatorname{DSU}_k$ into a **$\mathbb{Z}_2$-weighted (parity) DSU** paired with a **root self-palindrome bit**:
+
+- **`rev[k][x]` $\in \{0, 1\}$**: The reversal parity between $B_k(x)$ and its DSU parent $B_k(\operatorname{fa}[k][x])$. Path compression XORs `rev[k]` along the path to the root $r$, so `FIND(k, x)` returns $(r, d_x)$ satisfying $B_k(x) = B_k(r)^{R^{d_x}}$ (where $W^{R^0} = W$ and $W^{R^1} = W^R$).
+- **`is_pal[k][r]` $\in \{0, 1\}$ (The Root Self-Palindrome Bit)**: Suppose we call `UNITE(k, u, v, d)` where $(r_u, d_u) = \operatorname{FIND}(k, u)$ and $(r_v, d_v) = \operatorname{FIND}(k, v)$ already share the **same root** $r_u = r_v = r$. The net parity induced on the root block $B_k(r)$ is:
+  $$d_{\text{net}} = d_u \oplus d_v \oplus d \in \{0, 1\}.$$
+  If $d_{\text{net}} = 0$, the equation $B_k(r) = B_k(r)$ is redundant. **If $d_{\text{net}} = 1$, however, it forces $B_k(r) = B_k(r)^R$—meaning the root block $B_k(r)$ itself is a palindrome of length $2^k$!** Because a tree-structured DSU cannot store a self-loop edge $r \to r$ of weight $1$, we **must** store this fact in the boolean flag `is_pal[k][r] = 1` (and propagate `is_pal[k][rv] |= is_pal[k][ru]` whenever two roots $r_u \ne r_v$ merge).
+
+::: {.callout-note title="Lemma 26.3 (Signed Half-Block Pushdown & Self-Palindrome Propagation)"}
+At level $k \ge 1$ with half-length $h = 2^{k-1}$, pushing $\operatorname{DSU}_k$ down to $\operatorname{DSU}_{k-1}$ requires **two passes**:
+
+1. **Pass 1 (Root Self-Palindrome Pushdown)**: For every root $r$ at level $k$ (`fa[k][r] == r`) with `is_pal[k][r] == 1`, the equation $B_k(r) = B_k(r)^R$ is equivalent to the single reversed half-block equation:
+   $$\boxed{B_k(r) = B_k(r)^R \iff B_{k-1}(r) = B_{k-1}(r + 2^{k-1})^R \quad \bigl(\text{i.e., } \operatorname{UNITE}(k-1,\, r,\, r + 2^{k-1},\, 1)\bigr).}$$
+2. **Pass 2 (Spanning-Forest Edge Pushdown with Offset Cross-Swap)**: For every non-root $i \ne r$ with $(r, d) = \operatorname{FIND}(k, i)$:
+   - If $d = 0$ ($B_k(i) = B_k(r)$), unite $(i,\, r,\, 0)$ and $(i + 2^{k-1},\, r + 2^{k-1},\, 0)$ at level $k - 1$.
+   - If $d = 1$ ($B_k(i) = B_k(r)^R$), the first half of $B_k(i)$ matches the reversed **second half** of $B_k(r)$, and the second half of $B_k(i)$ matches the reversed **first half** of $B_k(r)$:
+     $$\boxed{B_k(i) = B_k(r)^R \iff B_{k-1}(i) = B_{k-1}(r + 2^{k-1})^R \;\wedge\; B_{k-1}(i + 2^{k-1}) = B_{k-1}(r)^R.}$$
+:::
+
+```
+Level k (d = 1):   [ B_{k-1}(i) | B_{k-1}(i + h) ]  === rev ===  [ B_{k-1}(r) | B_{k-1}(r + h) ]^R
+                         |               \_____________________________/               |
+                         \_____________________________________________________________/
+                   UNITE(k-1, i, r + h, 1)               AND           UNITE(k-1, i + h, r, 1)
+```
+
+::: {.callout-tip title="The $S' = S \cdot S^R$ Doubled-String Duality (Parity-Free Alternative)"}
+If memory permits $2N$ indices per level, you can eliminate signed edges and `is_pal[k][r]` entirely: construct the virtual doubled string $S'[1..2N] = S \cdot S^R$, pre-unite `UNITE(0, i, 2N + 1 - i)` at level $0$ for $1 \le i \le N$, and rewrite every reversed constraint $S[l_1..r_1] = S[l_2..r_2]^R$ as the **orientation-preserving** constraint $S'[l_1..r_1] = S'[2N + 1 - r_2 .. 2N + 1 - l_2]$! Signed DSU (`Contract 26.1`) achieves the exact same result in **half the memory and half the index range** $[1..N]$.
+:::
+
+---
+
+### 3.2 Hand-Checked Trace: Translation + Palindrome Collapse on $N = 6$
+
+Let $S[1..6]$ be constrained by two equations of length $L = 4 = 2^2$:
+$$\text{(1) } S[1..4] = S[3..6] \quad (t = 0) \qquad \text{and} \qquad \text{(2) } S[1..4] = \bigl(S[1..4]\bigr)^R \quad (t = 1).$$
+
+| Step / Level | Operation Executed | Resulting DSU State & `is_pal` Flags | Mathematical Meaning |
+| :--- | :--- | :--- | :--- |
+| **Init ($k = 2$, $2^2 = 4$)** | Query 1: `UNITE(2, 1, 3, 0)` | $\operatorname{fa}[2][1] = 3,\; \operatorname{rev}[2][1] = 0$ | $B_2(1) = B_2(3)$ |
+| **Init ($k = 2$, $2^2 = 4$)** | Query 2: `UNITE(2, 1, 1, 1)` | $\operatorname{FIND}(2, 1) = (3, 0) \implies r_u = r_v = 3$, $d_{\text{net}} = 0 \oplus 0 \oplus 1 = 1 \implies \text{is\_pal}[2][3] = 1$ | Root block $B_2(3) = S[3..6]$ is a palindrome! |
+| **Push $k = 2 \to 1$ ($h = 2$)** | Pass 1 ($r = 3$, $\text{is\_pal}=1$): `UNITE(1, 3, 5, 1)`<br>Pass 2 ($i = 1 \to r = 3, d = 0$): `UNITE(1, 1, 3, 0)` & `UNITE(1, 3, 5, 0)` | Merging $(3, 5, 1)$ and $(3, 5, 0)$ at $k = 1$ unites $B_1(1), B_1(3), B_1(5)$ into one root $r_1 = 5$ and sets $\text{is\_pal}[1][5] = 1$! | $S[1..2] = S[3..4] = S[5..6]$ and $S[5..6] = S[5..6]^R$ |
+| **Push $k = 1 \to 0$ ($h = 1$)** | Pass 1 ($r_1 = 5$, $\text{is\_pal}=1$): `UNITE(0, 5, 6, 1)`<br>Pass 2 ($i = 1, 3 \to r_1 = 5$): `UNITE(0, 1, 5, 0)`, `UNITE(0, 2, 6, 0)`, `UNITE(0, 3, 5, 0)`, `UNITE(0, 4, 6, 0)` | All $6$ positions $\{1, 2, 3, 4, 5, 6\}$ merge into **one single component** ($C = 1$). | $S[1] = S[2] = S[3] = S[4] = S[5] = S[6]$ |
+
+Verify by hand: $S[1..4]$ is a palindrome ($S[1]=S[4], S[2]=S[3]$) and period $2$ ($S[1]=S[3]=S[5], S[2]=S[4]=S[6]$), so $S[1] = S[4] = S[2] = S[3] = S[5] = S[6]$, giving $C = 1$.
+
+---
+
+### 3.3 Signed Tree Binary-Lifting DSU (`树上倍增并查集`, `T-5A-02`)
+
+Now suppose characters sit on the vertices of a rooted tree $T$ with $N \le 2 \times 10^5$ nodes, and we are given $M$ **tree-path word equations** $\operatorname{str}(u_1 \rightsquigarrow v_1) = \operatorname{str}(u_2 \rightsquigarrow v_2)$ between arbitrary simple paths of equal length $L$.
+
+1. **Upward Dyadic Ancestor Blocks**: For each level $k \in \{0, \dots, \lfloor \log_2 N \rfloor\}$ and vertex $u$ with $\operatorname{depth}(u) \ge 2^k - 1$, define $B_k(u)$ to be the upward vertical path of $2^k$ vertices starting at $u$:
+   $$B_k(u) := u \to \operatorname{anc}[0][u] \to \dots \to \operatorname{anc}[0]\bigl(\operatorname{anc}[k-1][u]\bigr).$$
+   By Theorem 26.1, an equation between two **upward** paths of length $L$, $\operatorname{str}(u_1 \uparrow L) = \operatorname{str}(u_2 \uparrow L)^{R^d}$ ($d \in \{0, 1\}$), splits at $k = \lfloor \log_2 L \rfloor$ into two level-$k$ tree-block merges:
+   - If $d = 0$: `UNITE(k, u1, u2, 0)` and `UNITE(k, jump(u1, L - 2^k), jump(u2, L - 2^k), 0)`.
+   - If $d = 1$: `UNITE(k, u1, jump(u2, L - 2^k), 1)` and `UNITE(k, jump(u1, L - 2^k), u2, 1)`.
+2. **Splitting General Undirected Paths $u \rightsquigarrow v$ at $\operatorname{LCA}(u, v)$**:
+   Every directed simple path $u \rightsquigarrow v$ in $T$ decomposes at $w = \operatorname{LCA}(u, v)$ into:
+   - An **upward prefix** $u \uparrow w$ of length $L_{\text{up}} = \operatorname{depth}(u) - \operatorname{depth}(w) + 1$, followed by
+   - A **downward suffix** $w' \downarrow v$ (where $w'$ is the child of $w$ toward $v$) of length $L_{\text{down}} = \operatorname{depth}(v) - \operatorname{depth}(w)$, which is the **exact reversal** $(v \uparrow w')^R$ of an upward ancestor path from $v$!
+   When equating $\operatorname{str}(u_1 \rightsquigarrow v_1) = \operatorname{str}(u_2 \rightsquigarrow v_2)$ of total length $L$, the two LCA split points partition the offset interval $[1, L]$ into **at most $3$ contiguous sub-segments**! On each sub-segment, both sides are pure vertical paths (either upward $t = 0$ or downward $=$ reversed upward $t = 1$), reducing every general tree-path equation to at most $3$ upward/reversed-upward path equations (at most $6$ `UNITE` calls)!
+3. **Tree Level Pushdown ($k \to k - 1$, $h = 2^{k-1}$)**:
+   - Pass 1 (Root self-palindrome `is_pal[k][r] == 1`): `UNITE(k - 1, r, anc[k - 1][r], 1)`.
+   - Pass 2 (Edge $u \to r$ with parity $d$):
+     - If $d = 0$: `UNITE(k - 1, u, r, 0)` and `UNITE(k - 1, anc[k - 1][u], anc[k - 1][r], 0)`.
+     - If $d = 1$: `UNITE(k - 1, u, anc[k - 1][r], 1)` and `UNITE(k - 1, anc[k - 1][u], r, 1)`.
+
+---
+
+### 3.4 Three Contraction Engines for Huge-Length ($N \le 10^{18}$) Word Equations (`T-5A-02`)
+
+When $N \le 10^{18}$ and $M \le 10^5$, allocating $O(N \log N)$ DSU nodes is impossible. Instead, we exploit three structural contractions depending on the equation family:
+
+1. **Engine A — Plandowski / Fine–Wilf Euclidean Period Folding**:
+   Suppose an equation equates two overlapping intervals $S[l_1..r_1] = S[l_2..r_2]$ with $l_1 < l_2 \le r_1$ and shift $p = l_2 - l_1$. Then the entire union $[l_1, r_2]$ is periodic with period $p$: every index $x \in [l_2, r_2]$ folds canonically into the base period window $[l_1, l_1 + p - 1]$ via:
+   $$\boxed{x \longmapsto l_1 + \bigl((x - l_1) \bmod p\bigr).}$$
+   Any sub-interval $[a, b] \subseteq [l_2, r_2]$ of length $\le p$ maps under modulo-$p$ folding to **at most $2$ contiguous intervals** inside $[l_1, l_1 + p - 1]$. If two periodic intervals of periods $p$ and $q$ overlap on a region $I$ of length $|I| \ge p + q - \gcd(p, q)$, **Theorem 1.2 (Fine–Wilf)** contracts their entire union into a single interval of period $g = \gcd(p, q)$; if $|I| < p + q - \gcd(p, q)$ ($p < q$), replacing the $q$-shift by $(q \bmod p)$ executes one Euclidean division step, terminating in $O(\log N)$ steps!
+2. **Engine B — Dihedral Reflection-to-Translation Reduction for Huge Palindromes**:
+   A palindrome equation $S[l_i..r_i] = S[l_i..r_i]^R$ acts on $[l_i, r_i]$ as the affine reflection involution:
+   $$R_i(x) = (l_i + r_i) - x.$$
+   A single palindrome folds its right half $[\lfloor(l_i + r_i)/2\rfloor + 1,\, r_i]$ onto its left half $[l_i,\, \lceil(l_i + r_i)/2\rceil]$, halving the interval length. Whenever **two** palindrome intervals $[l_1, r_1]$ and $[l_2, r_2]$ overlap, the composition of their two reflections in the dihedral group is a **pure translation**:
+   $$\boxed{\bigl(R_2 \circ R_1\bigr)(x) = (l_2 + r_2) - \bigl((l_1 + r_1) - x\bigr) = x + \bigl((l_2 + r_2) - (l_1 + r_1)\bigr),}$$
+   which immediately induces period $\Delta = |(l_2 + r_2) - (l_1 + r_1)|$ on the intersection and reduces to Engine A!
+3. **Engine C — Artur Jeż's Recompression (`Ch 21` / `T-3B-05`)**:
+   For general non-overlapping or overlapping word equations over $N \le 10^{18}$, maintain intervals as an implicit Straight-Line Program (SLP) and alternate **Run-Length Block Compression (`RComp`: $c^\ell \to c_\ell$)** and **Locally Consistent Pair Compression (`PComp`: $ab \to c$ for $(a, b) \in \Sigma_L \times \Sigma_R$)**. By [Chapter 21](ch21-locally-consistent-parsing-slp-attractors.qmd), only $O(1)$ boundary tokens per equation are split before each compression phase, collapsing all lengths to $1$ in $O(M \log N)$ phases!
+
+---
+
+## 4. Reverse-Engineering Scratchpad, Algorithmic Contracts & Boundary Pitfalls (`BP-23` / `BP-26-01`–`BP-26-03` / `BP-5A-01`–`BP-5A-03`)
+
+### 4.1 Implementation Contract: Signed Binary-Lifting DSU (`倍增并查集`)
+
+```cpp
+// Signed Binary-Lifting DSU for forward (d = 0) & reversed/palindromic (d = 1) word equations.
+// Space: O(N log N) | Time: O((M + N log N) * alpha(N))
+struct SignedParallelDSU {
+    int n, K;
+    vector<vector<int>> fa;
+    vector<vector<uint8_t>> rev, is_pal;
+
+    SignedParallelDSU(int n_) : n(n_), K(n_ > 1 ? __lg(n_) : 0),
+        fa(K + 1, vector<int>(n + 1)),
+        rev(K + 1, vector<uint8_t>(n + 1, 0)),
+        is_pal(K + 1, vector<uint8_t>(n + 1, 0)) {
+        for (int k = 0; k <= K; ++k)
+            iota(fa[k].begin(), fa[k].end(), 0);
+    }
+
+    pair<int, uint8_t> find(int k, int x) {
+        if (fa[k][x] == x) return {x, 0};
+        auto [r, d] = find(k, fa[k][x]);
+        fa[k][x] = r;
+        rev[k][x] ^= d;
+        return {r, rev[k][x]};
+    }
+
+    void unite_block(int k, int u, int v, uint8_t d) {
+        auto [ru, du] = find(k, u);
+        auto [rv, dv] = find(k, v);
+        if (ru == rv) {
+            if ((du ^ dv ^ d) == 1)
+                is_pal[k][ru] = 1; // Critical: self-reversal loop on root ru!
+            return;
+        }
+        fa[k][ru] = rv;
+        rev[k][ru] = du ^ dv ^ d;
+        is_pal[k][rv] |= is_pal[k][ru];
+    }
+
+    // Add equation S[l1 .. l1+L-1] == S[l2 .. l2+L-1] (d=0) or S[l2 .. l2+L-1]^R (d=1)
+    void add_equation(int l1, int l2, int L, uint8_t d) {
+        if (L <= 0) return;
+        int k = __lg(L), span = 1 << k;
+        if (d == 0) {
+            unite_block(k, l1, l2, 0);
+            unite_block(k, l1 + L - span, l2 + L - span, 0);
+        } else {
+            unite_block(k, l1, l2 + L - span, 1);
+            unite_block(k, l1 + L - span, l2, 1);
+        }
+    }
+
+    void pushdown_all() {
+        for (int k = K; k >= 1; --k) {
+            int half = 1 << (k - 1), lim = n - (1 << k) + 1;
+            // Pass 1: Push down root self-palindrome constraints FIRST
+            for (int r = 1; r <= lim; ++r)
+                if (fa[k][r] == r && is_pal[k][r])
+                    unite_block(k - 1, r, r + half, 1);
+            // Pass 2: Push down spanning-forest edges
+            for (int i = 1; i <= lim; ++i) {
+                auto [r, d] = find(k, i);
+                if (r == i) continue;
+                if (d == 0) {
+                    unite_block(k - 1, i, r, 0);
+                    unite_block(k - 1, i + half, r + half, 0);
+                } else {
+                    unite_block(k - 1, i, r + half, 1);
+                    unite_block(k - 1, i + half, r, 1);
+                }
+            }
+        }
+    }
+};
+```
+
+---
+
+### 4.2 Boundary Pitfalls & Broken-Invariant Counterexamples (`BP-23` / `BP-26-01`–`BP-26-03` / `BP-5A-01`–`BP-5A-03`)
+
+::: {.callout-warning title="Pitfall 26.1 (BP-23 / BP-26-01 / BP-5A-01: The $N = 4$ Self-Loop Bug — Dropping `is_pal[k][ru]` When `ru == rv`)"}
+- **The Broken Shortcut**: In `unite_block(k, u, v, d)`, writing standard parity-DSU logic:
+  ```cpp
+  if (ru == rv) return; // WRONG when (du ^ dv ^ d) == 1!
+  ```
+- **Explicit Counterexample ($N = 4$)**: Impose a single palindrome constraint $S[1..4] = (S[1..4])^R$ on $S[1..4]$. Here $L = 4 = 2^2$, so `add_equation(1, 1, 4, 1)` calls `unite_block(2, 1, 1, 1)`. Because $u = v = 1$, we have `ru == rv == 1` immediately! Returning early without setting `is_pal[2][1] = 1` leaves $\operatorname{DSU}_2$, $\operatorname{DSU}_1$, and $\operatorname{DSU}_0$ completely empty, reporting $C = 4$ components instead of $C = 2$ ($S[1]=S[4], S[2]=S[3]$)!
+- **Even When $u \ne v$ Initially**: On $N = 6$ in §3.2 (`S[1..4] = S[3..6]` and `S[1..4] = S[3..6]^R`), the first equation merges $1$ and $3$ at level $2$, and the second equation calls `unite_block(2, 1, 3, 1)` where $1$ and $3$ **already share root $3$**! Dropping `is_pal[k][ru] = 1` loses the reversal constraint on $B_2(3)$.
+:::
+
+::: {.callout-warning title="Pitfall 26.2 (BP-26-02 / BP-5A-02: Forgetting to Cross-Swap Half-Offsets on $d = 1$ Pushdown)"}
+- **The Broken Shortcut**: Pushing a reversed edge $B_k(i) = B_k(r)^R$ down to level $k - 1$ via `unite_block(k - 1, i, r, 1)` and `unite_block(k - 1, i + half, r + half, 1)` (without swapping `r` and `r + half`).
+- **Explicit Counterexample ($N = 4, k = 1, \text{half} = 1$)**: For $B_1(1) = S[1..2]$ and $B_1(3) = S[3..4]$, $B_1(1) = B_1(3)^R$ means $S[1] = S[4]$ and $S[2] = S[3]$. Failing to swap `r` and `r + half` pushes $(1, 3)$ and $(2, 4)$ to level $0$, forcing $S[1] = S[3]$ and $S[2] = S[4]$ (a forward translation instead of a reversal!).
+:::
+
+::: {.callout-warning title="Pitfall 26.3 (BP-26-03 / BP-5A-03: Period Wrap-Around Split on $N \le 10^{18}$ Modulo Folding)"}
+When folding a sub-interval $[x, y]$ of length $y - x + 1 < p$ into the canonical period base $[l, l + p - 1]$ via $z \mapsto l + ((z - l) \bmod p)$, if $(x - l) \bmod p > (y - l) \bmod p$, the image **straddles the period boundary** $l + p - 1$ and must be split into **two** contiguous intervals $[l + ((x - l)\bmod p),\; l + p - 1]$ and $[l,\; l + ((y - l)\bmod p)]$. Treating $[l + ((x-l)\bmod p),\; l + ((y-l)\bmod p)]$ as a single interval creates an inverted range with $L > R$!
+:::
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Problem Ladder
+
+### Tier 1 — Stepping Stones (`W5A-01`, `W5A-06`)
+
+#### Problem 26.1 (`W5A-01`) — `[SCOI2016] 萌萌哒` (`Luogu P3295` / `BZOJ 4567`)
+
+- **Mathematical Statement**: An unknown $N$-digit decimal integer $S[1..N] \in \{\texttt{0}, \dots, \texttt{9}\}^N$ has no leading zero ($S[1] \ne \texttt{0}$). You are given $M$ substring equality constraints $(l_{1,q}, r_{1,q}, l_{2,q}, r_{2,q})$ with $r_{1,q} - l_{1,q} = r_{2,q} - l_{2,q}$, each requiring $S[l_{1,q} .. r_{1,q}] = S[l_{2,q} .. r_{2,q}]$. Count the number of valid decimal strings $S$ modulo $10^9 + 7$.
+- **Constraints**: $1 \le N \le 10^5$, $1 \le M \le 10^5$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At $N, M = 10^5$, uniting $S[l_1 + \delta]$ and $S[l_2 + \delta]$ for $0 \le \delta \le r_1 - l_1$ takes $\Theta(NM\alpha(N)) \approx 10^{10}$ operations. Why can we replace a range equality of arbitrary length $L$ with just two power-of-two block merges?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Apply **Theorem 26.1 ($t = 0$)**: for $L = r_1 - l_1 + 1$ and $k = \lfloor \log_2 L \rfloor$, the intervals $[0, 2^k - 1]$ and $[L - 2^k, L - 1]$ cover $[0, L - 1]$, so $S[l_1..r_1] = S[l_2..r_2] \iff B_k(l_1) = B_k(l_2) \wedge B_k(l_1 + L - 2^k) = B_k(l_2 + L - 2^k)$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Maintain $17$ DSU levels ($k = 0 \dots 16$). Insert each query into level $k = \lfloor \log_2 L \rfloor$, then sweep $k = 16 \downarrow 1$ pushing each non-root $i$ and its root $r = \operatorname{find}_k(i)$ to level $k - 1$ as $(i, r)$ and $(i + 2^{k-1}, r + 2^{k-1})$. At level $0$, if there are $C$ connected components, the component containing $1$ has $9$ choices ($\texttt{1}$–$\texttt{9}$) and the other $C - 1$ components have $10$ choices each.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5A-01`)"}
+1. **Diagnostic Signal**: Bulk range equalities of length up to $N = 10^5$ defeat pointwise DSU.
+2. **Combinatorial Word Invariant**: By Theorem 26.1, each length-$L$ equality splits losslessly into two merges in $\operatorname{DSU}_k$ at $k = \lfloor \log_2 L \rfloor$. Top-down spanning-star pushdown (`unite(k - 1, i, r)` and `unite(k - 1, i + 2^{k-1}, r + 2^{k-1})`) preserves all transitive equalities down to $\operatorname{DSU}_0$.
+3. **Algorithmic Compilation**:
+   - Handle $N = 1$ specially: if $N = 1$ and leading zero is allowed in single-digit numbers (per `Luogu P3295` convention, $0$ is a valid 1-digit number if $N = 1$, or check $9 \cdot 10^{C-1}$ for $N \ge 1$).
+   - Run the top-down sweep from $k = \lfloor \log_2 N \rfloor$ down to $1$ in $O((M + N \log N)\alpha(N))$ time.
+   - Count roots $r \in \{1, \dots, N\}$ with $\operatorname{fa}[0][r] = r$. Output $9 \cdot 10^{C - 1} \bmod (10^9 + 7)$.
+4. **Broken-Invariant Counterexample**: Pushing down all $\binom{|C|}{2}$ pairs inside a level-$k$ component instead of only the $|C| - 1$ star edges $(i, \operatorname{find}_k(i))$ degrades back to $\Theta(N^2 \log N)$.
+:::
+
+---
+
+#### Problem 26.2 (`W5A-06`) — `CF 827A — String Reconstruction` & Substring Placement DSU
+
+- **Mathematical Statement**: An unknown string $S[1..L_{\max}]$ is specified by $N$ known template strings $T_1, \dots, T_N$ along with occurrence lists: template $T_i$ occurs starting at positions $x_{i, 1} < x_{i, 2} < \dots < x_{i, k_i}$. All inputs are guaranteed to be mutually consistent on overlaps, and any position of $S$ not covered by any template may be chosen freely to minimize $S$ lexicographically. Reconstruct $S[1..L_{\max}]$.
+- **Constraints**: $1 \le N \le 10^5$, $\sum |T_i| \le 10^6$, $\sum k_i \le 10^6$, $L_{\max} = \max_{i, j}(x_{i, j} + |T_i| - 1) \le 2 \times 10^6$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+If $T_1 = \texttt{a}^{10^6}$ is placed at $x = 1, 2, \dots, 10^6$, copying $|T_1|$ characters for each placement takes $\Theta(L_{\max}^2) = 10^{12}$ operations.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Because all placements are consistent, each index $p \in \{1, \dots, L_{\max}\}$ only needs to be written **at most once**. Maintaining a "next uncovered index" DSU on $\{1, \dots, L_{\max} + 1\}$ lets us skip over maximal contiguous blocks of already-assigned characters in $O(\alpha(L_{\max}))$ amortized time.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Initialize $\operatorname{nxt}[p] = p$ for $1 \le p \le L_{\max} + 1$ and fill $S[1..L_{\max}]$ with `'a'`. For each placement $[l, r]$ of $T_i$ ($r = l + |T_i| - 1$), iterate `for (int p = find(l); p <= r; p = find(p)) { S[p] = T_i[p - l + 1]; nxt[p] = find(p + 1); }`.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5A-06`)"}
+1. **Diagnostic Signal**: Overlapping placements re-write the same indices up to $\Theta(k)$ times.
+2. **Combinatorial Word Invariant**: Let $U \subseteq \{1, \dots, L_{\max}\}$ be the set of indices not yet assigned by any placement. Whenever an index $p \in U$ is assigned $S[p] = T_i[p - l + 1]$, removing $p$ from $U$ corresponds to directing $\operatorname{nxt}[p] \leftarrow p + 1$ in a DSU over $\{1, \dots, L_{\max} + 1\}$.
+3. **Algorithmic Compilation**: Each index $p \in \{1, \dots, L_{\max}\}$ is visited as $\operatorname{find}(p) \le r$ at most once before being united with $p + 1$, and each placement performs at most one final $\operatorname{find}(p) > r$ call. Total time: $O\bigl((\sum k_i + L_{\max})\alpha(L_{\max})\bigr)$.
+4. **Broken-Invariant Counterexample**: Leaving uncovered positions as `'\0'` instead of `'a'` truncates the output string early when printed as a C-string.
+:::
+
+---
+
+### Tier 2 — Intermediate (`W5A-14`, `W5A-29`)
+
+#### Problem 26.3 (`W5A-14`) — `Signed Substring & Palindrome Word Equations` (`AtCoder ABC 259 Ex` / `CF Gym 102900K` / `LOJ #6073`)
+
+- **Mathematical Statement**: Given string length $N$, alphabet size $\sigma$, $M_1$ orientation-preserving equations $S[l_1..r_1] = S[l_2..r_2]$, and $M_2$ orientation-reversing / palindromic equations $S[l_1..r_1] = \bigl(S[l_2..r_2]\bigr)^R$, compute the number of valid strings $S \in \Sigma^N$ modulo $998244353$.
+- **Constraints**: $1 \le N \le 2 \times 10^5$, $0 \le M_1 + M_2 \le 2 \times 10^5$, $1 \le \sigma \le 10^9$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Both forward translations ($d = 0$) and reversals/palindromes ($d = 1$) act simultaneously on substrings of length up to $N$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Use **Theorem 26.1** and **Lemma 26.3**: each level-$k$ DSU stores edge parity `rev[k][x]` $\in \{0, 1\}$ and root self-palindrome flag `is_pal[k][r]` $\in \{0, 1\}$. When $d = 1$, pushing $B_k(i) = B_k(r)^R$ to level $k - 1$ cross-swaps the half-offsets: $B_{k-1}(i) = B_{k-1}(r + 2^{k-1})^R$ and $B_{k-1}(i + 2^{k-1}) = B_{k-1}(r)^R$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Deploy `SignedParallelDSU` (**Contract 26.1**). Remember Pass 1 at each level $k$: for every root $r$ with `is_pal[k][r] == 1`, call `unite_block(k - 1, r, r + 2^{k-1}, 1)` before pushing spanning edges in Pass 2. Finally, count root components $C$ at level $0$ and output $\sigma^C \bmod 998244353$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5A-14`)"}
+1. **Diagnostic Signal**: Simultaneous range equalities and range reversals require tracking relative orientation across $\lfloor \log_2 N \rfloor + 1$ dyadic levels.
+2. **Combinatorial Word Invariant**: Every connected component of $\operatorname{DSU}_k$ has a spanning tree rooted at $r$ with relative reversal bits $d_i \in \{0, 1\}$ ($B_k(i) = B_k(r)^{R^{d_i}}$), plus at most one independent odd-parity cycle represented by `is_pal[k][r] = 1` ($B_k(r) = B_k(r)^R$). Pushing `is_pal[k][r]` down as `unite_block(k - 1, r, r + 2^{k-1}, 1)` and cross-swapping $d = 1$ edges preserves the exact character equivalence relation down to $k = 0$.
+3. **Algorithmic Compilation**: Execute `SignedParallelDSU` (`Contract 26.1`) in $O((M + N \log N)\alpha(N))$ time and $O(N \log N)$ space. Note that at level $k = 0$, a self-palindrome on a $1$-character block $S[i] = S[i]^R$ is a tautology, so `is_pal[0][r]` imposes no further restriction on $\sigma^C$.
+4. **Broken-Invariant Counterexample (`Pitfall 26.1`)**: Omitting `is_pal[k][ru] = 1` when `ru == rv` and `(du ^ dv ^ d) == 1` fails on $N = 4, S[1..4] = S[1..4]^R$, outputting $\sigma^4$ instead of $\sigma^2$.
+:::
+
+---
+
+#### Problem 26.4 (`W5A-29` / `W5A-23`) — `Online Word Equations with Immediate Component Queries` (`CSAcademy — Substring Restrictions` / `CF Gym 102059`)
+
+- **Mathematical Statement**: Start with an unconstrained string $S[1..N]$ over an alphabet of size $\sigma = 26$. Process $Q$ **online** queries $(l_{1,q}, l_{2,q}, L_q)$ (asserting $S[l_{1,q} .. l_{1,q} + L_q - 1] = S[l_{2,q} .. l_{2,q} + L_q - 1]$, where $l_{1,q}, l_{2,q}, L_q$ may be XOR-encrypted by the previous answer). After **each** query, output the current number of valid strings $26^C \bmod (10^9 + 7)$.
+- **Constraints**: $1 \le N, Q \le 10^5$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Because queries are XOR-encrypted by the previous answer, offline level-by-level pushdown is impossible.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 26.2 (Online Potential Amortization)**, if `merge_block(k, i, j)` immediately returns whenever $\operatorname{find}_k(i) == \operatorname{find}_k(j)$ and otherwise unites at level $k$ and recurses twice at level $k - 1$, then every recursive descent decreases the potential $\Phi = \sum_{k=0}^K c_k$ by at least $1$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Maintain `comp_0 = N`. In `merge_block(k, i, j)`: let $r_i = \operatorname{find}_k(i), r_j = \operatorname{find}_k(j)$; if $r_i == r_j$ return; unite $r_i, r_j$ in $\operatorname{DSU}_k$; if $k == 0$, decrement `comp_0`; else call `merge_block(k - 1, i, j)` and `merge_block(k - 1, i + (1 << (k - 1)), j + (1 << (k - 1)))`.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5A-29`)"}
+1. **Diagnostic Signal**: Online encrypted queries require maintaining the exact component count $c_0$ after every operation.
+2. **Combinatorial Word Invariant**: By Theorem 26.2, $\Phi = \sum_{k=0}^K c_k \le N(K + 1)$. Each productive `merge_block` call reduces $\Phi$ by $1$ and spawns $2$ child calls, so across all $Q$ queries at most $2Q + 3N(K + 1)$ calls occur.
+3. **Algorithmic Compilation**: Precompute powers $26^c \bmod (10^9 + 7)$ for $1 \le c \le N$. For each query $(l_1, l_2, L)$, let $k = \lfloor \log_2 L \rfloor$, invoke `merge_block(k, l1, l2)` and `merge_block(k, l1 + L - 2^k, l2 + L - 2^k)`, and output `pow26[comp_0]`. Total time: $O((Q + N \log N)\alpha(N))$.
+4. **Broken-Invariant Counterexample**: Uniting at level $k$ *after* the two recursive calls instead of *before* them fails when the first child call indirectly equates the two blocks at level $k$ or when overlapping recursive calls re-enter the same $(k, r_i, r_j)$ pair! Always unite at level $k$ **before** recursing to $k - 1$.
+:::
+
+---
+
+### Tier 3 — Advanced (`W5A-47`, `W5A-34`)
+
+#### Problem 26.5 (`W5A-47`) — `Undirected Tree-Path Word Equations via Signed Tree Binary-Lifting DSU`
+
+- **Mathematical Statement**: Given a rooted tree $T$ with $N$ vertices carrying unknown characters $c[1..N] \in \Sigma^N$ ($|\Sigma| = \sigma$) and $M$ undirected path equations $(u_1, v_1, u_2, v_2)$ where $\operatorname{dist}(u_1, v_1) = \operatorname{dist}(u_2, v_2)$, each asserting that the string read along simple path $u_1 \rightsquigarrow v_1$ equals the string read along simple path $u_2 \rightsquigarrow v_2$, compute the number of valid vertex labelings $\sigma^C \bmod 998244353$.
+- **Constraints**: $1 \le N, M \le 2 \times 10^5$, time limit $2.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Simple paths $u \rightsquigarrow v$ turn at $w = \operatorname{LCA}(u, v)$, combining an upward path $u \uparrow w$ with a downward path $w' \downarrow v$. Heavy-Light Decomposition splits each path into $O(\log N)$ segments, which would take $O(M \log N)$ merges before binary lifting. Can we split each path into at most **two** vertical pieces?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **§3.3 (`T-5A-02`)**, any downward path $w' \downarrow v$ is the **exact reversal** $(v \uparrow w')^R$ of an upward ancestor path starting at $v$! Splitting $u_1 \rightsquigarrow v_1$ at $w_1 = \operatorname{LCA}(u_1, v_1)$ and $u_2 \rightsquigarrow v_2$ at $w_2 = \operatorname{LCA}(u_2, v_2)$ cuts the common path length $L$ at most twice, producing **at most $3$ aligned vertical segments** (upward vs. upward, or upward vs. reversed upward)!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Maintain a Signed Tree Binary-Lifting DSU on states $(k, u)$ where $B_k(u)$ is the upward path of $2^k$ vertices from $u$. Push down level $k \to k - 1$ using $\operatorname{anc}[k - 1][u]$ in place of $i + 2^{k-1}$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5A-47`)"}
+1. **Diagnostic Signal**: Equating $\Lambda$-shaped paths $u_1 \rightsquigarrow v_1$ and $u_2 \rightsquigarrow v_2$ on a tree requires aligning upward and downward segments.
+2. **Combinatorial Word Invariant**: Let $w_1 = \operatorname{LCA}(u_1, v_1)$ (upward prefix length $a_1 = \operatorname{depth}(u_1) - \operatorname{depth}(w_1) + 1$) and $w_2 = \operatorname{LCA}(u_2, v_2)$ (upward prefix length $a_2 = \operatorname{depth}(u_2) - \operatorname{depth}(w_2) + 1$). Assume $a_1 \le a_2$ by swapping $(u_1, v_1) \leftrightarrow (u_2, v_2)$. Then the length-$L$ equation splits into at most $3$ vertical equations:
+   - **Segment 1** $[1, a_1]$ (length $L_1 = a_1$, both upward, $d = 0$): $u_1 \uparrow L_1 = u_2 \uparrow L_1$.
+   - **Segment 2** $[a_1 + 1, a_2]$ (length $L_2 = a_2 - a_1$, path 1 downward vs. path 2 upward, $d = 1$): $\operatorname{jump}(v_1, L - a_2) \uparrow L_2 = \bigl(\operatorname{jump}(u_2, a_1) \uparrow L_2\bigr)^R$.
+   - **Segment 3** $[a_2 + 1, L]$ (length $L_3 = L - a_2$, both downward $\iff$ both reversed upward, $d = 0$): $v_1 \uparrow L_3 = v_2 \uparrow L_3$.
+3. **Algorithmic Compilation**: Each of the $\le 3$ segments calls `add_tree_equation(x, y, len, d)` in the Signed Tree Binary-Lifting DSU, followed by a single top-down pushdown from $k = \lfloor \log_2 N \rfloor$ to $1$ using `anc[k - 1][u]`. Total time: $O((M + N \log N)\alpha(N))$.
+4. **Broken-Invariant Counterexample**: When both segments are downward (Segment 3), reversing **both** sides cancels the two reversals ($d = 1 \oplus 1 = 0$), so $v_1 \uparrow L_3 = v_2 \uparrow L_3$ is an **orientation-preserving** ($d = 0$) equation starting from the bottom endpoints $v_1$ and $v_2$!
+:::
+
+---
+
+#### Problem 26.6 (`W5A-34`) — `Dihedral Reflection & Palindrome Overlap Equations at N <= 10^18`
+
+- **Mathematical Statement**: An unknown string $S[1..N]$ of huge length $N \le 10^{18}$ over alphabet $\Sigma$ ($|\Sigma| = \sigma$) is constrained to be a global palindrome ($S[1..N] = S[1..N]^R$), and in addition $M$ prefixes $S[1..L_1], \dots, S[1..L_M]$ ($1 \le L_i \le N$) are also palindromes. Compute the number of independent character orbits $C$ and output $\sigma^C \bmod 998244353$.
+- **Constraints**: $1 \le N \le 10^{18}$, $1 \le M \le 2 \times 10^5$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+**Key Question**: If $S[1..N]$ is a palindrome and a prefix $S[1..L]$ is also a palindrome, why does that force $N - L$ to be a **period** of $S[1..N]$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Period–Border Duality (Theorem 1.1)** and **§3.4 (Engine B)**: a palindromic prefix $S[1..L] = S[1..L]^R$ inside a global palindrome $S[1..N] = S[1..N]^R$ satisfies $S[1..L] = S[1..L]^R = S[N - L + 1 .. N]$, so $L \in \operatorname{Border}(S)$ and $p_i = N - L_i \in \operatorname{Per}(S)$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+**Dihedral Interaction**: Does $p_i = N - L_i \in \operatorname{Per}(S)$ alone capture the full constraint, or do two periods $p_1, p_2$ interact with the global palindrome reflection $R_N(x) = N + 1 - x$ even when $N < p_1 + p_2 - \gcd(p_1, p_2)$? Because every period $p_i = N - L_i$ comes from a **symmetric palindrome** $R_{L_i}(x) = L_i + 1 - x$, composing $R_N \circ R_{L_i}$ generates the dihedral reflection group where Euclidean subtraction $(p_1, p_2) \mapsto (p_1, p_2 - p_1)$ is valid **globally** whenever $L_i$ is a palindromic border!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5A-34`)"}
+1. **Diagnostic Signal**: $N \le 10^{18}$ forbids explicit index arrays, and multiple palindrome reflections overlap across $[1, N]$.
+2. **Combinatorial Word Invariant**: Let $R_L(x) = L + 1 - x$ denote the reflection on $[1, L]$. If both $S[1..N]$ and $S[1..L]$ ($L < N$) are palindromes, then for every $x \in [1, L]$, $S[x] = S[L + 1 - x] = S[N + 1 - (L + 1 - x)] = S[x + (N - L)]$, so $p = N - L$ is a period of $S[1..N]$, **and** the remainder suffix $S[L + 1 .. N]$ of length $N - L = p$ is also a palindrome! Consequently, folding $S[1..N]$ modulo $p = N - L$ reduces the problem on $(N;\; L_1, \dots, L_M)$ to a strictly smaller palindrome problem on period length $p$, and across all $L_i$ with $L_i \ge N/2$ (or via symmetric dihedral reduction on the torus $\mathbb{Z}/2N\mathbb{Z}$ when full cyclic reflections apply, or Euclidean folding of the longest palindromic border $L_{\max}$ via $N \leftarrow N - L_{\max}$ when $L_{\max} \ge N/2$), we contract the active interval length in $O(M \log N)$ Euclidean steps.
+3. **Algorithmic Compilation**: Sort $L_1, \dots, L_M$. At each step with current active palindrome length $N$: while the largest $L_i < N$ satisfies $2 L_i \ge N$, period $p = N - L_i \le N/2$ folds $[1, N]$ onto $[1, p]$ (and maps every other $L_j$ into $[1, p]$ via $L_j \bmod p$ or $p - (L_j \bmod p)$); when all remaining $L_i < N/2$, each palindrome $S[1..L_i]$ lies completely inside the first half $[1, \lceil N/2 \rceil]$ of $S[1..N]$ without touching the midpoint of $S[1..N]$, so the midpoint reflection of $S[1..N]$ simply folds $[ \lfloor N/2 \rfloor + 1, N ]$ onto $[1, \lceil N/2 \rceil]$ (contributing $0$ extra constraints to $[1, \lceil N/2 \rceil]$) and reduces $N \leftarrow \lceil N/2 \rceil$! Total time: $O(M \log N)$.
+4. **Broken-Invariant Counterexample**: Assuming $g = \gcd(N - L_1, \dots, N - L_M)$ is always a global period fails when $L_i$ are tiny ($L_1 = 2, L_2 = 3$ on $N = 10$): $S[1..2]$ and $S[1..3]$ are palindromes ($S[1]=S[2]=S[3]$) and $S[8..10] = S[1..3]$, leaving $S[4..7]$ completely unconstrained ($C = 1 + 1 + 2 = 4$, whereas $\gcd(8, 7) = 1$ would falsely claim $C = 1$!). Separating $L_i \ge N/2$ (which overlap across the center of $S[1..N]$) from $L_i < N/2$ (which sit entirely inside the left half $[1, \lceil N/2 \rceil]$) resolves this exact boundary!
+:::
+
+---
+
+### Tier 4 — Mastery (`W5A-36`, `W5A-49`)
+
+#### Problem 26.7 (`W5A-36` / `W5A-38`) — `Huge-Length (N <= 10^18) Word Equations via Plandowski / Fine–Wilf Period Folding` (`QOJ #6504` / `Universal Cup`)
+
+- **Mathematical Statement**: Given $N \le 10^{18}$, alphabet size $\sigma$, and $M$ substring equality equations $S[l_{1,i} .. r_{1,i}] = S[l_{2,i} .. r_{2,i}]$ ($r_{1,i} - l_{1,i} = r_{2,i} - l_{2,i}$), compute the number of connected components $C$ of $(\{1, \dots, N\}, \sim)$ and output $\sigma^C \bmod 998244353$.
+- **Constraints**: $1 \le N \le 10^{18}$, $1 \le M \le 1000$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+When an equation $S[l_1..r_1] = S[l_2..r_2]$ has $l_1 < l_2 \le r_1$, the shift $p = l_2 - l_1$ may be $1$ while $L = r_1 - l_1 + 1 = 10^{18}$, so naive interval splitting creates $L / p = 10^{18}$ pieces.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **§3.4 (Engine A)**, whenever $l_1 < l_2 \le r_1$, every index $x \in [l_2, r_2]$ folds into the base period interval $[l_1, l_2 - 1]$ of length $p = l_2 - l_1$ via $x \mapsto l_1 + ((x - l_1) \bmod p)$! Thus the entire interval $[l_2, r_2]$ can be **deleted from the active universe** and replaced by a periodic projection pointer into $[l_1, l_2 - 1]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Process equations one by one, maintaining a partition of the remaining "unfolded" indices into $O(M)$ elementary intervals plus a DAG of modulo-folding/translation rules. To apply a new equation $A = B$, project both $A$ and $B$ through existing folding rules into a list of canonical base intervals (using Euclidean $\gcd$ contraction whenever a periodic projection wraps around another periodic interval), and for the first unmapped overlap, turn the right-hand interval into a new folding rule!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5A-36`)"}
+1. **Diagnostic Signal**: $N \le 10^{18}$ with overlapping self-shifts requires contracting periodic loops in $O(\log N)$ Euclidean steps rather than $O(L/p)$ linear steps.
+2. **Combinatorial Word Invariant**: Every equation $S[l_1..l_1+L-1] = S[l_2..l_2+L-1]$ ($l_1 < l_2$) eliminates the interval $[l_2, l_2 + L - 1]$ by mapping each $x \in [l_2, l_2 + L - 1]$ to $l_1 + ((x - l_1) \bmod (l_2 - l_1)) \in [l_1, l_2 - 1]$. If $[l_1, l_2 - 1]$ later gets partially or fully mapped by another shift $q$, any sub-interval of length $\ge p + q - \gcd(p, q)$ contracts to period $\gcd(p, q)$ by **Theorem 1.2 (Fine–Wilf)**, while shorter overlaps reduce $p \mapsto p \bmod q$ in $O(\log N)$ steps.
+3. **Algorithmic Compilation**:
+   - Alternatively, apply **Jeż's Recompression (Engine C, `Ch 21`)**: represent $S[1..N]$ initially as a single run-length block $x_1 \dots x_N$ with $2M$ cut boundaries, and in each of $O(\log N)$ rounds: (1) split equations at block boundaries, (2) compress maximal RLE blocks $c^\ell \to c_\ell$, and (3) partition active symbols into $\Sigma_L \sqcup \Sigma_R$ to compress adjacent pairs $ab \to c$. Each round creates $O(M)$ new symbols, and any unused initial symbol of length $\ell$ contributes $\ell$ to $C$.
+   - Total time: $O(M^2 \log^2 N)$ (interval Euclidean folding) or $O(M \log^2 N)$ (recompression).
+4. **Broken-Invariant Counterexample (`Pitfall 26.3`)**: When projecting an interval $[x, y]$ of length $< p$ modulo $p$ into $[l_1, l_1 + p - 1]$, if $(x - l_1) \bmod p > (y - l_1) \bmod p$, you **must** split the image into two contiguous intervals $[l_1 + ((x - l_1)\bmod p),\; l_1 + p - 1]$ and $[l_1,\; l_1 + ((y - l_1)\bmod p)]$.
+:::
+
+---
+
+#### Problem 26.8 (`W5A-49` / `W5A-30`) — `Dynamic Online Word Equations with Conflict Detection & Atomic Rollback`
+
+- **Mathematical Statement**: Maintain a string $S[1..N]$ under $Q$ online queries of three types:
+  1. `1 l1 l2 L`: Assert $S[l_1 .. l_1 + L - 1] = S[l_2 .. l_2 + L - 1]$. If this equation contradicts any previously accepted assertion, output `INVALID` and **ignore** it (do not modify the state); otherwise accept it and output `VALID`.
+  2. `2 u v`: Assert $S[u] \ne S[v]$. If already $S[u] = S[v]$, output `INVALID` and ignore it; otherwise accept it and output `VALID`.
+  3. `3`: Output the current number of valid strings $\sigma^C \bmod 998244353$ (assuming $\sigma$ is large enough that no chromatic conflict occurs, or count components $C$).
+- **Constraints**: $1 \le N, Q \le 2 \times 10^5$, time limit $2.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+An invalid Type-1 query may successfully merge dozens of blocks at levels $k = 17 \dots 1$ before discovering a forbidden edge $S[x] \ne S[y]$ at level $0$. If we do not roll back those intermediate merges, future queries will be corrupted; if we spend $\Theta(N)$ time before discovering the conflict, an adversary can repeat that invalid query $Q$ times to force $\Theta(NQ)$ TLE!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **§2.2**, if `merge_block(k, i, j)` aborts and unwinds its rollback stack **at the very first level-$0$ conflict**, how many recursive calls could have occurred inside the failed query before that first conflict? At most the $O(\log N)$ ancestors of the conflicting level-$0$ pair plus any productive merges that were valid up to that point! However, what if $1000$ valid level-$0$ merges happen *before* the conflicting level-$0$ merge, and then get rolled back?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+To prevent an adversary from repeatedly triggering $1000$ valid merges followed by $1$ conflict at the end of a long block: maintain `neq[k][r]` small-to-large at **every** level $k \in [0, K]$. Whenever a conflict between $r_u = \operatorname{find}_0(u)$ and $r_v = \operatorname{find}_0(v)$ is found at level $0$ inside a recursive call from $(k, i, j)$, we **record the forbidden pair $(r_i, r_j)$ in `neq[k]` at level $k$** before rolling back; then any future call to $(k, i, j)$ detects the conflict at level $k$ in **$O(\log N)$ time without recursing**!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5A-49`)"}
+1. **Diagnostic Signal**: Rolling back a failed query restores $\Phi$, which could otherwise allow an adversary to pay for the same $\Delta \Phi$ reduction repeatedly if conflicts are only remembered at level $0$.
+2. **Combinatorial Word Invariant (Conflict Caching / Upward Inequality Promotion)**:
+   - Maintain a union-by-size (non-path-compressed, or rollback-logged) DSU at each level $k \in [0, K]$, plus small-to-large forbidden-root sets `neq[k][r]` at every level $k$.
+   - When `merge_block(k, i, j)` is called: let $r_i = \operatorname{find}_k(i), r_j = \operatorname{find}_k(j)$.
+     - If $r_i == r_j$, return `true`.
+     - If $r_j \in \operatorname{neq}[k][r_i]$, return `false` immediately in $O(\log N)$ time!
+     - If $k > 0$, recursively check `merge_block(k - 1, i, j)` and `merge_block(k - 1, i + 2^{k-1}, j + 2^{k-1})`.
+     - **Crucial Amortization Step**: If either child call returns `false`, then $B_k(r_i)$ and $B_k(r_j)$ are **permanently incompatible**! Even as we roll back the partial unions made during this failed query, we **commit the forbidden edge $(r_i, r_j)$ into `neq[k][r_i]` and `neq[k][r_j]`** before unwinding the DSU merges of the failed child!
+   - Why does this restore $O((Q + N \log N)\log^2 N)$ worst-case time? Because every recursive step that fails at a child was preceded by a valid merge of its first child (decreasing $\Phi$) or terminates the query (at most $K = \lfloor \log_2 N \rfloor$ ancestor frames on the call stack at the moment of failure)! Notice that we *must* unite at level $k$ before recursing so the right child sees the left child's equalities; if the right child subsequently fails because of the combination of left and right, then $r_i$ and $r_j$ at level $k$ are permanently incompatible, and at most $1$ failure path of depth $\le K$ occurs per query (while caching $(r_i, r_j) \in \operatorname{neq}[k]$ prevents $(r_i, r_j)$ from ever recursing again when the whole query is rolled back!).
+3. **Algorithmic Compilation**:
+   - For Type-2 (`u != v`): let $r_u = \operatorname{find}_0(u), r_v = \operatorname{find}_0(v)$. If $r_u == r_v$, print `INVALID`; else insert $r_v \in \operatorname{neq}[0][r_u]$ and $r_u \in \operatorname{neq}[0][r_v]$.
+   - For Type-1 (`l1, l2, L`): test the two level-$k$ blocks with a rollback checkpoint; if valid, commit small-to-large `neq` set merges; if invalid, unwind the DSU rollback log while keeping the newly discovered level-$k$ forbidden pair $(r_i, r_j) \in \operatorname{neq}[k]$.
+   - Total time: $O\bigl((Q + N \log N)\log^2 N\bigr)$.
+4. **Broken-Invariant Counterexample**: Rolling back a failed `merge_block(k, i, j)` **without** caching $(r_i, r_j) \in \operatorname{neq}[k]$ allows an adversary to send the exact same invalid query `1 1 2 N-1` $Q$ times, forcing $\Theta(N \log N)$ work per query!
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Decision Checklist: When to Apply Chapter 26 Machinery
+
+| Contest Signal / Equation Family | Invariant & Engine to Invoke | Time Complexity |
+| :--- | :--- | :--- |
+| Offline substring equalities $S[l_1..r_1] = S[l_2..r_2]$ (`[SCOI2016]`) | **Theorem 26.1**: 2 blocks at $k = \lfloor \log_2 L \rfloor$ + top-down star pushdown | $O\bigl((M + N \log N)\alpha(N)\bigr)$ |
+| Simultaneous substring & palindrome/reversal equations ($t \in \{0, 1\}$) | **Contract 26.1**: Signed DSU (`rev[k][x]`) + root `is_pal[k][r]` + offset cross-swap | $O\bigl((M + N \log N)\alpha(N)\bigr)$ |
+| Online substring equalities with intermediate component queries | **Theorem 26.2**: Recursive `merge_block` short-circuiting on $\operatorname{find}_k(i) == \operatorname{find}_k(j)$ | $O\bigl((M + N \log N)\alpha(N)\bigr)$ |
+| Online equations + `!=` conflicts with atomic rejection (`W5A-49`) | Rollback DSU + small-to-large `neq[k][r]` sets with conflict caching | $O\bigl((M + N \log N)\log^2 N\bigr)$ |
+| Wildcard border realizability $S[1..b] = S[N-b+1..N]$ (`[PKUSC2018]`) | NTT difference convolution $(\texttt{0} \text{ vs. } \texttt{1})$ + harmonic multiple sieve | $O(N \log N)$ |
+| Undirected tree-path equations $\operatorname{str}(u_1 \rightsquigarrow v_1) = \operatorname{str}(u_2 \rightsquigarrow v_2)$ | Split at $\operatorname{LCA}$ into $\le 3$ vertical segments + **Signed Tree Binary-Lifting DSU** | $O\bigl((M + N \log N)\alpha(N)\bigr)$ |
+| Huge-length ($N \le 10^{18}$) word / palindrome equations | Fine–Wilf Euclidean modulo folding, Dihedral $R_2 \circ R_1 = T_\Delta$, or Jeż Recompression | $O(M \log^2 N)$ |
+
+### 6.2 Four Pre-Submission Invariant Guards for Chapter 26
+
+1. **Self-Palindrome Root Guard (`Pitfall 26.1`)**: In Signed Binary-Lifting DSU, whenever `ru == rv` and `(du ^ dv ^ d) == 1`, you **must** set `is_pal[k][ru] = 1` before returning, and push `is_pal[k][r]` down via `unite_block(k - 1, r, r + 2^{k-1}, 1)` in Pass 1.
+2. **Reversed Half-Offset Cross-Swap Guard (`Pitfall 26.2`)**: Pushing $B_k(i) = B_k(r)^R$ ($d = 1$) down to level $k - 1$ pairs `(i, r + half, 1)` and `(i + half, r, 1)`, never `(i, r, 1)`.
+3. **Tree Downward-vs-Downward Parity Guard (`Problem 26.6`)**: On a tree path $u \rightsquigarrow v$, the downward leg $w' \downarrow v$ is $(v \uparrow w')^R$. Equating two downward legs reverses *both* sides, giving an **orientation-preserving ($d = 0$)** upward equation from $(v_1, v_2)$.
+4. **Modulo Wrap-Around Split Guard (`Pitfall 26.3`)**: When folding $[x, y]$ modulo $p$ into $[l, l + p - 1]$ at $N \le 10^{18}$, split into two intervals whenever $(x - l) \bmod p > (y - l) \bmod p$.
+
+### 6.3 What Comes Next in Part VII
+In this chapter, every constraint was a symmetric **equality** ($=$ or $=^R$). What happens when a problem gives us **asymmetric lexicographical inequalities** $S[l_1..r_1] < S[l_2..r_2]$ or $S[l_1..r_1] \le S[l_2..r_2]$, or asks us to **invert** a string data structure—reconstructing or counting all strings $S \in \Sigma^N$ that produce a prescribed KMP $\pi$ array, Z-array, Manacher radius array, or Suffix Array? In **[Chapter 27: Inverse String Reconstruction (`KMP` / `Z` / `Manacher` / `SA`) and String Inequality Digraphs](ch27-inverse-reconstruction-inequality-dags.qmd)**, we combine Binary-Lifting DSU with **Chordal Mismatch-Graph Chromatic Products**, the **Suffix Array Adjacency Theorem (`CF 1526E`)**, and **$\{0, 1\}$-Weighted Tarjan SCC Condensation DAGs**.

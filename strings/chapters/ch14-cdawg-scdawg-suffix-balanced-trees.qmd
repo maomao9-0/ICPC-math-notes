@@ -1,0 +1,641 @@
+---
+title: "Compact, Persistent & Bi-Directional Suffix Structures: CDAWG, SCDAWG, and Hash-Free Suffix Balanced Trees (后缀平衡树)"
+subtitle: "Chapter 14 · Part III: Suffix Automata, Suffix Trees, Dominant Pairs & Bi-Directional Suffix Structures"
+---
+
+::: {.callout-important title="Prerequisites, Assumed Library & Learning Objectives"}
+- **Assumed Library Primitives**: Single-string Suffix Automaton (`SAM`), Suffix Array (`SA`, `rk`, `height`), and standard binary search trees / Segment Trees. See [Notation & Conventions](../notation.qmd) for 1-based closed indexing $S[1..N]$.
+- **Strict Prerequisite Chapters**: [Chapter 09 — SAM $\leftrightarrow \operatorname{ST}(S^R)$ Duality & Generalized SAM](ch09-sam-duality-gsam-trie-bfs.qmd), [Chapter 12 — Linear-Time Induced Sorting (`SA-IS`)](ch12-sais-induced-sorting-lcp.qmd), and [Chapter 13 — Zero-Tree Virtual Suffix Trees & Dominant Pairs](ch13-virtual-suffix-trees-dominant-pairs.qmd).
+- **Assigned Technique IDs**: `T-2A-02` (Compact DAWG Maximal-Repeat Bijection & Unamortized Persistent Tree SAM), `T-2B-05` (Two-Sided Closure Commutativity & Bi-Directional `SCDAWG`), `T-2B-06` (Dietz–Sleator 64-Bit Scapegoat Suffix Balanced Trees & Hash-Free BST RMQ LCP).
+- **Learning Objectives**:
+  1. Prove the **Maximal-Repeat Vertex Bijection (`T-2A-02`)**: compacting every non-terminal state $u \in \operatorname{SAM}(S)$ of DAG out-degree $1$ yields the **Compact DAWG (`CDAWG`)**, whose internal vertices correspond bijectively to **maximal repeats** $w = \overleftarrow{w} = \overrightarrow{w}$, forcing $V_{\text{CDAWG}}(S) = V_{\text{CDAWG}}(S^R)$ ($O(\log N)$ on Fibonacci words).
+  2. Eliminate the $\Theta(N^2)$ star-branching amortization trap of standard SAM by maintaining **Persistent Ancestor-Transition Tables (`anc_trans[u][c]`)** in worst-case $O(\log |\Sigma|)$ time and space per version-tree step.
+  3. Prove **Two-Sided Closure Commutativity** ($\overleftarrow{(\overrightarrow{w})} = \overrightarrow{(\overleftarrow{w})} = \overleftrightarrow{w}$) and **Ukkonen–Weiner Frontier Duality (`T-2B-05`)** to maintain distinct substrings and repeats under online bi-directional `push_front(c)` and `push_back(c)` in a **Symmetric Compact DAWG (`SCDAWG`)**.
+  4. Construct **Hash-Free Suffix Balanced Trees (`后缀平衡树`, `T-2B-06`)** using an $\alpha = 0.75$ Scapegoat Tree with 64-bit integer midpoint tags $\operatorname{tag}[x] \in [0, 2^{62}]$ for $O(1)$ suffix comparison and $O(\log N)$ deterministic BST range-minimum LCP bootstrapping under online encrypted `push_front`/`pop_front`.
+:::
+
+---
+
+## 1. Compact DAWG (`CDAWG`) & Maximal-Repeat Symmetry (`T-2A-02`)
+
+### 1.1 The Diagnostic Signal: Why $\operatorname{SAM}(S)$ Still Has Redundant Unary Chains
+
+In [Chapter 09](ch09-sam-duality-gsam-trie-bfs.qmd), we proved that the suffix-link tree $\mathcal{T}_{\text{link}}(\operatorname{SAM}(S))$ is the **compacted** Suffix Tree $\operatorname{ST}(S^R)$: it merges substrings $w$ and $cw$ whenever extending on the **left** preserves the right-endpoint occurrence set ($\operatorname{endpos}_S(cw) = \operatorname{endpos}_S(w)$).
+
+However, look at the **transition DAG** of $\operatorname{SAM}(S)$ (which extends strings on the **right**, $w \to wd$):
+
+- Suppose every occurrence of $w$ in $S$ is immediately followed by the exact same character $d$ (and $w$ does not touch the right boundary $S[N]$). Then $\operatorname{startpos}_S(wd) = \operatorname{startpos}_S(w)$, so in $\operatorname{ST}(S)$, $w \to wd$ is an **unbranched unary edge** that gets compressed into a single multi-character edge!
+- Yet in $\operatorname{SAM}(S)$, because $w$ and $wd$ have ending positions shifted by $+1$ ($\operatorname{endpos}_S(wd) = \operatorname{endpos}_S(w) + 1 \ne \operatorname{endpos}_S(w)$), $\operatorname{SAM}(S)$ allocates **separate states** for $w$ and $wd$, connected by a unary DAG edge $u \xrightarrow{d} v$ of out-degree $1$!
+- Consequently, on highly repetitive strings such as $S = \texttt{a}^N$ or standard Fibonacci words $F_k$, $\operatorname{SAM}(S)$ still requires $\Theta(N)$ states even though $F_k$ has only $O(\log N)$ branching repeats!
+
+---
+
+### 1.2 The Combinatorial Word Invariant: Left Closure, Right Closure, and the Maximal-Repeat Bijection
+
+For any non-empty substring $w$ of $S[1..N]$, let us define its two canonical context closures:
+
+1. **Left-Extension Closure $\overleftarrow{w}$**: The longest substring in $w$'s $\operatorname{endpos}_S$ equivalence class (i.e., $\operatorname{longest}(u)$ for the state $u \in \operatorname{SAM}(S)$ containing $w$). Extending $w$ to $\overleftarrow{w}$ prepends all characters that precede *every* occurrence of $w$ in $S$.
+2. **Right-Extension Closure $\overrightarrow{w}$**: The longest substring in $w$'s $\operatorname{startpos}_S$ equivalence class (i.e., the path label to the nearest branching or leaf descendant of $w$'s locus in $\operatorname{ST}(S)$, or $\bigl(\overleftarrow{w^R}\bigr)^R$ in $\operatorname{SAM}(S^R)$). Extending $w$ to $\overrightarrow{w}$ appends all characters that follow *every* occurrence of $w$ in $S$.
+
+A substring $w$ occurring at least twice in $S$ is called a **maximal repeat (`极长重复子串`)** if and only if it is simultaneously left-maximal ($w = \overleftarrow{w}$) and right-maximal ($w = \overrightarrow{w}$)—meaning extending $w$ by even a single character to the left ($cw$) or to the right ($wd$) strictly decreases its occurrence count in $S$.
+
+::: {.callout-note title="Theorem 14.1 (Maximal-Repeat Vertex Bijection of the Compact DAWG)"}
+Let $\operatorname{CDAWG}(S)$ be the directed acyclic multi-graph obtained from $\operatorname{SAM}(S)$ by:
+
+1. Splitting off occurrences that touch the right boundary $S[N]$ (or appending a unique terminal sentinel $\$$ so the whole string $S\$$ is the unique sink $t_{\text{sink}}$), and
+2. Compacting every non-sink state $u \in \operatorname{SAM}(S)$ of DAG out-degree $1$ into a single multi-character edge labeled by the substring interval $S[l_e .. r_e]$ (merging $u$ into its unique DAG successor $v$).
+
+Then:
+
+1. **Maximal-Repeat Bijection**: The internal vertices (excluding source $\varepsilon$ and sink $S\$$) of $\operatorname{CDAWG}(S)$ correspond **bijectively to the maximal repeats of $S$**:
+   $$\boxed{V_{\text{int}}\bigl(\operatorname{CDAWG}(S)\bigr) \;\cong\; \bigl\{\,w \in \operatorname{Sub}(S) \;\big|\; \operatorname{occ}_S(w) \ge 2 \;\land\; w = \overleftarrow{w} = \overrightarrow{w}\,\bigr\}.}$$
+
+2. **Reversal Vertex Symmetry**: Because $w$ is a maximal repeat of $S$ if and only if $w^R$ is a maximal repeat of $S^R$, $\operatorname{CDAWG}(S)$ and $\operatorname{CDAWG}(S^R)$ have the **exact same number of vertices**! On Sturmian / Fibonacci words of length $N$, $|V(\operatorname{CDAWG}(S))| = \Theta(\log N)$ while $|E(\operatorname{CDAWG}(S))| = \Theta(\log N)$.
+:::
+
+```
+Fibonacci prefix S = "abaababa" (N = 8):
+  SAM(S) has 11 states, but only 3 substrings are Maximal Repeats (w = <-w = w->):
+    1. "a"     (occ = 5 at {1,3,4,6,8}: left chars {$,b,a}, right chars {b,a,$})
+    2. "aba"   (occ = 3 at {1..3, 4..6, 6..8}: left chars {$,a,b}, right chars {a,b,$})
+    3. "abaab" (occ = 2 at {1..5, 4..8}: left chars {$,a}, right chars {a,$})
+    --- By contrast, "ab" (occ=3) is NOT right-maximal because every "ab" is followed by 'a' ("aba")!
+    --- And "ba" (occ=2) is NOT left-maximal because every "ba" is preceded by 'a' ("aba")!
+```
+
+#### Proof of Theorem 14.1
+Every state $u \in \operatorname{SAM}(S)$ has $\operatorname{longest}(u) = \overleftarrow{w}$ for all $w \in E(u)$, so $\operatorname{longest}(u)$ is automatically left-maximal. In $\operatorname{SAM}(S\$$), state $u \notin \{\text{root}, \text{sink}\}$ has DAG out-degree $\ge 2$ if and only if there exist at least two distinct characters $d_1 \ne d_2$ in $\Sigma \cup \{\$\}$ such that $\operatorname{longest}(u) d_1$ and $\operatorname{longest}(u) d_2$ both occur in $S\$$, which is the exact definition of $\operatorname{longest}(u)$ being right-maximal ($\operatorname{longest}(u) = \overrightarrow{\operatorname{longest}(u)}$) with $\operatorname{occ}_S(\operatorname{longest}(u)) \ge 2$. Conversely, if $u$ has out-degree $1$ along edge $u \xrightarrow{d} v$, then $\operatorname{longest}(u)$ is always followed by $d$, so $\overrightarrow{\operatorname{longest}(u)} = \overrightarrow{\operatorname{longest}(v)}$; compacting $u$ into $v$ replaces the unary chain with its unique right-maximal endpoint. $\blacksquare$
+
+---
+
+## 2. Unamortized Deterministic SAM on Version Trees (`T-2A-02`)
+
+### 2.1 The Diagnostic Signal: The Star-Branching $\Theta(N^2)$ Trap
+
+In [Chapter 09](ch09-sam-duality-gsam-trie-bfs.qmd), we saw how to build a Generalized SAM on a *known* Trie in $O(V|\Sigma|)$ time via **Offline Trie BFS**. What if a problem builds a **version tree of strings online** (`append(version_v, c)` creates a new version $v_{\text{new}}$ representing $S_{v} + c$) and immediately queries substring properties of the single root-to-$v_{\text{new}}$ string $S_{v_{\text{new}}}$ (independently of other branches)?
+
+Standard single-string `extend(c)` fails catastrophically in two ways:
+
+1. **Amortized Link-Walk Blowup ($\Theta(N^2)$ TLE)**: The standard loop `while (p && !ch[p][c]) p = link[p];` relies on the potential $\Phi = \operatorname{len}(\operatorname{link}(\text{last}))$ decreasing along a single path. If an adversary creates version $v$ for $\texttt{a}^m$ (where $\operatorname{link}$ forms a chain of length $m$) and then issues $m$ independent queries appending $\texttt{b}$ to $v$, each query walks all $m$ suffix links from scratch, taking $\Theta(m^2)$ time!
+2. **Cross-Branch Transition Corruption**: Mutating `ch[p][c] = cur` on ancestors $p$ of $u$ overwrites transitions belonging to sibling versions on the version tree.
+
+---
+
+### 2.2 Persistent Ancestor-Transition Tables (`anc_trans[u][c]`)
+
+To achieve **unamortized worst-case $O(\log |\Sigma|)$ time and space** per version extension without mutating ancestor states, we replace the amortized link walk with a direct ancestor-transition table `anc_trans[u][c]`:
+
+::: {.callout-note title="Theorem 14.2 (Unamortized Persistent Tree SAM via `anc_trans[u][c]`)"}
+For each state $u \in \operatorname{SAM}(S_{\text{root} \to v})$, define:
+
+1. $\delta(u, c) = \operatorname{ch}[u][c]$: the outgoing DAG transition from $u$ on character $c$, stored as a **persistent (functional) balanced bitwise trie** of depth $\lceil \log_2 |\Sigma| \rceil$.
+2. $\operatorname{anc\_trans}[u][c]$: the **deepest ancestor $p$ of $u$ on $\mathcal{T}_{\text{link}}$ (including $u$ itself)** such that $\delta(p, c) \ne 0$ (or $0$ if no ancestor of $u$ has transition $c$), also stored as a persistent bitwise trie of depth $\lceil \log_2 |\Sigma| \rceil$.
+
+When extending version $v$ (at state $\text{last}$) by character $c$ to create state $\text{cur}$ with $\operatorname{len}(\text{cur}) = \operatorname{len}(\text{last}) + 1$:
+
+- **Direct $O(1)$ Jump**: Instead of walking `p = link[p]`, look up $p = \operatorname{anc\_trans}[\text{last}][c]$ in a single query!
+- **Deferred Lazy Transition Assignment**: Instead of mutating $\delta(p', c) \leftarrow \text{cur}$ on every state $p'$ along the link path from $\text{last}$ to $p$, observe that in a single-string SAM extension, the only newly created states are $\text{cur}$ and at most one split state $\text{clone}$. How do future extensions down this branch resolve transitions without mutating ancestor states?
+  - Whenever `last` is extended by $c$ to `cur`, every ancestor of `last` that previously lacked transition $c$ now transitions to `cur` on $c$, so for `cur` (and its future link-descendants), the deepest ancestor with transition $c$ is updated when `cur`'s own link is wired.
+  - Furthermore (**Lazy Edge-Target Resolution**): every DAG transition edge $(x \xrightarrow{c} y)$ originally added when $x$ was extended by $c$ always points to the unique state covering length $\operatorname{len}(x) + 1$ in $y$'s suffix-link subtree. Specifically, if $p = \operatorname{anc\_trans}[\text{last}][c] \ne 0$, the true target $q = \delta_{\text{true}}(p, c)$ at step $v$ is the **unique ancestor of $\delta_{\text{init}}(p, c)$ on $\mathcal{T}_{\text{link}}$ having $\operatorname{len}(q) \ge \operatorname{len}(p) + 1$** (found via binary lifting on $\mathcal{T}_{\text{link}}$, or maintained directly if `quick_link` on a shared Online Tree GSAM is used).
+:::
+
+Let us state both regimes clearly so you can deploy the exact right weapon in contests:
+
+| Version-Tree Regime | State / Transition Mechanism | Worst-Case Step Cost |
+| :--- | :--- | :--- |
+| **Regime 1: Online Tree GSAM** (all branches coexist in one shared automaton) | Maintain `quick_link[u][c]` = deepest proper ancestor $p$ of $u$ with $\delta(p, c) = \delta(\operatorname{link}(u), c)$ (skipping unary redirection chains) | **$O(1)$ amortized / $O(\log N)$ worst-case** |
+| **Regime 2: Fully Persistent Single-Path SAM** (independent root-to-$v$ strings) | Store `link_up[k][u]` (binary lifting table on $\mathcal{T}_{\text{link}}$) and persistent `first_cur[u][c]` (the state `cur` created when an ancestor $p$ first saw $c$); resolve $q$ by lifting `first_cur[p][c]` to $\operatorname{len}(q) \ge \operatorname{len}(p)+1$ | **$O(\log N + \log |\Sigma|)$ strict worst-case** |
+
+---
+
+## 3. Bi-Directional `SCDAWG` & Ukkonen–Weiner Frontier Duality (`T-2B-05`)
+
+### 3.1 The Diagnostic Signal: Online Two-Ended `push_front` and `push_back`
+
+Suppose a string $S$ starts empty and grows online at **both ends** via `push_front(c)` ($S \leftarrow cS$) and `push_back(c)` ($S \leftarrow Sc$), and operations are **encrypted** so we cannot pre-simulate the deque offline. How do we maintain the exact count of distinct substrings and maximal repeats in real time?
+
+### 3.2 Two-Sided Closure Commutativity & Active-Frontier Duality
+
+First, why do $\operatorname{CDAWG}(S)$ and $\operatorname{CDAWG}(S^R)$ glue together into a single symmetric structure?
+
+::: {.callout-note title="Theorem 14.3 (Two-Sided Closure Commutativity & Ukkonen–Weiner Frontier Duality)"}
+1. **Closure Commutativity (Blumer et al. 1987 / Inenaga et al. 2005)**: For every substring $w$ of $S$, taking its left-extension closure followed by its right-extension closure equals taking its right-extension closure followed by its left-extension closure:
+   $$\boxed{\overrightarrow{\bigl(\overleftarrow{w}\bigr)} \;=\; \overleftarrow{\bigl(\overrightarrow{w}\bigr)} \;=\; \overleftrightarrow{w}.}$$
+   Thus every substring $w$ maps to a unique minimal enclosing maximal repeat (or sink) $\overleftrightarrow{w}$ in the **Symmetric Compact DAWG (`SCDAWG`)**, which simultaneously embeds $\operatorname{CDAWG}(S)$ (via right-extension edges) and $\operatorname{CDAWG}(S^R)$ (via left-extension edges) on the **exact same vertex set** of size $\le N + 1$!
+
+2. **Ukkonen–Weiner Active-Frontier Duality**: Let $L_{\max}(S)$ be the longest prefix of $S$ occurring at least twice in $S$, and $R_{\max}(S)$ be the longest suffix of $S$ occurring at least twice in $S$. Then:
+   - **`push_back(c)` ($S \leftarrow Sc$)**: Increases distinct substrings by $\Delta_{\text{distinct}} = |Sc| - |R_{\max}(Sc)|$. On $\operatorname{ST}(S)$, Ukkonen's active suffix point $(u_{\text{suf}}, d_{\text{suf}})$ steps along suffix links until transition $c$ exists; on $\operatorname{ST}(S^R)$, Weiner's algorithm inserts a **single new leaf** $c S^R$ at the locus of $R_{\max}(Sc)^R$.
+   - **`push_front(c)` ($S \leftarrow cS$)**: Increases distinct substrings by $\Delta_{\text{distinct}} = |cS| - |L_{\max}(cS)|$. On $\operatorname{ST}(S^R)$, Ukkonen's active prefix point $(u_{\text{pref}}, d_{\text{pref}})$ steps along suffix links; on $\operatorname{ST}(S)$, Weiner's algorithm inserts a **single new leaf** $c S$ at the locus of $L_{\max}(cS)$.
+:::
+
+#### Proof of Theorem 14.3
+
+1. **Commutativity**: Write $\overleftarrow{w} = \alpha w$ where $\alpha \in \Sigma^*$ is the longest string such that every occurrence of $w$ in $S$ is preceded by $\alpha$. Write $\overrightarrow{(\alpha w)} = \alpha w \beta$ where $\beta \in \Sigma^*$ is the longest string such that every occurrence of $\alpha w$ is followed by $\beta$. Since $\operatorname{occ}_S(\alpha w) = \operatorname{occ}_S(w)$, every occurrence of $w$ is also followed by $\beta$, so $\overrightarrow{w} = w \beta$ for the **exact same** right extension $\beta$! Symmetrically, every occurrence of $w \beta$ is preceded by $\alpha$, so $\overleftarrow{(\overrightarrow{w})} = \overleftarrow{(w \beta)} = \alpha w \beta = \overrightarrow{(\overleftarrow{w})}$.
+2. **Active-Frontier Coupling**: The only potential coupling between the left active frontier $L_{\max}(S)$ and the right active frontier $R_{\max}(S)$ occurs when `push_back(c)` causes $L_{\max}(S)$ to match the newly created suffix at the right end of $Sc$ (i.e., $L_{\max}(S)c$ is a suffix of $Sc$, so $L_{\max}(S)c$ is a **border** of $Sc$), in which case $\operatorname{occ}_{Sc}(L_{\max}(S)c) = 2$ and the active prefix point advances by $+1$ character ($L_{\max}(Sc) = L_{\max}(S)c$). Symmetrically, `push_front(c)` advances $R_{\max}(cS) = c R_{\max}(S)$ iff $c R_{\max}(S)$ is a prefix (border) of $cS$. $\blacksquare$
+
+---
+
+## 4. Hash-Free Suffix Balanced Trees (`后缀平衡树`, `T-2B-06`)
+
+### 4.1 The Diagnostic Signal: Online Encrypted `push_front` / `pop_front`
+
+Suppose a problem maintains a string $S$ online under **encrypted** front-prepends `push_front(c)` (and optionally `pop_front()`) and requires:
+
+- $O(1)$ lexicographical comparison of any two existing suffixes (`[BZOJ 3682] Phorni`),
+- Pattern occurrence counting $\operatorname{occ}_S(P)$ for query strings $P$ (`[BZOJ 4768] wxh loves substring`), or
+- Real-time maintenance of $\operatorname{SA}$ rank, $K$-th suffix, and adjacent `height` (LCP) values.
+
+Why is `push_front(c)` fundamentally friendly to a Balanced Binary Search Tree of suffixes, whereas `push_back(c)` is not?
+
+- Index the suffixes from right to left as $S$ grows at the front: let $\operatorname{suf}(1) = S[1..1]$, $\operatorname{suf}(2) = c_2 \cdot \operatorname{suf}(1)$, $\dots$, $\operatorname{suf}(n) = c_n \cdot \operatorname{suf}(n-1)$ be the suffix of length $n$ created at step $n$.
+- When `push_front(c)` prepends $c$ to form $\operatorname{suf}(n) = c \cdot \operatorname{suf}(n-1)$, the existing $n - 1$ suffixes $\operatorname{suf}(1), \dots, \operatorname{suf}(n-1)$ **do not change at all**! Only **one** new suffix $\operatorname{suf}(n)$ is inserted into the sorted suffix order!
+
+---
+
+### 4.2 Dietz–Sleator 64-Bit Scapegoat Tags & Hash-Free BST RMQ LCP
+
+If we store $\operatorname{suf}(1), \dots, \operatorname{suf}(n-1)$ in a Balanced BST, comparing a newly inserted suffix $\operatorname{suf}(n) = c \cdot \operatorname{suf}(n-1)$ against a BST node $u$ ($\operatorname{suf}(u) = S[u] \cdot \operatorname{suf}(u-1)$) takes $O(\log n)$ time per node if we use binary search + hashing, resulting in $O(\log^2 n)$ per insertion. Can we reduce node comparison to **$O(1)$ deterministic time** and LCP maintenance to **$O(\log n)$ hash-free time**?
+
+::: {.callout-note title="Theorem 14.4 (Dietz–Sleator 64-Bit Scapegoat Tags & Hash-Free BST LCP Invariant)"}
+Maintain the sorted suffixes $\operatorname{suf}(1), \dots, \operatorname{suf}(n-1)$ in an **$\alpha$-Weight-Balanced BST (Scapegoat Tree with $\alpha = 0.75$)**. Assign the root the integer tag interval $[0, 2^{62}]$, and recursively assign each node $x$ with interval $[L_x, R_x]$ the midpoint tag:
+$$\boxed{\operatorname{tag}[x] \;=\; \frac{L_x + R_x}{2} \;\in\; \bigl[0,\, 2^{62}\bigr],}$$
+passing $[L_x, \operatorname{tag}[x]]$ to its left child and $[\operatorname{tag}[x], R_x]$ to its right child (with $\operatorname{tag}[0] = -1$ for the empty suffix $\varepsilon$).
+
+1. **$O(1)$ Existing-Suffix Comparison**: For any $i, j \in \{1, \dots, n-1\}$, $\operatorname{suf}(i) < \operatorname{suf}(j) \iff \operatorname{tag}[i] < \operatorname{tag}[j]$ in $O(1)$ time.
+2. **$O(1)$ New-Suffix Comparison During Insertion**: When inserting $\operatorname{suf}(n) = c \cdot \operatorname{suf}(n-1)$ and comparing against BST node $u$:
+   $$\boxed{\operatorname{suf}(n) \lessgtr_{\text{lex}} \operatorname{suf}(u) \;\Longleftrightarrow\; \bigl(c,\; \operatorname{tag}[n-1]\bigr) \;\lessgtr\; \bigl(S[u],\; \operatorname{tag}[u-1]\bigr) \quad \text{in } O(1) \text{ time!}}$$
+
+3. **Hash-Free $O(\log n)$ Combinatorial LCP Bootstrapping**: Once $\operatorname{suf}(n)$ is inserted between inorder predecessor $u^-$ and successor $u^+$, its adjacent LCP with $u^-$ (and symmetrically $u^+$) satisfies the exact recurrence:
+   $$\boxed{\operatorname{LCP}\bigl(\operatorname{suf}(n),\, \operatorname{suf}(u^-)\bigr) \;=\; \begin{cases} 0 & \text{if } S[n] \ne S[u^-], \\ 1 + \operatorname{LCP}\bigl(\operatorname{suf}(n-1),\, \operatorname{suf}(u^- - 1)\bigr) & \text{if } S[n] = S[u^-], \end{cases}}$$
+   where $\operatorname{LCP}(\operatorname{suf}(n-1), \operatorname{suf}(u^- - 1))$ is answered in **$O(\log n)$ deterministic time** as a standard BST range-minimum query over the adjacent `height` values stored inside the Suffix Balanced Tree itself—requiring **zero rolling hashes**!
+:::
+
+```
+Inserting suf(n) = c + suf(n-1) into the Scapegoat Suffix Balanced Tree:
+  At each BST node u with interval [L_u, R_u] and tag[u] = (L_u + R_u) / 2:
+    Compare (S[n], tag[n-1]) vs. (S[u], tag[u-1]) in O(1) integer operations!
+        /                                      \
+  Go Left: [L_u, tag[u]]                 Go Right: [tag[u], R_u]
+```
+
+#### Proof of Theorem 14.4
+
+1. **Depth & Precision Bound**: In a Scapegoat Tree with balance factor $\alpha = 0.75$, every child $y$ of $x$ satisfies $\operatorname{sz}[y] \le \frac{3}{4} \operatorname{sz}[x]$. Thus for $n \le 10^6$, the maximum tree depth is $\le \lfloor \log_{4/3}(10^6) \rfloor + 1 = 49 < 62$, so integer halving of $[0, 2^{62}]$ never collapses $L_x = R_x$. When the highest unbalanced ancestor of size $s$ is flattened and rebuilt into a perfectly balanced binary tree in $O(s)$ time ($O(\log n)$ amortized per insertion), all $\operatorname{tag}[\cdot]$ values in that subtree are reassigned within $[L_{\text{sub}}, R_{\text{sub}}]$, preserving global tag order.
+2. **Hash-Free LCP**: Peeling off the first character $S[n] = S[u^-] = c$ reduces $\operatorname{LCP}(\operatorname{suf}(n), \operatorname{suf}(u^-))$ to $1 + \operatorname{LCP}(\operatorname{suf}(n-1), \operatorname{suf}(u^- - 1))$. Because $\operatorname{suf}(n-1)$ and $\operatorname{suf}(u^- - 1)$ are *already* in the BST at known positions (identifiable via their tags $\operatorname{tag}[n-1]$ and $\operatorname{tag}[u^- - 1]$), their LCP is the minimum of `height[v]` (where `height[v] = LCP(v, pred(v))`) over all nodes $v$ strictly after the smaller tag and at or before the larger tag—a standard $O(\log n)$ BST range-minimum query! $\blacksquare$
+
+---
+
+### 4.3 Reverse-Engineering Scratchpad: Contract 14.1 — Scapegoat Suffix Balanced Tree (`后缀平衡树`)
+
+```cpp
+struct SuffixBalancedTree {
+    static constexpr double ALPHA = 0.75;
+    static constexpr long long INF_TAG = 1ULL << 62;
+
+    int rt = 0, tot = 0;
+    std::vector<int> ls, rs, sz, s_char;
+    std::vector<long long> tag;
+    std::vector<int> flat;
+
+    SuffixBalancedTree(int max_n)
+        : ls(max_n + 2, 0), rs(max_n + 2, 0), sz(max_n + 2, 0),
+          s_char(max_n + 2, 0), tag(max_n + 2, -1) {}
+
+    bool cmp_suffix(int u, int v) const { // Returns suf(u) < suf(v) in O(1)
+        if (s_char[u] != s_char[v]) return s_char[u] < s_char[v];
+        return tag[u - 1] < tag[v - 1];
+    }
+
+    void pushup(int x) { sz[x] = sz[ls[x]] + sz[rs[x]] + 1; }
+
+    bool bad(int x) const {
+        return std::max(sz[ls[x]], sz[rs[x]]) > ALPHA * sz[x];
+    }
+
+    void flatten(int x) {
+        if (!x) return;
+        flatten(ls[x]);
+        flat.push_back(x);
+        flatten(rs[x]);
+    }
+
+    int build(int l, int r, long long L_tag, long long R_tag) {
+        if (l > r) return 0;
+        int mid = (l + r) >> 1;
+        int x = flat[mid];
+        long long mid_tag = (L_tag + R_tag) >> 1;
+        tag[x] = mid_tag;
+        ls[x] = build(l, mid - 1, L_tag, mid_tag);
+        rs[x] = build(mid + 1, r, mid_tag, R_tag);
+        pushup(x);
+        return x;
+    }
+
+    int* insert(int& x, int id, long long L_tag, long long R_tag) {
+        if (!x) {
+            x = id;
+            sz[x] = 1;
+            tag[x] = (L_tag + R_tag) >> 1;
+            return nullptr;
+        }
+        long long mid_tag = (L_tag + R_tag) >> 1;
+        int* scapegoat = cmp_suffix(id, x)
+            ? insert(ls[x], id, L_tag, mid_tag)
+            : insert(rs[x], id, mid_tag, R_tag);
+        pushup(x);
+        if (bad(x)) scapegoat = &x; // Track highest unbalanced ancestor
+        return scapegoat;
+    }
+
+    // Prepends character c to create suffix `id` (1-indexed: id = 1, 2, ..., N)
+    void push_front(int id, int c) {
+        s_char[id] = c;
+        long long L_tag = 0, R_tag = INF_TAG;
+        int* sg = insert(rt, id, L_tag, R_tag);
+        if (sg) {
+            // Find the exact [L_tag, R_tag] bounds of *sg by walking from rt
+            int cur = rt;
+            while (cur != *sg) {
+                long long mid = (L_tag + R_tag) >> 1;
+                if (tag[*sg] < tag[cur]) { R_tag = mid; cur = ls[cur]; }
+                else                     { L_tag = mid; cur = rs[cur]; }
+            }
+            flat.clear();
+            flatten(*sg);
+            *sg = build(0, (int)flat.size() - 1, L_tag, R_tag);
+        }
+    }
+};
+```
+
+---
+
+### 4.4 Boundary Pitfalls & Broken-Invariant Counterexamples (`BP-14` / `BP-14-01`–`BP-14-03` / `BP-2B-06`–`BP-2B-08`)
+
+1. **Counterexample 14.5 (`BP-14-01` / `BP-2B-06`) — Why `push_back(c)` Flips Existing Suffix Order (`"aa" -> "aab"`)**:
+   Suppose $S = \texttt{"aa"}$. Its two suffixes are $\operatorname{suf}(1) = \texttt{"aa"}$ and $\operatorname{suf}(2) = \texttt{"a"}$, ordered as:
+   $$\operatorname{suf}(2) = \texttt{"a"} \;<\; \operatorname{suf}(1) = \texttt{"aa"}.$$
+   Now append `'b'` to the **right** (`push_back('b')`), producing $S' = \texttt{"aab"}$. The two existing suffixes become $\operatorname{suf}(1) = \texttt{"aab"}$ and $\operatorname{suf}(2) = \texttt{"ab"}$, whose order **flips**:
+   $$\operatorname{suf}(1) = \texttt{"aab"} \;<\; \operatorname{suf}(2) = \texttt{"ab"}!$$
+   In general, appending $c$ to the right simultaneously modifies *all* existing suffixes and flips the relative order of any pair where one suffix was a proper prefix (border) of the other. **Rule**: A Suffix Balanced Tree can *only* insert at the **front** (`push_front(c)`). If a problem appends to the back and queries prefix/substring properties, **reverse the string and patterns** so `push_back` becomes `push_front`!
+
+2. **Counterexample 14.6 (`BP-14` / `BP-14-02` / `BP-2B-07`) — 53-Bit IEEE-754 `double` Tag Underflow in Randomized Treaps**:
+   Many older tutorials implement Suffix Balanced Trees using a randomized Treap with `double` tags in $[0.0, 1.0]$. Because IEEE-754 `double` has only a 53-bit mantissa, any root-to-leaf path of length $\ge 53$ collapses `mid = (L + R) / 2 == L`, causing distinct suffixes to receive **identical tags** and corrupting both the BST and external Segment Trees (`[BZOJ 3682]`). Always use an $\alpha = 0.75$ Scapegoat Tree with `uint64_t` / `long long` tags in $[0, 2^{62}]$ (maximum depth $\le 49$).
+
+3. **Counterexample 14.7 (`BP-14-03` / `BP-2B-08`) — Rebuilding the Highest vs. Lowest Unbalanced Scapegoat Node**:
+   During `insert`, multiple ancestors on the insertion path may satisfy `bad(x)`. Rebuilding the *lowest* unbalanced node can leave higher ancestors at depth $> \log_{4/3} n$, causing tag interval exhaustion $[L_x, R_x]$. Always overwrite `scapegoat = &x` on the way **up** the recursion so only the **highest** (shallowest) unbalanced ancestor is rebuilt!
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Ladder (8 Non-Template Problems)
+
+### Tier 1 — Stepping Stone (`W2B-37`, `W2B-41`)
+
+#### Problem 14.1 (`W2B-37`) — `[BZOJ 3682] Phorni`
+
+- **Mathematical Statement**: A string $S$ initially has length $N_0$, and an integer array $P[1..M]$ stores suffix identifiers $P[x] \in \{1, \dots, |S|\}$ (where suffix $k$ denotes the suffix of length $k$ after $k$ front-prepends). Process $Q$ **online encrypted** operations of three types:
+  1. `I c`: Prepend character $c$ to the front of $S$ (`push_front(c)`), creating suffix $|S| + 1$.
+  2. `C x v`: Update $P[x] \leftarrow v$.
+  3. `Q l r`: Return the index $x \in [l, r]$ minimizing $\operatorname{suf}(P[x])$ lexicographically (breaking ties by smaller $x$).
+- **Constraints**: $N_0 + Q \le 5 \times 10^5$, $M \le 5 \times 10^5$, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Operations are **encrypted online**, and a Segment Tree over $P[1..M]$ needs an $O(1)$ comparator between any two suffixes $\operatorname{suf}(P[x])$ and $\operatorname{suf}(P[y])$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 14.4**, maintaining all suffixes in an $\alpha = 0.75$ Scapegoat Suffix Balanced Tree (`Contract 14.1`) assigns each suffix $k$ a 64-bit integer tag $\operatorname{tag}[k] \in [0, 2^{62}]$ such that $\operatorname{suf}(u) < \operatorname{suf}(v) \iff \operatorname{tag}[u] < \operatorname{tag}[v]$ in $O(1)$ time!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+When a Scapegoat subtree rebuilds and changes $\operatorname{tag}[k]$ for $O(s)$ suffixes, do you need to rebuild the Segment Tree over $P[1..M]$? **No!** Because Scapegoat rebuilds preserve the *relative order* of all existing tags, the winning index $x = \arg\min_{t \in [L, R]} \operatorname{tag}[P[t]]$ stored at each Segment Tree node never changes! Just store the winning index $x$ in each Segment Tree node and read `tag[P[x]]` dynamically during `pushup` and `query`.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-37`)"}
+1. **Diagnostic Signal**: Online encryption forbids building a static Suffix Array at the end, and $O(\log N)$ hash-binary-search comparison inside a Segment Tree costs $O(Q \log^2 N)$ with heavy constant factors.
+2. **Combinatorial Word Invariant**:
+   - Under `push_front(c)`, existing suffixes $\operatorname{suf}(1), \dots, \operatorname{suf}(n-1)$ never change their relative lexicographical order.
+   - By Theorem 14.4, **Contract 14.1** maintains 64-bit midpoint tags $\operatorname{tag}[1..n]$ in $O(\log n)$ amortized time per `push_front`.
+   - Crucially, because a Scapegoat rebuild is an order-preserving re-labeling of $\operatorname{tag}[\cdot]$, every Segment Tree node over $P[1..M]$ that stores the *index* $x \in [L, R]$ of its minimum suffix remains 100% valid across Scapegoat rebuilds without touching the Segment Tree!
+3. **Algorithmic Compilation**:
+   - Insert the initial $N_0$ suffixes from right to left using `sbt.push_front(id, c)`.
+   - Build a Segment Tree over $1 \dots M$ where `seg[node]` stores the index $x$ minimizing `(sbt.tag[P[x]], x)`.
+   - On `I c`: call `sbt.push_front(++n, c)`.
+   - On `C x v`: set `P[x] = v` and point-update `x` in the Segment Tree in $O(\log M)$ time.
+   - On `Q l r`: query the Segment Tree on $[l, r]$ in $O(\log M)$ time, looking up `sbt.tag[P[x]]` in $O(1)$ time at each merge step. Total time: $O((N_0 + M + Q) \log(N_0 + Q))$.
+4. **Broken-Invariant Counterexample (`Counterexample 14.6`)**: Storing the raw value `tag[P[x]]` as a cached number inside the Segment Tree node (instead of looking up `sbt.tag[P[x]]` via the stored index $x$) breaks as soon as a Scapegoat rebuild reassigns `sbt.tag[P[x]]`!
+:::
+
+---
+
+#### Problem 14.2 (`W2B-41`) — `CDAWG Maximal Repeat Compaction & Fibonacci Compression` (`QOJ / ICPC WF` Paradigm)
+
+- **Mathematical Statement**: Given a string $S[1..N]$, a substring $w$ is a **maximal repeat** if $\operatorname{occ}_S(w) \ge 2$ and extending $w$ by one character to the left ($cw$) or to the right ($wd$) strictly decreases its occurrence count in $S$. Compute:
+  1. The number of distinct maximal repeats of $S$ (the internal vertex count $|V_{\text{int}}(\operatorname{CDAWG}(S))|$),
+  2. The sum of lengths $\sum |w|$ over all maximal repeats $w$, and
+  3. Verify the exact count on the $k$-th Fibonacci word $F_k$ ($F_1 = \texttt{b}, F_2 = \texttt{a}, F_k = F_{k-1} F_{k-2}$).
+- **Constraints**: $1 \le N \le 5 \times 10^5$, $|\Sigma| = 26$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+By **Theorem 14.1**, maximal repeats satisfy $w = \overleftarrow{w} = \overrightarrow{w}$. How do we identify them in $O(N)$ time on either $\operatorname{SAM}(S)$ or the Contracted Min-Cartesian Tree of $H[2..N]$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+- **Method A (On $\operatorname{SAM}(S)$)**: Every state $u > 1$ has $\operatorname{longest}(u) = \overleftarrow{w}$ (already left-maximal!). State $u$ is also right-maximal with $\operatorname{occ}_S \ge 2$ iff $|\operatorname{endpos}_S(u)| \ge 2$ AND either $u$ has $\ge 2$ outgoing DAG transitions ($\operatorname{outdeg}(u) \ge 2$) OR $N \in \operatorname{endpos}_S(u)$ (an occurrence touches the right boundary $S[N]$ so it cannot be extended right)!
+- **Method B (On the `height` Cartesian Tree)**: Every contracted internal node $u$ spanning $[L_u, R_u]$ is already right-maximal with $\operatorname{occ}_S = R_u - L_u + 1 \ge 2$! It is also left-maximal iff the preceding characters $B[x] = S[\operatorname{SA}[x] - 1]$ ($x \in [L_u, R_u]$, with $S[0] = \$_0$) are **not all equal**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Using Method A: build $\operatorname{SAM}(S)$, propagate $\operatorname{cnt}[u] = |\operatorname{endpos}_S(u)|$ and boolean $\operatorname{has\_end}[u] = [N \in \operatorname{endpos}_S(u)]$. Count states $u > 1$ where $\operatorname{cnt}[u] \ge 2$ and ($\operatorname{outdeg}(u) + \operatorname{has\_end}[u] \ge 2$), and sum $\operatorname{len}(u)$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-41`)"}
+1. **Diagnostic Signal**: Each SAM state $u$ covers a length interval $[\operatorname{len}(\operatorname{link}(u))+1, \operatorname{len}(u)]$, but any string $w \in E(u)$ shorter than $\operatorname{longest}(u)$ is always preceded by the same character in $S$ and thus is **never** left-maximal! Therefore, at most **one** string per SAM state—namely $\operatorname{longest}(u)$ of length $\operatorname{len}(u)$—can be a maximal repeat.
+2. **Combinatorial Word Invariant**:
+   By Theorem 14.1, $\operatorname{longest}(u)$ ($u > 1$) is a maximal repeat of $S$ if and only if:
+   $$\bigl|\operatorname{endpos}_S(u)\bigr| \ge 2 \quad \land \quad \Bigl(\operatorname{outdeg}_{\text{DAG}}(u) \;+\; \bigl[N \in \operatorname{endpos}_S(u)\bigr] \;\ge\; 2\Bigr).$$
+   Why? Because every occurrence $e \in \operatorname{endpos}_S(u)$ with $e < N$ is followed by character $S[e+1]$ (creating a valid outgoing transition $\delta(u, S[e+1]) \ne 0$), while an occurrence at $e = N$ is followed by the end-of-string sentinel $\$$. Thus $\operatorname{longest}(u)$ cannot be extended by a single common character on the right iff the set of following symbols in $\Sigma \cup \{\$\}$ has size $\ge 2$, which is exactly $\operatorname{outdeg}_{\text{DAG}}(u) + [N \in \operatorname{endpos}_S(u)] \ge 2$.
+
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{SAM}(S)$ in $O(N)$ time, marking $\operatorname{cnt}[\operatorname{pos}[i]] = 1$ for $1 \le i \le N$ and $\operatorname{has\_end}[\operatorname{pos}[N]] = 1$.
+   - Propagate `cnt[link[u]] += cnt[u]` and `has_end[link[u]] |= has_end[u]` bottom-up on $\mathcal{T}_{\text{link}}$.
+   - For each state $u \in [2..tot]$: compute $\operatorname{deg} = \operatorname{has\_end}[u] + \sum_{c \in \Sigma} [\operatorname{ch}[u][c] \ne 0]$. If $\operatorname{cnt}[u] \ge 2$ and $\operatorname{deg} \ge 2$, increment the maximal-repeat count and add $\operatorname{len}(u)$ to the length sum. Time: $O(N |\Sigma|)$.
+   - **Fibonacci Word Check**: On $F_k$ ($k \ge 4$), there are exactly $k - 2 = \Theta(\log |F_k|)$ maximal repeats (the central Sturmian palindromes plus prefix/suffix repeats), confirming Theorem 14.1!
+4. **Broken-Invariant Counterexample**: Forgetting the term $[N \in \operatorname{endpos}_S(u)]$ misses maximal repeats whose second right-extension is the end of the string (for example, in $S = \texttt{"aba"}$, $w = \texttt{"a"}$ occurs at $\{1, 3\}$; at $1$ it is followed by `'b'`, and at $3 = N$ it hits the end of $S$, so $\operatorname{outdeg}(\texttt{"a"}) = 1$ in $\operatorname{SAM}(\texttt{"aba"})$, yet $\texttt{"a"}$ IS a maximal repeat because $1 + [3 \in \{1, 3\}] = 2$!).
+:::
+
+---
+
+### Tier 2 — Intermediate (`W2B-38`, `W2B-39B`)
+
+#### Problem 14.3 (`W2B-38`) — `[BZOJ 4768] wxh loves substring` (`Luogu P6164`)
+
+- **Mathematical Statement**: Maintain a string $S$ (initially given of length $N_0$) under $Q$ **online encrypted** operations:
+  1. `push_front(c)`: Prepend character $c$ to the front of $S$.
+  2. `pop_front()`: Delete the first character of $S$.
+  3. `query(P)`: Given a pattern string $P$, output the number of occurrences $\operatorname{occ}_S(P)$ of $P$ in the current string $S$.
+- **Constraints**: $N_0, Q \le 2 \times 10^5$, $\sum |P| \le 10^6$, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+We have both `push_front(c)` and `pop_front()` under online encryption, plus pattern counting $\operatorname{occ}_S(P)$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In the Suffix Balanced Tree (`Contract 14.1`), `push_front(c)` inserts $\operatorname{suf}(n)$ and `pop_front()` simply deletes $\operatorname{suf}(n)$! How do we count suffixes starting with pattern $P[1..m]$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+If you walk down the BST comparing $P[1..m]$ character-by-character against BST node $u$ ($\operatorname{suf}(u)$), each of the $O(\log n)$ BST steps takes $O(|P|)$ character comparisons in the worst case ($O(|P|\log n)$ total). Specifically, because $P$ is a fixed string of length $m$, $\operatorname{suf}(u)$ starts with $P$ iff $\operatorname{suf}(u)$ lies lexicographically between $P^- = P[1..m-1] \cdot (P[m] - 1) \cdot \infty$ and $P^+ = P[1..m] \cdot \infty$! To get strict **$O(|P| \log n)$** (which easily passes for $\sum |P| \le 10^6$ with early mismatch termination) or **$O(|P| + \log n)$**, maintain $(l_{\text{lcp}}, r_{\text{lcp}})$ with the current BST interval bounds!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-38`)"}
+1. **Diagnostic Signal**: `pop_front()` removes the most recently prepended suffix $\operatorname{suf}(n)$, while `query(P)` counts active suffixes in the BST that have $P$ as a prefix.
+2. **Combinatorial Word Invariant**:
+   - Every occurrence of $P[1..m]$ in $S[1..n]$ is a prefix of some suffix $\operatorname{suf}(u)$ ($m \le u \le n$).
+   - Define the half-infinite boundary strings $P^- = P[1..m] - \varepsilon$ (a string equal to $P$ terminated by a sentinel $-\infty$ smaller than all characters, i.e., $P < \operatorname{suf}(u)$ whenever $\operatorname{suf}(u)$ starts with $P$, and ordered naturally otherwise) and $P^+ = P[1..m] \cdot (+\infty)$ (equal to $P$ followed by $+\infty$).
+   - Then $\operatorname{suf}(u)$ has $P$ as a prefix **if and only if** $P^- < \operatorname{suf}(u) < P^+$!
+3. **Algorithmic Compilation**:
+   - Maintain the Scapegoat Suffix Balanced Tree (`Contract 14.1`) with lazy deletion (`alive[x] \in \{0, 1\}`, where `sz[x]` counts total nodes for balance and `act[x]` counts alive nodes for rank queries; rebuild when `act[x] < ALPHA * sz[x]`).
+   - For `pop_front()`, mark node $n$ as `alive[n] = 0`, decrement `n`, and update `act` along the path from `rt` to $n$.
+   - For `query(P)`, compute `rank(P^+) - rank(P^-)` by walking down the BST from `rt`: at node $u$, compare $P^\pm$ with $\operatorname{suf}(u)$ character-by-character (up to $\min(m, u)$ steps). To guarantee strict **$O(|P| + \log n)$** worst-case time even on unary strings, track $l_{\text{match}}$ and $r_{\text{match}}$ (the LCP of $P$ with the tightest left and right BST ancestors visited so far) and start comparing at $\min(l_{\text{match}}, r_{\text{match}})$ using `height` RMQ on the BST! Time: $O((N_0 + Q) \log N + \sum |P| \log N)$ (or $O(\sum |P| + Q \log N)$ with LCP skipping).
+4. **Broken-Invariant Counterexample**: Do not physically unlink `ls[x]`/`rs[x]` without preserving $\operatorname{tag}[x]$ (or use lazy deletion `alive[x] = 0`), because even while $n$ is being popped, its tag is no longer referenced by shorter suffixes $1 \dots n-1$, whereas unlinking internal BST nodes carelessly can violate the Scapegoat tag interval hierarchy $[L_x, R_x]$.
+:::
+
+---
+
+#### Problem 14.4 (`W2B-39B`) — `Online Encrypted Prepend with Dynamic Lexicographical K-th Suffix & Adjacent LCP`
+
+- **Mathematical Statement**: Starting from an empty string $S = \varepsilon$, process $Q$ **online encrypted** operations:
+  1. `push_front(c)`: Prepend $c$ to $S$.
+  2. `kth_suffix(k)`: Output the length $u$ of the $k$-th lexicographically smallest suffix of $S$, together with $\operatorname{LCP}(\operatorname{suf}(u), \operatorname{suf}(u^-))$ where $u^-$ is the $(k-1)$-th suffix (or $0$ if $k = 1$).
+  3. `distinct_substrings()`: Output the current number of distinct non-empty substrings of $S$.
+- **Constraints**: $1 \le Q \le 2 \times 10^5$, $|\Sigma| \le 10^9$ (integer alphabet), time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Alphabet size $|\Sigma| \le 10^9$ and online encrypted `push_front` with order-statistic ($k$-th suffix) and exact LCP queries!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Apply **Theorem 14.4 (Part 3 — Hash-Free BST RMQ LCP)**: when $\operatorname{suf}(n)$ is inserted between predecessor $u^-$ and successor $u^+$ in the Suffix Balanced Tree:
+$$\operatorname{LCP}(\operatorname{suf}(n), u^-) = [S[n] == S[u^-]] \cdot \bigl(1 + \operatorname{LCP}(\operatorname{suf}(n-1), u^- - 1)\bigr).$$
+And how much does inserting $\operatorname{suf}(n)$ increase the total number of distinct substrings? By $n - \max\bigl(\operatorname{LCP}(n, u^-),\, \operatorname{LCP}(n, u^+)\bigr)$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+At each BST node $x$, store `h_pred[x] = LCP(suf(x), suf(pred(x)))` and `min_h[x]` = minimum of `h_pred` in $x$'s BST subtree (pushed up in `pushup(x)`). Then $\operatorname{LCP}(a, b)$ for any two existing suffixes $a, b$ with $\operatorname{tag}[a] < \operatorname{tag}[b]$ is simply the minimum of `h_pred[v]` over the BST range $(\operatorname{tag}[a], \operatorname{tag}[b]]$ in $O(\log n)$ deterministic time!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-39B`)"}
+1. **Diagnostic Signal**: $|\Sigma| \le 10^9$ rules out array-based automata, and anti-hash tests break rolling-hash LCP binary search. Theorem 14.4's hash-free BST RMQ LCP handles arbitrary integer alphabets deterministically in $O(\log n)$ time!
+2. **Combinatorial Word Invariant**:
+   - Store at each BST node $x$ its adjacent LCP `h_pred[x] = LCP(x, pred(x))` and subtree minimum `min_h[x] = min(min_h[ls[x]], h_pred[x], min_h[rs[x]])`.
+   - For any two existing suffixes $a \ne b$, swap if $\operatorname{tag}[a] > \operatorname{tag}[b]$. Then $\operatorname{LCP}(a, b) = \min_{\operatorname{tag}[a] < \operatorname{tag}[v] \le \operatorname{tag}[b]} \operatorname{h\_pred}[v]$, evaluated by a standard 1D BST range query using $\operatorname{tag}[\cdot]$ as keys!
+   - When inserting $\operatorname{suf}(n)$ between $u^-$ and $u^+$:
+     1. Compute $h_L = (S[n] == S[u^-]) ? 1 + \text{query\_lcp}(n - 1, u^- - 1) : 0$.
+     2. Compute $h_R = (S[n] == S[u^+]) ? 1 + \text{query\_lcp}(n - 1, u^+ - 1) : 0$.
+     3. Set `h_pred[n] = h_L`, update `h_pred[u^+] = h_R` (and refresh `min_h` on the path to $u^+$), and add $n - \max(h_L, h_R)$ to `total_distinct`.
+3. **Algorithmic Compilation**:
+   - Extend **Contract 14.1** with `h_pred[x]` and `min_h[x]`.
+   - Before inserting $n$, find $u^-$ and $u^+$ by a downward walk using `cmp_suffix(n, x)`, compute $h_L$ and $h_R$ via `query_lcp` on the existing tree, then insert $n$ with `h_pred[n] = h_L` and point-update `h_pred[u^+] = h_R`.
+   - `kth_suffix(k)` walks the BST using `sz[ls[x]]` in $O(\log n)$ time and returns `(x, h_pred[x])`. Total time: $O(Q \log Q)$, zero hashing!
+4. **Broken-Invariant Counterexample**: Always evaluate `query_lcp(n - 1, u^- - 1)` **before** inserting $n$ (or after updating `h_pred[u^+] = h_R`), because while $n$ is inserted without `h_pred[u^+]` updated to $h_R$, any range crossing $n \to u^+$ still holds the old value $\operatorname{LCP}(u^-, u^+)$! Computing $h_L$ and $h_R$ *before* inserting $n$ is completely clean because $n - 1$, $u^- - 1$, and $u^+ - 1$ already exist in the unmodified BST.
+:::
+
+---
+
+### Tier 3 — Advanced (`W2A-41`, `W2B-45`)
+
+#### Problem 14.5 (`W2A-41`) — `Online Persistent Version-Tree SAM Substring Queries` (`Universal Cup / QOJ` Paradigm)
+
+- **Mathematical Statement**: A version tree starts with version $0$ representing the empty string $S_0 = \varepsilon$. Process $Q$ **online encrypted** queries of two types:
+  1. `append(v, c)`: Create a new version $i$ by appending character $c$ to version $v$ ($S_i = S_v + c$), and output the number of distinct substrings in $S_i$.
+  2. `max_suffix_match(v, P)`: Given a version $v$ and a query string $P[1..m]$, find the maximum length of a suffix of $P$ that occurs as a substring of $S_v$.
+- **Constraints**: $1 \le Q \le 2 \times 10^5$, $\sum |P| \le 5 \times 10^5$, $|\Sigma| = 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Queries are **online encrypted** on a version tree, and `max_suffix_match(v, P)` must only match substrings of the **single path string $S_v$**, NOT substrings from other branches of the version tree!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Why does a shared Online Tree GSAM fail `max_suffix_match(v, P)`? Because in a shared GSAM, $\delta(u, c)$ includes transitions created by *other* branches! However, combine a shared **Online Tree GSAM** (using `quick_link[u][c]` from **Theorem 14.2**) with a **Persistent Segment Tree Merge over Euler-tour intervals** of the version tree—or even simpler, use **Theorem 14.2's Fully Persistent Single-Path SAM (`anc_trans[u][c]`)**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+With **Theorem 14.2 (Persistent Single-Path SAM)**:
+
+- At each SAM state $u$, maintain its binary-lifting link table `up[k][u]` and persistent array `anc_trans[u][c]` (recording the deepest ancestor $p$ of $u$ that has outgoing transition $c$, and the initial target state `init_to[p][c]` created when $p$ first saw $c$).
+- To evaluate $\delta_v(u, c)$ on version $v$: if `anc_trans[u][c]` has $\operatorname{len}(p) < \operatorname{len}(u)$, then $\delta_v(u, c) = 0$; otherwise lift `init_to[u][c]` on $\mathcal{T}_{\text{link}}$ to the highest ancestor $q$ with $\operatorname{len}(q) \ge \operatorname{len}(u) + 1$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2A-41`)"}
+1. **Diagnostic Signal**: Online version-tree branching with branch-isolated transition queries defeats both amortized single-string SAM ($\Theta(Q^2)$ star-branch blowup) and offline Trie-BFS GSAM.
+2. **Combinatorial Word Invariant (Theorem 14.2 — Unamortized Persistent Tree SAM)**:
+   - Along any single root-to-$v$ string $S_v$, suppose state $p$ first gained an outgoing transition on character $c$ when prefix $S_v[1..r_0]$ was extended to state $y_0 = \operatorname{pos}[r_0]$. At all later versions $v$ down that subtree, what is the current target state $q = \delta_v(p, c)$?
+   - Whenever a later extension splits $q$, the new `clone` has length $\operatorname{len}(p) + 1$ and becomes the parent of $q$ on $\mathcal{T}_{\text{link}}$! Therefore, at any version $v$, $\delta_v(p, c)$ is **always** the unique ancestor $q$ of $y_0$ on $\mathcal{T}_{\text{link}}$ satisfying:
+     $$\operatorname{len}\bigl(\operatorname{link}(q)\bigr) \;<\; \operatorname{len}(p) + 1 \;\le\; \operatorname{len}(q)!$$
+
+   - Furthermore, maintaining `anc_trans[u][c]` = deepest ancestor $(p, y_0)$ of $u$ on $\mathcal{T}_{\text{link}}$ that has transition $c$ (copied from `link[u]` in $O(|\Sigma|)$ when $u$'s link is wired) finds both $p$ and $y_0$ in **$O(1)$ time** without walking a single suffix link!
+3. **Algorithmic Compilation**:
+   - For each state $u$, store `len[u]`, `up[0..18][u]` (binary lifting on $\mathcal{T}_{\text{link}}$), and `anc_p[u][26]`, `anc_y0[u][26]`.
+   - Helper `get_trans(u, c)`: if `anc_p[u][c] != u`, return `0`; else lift `y = anc_y0[u][c]` via `up[k][y]` while `len[up[k][y]] >= len[u] + 1` and return `y`.
+   - Helper `wire_node(u, par, self_c, self_y0)`: set `up[0][u] = par`, fill `up[1..18][u]`, copy `anc_p[u]` and `anc_y0[u]` from `par`, and if `self_c != -1`, set `anc_p[u][self_c] = u` and `anc_y0[u][self_c] = self_y0`.
+   - On `append(v, c)` from `last = ver_state[v]`:
+     - Allocate `cur = ++tot`, `len[cur] = len[last] + 1`.
+     - Look up $p = \text{anc\_p}[\text{last}][c]$ in $O(1)$ time!
+     - If $p == 0$: `wire_node(cur, 1, -1, 0)`.
+     - Else find $q = \text{get\_trans}(p, c)$. If $\operatorname{len}(q) == \operatorname{len}(p) + 1$, `wire_node(cur, q, -1, 0)`. Otherwise allocate `clone = ++tot`, `len[clone] = len[p] + 1`, `wire_node(clone, up[0][q], -1, 0)` (inheriting $q$'s own transitions at length $\operatorname{len}(p)+1$), and `wire_node(cur, clone, -1, 0)`! (Note that since `cur`'s link path only goes through states of length $\le \operatorname{len}(p)+1$, states between `last` and $p$ are strictly longer than `clone` and are never ancestors of `cur`!).
+   - ` distinct_substrings()` maintains `ans[v] = ans[parent_v] + len[cur] - len[up[0][cur]]` in $O(1)$!
+   - `max_suffix_match(v, P)` walks $P^R$ or matches $P$ along `ver_state[v]`. Total time: $O((Q + \sum |P|) (\log Q + |\Sigma|))$.
+4. **Broken-Invariant Counterexample**: Never mutate `up[0][q] = clone` in-place on an existing state $q$ shared with other version branches! Instead, because $q$ is only reached via binary lifting from $y_0$ down the current branch, either insert `clone` on the new path `cur -> clone -> up[0][q]` (so future lifts from `cur` hit `clone`!) or, if $y_0$ is lifted, check whether $\operatorname{len}(q) > \operatorname{len}(p) + 1$ and return a virtual split state $(q, \operatorname{len}(p)+1)$ on the fly! Returning a virtual split pair `(state_q, cur_len)` eliminates `clone` allocation entirely!
+:::
+
+---
+
+#### Problem 14.6 (`W2B-45`) — `Tree-Branched Suffix Balanced Tree with Ancestor LCP RMQ`
+
+- **Mathematical Statement**: Given a rooted tree being built online via $Q$ **encrypted** operations `add_leaf(parent_u, c)` (creating node $v$ whose upward string to the root is $\operatorname{str}(v) = c \cdot \operatorname{str}(\text{parent}_u)$), support:
+  1. `cmp_nodes(u, v)`: Compare $\operatorname{str}(u)$ and $\operatorname{str}(v)$ lexicographically in $O(1)$ time.
+  2. `lcp_nodes(u, v)`: Compute $\operatorname{LCP}(\operatorname{str}(u), \operatorname{str}(v))$ in $O(\log Q)$ deterministic time (without rolling hash).
+  3. `kth_tree_string(k)`: Return the node ID of the $k$-th lexicographically smallest upward tree string.
+- **Constraints**: $1 \le Q \le 2 \times 10^5$, $|\Sigma| \le 10^9$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Each tree node $v$ satisfies $\operatorname{str}(v) = c \cdot \operatorname{str}(\operatorname{par}(v))$—the exact recurrence of a Suffix Balanced Tree where $n - 1$ is replaced by $\operatorname{par}(v)$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 14.4**, replacing `tag[u - 1]` with `tag[par[u]]` in **Contract 14.1** compares any two upward tree paths in $O(1)$ time:
+$$\operatorname{str}(u) \lessgtr \operatorname{str}(v) \;\Longleftrightarrow\; \bigl(S[u],\; \operatorname{tag}[\operatorname{par}(u)]\bigr) \;\lessgtr\; \bigl(S[v],\; \operatorname{tag}[\operatorname{par}(v)]\bigr),$$
+breaking exact string ties ($\operatorname{str}(u) = \operatorname{str}(v)$) by node ID $u < v$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+What if $\operatorname{str}(u) = \operatorname{str}(v)$ (two distinct tree nodes spell the exact same string to the root)? Assign a secondary representative `rep[u]` (the first node inserted with that exact string) so equal strings share `tag[rep[u]]` for comparisons, while the Hash-Free LCP recurrence becomes:
+$$\operatorname{LCP}(u, u^-) = \bigl[S[u] == S[u^-]\bigr] \cdot \Bigl(1 + \operatorname{LCP}\bigl(\operatorname{par}(u),\, \operatorname{par}(u^-)\bigr)\Bigr)!$$
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-45`)"}
+1. **Diagnostic Signal**: On a tree, multiple nodes can have identical upward strings ($\operatorname{str}(u) = \operatorname{str}(v)$), and $|\Sigma| \le 10^9$ forbids Trie child arrays.
+2. **Combinatorial Word Invariant**:
+   - Maintain a representative `rep[u]` for each tree node $u$. Two nodes $u, v$ have $\operatorname{str}(u) = \operatorname{str}(v)$ iff $S[u] == S[v]$ and $\operatorname{rep}[\operatorname{par}(u)] == \operatorname{rep}[\operatorname{par}(v)]$.
+   - When inserting $v$ into the Scapegoat Suffix Balanced Tree: if we encounter an existing BST node $w$ with $S[v] == S[w]$ and $\operatorname{rep}[\operatorname{par}(v)] == \operatorname{rep}[\operatorname{par}(w)]$, we set $\operatorname{rep}[v] = \operatorname{rep}[w]$ (so $\operatorname{tag}[\operatorname{rep}[v]] = \operatorname{tag}[\operatorname{rep}[w]]$), and break the BST insertion tie by $v > w$, setting `h_pred[v] = depth[v]`.
+   - Otherwise, $\operatorname{str}(v) \ne \operatorname{str}(w)$, and $\operatorname{str}(v) < \operatorname{str}(w) \iff (S[v], \operatorname{tag}[\operatorname{rep}[\operatorname{par}(v)]]) < (S[w], \operatorname{tag}[\operatorname{rep}[\operatorname{par}(w)]])$ in $O(1)$ time!
+   - By Theorem 14.4, $\operatorname{LCP}(v, u^-) = [S[v] == S[u^-]] \cdot \bigl(1 + \operatorname{LCP}(\operatorname{par}(v), \operatorname{par}(u^-))\bigr)$, queried via BST range-minimum over `h_pred` in $O(\log Q)$ time.
+3. **Algorithmic Compilation**: Implement **Contract 14.1** with `par[u]`, `rep[u]`, `h_pred[u]`, and `min_h[u]`. Each `add_leaf`, `lcp_nodes`, and `kth_tree_string` runs in $O(\log Q)$ time, and `cmp_nodes` runs in $O(1)$ time.
+4. **Broken-Invariant Counterexample**: Failing to unify `rep[u] = rep[w]` when $\operatorname{str}(u) = \operatorname{str}(w)$ assigns slightly different tags $\operatorname{tag}[u] \ne \operatorname{tag}[w]$ to identical strings, which then causes children $(c, u)$ and $(c, w)$ with the same character $c$ to misorder against third nodes!
+:::
+
+---
+
+### Tier 4 — Mastery (`W2B-40`, `W2B-46`)
+
+#### Problem 14.7 (`W2B-40`) — `Bi-Directional SCDAWG Online push_front / push_back Distinct Substrings` (`[THUPC 2019 / QOJ]` Paradigm)
+
+- **Mathematical Statement**: Starting with an empty string $S = \varepsilon$, process $Q$ **online encrypted** deque character additions:
+  1. `push_front(c)`: Prepend character $c$ to the left of $S$ ($S \leftarrow cS$).
+  2. `push_back(c)`: Append character $c$ to the right of $S$ ($S \leftarrow Sc$).
+  After each operation, output the current number of **distinct non-empty substrings** of $S$.
+
+- **Constraints**: $1 \le Q \le 2 \times 10^5$, $|\Sigma| = 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Because operations are **encrypted**, we cannot pre-simulate the deque offline and run static SAM + LCT (`Filter 1` vs. `Filter 3` in Section 4). We must maintain distinct substrings online at *both* ends!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 14.3 (Ukkonen–Weiner Frontier Duality)**:
+
+- `push_front(c)` adds $|cS| - |L_{\max}(cS)|$ new distinct substrings, where $L_{\max}(cS)$ is the longest prefix of $cS$ occurring at least twice in $cS$.
+- `push_back(c)` adds $|Sc| - |R_{\max}(Sc)|$ new distinct substrings, where $R_{\max}(Sc)$ is the longest suffix of $Sc$ occurring at least twice in $Sc$.
+How can we find $|L_{\max}(cS)|$ and $|R_{\max}(Sc)|$ online?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+We have two clean online architectures:
+
+- **Architecture A (Coupled Forward & Backward Frontiers via Online SCDAWG)**: Maintain the active frontier $(L_{\max}, R_{\max})$ on the **Online SCDAWG** (or maintain the Suffix Balanced Tree of $S$ where `push_back` only affects suffixes shorter than the active frontier $R_{\max}$); `SCDAWG` updates both frontiers in $O(\log |\Sigma|)$ amortized time!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-40`)"}
+1. **Diagnostic Signal**: True online encrypted bi-directional distinct substring maintenance.
+2. **Combinatorial Word Invariant (Theorem 14.3 — Online SCDAWG & Frontier Duality)**:
+   - Maintain the **Symmetric Compact DAWG (`SCDAWG`)** of $S$ with two sets of directed edges on the same vertex set $V$: right-extension edges $u \xrightarrow{\text{right}: S[l..r]} v$ (forming $\operatorname{CDAWG}(S)$) and left-extension edges $u \xrightarrow{\text{left}: S[l..r]} v$ (forming $\operatorname{CDAWG}(S^R)$), together with the active suffix locus $R_{\max} = (u_R, d_R)$ and active prefix locus $L_{\max} = (u_L, d_L)$.
+   - When `push_back(c)` is called ($S \leftarrow Sc$):
+     1. Walk the active suffix locus $(u_R, d_R)$ up the left-extension parent links (`slink_R`, which are the explicit tree parents in $\operatorname{ST}(S)$!) while $(u_R, d_R)$ cannot extend right by $c$, adding a right-extension leaf edge to `sink` at each visited state.
+     2. If $(u_R, d_R)$ stops in the middle of a right-extension edge (or at a non-left-maximal locus), split the edge/vertex to preserve $w = \overleftarrow{w} = \overrightarrow{w}$.
+     3. Advance $(u_R, d_R)$ by $c$; its new string depth is $|R_{\max}(Sc)|$, so `ans += |Sc| - |R_{\max}(Sc)|`.
+     4. **Frontier Coupling Check**: If the active prefix locus $(u_L, d_L)$ had length $|L_{\max}(S)| = |S| - \text{offset}$ and the newly created suffix of length $|L_{\max}(S)| + 1$ matches $L_{\max}(S)c$, advance $(u_L, d_L)$ by $+1$ along its right-extension edge!
+   - By exact symmetry, `push_front(c)` executes the same loop swapping left and right extensions!
+3. **Algorithmic Compilation**:
+   - Each vertex $u \in V(\operatorname{SCDAWG})$ stores its length $\operatorname{len}(u)$, right-transitions $\delta_R(u, c) = (v, l, r)$, and left-transitions $\delta_L(u, c) = (v, l, r)$.
+   - By Inenaga et al.'s amortization theorem, the potentials $\Phi_R = |R_{\max}(S)|$ and $\Phi_L = |L_{\max}(S)|$ increase by at most $+1$ per `push_front`/`push_back` (even across the frontier coupling check!) and decrease by $\ge 1$ on every link step, bounding total time to **$O(Q \log |\Sigma|)$**!
+4. **Broken-Invariant Counterexample**: Forgetting Step 4 (the Frontier Coupling Check when $L_{\max}(S)c$ is a suffix of $Sc$) leaves $|L_{\max}|$ stale by $1$ whenever the entire active prefix matches the newly completed border at the opposite end of $S$!
+:::
+
+---
+
+#### Problem 14.8 (`W2B-46`) — `Two-Ended Affix Automaton / Deque Substring Occurrence Queries`
+
+- **Mathematical Statement**: A string $S$ is modified over $Q$ steps by `push_front(c)` and `push_back(c)`. In **Subtask A (Unencrypted / Offline Deque)**, you are also given $M$ queries asking for $\operatorname{occ}_S(P_q)$ inside a sub-window $S[l_q .. r_q]$ of the current deque. In **Subtask B (Online Encrypted Deque)**, you are given query patterns $P_q$ ($\sum |P_q| \le 5 \times 10^5$) asking whether $P_q$ occurs in the current string $S$ and how many times $P_q$ occurs.
+- **Constraints**: $1 \le Q, M \le 2 \times 10^5$, $\sum |P_q| \le 5 \times 10^5$, time limit $3.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Apply the **Contest Decision Filter**:
+
+- In **Subtask A (Unencrypted)**: pre-simulate the deque to build the final master string $M[1..N]$ so that at any time $t$, the current deque is a contiguous substring $M[L_t .. R_t]$!
+- In **Subtask B (Encrypted)**: use the Online SCDAWG or coupled Heavy/Periodic Split + Suffix Balanced Tree!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+For **Subtask B**, observe how `push_front(c)` and `push_back(c)` can be unified using **Two Coupled Suffix Balanced Trees Split at the Origin**:
+If we split the deque at its initial origin $0$ into a left-growing string $S_L$ (`push_front`) and a right-growing string $S_R$ (`push_back`), then any pattern $P_q$ either lies entirely in $S_L$, entirely in $S_R$, or **straddles the seam** ($|P_q|$ characters around the seam, checked by KMP in $O(|P_q|)$ time)!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Why does splitting at the origin $0$ into $S_L$ (maintained by a Suffix Balanced Tree $\mathcal{T}_L$ under `push_front`) and $S_R$ (maintained by a Suffix Balanced Tree $\mathcal{T}_R$ on $S_R^R$ under `push_back`, since `push_back` on $S_R$ is `push_front` on $S_R^R$!) work immediately for **arbitrary pattern occurrence queries $\operatorname{occ}_S(P_q)$**?
+Because any occurrence of $P_q$ in $S = S_L \cdot S_R$ is:
+
+1. Entirely inside $S_L$: counted in $O(|P_q| + \log N)$ on $\mathcal{T}_L$ (`Problem 14.3`)!
+2. Entirely inside $S_R$ (i.e., $P_q^R$ is entirely inside $S_R^R$): counted in $O(|P_q| + \log N)$ on $\mathcal{T}_R$!
+3. Straddling the seam between $S_L$ and $S_R$: $P_q$ can only straddle the seam inside the window of length $\le 2|P_q| - 2$ taking the last $|P_q| - 1$ characters of $S_L$ and the first $|P_q| - 1$ characters of $S_R$, which is counted by running KMP on a string of length $< 2|P_q|$ in **$O(|P_q|)$ time**!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-46`)"}
+1. **Diagnostic Signal**: Recognising the **Origin-Seam Decomposition** turns an intimidating two-ended encrypted pattern-matching problem into two independent one-ended Suffix Balanced Trees plus a linear KMP seam check!
+2. **Combinatorial Word Invariant (Origin-Seam Decomposition for Deque Pattern Matching)**:
+   - Partition the deque string at its starting origin into $S = S_L \cdot S_R$, where `push_front(c)` prepends $c$ to $S_L$ ($S_L \leftarrow c S_L$) and `push_back(c)` appends $c$ to $S_R$ ($S_R \leftarrow S_R c \iff S_R^R \leftarrow c S_R^R$).
+   - Every occurrence of a pattern $P$ of length $m = |P|$ in $S = S_L \cdot S_R$ falls into **exactly one** of three disjoint classes:
+     1. **Left-Only**: Contained entirely in $S_L$ ($\operatorname{occ}_{S_L}(P)$).
+     2. **Right-Only**: Contained entirely in $S_R$, which by reversal equals $\operatorname{occ}_{S_R^R}(P^R)$.
+     3. **Seam-Straddling**: Starts in the last $m - 1$ characters of $S_L$ and ends in the first $m - 1$ characters of $S_R$.
+   - Crucially, `push_front(c)` on $S_L$ and `push_front(c)` on $S_R^R$ **never modify the characters near the origin seam** (once $|S_L| \ge m-1$ and $|S_R| \ge m-1$)!
+3. **Algorithmic Compilation**:
+   - **Subtask A (Unencrypted)**: Pre-simulate the deque into $M[1..N]$ and answer substring queries $M[l_q .. r_q]$ using `Ch 10` Persistent Segment Tree Merge on $\operatorname{SAM}(M)$ (`query(rt[u], l_q + |P_q| - 1, r_q)`) in $O((N + \sum |P_q|) \log N)$ time.
+   - **Subtask B (Encrypted Online)**:
+     - Maintain Suffix Balanced Tree $\mathcal{T}_L$ on $S_L$ (`push_front(c)` inserts into $\mathcal{T}_L$) and Suffix Balanced Tree $\mathcal{T}_R$ on $S_R^R$ (`push_back(c)` inserts into $\mathcal{T}_R$).
+     - For `query(P)` of length $m = |P|$:
+       - If $m == 1$: count occurrences of $P[1]$ directly in $O(1)$.
+       - Otherwise: query $\mathcal{T}_L$ for $\operatorname{occ}_{S_L}(P)$, query $\mathcal{T}_R$ for $\operatorname{occ}_{S_R^R}(P^R)$, extract the seam string $W = \operatorname{suffix}_{\min(|S_L|, m-1)}(S_L) \cdot \operatorname{prefix}_{\min(|S_R|, m-1)}(S_R)$ of length $\le 2m - 2$, and add $\operatorname{occ}_W(P)$ via KMP in $O(m)$ time!
+     - Total time: $O(Q \log Q + \sum |P_q| \log Q)$, completely bypassing two-ended automaton splits!
+4. **Broken-Invariant Counterexample**: Taking $\operatorname{suffix}_{m}(S_L) \cdot \operatorname{prefix}_{m}(S_R)$ (length $m$ on each side instead of $m - 1$) includes occurrences of $P$ that touch the seam without crossing it, double-counting them with $\operatorname{occ}_{S_L}(P)$ and $\operatorname{occ}_{S_R^R}(P^R)$! Always take $\min(|S_L|, m - 1)$ and $\min(|S_R|, m - 1)$.
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Decision Checklist: Choosing the Right Compact / Persistent / Bi-Directional Engine
+
+| Contest Signal / Query Structure | Engine to Invoke | Complexity |
+| :--- | :--- | :--- |
+| Enumerate / compress **maximal repeats** $w = \overleftarrow{w} = \overrightarrow{w}$ | **Theorem 14.1 (`CDAWG`)**: SAM states with $\operatorname{cnt}[u] \ge 2$ & $\operatorname{outdeg}(u) + [N \in \operatorname{endpos}(u)] \ge 2$ | $O(N)$ |
+| Online version-tree branching `append(v, c)` (shared automaton) | **Theorem 14.2 (Regime 1)**: Online Tree GSAM with `quick_link[u][c]` | $O(Q \log |\Sigma|)$ |
+| Online version-tree branching `append(v, c)` (independent root-to-$v$ strings) | **Theorem 14.2 (Regime 2)**: Persistent `anc_trans[u][c]` + Link-Tree binary lifting | $O(Q \log Q)$ |
+| Unencrypted deque `push_front`/`push_back` + substring queries | Pre-simulate deque into master string $M[1..N]$ $\to$ static `Ch 10`/`Ch 11`/`Ch 13` | $O((N+Q)\log N)$ |
+| Online **encrypted** `push_front` / `pop_front` + suffix order / LCP / $\operatorname{occ}_S(P)$ | **Theorem 14.4 (`Contract 14.1`)**: 64-bit Scapegoat Suffix Balanced Tree + Hash-Free BST LCP | $O(Q \log Q)$ |
+| Online **encrypted** `push_back` + prefix/substring queries | **Reverse $S$ and patterns** (`Counterexample 14.5`) $\to$ `push_front` Suffix Balanced Tree | $O(Q \log Q)$ |
+| Online **encrypted** two-ended `push_front` & `push_back` + pattern $\operatorname{occ}_S(P)$ | **Origin-Seam Decomposition (`Problem 14.8`)**: $\mathcal{T}_L(S_L) + \mathcal{T}_R(S_R^R) + O(|P|)$ KMP seam | $O((Q + \sum |P|)\log Q)$ |
+| Online **encrypted** two-ended `push_front` & `push_back` + distinct substrings | **Theorem 14.3 (`SCDAWG`)**: Ukkonen–Weiner active-frontier duality $(L_{\max}, R_{\max})$ | $O(Q \log |\Sigma|)$ |
+
+### 6.2 What Comes Next: Blind Checkpoint III (`CP-III`)
+You have now completed all six chapters of **Part III (`Ch 09`–`Ch 14`)**, spanning Generalized SAM Trie-BFS, $[l+L-1, r]$-Clipped Endpos Segment Tree Merging, LCT `access` Color-Chain Sweeping, Intra-State Stratification, `SA-IS` $\operatorname{rk}$-Descents, Zero-Tree Virtual Suffix Trees, $2N \log_2 N$ Dominant Pairs, `CDAWG`/`SCDAWG`, and 64-Bit Scapegoat Suffix Balanced Trees. Put your diagnostic instincts to the test in **[Blind Checkpoint III — SAM/GSAM, Endpos Merging, LCT, Virtual Suffix Trees & Dominant Pairs (`CP-III`)](../checkpoints/cp03-part3-suffix-structures-dominant-pairs.qmd)**.

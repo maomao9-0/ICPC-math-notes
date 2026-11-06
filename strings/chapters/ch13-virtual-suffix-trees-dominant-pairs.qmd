@@ -1,0 +1,679 @@
+---
+title: "Zero-Tree Virtual Suffix Trees (后缀树虚树) and Suffix Tree Dominant Pairs (启发式合并支配对)"
+subtitle: "Chapter 13 · Part III: Suffix Automata, Suffix Trees, Dominant Pairs & Bi-Directional Suffix Structures"
+---
+
+::: {.callout-important title="Prerequisites, Assumed Library & Learning Objectives"}
+- **Assumed Library Primitives**: $O(N)$ or $O(N \log N)$ Suffix Array (`SA[1..N]`, `rk[1..N]`), Kasai's or Fischer's $O(N)$ adjacent LCP array (`height[2..N]`), $O(1)$ Sparse Table RMQ for Longest Common Extension ($\operatorname{LCE}_S(i, j)$), Fenwick Trees, and Disjoint Set Union (DSU). See [Notation & Conventions](../notation.qmd) for 1-based closed indexing $S[1..N]$.
+- **Strict Prerequisite Chapters**: [Chapter 09 — SAM $\leftrightarrow \operatorname{ST}(S^R)$ Duality](ch09-sam-duality-gsam-trie-bfs.qmd), [Chapter 10 — SAM Endpos Segment Tree Merging & Substring Clipping](ch10-sam-endpos-segtree-merge.qmd), and [Chapter 12 — Linear-Time Induced Sorting (`SA-IS`) & Induced LCP](ch12-sais-induced-sorting-lcp.qmd).
+- **Assigned Technique IDs**: `T-2B-02` (Four-Way Suffix Tree Isomorphism & Zero-Tree Substring Virtual Suffix Trees), `T-2B-03` (DSU-on-Tree Predecessor/Successor Dominant Pairs & Two-Threshold Right-Clipped 2D Sweeps).
+- **Learning Objectives**:
+  1. Prove the canonical **Four-Way Suffix Tree Isomorphism** uniting the compacted Suffix Tree $\operatorname{ST}(S)$, the Contracted Min-Cartesian Tree of $\operatorname{height}[2..N]$, the Decreasing-$\operatorname{height}$ Kruskal DSU Reachability Tree, and the Reversed SAM Link Tree $\mathcal{T}_{\text{link}}(\operatorname{SAM}(S^R))$.
+  2. Master **Monotonic-Stack All-Pairs LCP Aggregation** (`[AHOI2013] 差异`), **Decreasing-`height` Kruskal DSU Sweeps** (`[NOI2015] 品酒大会`), and **$O(k \log k)$ Zero-Tree Substring Virtual Suffix Trees (`后缀树虚树`)** (`CF 1073G`) that build exact auxiliary trees over arbitrary query substrings $U_t = S[l_t..r_t]$ directly from adjacent clipped $\operatorname{LCE}$s without constructing an explicit tree.
+  3. Prove the **Suffix Tree Dominant Pair Theorem (`启发式合并支配对`)**: merging ordered sets of original string indices via DSU-on-Tree generates at most **$2N \log_2 N$ adjacent predecessor/successor triples** $(i^-, i, \ell_u)$ and $(i, i^+, \ell_u)$ that strictly dominate all $\binom{N}{2}$ suffix pairs for 2D range queries $[l, r]$.
+  4. Compile dominant triples into an $O(N \log^2 N + Q \log N)$ **Two-Threshold 2D Sweep** that separates unclipped occurrences ($b + \ell_u - 1 \le r$) from right-boundary-clipped occurrences ($b \le r < b + \ell_u - 1$, clipped to $r - b + 1$), while avoiding equal-height partial-node evaluation bugs (`CF 616F`) and missing $\operatorname{occ}=1$ leaf edges.
+:::
+
+---
+
+## 1. The Four-Way Suffix Tree Isomorphism & Equal-Height Contraction (`T-2B-02`)
+
+### 1.1 The Diagnostic Signal: Why Explicit Suffix Trees Are Almost Never Needed
+
+A classic Suffix Tree $\operatorname{ST}(S)$ is the compacted trie of all $N$ suffixes $\operatorname{suf}(i) = S[i..N]\$$ ($1 \le i \le N$). In contest problems, tasks naturally phrase their questions in terms of $\operatorname{ST}(S)$:
+
+- **Subset Pair Aggregations**: Given $Q$ queries specifying subsets of suffixes or substrings $A_q, B_q$ with $\sum_q (|A_q| + |B_q|) \le 5 \times 10^5$, evaluate $\sum_{u \in A_q} \sum_{v \in B_q} f\bigl(\operatorname{LCP}(u, v)\bigr)$ (`CF 1073G`).
+- **Thresholded Component Statistics**: For every similarity threshold $r \in [0, N-1]$, count pairs of suffixes $(i, j)$ with $\operatorname{LCP}(\operatorname{suf}(i), \operatorname{suf}(j)) \ge r$ and maximize $a_i \cdot a_j$ where vertex weights $a_i \in [-10^9, 10^9]$ can be negative (`[NOI2015] 品酒大会`).
+- **2D Index-Range Pair Optimization**: Given $Q$ range queries $[l, r]$ on original string indices, optimize a function of $\operatorname{LCP}(\operatorname{suf}(a), \operatorname{suf}(b))$ over all $\binom{r-l+1}{2}$ pairs $l \le a < b \le r$ (`CF 1043G`, `CF 1098F`).
+
+Implementing Ukkonen's online Suffix Tree algorithm directly is notorious for edge-splitting boilerplate and alphabet-sized transition maps. Worse, even if you build an explicit tree $\mathcal{T}$ of $2N-1$ nodes and run standard Heavy-Light or Euler-tour LCA to build a Virtual Tree over query *substrings* $U_t = S[l_t..r_t]$, locating the locus of each $U_t$ on $\mathcal{T}$ requires $O(\log N)$ binary lifting per substring before the Virtual Tree even begins!
+
+The key insight of this chapter is that **the Suffix Array `SA[1..N]` and adjacent LCP array `height[2..N]` already encode the complete topology of $\operatorname{ST}(S)$**.
+
+---
+
+### 1.2 The Combinatorial Word Invariant: Concrete Objects & The Canonical Four-Way Isomorphism
+
+Let $S[1..N]$ have Suffix Array $\operatorname{SA}[1..N]$, inverse rank array $\operatorname{rk}[1..N]$, and adjacent LCP array $H[k] = \operatorname{height}[k] = \operatorname{LCP}\bigl(\operatorname{suf}(\operatorname{SA}[k-1]),\, \operatorname{suf}(\operatorname{SA}[k])\bigr)$ for $2 \le k \le N$ (with boundary sentinels $H[1] = H[N+1] = 0$). By the fundamental LCP Interval Identity, for any two suffix ranks $1 \le x < y \le N$:
+
+$$\operatorname{LCP}\bigl(\operatorname{suf}(\operatorname{SA}[x]),\, \operatorname{suf}(\operatorname{SA}[y])\bigr) \;=\; \min_{x < k \le y} H[k].$$
+
+This single equation implies that **every branching node of $\operatorname{ST}(S)$ is a local minimum bottleneck in $H[2..N]$**. More precisely, four seemingly distinct tree structures on $S$ are canonically isomorphic:
+
+::: {.callout-note title="Theorem 13.1 (The Canonical Four-Way Suffix Tree Isomorphism)"}
+For any string $S[1..N]$, there is a canonical bijection between the internal branching nodes (and leaves) of the following four rooted trees, preserving string depth $\ell_u$, leaf occurrence sets, and pairwise $\operatorname{LCA}$ depths:
+$$\boxed{\operatorname{ST}(S) \;\cong\; \operatorname{Contracted-Min-Cartesian}\bigl(H[2..N]\bigr) \;\cong\; \mathcal{T}_{\text{Kruskal-DSU}}\bigl(H[2..N]\bigr) \;\cong\; \mathcal{T}_{\text{link}}\bigl(\operatorname{SAM}(S^R)\bigr).}$$
+Specifically, for every internal node $u$ spanning the contiguous Suffix Array leaf interval $[L_u, R_u] \subseteq [1, N]$ ($L_u < R_u$):
+
+1. **String Depth & Parent Depth**: Node $u$ has string depth $\ell_u = \min_{L_u < k \le R_u} H[k]$, and its parent $p(u)$ in the contracted tree has string depth $\ell_{p(u)} = \max\bigl(H[L_u],\, H[R_u + 1]\bigr) < \ell_u$.
+2. **Exact Substring Partition**: Node $u$ represents the **$\ell_u - \ell_{p(u)}$ distinct substrings** $S\bigl[\operatorname{SA}[L_u] .. \operatorname{SA}[L_u] + d - 1\bigr]$ for $d \in \bigl[\ell_{p(u)} + 1,\, \ell_u\bigr]$, each occurring **exactly $\operatorname{sz}(u) = R_u - L_u + 1 \ge 2$ times** in $S$ (at starting positions $\{\operatorname{SA}[x] : L_u \le x \le R_u\}$).
+3. **Unique-Occurrence Leaf Edges ($\operatorname{occ} = 1$)**: Each leaf $x \in [1, N]$ corresponds to suffix $\operatorname{suf}(\operatorname{SA}[x])$ of length $\operatorname{len}_x = N - \operatorname{SA}[x] + 1$, attached below parent depth $\ell_{p(x)} = \max\bigl(H[x],\, H[x+1]\bigr)$, representing **$\operatorname{len}_x - \max\bigl(H[x], H[x+1]\bigr)$ distinct substrings** that occur **exactly once** in $S$.
+:::
+
+```
+Suffix Array leaves (N=5, S="abaab"):
+  SA[1]=3("aab")   SA[2]=1("abaab")   SA[3]=4("ab")   SA[4]=2("baab")   SA[5]=5("b")
+         \               /                  /                \               /
+          H[2]=1 ("a")  /                  /                  H[5]=1 ("b")  /
+                 \     /                  /                          \     /
+                  H[3]=2 ("ab")          /                            \   /
+                        \               /                              \ /
+                         \             /                                |
+                          H[4]=0 (root eps, merges [1..3] and [4..5])---+
+```
+
+#### Proof of Theorem 13.1
+
+1. **$\operatorname{ST}(S) \leftrightarrow \mathcal{T}_{\text{link}}(\operatorname{SAM}(S^R))$**: Proved in [Chapter 09, Theorem 9.2](ch09-sam-duality-gsam-trie-bfs.qmd): reversing $S$ maps starting positions of $w$ in $S$ to ending positions of $w^R$ in $S^R$, and right-extensions $w \to wc$ in $\operatorname{ST}(S)$ to left-extensions $cw^R \leftarrow w^R$ along suffix links in $\operatorname{SAM}(S^R)$.
+2. **$\operatorname{ST}(S) \leftrightarrow \operatorname{Contracted-Min-Cartesian}(H[2..N])$**: In the binary Min-Cartesian Tree of $H[2..N]$, each index $k \in [2..N]$ splits a maximal interval of gaps $[L'_k, R'_k] \subseteq [2, N]$ where $H[j] \ge H[k]$, which corresponds to the Suffix Array leaf interval $[L_k, R_k] = [L'_k - 1, R'_k]$. If a node $k$ has $H[k] = H[\operatorname{par}(k)]$ (because multiple gaps inside $[L_u, R_u]$ tie for the minimum LCP $\ell_u$), contracting all zero-weight edges $H[k] - H[\operatorname{par}(k)] = 0$ merges those binary splits into a single multi-way branching node $u$ whose children correspond to the maximal sub-intervals with strictly larger internal LCP ($> \ell_u$). That multi-way node is the exact branching node of $\operatorname{ST}(S)$ at string depth $\ell_u$.
+3. **$\operatorname{Contracted-Min-Cartesian}(H[2..N]) \leftrightarrow \mathcal{T}_{\text{Kruskal-DSU}}(H[2..N])$**: Sweeping threshold $\ell$ from $N$ down to $0$ and uniting adjacent Suffix Array leaves $(k-1, k)$ whenever $H[k] = \ell$ (Kruskal's algorithm on the path graph $1 - 2 - \dots - N$ with edge weights $H[k]$) forms a connected component $[L_u, R_u]$ at threshold $\ell = \ell_u$ that remains intact until $\ell$ drops to $\max(H[L_u], H[R_u+1]) = \ell_{p(u)}$. Thus the Kruskal DSU merge tree (with equal-weight merges contracted) is identical to the Contracted Min-Cartesian Tree. $\blacksquare$
+
+---
+
+### 1.3 Hand-Checkable Trace on $S = \texttt{abaab}$ ($N = 5$)
+
+Let us trace all four representations on $S = \texttt{abaab}$, verifying that every distinct substring of $S$ is accounted for exactly once across the internal nodes and leaf edges:
+
+| Tree Node / Leaf | SA Interval $[L_u, R_u]$ | Starting Indices $\{\operatorname{SA}[x]\}$ | Depth $\ell_u$ | Parent Depth $\ell_{p(u)}$ | Substrings Covered ($\ell_{p(u)} < d \le \ell_u$) | Count $\Delta \ell \times \operatorname{sz}(u)$ |
+| :--- | :---: | :---: | :---: | :---: | :--- | :---: |
+| **Root** $u_0$ ($H[4]=0$) | $[1, 5]$ | $\{1,2,3,4,5\}$ | $0$ | — | $\varepsilon$ (empty root) | — |
+| **Internal** $u_1$ ($H[2]=1$) | $[1, 3]$ | $\{3, 1, 4\}$ | $1$ | $\max(H[1],H[4])=0$ | $\texttt{"a"}$ ($d=1, \operatorname{occ}=3$) | $1 \times 3 = 3$ |
+| **Internal** $u_2$ ($H[3]=2$) | $[2, 3]$ | $\{1, 4\}$ | $2$ | $\max(H[2],H[4])=1$ | $\texttt{"ab"}$ ($d=2, \operatorname{occ}=2$) | $1 \times 2 = 2$ |
+| **Internal** $u_3$ ($H[5]=1$) | $[4, 5]$ | $\{2, 5\}$ | $1$ | $\max(H[4],H[6])=0$ | $\texttt{"b"}$ ($d=1, \operatorname{occ}=2$) | $1 \times 2 = 2$ |
+| **Leaf** $x=1$ ($\operatorname{SA}[1]=3$) | $[1, 1]$ | $\{3\}$ | $3$ | $\max(H[1],H[2])=1$ | $\texttt{"aa"}, \texttt{"aab"}$ ($d \in [2,3]$) | $2 \times 1 = 2$ |
+| **Leaf** $x=2$ ($\operatorname{SA}[2]=1$) | $[2, 2]$ | $\{1\}$ | $5$ | $\max(H[2],H[3])=2$ | $\texttt{"aba"}, \texttt{"abaa"}, \texttt{"abaab"}$ | $3 \times 1 = 3$ |
+| **Leaf** $x=3$ ($\operatorname{SA}[3]=4$) | $[3, 3]$ | $\{4\}$ | $2$ | $\max(H[3],H[4])=2$ | $\emptyset$ ($2 - 2 = 0$, absorbed into $u_2$) | $0 \times 1 = 0$ |
+| **Leaf** $x=4$ ($\operatorname{SA}[4]=2$) | $[4, 4]$ | $\{2\}$ | $4$ | $\max(H[4],H[5])=1$ | $\texttt{"ba"}, \texttt{"baa"}, \texttt{"baab"}$ | $3 \times 1 = 3$ |
+| **Leaf** $x=5$ ($\operatorname{SA}[5]=5$) | $[5, 5]$ | $\{5\}$ | $1$ | $\max(H[5],H[6])=1$ | $\emptyset$ ($1 - 1 = 0$, absorbed into $u_3$) | $0 \times 1 = 0$ |
+
+Summing $\Delta \ell = \ell_u - \ell_{p(u)}$ gives $1 + 1 + 1 + 2 + 3 + 0 + 3 + 0 = 11$ distinct substrings, and summing $\Delta \ell \times \operatorname{sz}(u)$ gives $3 + 2 + 2 + 2 + 3 + 0 + 3 + 0 = 15 = \binom{5+1}{2}$ total substring occurrences!
+
+---
+
+## 2. Monotonic-Stack LCP Sums, Kruskal DSU & Zero-Tree Virtual Suffix Trees (`T-2B-02`)
+
+### 2.1 Engine A & Engine B: Monotonic Stack vs. Decreasing-`height` Kruskal DSU
+
+Before restricting to query subsets, let us contrast the two global aggregation engines on $H[2..N]$:
+
+1. **Engine A — Asymmetric Monotonic Stack for All-Pairs LCP Sums (`[AHOI2013] 差异`, `CF 802I`)**:
+   To evaluate $\sum_{1 \le x < y \le N} \operatorname{LCP}(\operatorname{SA}[x], \operatorname{SA}[y]) = \sum_{1 \le x < y \le N} \min_{x < k \le y} H[k]$ in $O(N)$ time, every pair $(x, y)$ must be charged to a **unique** minimum gap index $k \in (x, y]$. We break ties among equal minimum values in $H$ by choosing the **leftmost** minimum:
+
+   - Define $L'_k \le k$ as the smallest gap index such that $H[j] > H[k]$ for all $j \in [L'_k, k-1]$ (**strict `>` on the left**).
+   - Define $R'_k \ge k$ as the largest gap index such that $H[j] \ge H[k]$ for all $j \in [k+1, R'_k]$ (**non-strict `>=` on the right**).
+   - **Invariant**: Every pair of suffix ranks $(x, y)$ with $L'_k - 1 \le x < k \le y \le R'_k$ has leftmost minimum gap $k$, contributing:
+     $$\sum_{1 \le x < y \le N} \operatorname{LCP}(\operatorname{SA}[x], \operatorname{SA}[y]) \;=\; \sum_{k=2}^N H[k] \cdot (k - L'_k + 1) \cdot (R'_k - k + 1).$$
+
+2. **Engine B — Decreasing-`height` Kruskal DSU Sweep (`[NOI2015] 品酒大会`)**:
+   When a problem asks for component-level extrema at every threshold $r \in [0, N-1]$—such as $\max_{\operatorname{LCP}(i, j) \ge r} (a_i \cdot a_j)$ where $a_i \in [-10^9, 10^9]$—bucket-sort the gaps $k \in [2..N]$ in decreasing order of $H[k]$. Maintain DSU components storing $(\operatorname{sz}[u], \max_1[u], \min_1[u])$. Merging $u = \operatorname{find}(k-1)$ and $v = \operatorname{find}(k)$ at $r = H[k]$ adds $\operatorname{sz}[u]\operatorname{sz}[v]$ pairs with exact $\operatorname{LCP} = r$ and updates the maximum product with $\max\bigl(\max_1[u]\max_1[v],\, \min_1[u]\min_1[v]\bigr)$. A single backward suffix sweep $r = N-1 \downarrow 0$ converts exact $\operatorname{LCP} = r$ statistics into $\operatorname{LCP} \ge r$.
+
+---
+
+### 2.2 Engine C: Zero-Tree Substring Virtual Suffix Trees (`后缀树虚树`, `CF 1073G`)
+
+Now suppose query $q$ gives $k_q$ arbitrary **substrings** $U_1, U_2, \dots, U_k$ of $S$, where $U_t = S[l_t .. r_t]$ has length $|U_t| = r_t - l_t + 1$ (note that full suffixes are simply the special case $r_t = N$). How do we construct the **Virtual Suffix Tree (`后缀树虚树`)** of $\{U_1, \dots, U_k\}$ in $O(k \log k)$ time *without* building $\operatorname{ST}(S)$ or binary-lifting on $\operatorname{SAM}(S^R)$?
+
+::: {.callout-note title="Theorem 13.2 (Zero-Tree Substring Virtual Suffix Tree via Clipped Adjacent LCEs)"}
+Let $U_1, U_2, \dots, U_k$ ($U_t = S[l_t .. r_t]$) be $k$ arbitrary substrings of $S$, sorted in non-decreasing lexicographical order $U_1 \le_{\text{lex}} U_2 \le_{\text{lex}} \dots \le_{\text{lex}} U_k$ using the $O(1)$ comparator:
+$$U_a \lessgtr_{\text{lex}} U_b \iff \begin{cases} |U_a| \lessgtr |U_b| & \text{if } \operatorname{LCE}_S(l_a, l_b) \ge \min(|U_a|, |U_b|), \\ \operatorname{rk}[l_a] \lessgtr \operatorname{rk}[l_b] & \text{otherwise.} \end{cases}$$
+Define the **clipped adjacent LCP array** $h_2, h_3, \dots, h_k$ by:
+$$\boxed{h_t \;=\; \operatorname{LCP}(U_{t-1},\, U_t) \;=\; \min\Bigl(\operatorname{LCE}_S(l_{t-1},\, l_t),\;\; |U_{t-1}|,\;\; |U_t|\Bigr), \qquad 2 \le t \le k.}$$
+Then for **every** pair of indices $1 \le a < b \le k$:
+$$\boxed{\operatorname{LCP}(U_a,\, U_b) \;=\; \min_{a < t \le b} h_t,}$$
+and the Contracted Min-Cartesian Tree built on $h_2, \dots, h_k$ in $O(k)$ time is canonically isomorphic to the **Virtual Suffix Tree** of $\{U_1, \dots, U_k\}$ inside $\operatorname{ST}(S)$.
+:::
+
+#### Proof of Theorem 13.2
+For any three strings $X \le_{\text{lex}} Y \le_{\text{lex}} Z$, if both $\operatorname{LCP}(X, Y) \ge d$ and $\operatorname{LCP}(Y, Z) \ge d$, then $X$ and $Z$ both have length $\ge d$ and agree with $Y$ on their first $d$ characters, so $\operatorname{LCP}(X, Z) \ge d$. Conversely, if $X$ and $Z$ agree on their first $d$ characters, then because $X \le_{\text{lex}} Y \le_{\text{lex}} Z$ is sandwiched between two strings starting with the same length-$d$ prefix $P$, $Y$ must also start with $P$, forcing $\operatorname{LCP}(X, Y) \ge d$ and $\operatorname{LCP}(Y, Z) \ge d$. Thus $\operatorname{LCP}(X, Z) = \min\bigl(\operatorname{LCP}(X, Y),\, \operatorname{LCP}(Y, Z)\bigr)$. Inducting across the sorted sequence $U_a \le_{\text{lex}} U_{a+1} \le_{\text{lex}} \dots \le_{\text{lex}} U_b$ yields $\operatorname{LCP}(U_a, U_b) = \min_{a < t \le b} h_t$. By Theorem 13.1, the Contracted Min-Cartesian Tree of $h_2, \dots, h_k$ is the exact compacted trie (Virtual Suffix Tree) of $\{U_1, \dots, U_k\}$. $\blacksquare$
+
+::: {.callout-tip title="Why Zero-Tree Virtual Suffix Trees Beat Explicit Virtual Trees"}
+A traditional Virtual Tree on $\operatorname{SAM}(S^R)$ requires: (1) building $\operatorname{SAM}(S^R)$ ($2N$ nodes), (2) precomputing binary lifting or $O(1)$ Weighted Ancestors to locate the state of each substring $S[l_t..r_t]$, (3) sorting by Euler-tour `dfn`, (4) computing $k-1$ tree LCAs, and (5) splitting compressed edges whenever $|U_t|$ falls strictly inside an edge $[\operatorname{len}(\operatorname{link}(u))+1, \operatorname{len}(u)]$.
+**Theorem 13.2 bypasses all five steps**: sorting by $(\operatorname{rk}[l_t], |U_t|)$ via $O(1)$ $\operatorname{LCE}$ automatically places intra-edge substrings in exact tree order, and clipping $h_t = \min(\operatorname{LCE}(l_{t-1}, l_t), |U_{t-1}|, |U_t|)$ automatically splits compressed edges without touching a single tree node!
+:::
+
+---
+
+## 3. Suffix Tree Dominant Pairs (`启发式合并支配对`, `T-2B-03`)
+
+### 3.1 The Diagnostic Signal: 2D Range Queries in Original String Index Space
+
+Suppose we are given $S[1..N]$ and $Q$ range queries $[l, r]$ ($1 \le l \le r \le N$), and we must compute:
+
+- **Range Longest Repeated Substring**: the maximum length of a substring occurring at least twice inside $S[l..r]$, i.e.,
+  $$\operatorname{Ans}(l, r) \;=\; \max_{l \le a < b \le r} \min\Bigl(r - b + 1,\;\; \operatorname{LCP}\bigl(\operatorname{suf}(a),\, \operatorname{suf}(b)\bigr)\Bigr),$$
+
+- **Range Repeated Substring Detection (`CF 1043G`)** or **Range Pairwise LCP Sums (`CF 1098F`)**.
+
+Why is this vastly harder than `[NOI2015] 品酒大会` or `CF 1073G`? Because the query interval $[l, r]$ restricts starting indices $a, b$ in **original string index space** $\{1, \dots, N\}$, whereas $\operatorname{LCP}(\operatorname{suf}(a), \operatorname{suf}(b))$ is governed by their LCA in **Suffix Array / Cartesian Tree space**! In general, a contiguous Suffix Tree subtree $[L_u, R_u]$ contains a scattered subset of original string indices, and there are $\binom{N}{2} = \Theta(N^2)$ suffix pairs $(a, b)$.
+
+How can we compress $\binom{N}{2}$ pairs down to $O(N \log N)$ pairs without losing the optimal answer for *any* query $[l, r]$?
+
+---
+
+### 3.2 The Predecessor/Successor Dominance Proof (`Theorem 13.3`)
+
+Consider an internal node $u$ of the Suffix Tree (or Min-Cartesian Tree of $H[2..N]$) with string depth $\ell_u = H[u]$. Suppose $u$ merges two child subtrees $\mathcal{A}$ (heavy child) and $\mathcal{B}$ (light child), and we are considering all cross-subtree pairs $(a, b)$ with $a \in \mathcal{A}, b \in \mathcal{B}$ (ordered so that $a < b$ in original string index space). Every such cross-subtree pair has $\operatorname{LCA}_{\text{ST}}(a, b) = u$, and therefore shares the **exact same unclipped LCP**:
+
+$$\operatorname{LCP}\bigl(\operatorname{suf}(a),\, \operatorname{suf}(b)\bigr) \;=\; \ell_u.$$
+
+Now fix an element $i \in \mathcal{B}$ from the light child, and look at all elements of the heavy child $\mathcal{A}$ in sorted order of their original string indices. Let:
+
+- $i^- = \max\{x \in \mathcal{A} : x < i\}$ be the **immediate predecessor** of $i$ in $\mathcal{A}$, and
+- $i^+ = \min\{x \in \mathcal{A} : x > i\}$ be the **immediate successor** of $i$ in $\mathcal{A}$.
+
+```
+Original String Index Axis (at Suffix Tree node u with fixed LCA depth l_u):
+
+   l          z          i^-          i          i^+          w          r
+---|----------|-----------|-----------|-----------|-----------|----------|---
+              |<--------->|<--------->|           |           |
+              |           [i^-, i] strictly inside [z, i]     |
+              |           (and both share right endpoint b=i!)|
+              |<--------------------->|           |<--------->|
+                                                  [i, i^+] strictly inside [i, w]
+                                                  (AND r - i^+ + 1 > r - w + 1!)
+```
+
+::: {.callout-note title="Theorem 13.3 (The Suffix Tree Dominant Pair Lemma — 启发式合并支配对)"}
+Traverse the Min-Cartesian Tree of $H[2..N]$ (or $\mathcal{T}_{\text{link}}(\operatorname{SAM}(S^R))$) bottom-up using **DSU-on-Tree (`树上启发式合并` / Small-to-Large Set Merging)**, maintaining at each node $u$ an ordered set $\mathcal{S}_u$ (`std::set<int>`) of original string starting indices $\operatorname{SA}[x]$ ($x \in [L_u, R_u]$). When merging a light child's index $i$ into the heavy set $\mathcal{S}_u$ at node $u$ of string depth $\ell_u$:
+
+1. **Emit Predecessor & Successor Triples**: Let $i^- = \max\{x \in \mathcal{S}_u : x < i\}$ and $i^+ = \min\{x \in \mathcal{S}_u : x > i\}$. Emit at most two candidate triples $(i^-, i, \ell_u)$ (if $i^-$ exists) and $(i, i^+, \ell_u)$ (if $i^+$ exists), then insert $i$ into $\mathcal{S}_u$ (or batch-insert after scanning the light child).
+2. **Strict 2D Dominance**: For *any* range query $[l, r]$ maximizing a function $g(a, b, \ell_u)$ that is non-increasing in interval span $[a, b]$ and non-increasing in the right endpoint $b$ (such as $\min(r - b + 1, \ell_u)$ for range longest repeat, or indicator $[\ell_u \ge b - a]$ for range tandem squares), every cross-subtree pair $(x, i)$ or $(i, y)$ with $\operatorname{LCA}(x, i) = u$ is **dominated** by $(i^-, i, \ell_u)$ or $(i, i^+, \ell_u)$.
+3. **Exact Sparsity Bound**: Across the entire Suffix Tree of $S[1..N]$, the total number of generated dominant triples $\mathcal{D}$ satisfies:
+   $$\boxed{|\mathcal{D}| \;\le\; 2 N \lfloor \log_2 N \rfloor.}$$
+:::
+
+#### Proof of Theorem 13.3
+Let $z \in \mathcal{S}_u$ be any element strictly to the left of $i^-$ ($z < i^- < i$). Both pairs $(z, i)$ and $(i^-, i)$ have $\operatorname{LCA} = u$ and thus share the exact same $\operatorname{LCP} = \ell_u$. Moreover:
+
+- **Containment Dominance**: Since $z < i^- < i$, we have $[i^-, i] \subsetneq [z, i]$. Any query $[l, r]$ that contains $[z, i]$ ($l \le z < i \le r$) automatically contains $[i^-, i]$ ($l \le i^- < i \le r$).
+- **Right-Clipping Equivalence**: Both $(z, i)$ and $(i^-, i)$ have the **exact same right index $b = i$**, so their right-boundary-clipped repeat lengths inside $[l, r]$ are identical:
+  $$\min(r - i + 1,\, \ell_u) \;=\; \min(r - i + 1,\, \ell_u).$$
+Symmetrically, let $w \in \mathcal{S}_u$ be any element strictly to the right of $i^+$ ($i < i^+ < w$). Then $[i, i^+] \subsetneq [i, w]$, so $(i, i^+)$ is valid for every query $[l, r]$ where $(i, w)$ is valid, **and** because $i^+ < w$, its right-boundary-clipped repeat length is at least as large:
+$$\min(r - i^+ + 1,\, \ell_u) \;\ge\; \min(r - w + 1,\, \ell_u).$$
+Finally, whenever an index $i \in \{1, \dots, N\}$ is merged from a light child into a heavy child, the size of the subtree containing $i$ at least doubles ($|\mathcal{S}_{\text{new}}| \ge 2 |\mathcal{S}_{\text{light}}|$). Thus each index $i$ acts as a light element at most $\lfloor \log_2 N \rfloor$ times, emitting at most $2$ triples per light insertion, giving $|\mathcal{D}| \le 2 N \lfloor \log_2 N \rfloor$. $\blacksquare$
+
+::: {.callout-warning title="Batch Querying vs. Incremental Insertion During Light-Subtree Merges"}
+When merging a light child $v$ into the heavy set $\mathcal{S}_u$ at node $u$, should you insert elements of $v$ into $\mathcal{S}_u$ one by one as you query $(i^-, i^+)$, or query all $i \in v$ against $\mathcal{S}_u$ first and then insert all $i \in v$ into $\mathcal{S}_u$?
+
+- **Querying all $i \in v$ against $\mathcal{S}_u$ first, then inserting all $i \in v$** is always valid (and strictly cleaner!), because any pair $(i_1, i_2)$ where *both* $i_1, i_2 \in v$ belong to the same light child $v$ has $\operatorname{LCA}(i_1, i_2)$ inside $v$'s subtree at depth $\ell \ge \ell_u$—it was **already captured** when $v$'s subtree was processed!
+:::
+
+---
+
+## 4. Reverse-Engineering Scratchpad, Algorithmic Contracts, Two-Threshold 2D Sweeps & Boundary Pitfalls (`BP-13-01`–`BP-13-03` / `BP-2B-03`–`BP-2B-05`)
+
+### 4.1 Contract 13.1 — Zero-Tree Substring Virtual Suffix Tree DP (`CF 1073G`)
+
+Given query sets $A_q, B_q$ of substrings $U = S[l..r]$, the following contract computes $\sum_{u \in A_q} \sum_{v \in B_q} \operatorname{LCP}(u, v)$ in $O(k \log k)$ time where $k = |A_q| + |B_q|$:
+
+```cpp
+struct SubItem {
+    int l, len;
+    long long wA, wB;
+};
+
+// Returns true if U < V in lexicographical substring order using O(1) LCE
+bool cmp_sub(const SubItem& a, const SubItem& b) {
+    if (a.l == b.l) return a.len < b.len;
+    int d = std::min({lce_query(a.l, b.l), a.len, b.len});
+    if (d == a.len || d == b.len) return a.len < b.len;
+    return rk[a.l] < rk[b.l];
+}
+
+long long solve_virtual_st_query(std::vector<SubItem>& items) {
+    if (items.empty()) return 0;
+    std::sort(items.begin(), items.end(), cmp_sub);
+    // 1. Deduplicate identical substrings (l_a, len_a) == (l_b, len_b) via LCE >= len
+    std::vector<SubItem> U;
+    for (const auto& it : items) {
+        if (!U.empty() && U.back().len == it.len &&
+            lce_query(U.back().l, it.l) >= it.len) {
+            U.back().wA += it.wA;
+            U.back().wB += it.wB;
+        } else {
+            U.push_back(it);
+        }
+    }
+    long long ans = 0;
+    int m = (int)U.size();
+    for (int i = 0; i < m; ++i) ans += U[i].wA * U[i].wB * U[i].len; // Same-substring pairs
+    if (m == 1) return ans;
+
+    // 2. Clipped adjacent LCPs h[1 .. m-1]
+    std::vector<int> h(m);
+    for (int i = 1; i < m; ++i)
+        h[i] = std::min({lce_query(U[i - 1].l, U[i].l), U[i - 1].len, U[i].len});
+
+    // 3. Monotonic stack over h[1 .. m-1]
+    std::vector<int> L(m), R(m), st;
+    for (int i = 1; i < m; ++i) {
+        while (!st.empty() && h[st.back()] > h[i]) st.pop_back(); // Strict > on left
+        L[i] = st.empty() ? 1 : st.back() + 1;
+        st.push_back(i);
+    }
+    st.clear();
+    for (int i = m - 1; i >= 1; --i) {
+        while (!st.empty() && h[st.back()] >= h[i]) st.pop_back(); // Non-strict >= on right
+        R[i] = st.empty() ? m - 1 : st.back() - 1;
+        st.push_back(i);
+    }
+    std::vector<long long> prefA(m + 1, 0), prefB(m + 1, 0);
+    for (int i = 0; i < m; ++i) {
+        prefA[i + 1] = prefA[i] + U[i].wA;
+        prefB[i + 1] = prefB[i] + U[i].wB;
+    }
+    for (int i = 1; i < m; ++i) {
+        long long leftA  = prefA[i] - prefA[L[i] - 1];
+        long long leftB  = prefB[i] - prefB[L[i] - 1];
+        long long rightA = prefA[R[i] + 1] - prefA[i];
+        long long rightB = prefB[R[i] + 1] - prefB[i];
+        ans += 1LL * h[i] * (leftA * rightB + leftB * rightA);
+    }
+    return ans;
+}
+```
+
+---
+
+### 4.2 Contract 13.2 — DSU-on-Tree Dominant Pairs + Two-Threshold 2D Sweep (`T-2B-03`)
+
+Once Theorem 13.3 extracts the $\le 2N \log_2 N$ dominant triples $(a, b, \ell)$ ($1 \le a < b \le N$), how do we answer $Q$ range longest repeated substring queries $\operatorname{Ans}(l, r) = \max_{(a, b, \ell) \in \mathcal{D},\, a \ge l,\, b \le r} \min(r - b + 1,\, \ell)$ in $O(N \log^2 N + Q \log N)$ time?
+
+We decouple the $\min(r - b + 1, \ell)$ operation by splitting at the right-endpoint threshold $e = b + \ell - 1$:
+
+- **Regime 1 (Unclipped: $a \ge l$ and $b + \ell - 1 \le r$)**: The entire repeat of length $\ell$ starting at $b$ fits inside $[l, r]$, contributing $\ell$.
+- **Regime 2 (Right-Boundary Clipped: $a \ge l$ and $b \le r < b + \ell - 1$)**: The repeat starting at $b$ overhangs $r$ and is clipped to length $r - b + 1 = r - (b - 1)$. Maximizing $r - b + 1$ for a fixed query $r$ is equivalent to **minimizing $b$** (or maximizing $-b$) over all triples with $a \ge l$, $b \le r$, and $b + \ell - 1 > r$!
+
+By separating the two regimes via sorting by the threshold $e = b + \ell - 1$ vs. $r$, we completely avoid any 3D query or deletion from a max-structure:
+
+- **Pass 1 (Regime 1: $b + \ell - 1 \le r$ and $a \ge l$)**: Sort triples by $e = b + \ell - 1$ ascending and queries by $r$ ascending. As $e \le r$, insert $(a, \text{val} = \ell)$ into a suffix-max Fenwick tree over $a$, and query $\max_{a \ge l} \ell$.
+- **Pass 2 (Regime 2: $b + \ell - 1 > r$, $a \ge l$, and $b \le r$)**: Notice that since $a < b$, any triple with $a \ge l$ and $b \le r$ automatically satisfies $l \le a < b \le r$! Sort triples by $e = b + \ell - 1$ **descending** and queries by $r$ **descending**. As $e > r$, insert point $b$ into a Suffix-Min Fenwick tree at position $a \in [1, N]$! Then for query $[l, r]$, the minimum $b_{\min}$ among all inserted triples with $a \ge l$ satisfies $b_{\min} \le r$ if and only if at least one valid Regime-2 triple exists, contributing $r - b_{\min} + 1$!
+
+```cpp
+// Pass 1 (Unclipped: b + len - 1 <= r, a >= l) & Pass 2 (Clipped: b + len - 1 > r, a >= l)
+// Every triple (a, b, len) has 1 <= a < b <= N.
+void solve_range_longest_repeat(int N, std::vector<Triple>& dom, std::vector<Query>& qs) {
+    // Pass 1: Sort by e = b + len - 1 ascending
+    std::sort(dom.begin(), dom.end(), [](const Triple& x, const Triple& y) {
+        return x.b + x.len - 1 < y.b + y.len - 1;
+    });
+    std::sort(qs.begin(), qs.end(), [](const Query& x, const Query& y) {
+        return x.r < y.r;
+    });
+    SuffixMaxBIT bit_len(N); // Supports update(a, len) and query_suffix_max(l)
+    size_t p = 0;
+    for (auto& q : qs) {
+        while (p < dom.size() && dom[p].b + dom[p].len - 1 <= q.r) {
+            bit_len.update(dom[p].a, dom[p].len);
+            ++p;
+        }
+        q.ans = std::max(q.ans, bit_len.query(q.l));
+    }
+
+    // Pass 2: Sort by e = b + len - 1 descending; maintain min(b) at index a
+    SuffixMinBIT bit_b(N); // Supports update(a, b) and query_suffix_min(l)
+    int idx = (int)dom.size() - 1;
+    for (int i = (int)qs.size() - 1; i >= 0; --i) {
+        while (idx >= 0 && dom[idx].b + dom[idx].len - 1 > qs[i].r) {
+            bit_b.update(dom[idx].a, dom[idx].b);
+            --idx;
+        }
+        int b_min = bit_b.query(qs[i].l);
+        if (b_min <= qs[i].r) {
+            qs[i].ans = std::max(qs[i].ans, qs[i].r - b_min + 1);
+        }
+    }
+}
+```
+
+Look closely at Pass 2 in the code above: because we want to maximize $r - b + 1$, we want the **smallest possible $b$** among all triples with $e > r$ and $a \ge l$. If the minimum such $b_{\min}$ satisfies $b_{\min} \le r$, it immediately gives the optimal clipped answer $r - b_{\min} + 1$; if $b_{\min} > r$, then *no* triple with $e > r$ and $a \ge l$ has $b \le r$! Thus Pass 2 needs only a 1D Suffix-Min Fenwick Tree (`SuffixMinBIT`) over $a$—zero Segment Trees required!
+
+---
+
+### 4.3 Boundary Pitfalls & Broken-Invariant Counterexamples (`BP-13-01`–`BP-13-03`)
+
+1. **Counterexample 13.4 (`BP-13-01` / `BP-2B-03`) — Partial Evaluation of Uncontracted Equal-Height Nodes When Weights Can Be Negative (`CF 616F`)**:
+   Suppose $S_1 = \texttt{"ab"}, c_1 = +10$, $S_2 = \texttt{"ab"}, c_2 = +10$, and $S_3 = \texttt{"ab"}, c_3 = -100$. In the Generalized Suffix Array, the three suffixes `"ab"` have adjacent LCPs $H[2] = 2$ and $H[3] = 2$.
+
+   - In the binary Min-Cartesian Tree of $H$, one of the two `2`s is the child of the other and spans only the first two suffixes $[1, 2]$ with weight sum $10 + 10 = +20$, whereas the true equivalence class of `"ab"` spans $[1, 3]$ with weight sum $10 + 10 - 100 = -80$!
+   - **Rule**: Never evaluate a Cartesian Tree node $k$ with interval $[L_k, R_k]$ unless $H[k] > \max(H[L_k], H[R_k + 1])$, which guarantees $[L_k, R_k]$ is a maximal contracted Suffix Tree node.
+2. **Counterexample 13.5 (`BP-13-02` / `BP-2B-04`) — Omitting $\operatorname{occ} = 1$ Leaf Edges (`CF 802I`, `CF 873F`, `CF 616F`)**:
+   In `CF 873F — Forbidden Indices`, suppose $S = \texttt{"abcdef"}$ has all distinct characters ($H[2..N] = 0$). Every internal node of the `height` Cartesian tree has $H[k] = 0$, giving $0$, while a single allowed suffix $\operatorname{suf}(1)$ of length $N$ achieves $N \times 1 = N$. Always evaluate the $N$ leaf edges of length $(N - \operatorname{SA}[x] + 1) - \max(H[x], H[x+1])$.
+
+3. **Counterexample 13.6 (`BP-13-03` / `BP-2B-05`) — Symmetric Strict/Non-Strict Monotonic Stack Bug**:
+   On $S = \texttt{"aaa"}$, $H[2] = 2, H[3] = 1$. If $S = \texttt{"ababab"}$, $H$ contains duplicate minimums. Using strict `>` on both left and right drops all pairs spanning duplicate minimums; using `>=` on both sides double-counts them. Always pair strict `>` on the left with non-strict `>=` on the right.
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Ladder (9 Non-Template Problems)
+
+### Tier 1 — Stepping Stone (`W2B-01`, `W2B-04`)
+
+#### Problem 13.1 (`W2B-01`) — `[AHOI2013] 差异` (`Luogu P4248`)
+
+- **Mathematical Statement**: Given a string $S[1..N]$, evaluate the all-pairs suffix difference sum:
+  $$\Sigma_{\text{diff}} \;=\; \sum_{1 \le i < j \le N} \Bigl(|\operatorname{suf}(i)| + |\operatorname{suf}(j)| - 2 \cdot \operatorname{LCP}\bigl(\operatorname{suf}(i),\, \operatorname{suf}(j)\bigr)\Bigr).$$
+
+- **Constraints**: $1 \le N \le 5 \times 10^5$, $|\Sigma| = 26$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Enumerating all $\binom{N}{2}$ suffix pairs takes $\Theta(N^2)$ time. Separate the length sum $\sum_{1 \le i < j \le N} \bigl((N - i + 1) + (N - j + 1)\bigr)$ from the all-pairs LCP sum.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In Suffix Array order, $\operatorname{LCP}(\operatorname{suf}(\operatorname{SA}[x]), \operatorname{suf}(\operatorname{SA}[y])) = \min_{x < k \le y} H[k]$. Apply **Theorem 13.1** (Min-Cartesian Tree of $H[2..N]$): how many pairs $(x, y)$ have $k$ as their leftmost minimum gap?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Each suffix length $L \in \{1, \dots, N\}$ appears in $N - 1$ pairs, so $\sum_{i < j} (|\operatorname{suf}(i)| + |\operatorname{suf}(j)|) = (N - 1) \frac{N(N+1)}{2}$. Use an asymmetric monotonic stack (`>` on left, `>=` on right) to find $[L'_k, R'_k]$ for each $k \in [2..N]$ and subtract $2 \sum_{k=2}^N H[k] (k - L'_k + 1)(R'_k - k + 1)$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-01`)"}
+1. **Diagnostic Signal**: At $N = 5 \times 10^5$, $\binom{N}{2} \approx 1.25 \times 10^{11}$ pairs must be aggregated in $O(N)$ time.
+2. **Combinatorial Word Invariant**:
+   - First, every suffix $\operatorname{suf}(i)$ of length $N - i + 1$ is paired with $N - 1$ other suffixes, so:
+     $$\sum_{1 \le i < j \le N} \bigl(|\operatorname{suf}(i)| + |\operatorname{suf}(j)|\bigr) \;=\; (N - 1) \sum_{i=1}^N (N - i + 1) \;=\; \frac{(N - 1) N (N + 1)}{2}.$$
+
+   - Second, re-indexing the unordered pairs $\{i, j\}$ by their Suffix Array positions $1 \le x < y \le N$ and breaking minimum ties in $H[x+1..y]$ by the leftmost minimum index $k$ partitions all $\binom{N}{2}$ pairs into $N - 1$ disjoint Cartesian rectangles $(x, y) \in [L'_k - 1, k - 1] \times [k, R'_k]$.
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{SA}$ and $H[2..N]$ in $O(N)$ time.
+   - Run two linear monotonic stack passes to compute $L'_k$ ($H[j] > H[k]$ for $L'_k \le j < k$) and $R'_k$ ($H[j] \ge H[k]$ for $k < j \le R'_k$).
+   - Output $\frac{(N-1)N(N+1)}{2} - 2 \sum_{k=2}^N H[k] (k - L'_k + 1)(R'_k - k + 1)$ using 64-bit (`long long` / `__int128`) arithmetic. Time: $O(N)$.
+4. **Broken-Invariant Counterexample (`Counterexample 13.6`)**: Using strict `>` on both left and right omits pairs whenever $H$ has duplicate minimum values (e.g., $S = \texttt{ababab}$).
+:::
+
+---
+
+#### Problem 13.2 (`W2B-04`) — `[NOI2015] 品酒大会` (`Luogu P2178` / `UOJ 131`)
+
+- **Mathematical Statement**: Given a string $S[1..N]$ and integer vertex weights $a_1, \dots, a_N \in [-10^9, 10^9]$, two suffixes $i < j$ are "$r$-similar" if $\operatorname{LCP}(\operatorname{suf}(i), \operatorname{suf}(j)) \ge r$. For every $r \in \{0, 1, \dots, N - 1\}$, compute:
+  1. The number of $r$-similar pairs $(i, j)$ ($1 \le i < j \le N$), and
+  2. The maximum product $a_i \cdot a_j$ among all $r$-similar pairs (or $0$ if no $r$-similar pair exists).
+- **Constraints**: $1 \le N \le 3 \times 10^5$, $|a_i| \le 10^9$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Weights $a_i$ can be negative ($-10^9 \times -10^9 = +10^{18}$), and we need exact counts and maximum products for **every** threshold $r \in [0, N-1]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 13.1**, sweeping $r$ from $N - 1$ down to $0$ and uniting adjacent SA indices $(k-1, k)$ when $H[k] = r$ constructs the Kruskal DSU Reachability Tree $\mathcal{T}_{\text{Kruskal-DSU}}(H[2..N])$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Maintain $(\operatorname{sz}[u], \max_1[u], \min_1[u])$ in each DSU component $u$. When merging $u$ and $v$ at $r = H[k]$, add $\operatorname{sz}[u]\operatorname{sz}[v]$ to `cnt[r]` and update `best[r]` with $\max(\max_1[u]\max_1[v], \min_1[u]\min_1[v])$. Finally, sweep $r = N - 2 \downarrow 0$ setting `cnt[r] += cnt[r+1]` and `best[r] = max(best[r], best[r+1])`.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-04`)"}
+1. **Diagnostic Signal**: Negative weights mean the maximum product across two subtrees can come from either the two largest values or the two smallest (most negative) values.
+2. **Combinatorial Word Invariant**: A pair of suffixes $(\operatorname{SA}[x], \operatorname{SA}[y])$ ($x < y$) has $\operatorname{LCP} = r$ if and only if $x$ and $y$ become connected for the first time when edges of weight $H[k] = r$ are added in decreasing order of weight. At the moment edge $(k-1, k)$ merges components $u$ and $v$, all $\operatorname{sz}[u] \cdot \operatorname{sz}[v]$ cross-component pairs have exact $\operatorname{LCP} = H[k]$, and the extremal cross-component product is $\max\bigl(\max_1[u]\max_1[v],\, \min_1[u]\min_1[v]\bigr)$.
+3. **Algorithmic Compilation**:
+   - Initialize `cnt[0..N-1] = 0` and `best[0..N-1] = -INF` (where $\text{INF} = 4 \times 10^{18}$).
+   - Bucket-sort $k \in [2..N]$ by $H[k]$ descending. Initialize DSU with $\operatorname{sz}[x] = 1, \max_1[x] = \min_1[x] = a_{\operatorname{SA}[x]}$.
+   - For $r = N - 1$ down to $0$: merge all $(k-1, k)$ with $H[k] = r$, updating `cnt[r]` and `best[r]`.
+   - Sweep $r = N - 2$ down to $0$: `cnt[r] += cnt[r+1]`, `best[r] = max(best[r], best[r+1])`. Print `(cnt[r], cnt[r] ? best[r] : 0)`. Time: $O(N \alpha(N))$.
+4. **Broken-Invariant Counterexample**: Initializing `best[r] = 0` instead of $-\infty$ outputs $0$ instead of a negative product when all $r$-similar pairs have opposite-sign weights (e.g., $+5$ and $-3 \implies -15$).
+:::
+
+---
+
+### Tier 2 — Intermediate (`W2B-03`, `W2B-15`)
+
+#### Problem 13.3 (`W2B-03`) — `CF 802I — Fake News (hard)`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ ($T$ test cases), compute the sum of squared occurrence counts over all distinct non-empty substrings $P$ of $S$:
+  $$\Sigma_{\text{sq}} \;=\; \sum_{P \in \operatorname{Sub}(S)} \operatorname{occ}_S(P)^2.$$
+
+- **Constraints**: $\sum N \le 10^5$, $|\Sigma| = 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+There are up to $\binom{N+1}{2}$ distinct substrings $P$. We need to group them by their equivalence classes on $\operatorname{ST}(S)$ or double-count ordered pairs of occurrences.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+**View 1 (Cartesian Tree Nodes)**: By **Theorem 13.1**, each contracted internal node $u$ with interval $[L_u, R_u]$ covers $\ell_u - \ell_{p(u)}$ distinct substrings, each occurring $\operatorname{sz}(u) = R_u - L_u + 1$ times, and each leaf $x$ covers $(N - \operatorname{SA}[x] + 1) - \max(H[x], H[x+1])$ substrings occurring $1$ time.
+**View 2 (Double Counting Pairs)**: $\operatorname{occ}_S(P)^2$ counts ordered pairs of starting positions $(i, j)$ where $P$ occurs. Summing over all $P$ counts, for each pair $(i, j)$, the number of common non-empty prefixes of $\operatorname{suf}(i)$ and $\operatorname{suf}(j)$, which is $\operatorname{LCP}(\operatorname{suf}(i), \operatorname{suf}(j))$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Using View 2, separate $i = j$ (which gives $\sum_{i=1}^N (N - i + 1) = \frac{N(N+1)}{2}$) and $i \ne j$ (which gives $2 \sum_{1 \le x < y \le N} \operatorname{LCP}(\operatorname{SA}[x], \operatorname{SA}[y])$), and apply the monotonic stack from Problem 13.1!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-03`)"}
+1. **Diagnostic Signal**: Summing $\operatorname{occ}_S(P)^2$ over distinct substrings $P$ can be done either on the contracted `height` Cartesian Tree or by double counting occurrence pairs.
+2. **Combinatorial Word Invariant (Double Counting Identity)**:
+   $$\sum_{P \in \operatorname{Sub}(S)} \operatorname{occ}_S(P)^2 \;=\; \sum_{i=1}^N \sum_{j=1}^N \sum_{d=1}^{\min(|\operatorname{suf}(i)|, |\operatorname{suf}(j)|)} \bigl[S[i..i+d-1] = S[j..j+d-1]\bigr] \;=\; \sum_{i=1}^N \sum_{j=1}^N \operatorname{LCP}\bigl(\operatorname{suf}(i),\, \operatorname{suf}(j)\bigr).$$
+   Splitting diagonal ($i = j$) and off-diagonal ($i \ne j$) terms gives:
+   $$\Sigma_{\text{sq}} \;=\; \frac{N(N+1)}{2} \;+\; 2 \sum_{k=2}^N H[k] \cdot (k - L'_k + 1) \cdot (R'_k - k + 1).$$
+
+3. **Algorithmic Compilation**: Compute $\operatorname{SA}$, $H[2..N]$, and monotonic stack bounds $[L'_k, R'_k]$ in $O(N)$ time, then output the formula above.
+4. **Broken-Invariant Counterexample (`Counterexample 13.5`)**: If using View 1 (summing $(\ell_u - \ell_{p(u)}) \operatorname{sz}(u)^2$ over Cartesian Tree nodes), forgetting the $N$ leaf edges $(\operatorname{occ} = 1)$ misses $\sum_{x=1}^N \bigl((N - \operatorname{SA}[x] + 1) - \max(H[x], H[x+1])\bigr) \cdot 1^2$.
+:::
+
+---
+
+#### Problem 13.4 (`W2B-15`) — `CF 616F — Expensive Strings`
+
+- **Mathematical Statement**: Given $M$ strings $T_1, \dots, T_M$ with signed integer costs $c_1, \dots, c_M \in [-10^7, 10^7]$, maximize over all non-empty strings $P$:
+  $$f(P) \;=\; |P| \cdot \sum_{i=1}^M c_i \cdot \operatorname{occ}_{T_i}(P).$$
+
+- **Constraints**: $1 \le M \le 10^5$, $\sum_{i=1}^M |T_i| \le 5 \times 10^5$, $|c_i| \le 10^7$, time limit $6.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Within any Suffix Tree equivalence class $u$, $\sum_{i=1}^M c_i \operatorname{occ}_{T_i}(P)$ is constant for all $P \in E(u)$, so if that sum is positive we always pick the maximum length $|P| = \ell_u$. However, $c_i$ can be **negative**!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Cap each suffix starting at position $p$ inside string $T_i$ to its remaining length $\operatorname{rem}[p] = \text{end}(T_i) - p + 1$, and cap $H[k] \leftarrow \min(H[k], \operatorname{rem}[\operatorname{SA}[k-1]], \operatorname{rem}[\operatorname{SA}[k]])$. By **Counterexample 13.4**, why must you skip any Cartesian node $k$ where $H[k] == \max(H[L'_k - 1], H[R'_k + 1])$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+If $H[k] == \max(H[L'_k - 1], H[R'_k + 1])$, then $[L'_k - 1, R'_k]$ is an **uncontracted partial binary split** of a larger equal-height group. When some $c_i < 0$, a partial subset of occurrences can have a strictly larger sum than the true occurrence set of length $H[k]$! Only evaluate intervals where $H[k] > \max(H[L'_k - 1], H[R'_k + 1])$, plus $\operatorname{occ}=1$ leaves where $\operatorname{rem}[\operatorname{SA}[x]] > \max(H[x], H[x+1])$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-15`)"}
+1. **Diagnostic Signal**: Negative weights $c_i < 0$ break naive Cartesian Tree evaluation if uncontracted equal-height nodes are inspected.
+2. **Combinatorial Word Invariant**:
+   - Concatenate $T_1 \cdot T_2 \cdots T_M$ of total length $N = \sum |T_i|$ (or separate with sentinels), recording for each index $p \in [1, N]$ its string ID $\operatorname{id}[p] \in [1, M]$ and remaining length $\operatorname{rem}[p]$ to the end of $T_{\operatorname{id}[p]}$.
+   - Cap $H[k] \leftarrow \min\bigl(H[k],\, \operatorname{rem}[\operatorname{SA}[k-1]],\, \operatorname{rem}[\operatorname{SA}[k]]\bigr)$ so no common prefix crosses a string boundary.
+   - By **Theorem 13.1**, a monotonic-stack interval $[L_k, R_k] = [L'_k - 1, R'_k]$ represents a valid Suffix Tree equivalence class at length $H[k]$ **if and only if** $H[k] > \max\bigl(H[L_k],\, H[R_k + 1]\bigr)$.
+   - Similarly, leaf $x \in [1, N]$ has a valid unique prefix of length $\operatorname{rem}[\operatorname{SA}[x]]$ **if and only if** $\operatorname{rem}[\operatorname{SA}[x]] > \max\bigl(H[x],\, H[x+1]\bigr)$.
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{SA}$ and capped $H[2..N]$. Precompute prefix sums $\operatorname{pref}[x] = \sum_{t=1}^x c_{\operatorname{id}[\operatorname{SA}[t]]}$.
+   - Compute $[L'_k, R'_k]$ via monotonic stack. Initialize `ans = 0`.
+   - For each $k \in [2..N]$: if $H[k] > \max(H[L'_k - 1], H[R'_k + 1])$, update `ans = max(ans, 1LL * H[k] * (pref[R'_k] - pref[L'_k - 2]))`.
+   - For each leaf $x \in [1..N]$: if $\operatorname{rem}[\operatorname{SA}[x]] > \max(H[x], H[x+1])$, update `ans = max(ans, 1LL * rem[SA[x]] * c[id[SA[x]]])`. Time: $O(N)$.
+4. **Broken-Invariant Counterexample (`Counterexample 13.4`)**: Omitting the guard `H[k] > max(H[L'_k - 1], H[R'_k + 1])` evaluates a proper sub-interval of an equal-height block, excluding negative-cost occurrences that belong to the same substring $P$!
+:::
+
+---
+
+### Tier 3 — Advanced (`W2B-11`, `W2B-35`, `W2B-22`)
+
+#### Problem 13.5 (`W2B-11`) — `CF 1073G — Yet Another LCP Problem`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ and $Q$ queries, each specifying two multisets of suffix starting indices $A_q = \{a_1, \dots, a_{k_q}\}$ and $B_q = \{b_1, \dots, b_{m_q}\}$, compute for each query:
+  $$\Sigma_q \;=\; \sum_{i \in A_q} \sum_{j \in B_q} \operatorname{LCP}\bigl(\operatorname{suf}(i),\, \operatorname{suf}(j)\bigr).$$
+
+- **Constraints**: $1 \le N, Q \le 2 \times 10^5$, $\sum_{q=1}^Q (|A_q| + |B_q|) \le 2 \times 10^5$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Both $O(|A_q||B_q|)$ pairwise loops and $O(N)$ full-array scans TLE. We need $O((|A_q| + |B_q|) \log(|A_q| + |B_q|))$ per query.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Apply **Theorem 13.2 (Zero-Tree Substring Virtual Suffix Tree)**: sort all query suffixes in $A_q \cup B_q$ by $\operatorname{rk}[\cdot]$, merge identical suffixes $i \in A_q \cap B_q$ (which contribute $(N - i + 1) \cdot w_A(i) w_B(i)$), and compute the $m - 1$ adjacent LCPs $h_t = \operatorname{LCE}_S(u_{t-1}, u_t)$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Run the monotonic stack of **Contract 13.1** on $h_1, \dots, h_{m-1}$ accumulating $h_t \cdot (W_{A, L} W_{B, R} + W_{B, L} W_{A, R})$ in $O(m)$ time!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-11`)"}
+1. **Diagnostic Signal**: $\sum (|A_q| + |B_q|) \le 2 \times 10^5$ is the canonical signature for a Virtual Suffix Tree (`后缀树虚树`).
+2. **Combinatorial Word Invariant**: By Theorem 13.2, after sorting the distinct indices $u_1, \dots, u_m$ of $A_q \cup B_q$ so that $\operatorname{rk}[u_1] < \operatorname{rk}[u_2] < \dots < \operatorname{rk}[u_m]$, every pair $1 \le x < y \le m$ satisfies $\operatorname{LCP}(\operatorname{suf}(u_x), \operatorname{suf}(u_y)) = \min_{x < t \le y} h_t$ where $h_t = \operatorname{RMQ}_H(\operatorname{rk}[u_{t-1}] + 1, \operatorname{rk}[u_t])$.
+3. **Algorithmic Compilation**: Directly invoke **Contract 13.1** (`solve_virtual_st_query`) with $l = i$ and $\text{len} = N - i + 1$ for each $i \in A_q$ ($w_A = 1, w_B = 0$) and $j \in B_q$ ($w_A = 0, w_B = 1$). Total time: $O\bigl(N \log N + \sum (|A_q| + |B_q|) \log(|A_q| + |B_q|)\bigr)$.
+4. **Broken-Invariant Counterexample**: Failing to deduplicate $i \in A_q \cap B_q$ before calling $\operatorname{RMQ}_H(\operatorname{rk}[u_{t-1}] + 1, \operatorname{rk}[u_t])$ queries an inverted interval $[r + 1, r]$.
+:::
+
+---
+
+#### Problem 13.6 (`W2B-35`) — `Range [l, r] Longest Repeated Substring via Dominant Pairs` (`UOJ / LOJ / QOJ` Paradigm)
+
+- **Mathematical Statement**: Given a string $S[1..N]$ and $Q$ range queries $[l_q, r_q]$ ($1 \le l_q \le r_q \le N$), find for each query the maximum length of a substring that occurs **at least twice** (possibly overlapping) inside $S[l_q .. r_q]$:
+  $$\operatorname{Ans}(l_q, r_q) \;=\; \max_{l_q \le a < b \le r_q} \min\Bigl(r_q - b + 1,\;\; \operatorname{LCP}\bigl(\operatorname{suf}(a),\, \operatorname{suf}(b)\bigr)\Bigr).$$
+
+- **Constraints**: $1 \le N, Q \le 2 \times 10^5$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Query intervals $[l_q, r_q]$ filter indices in original string space, while $\operatorname{LCP}(\operatorname{suf}(a), \operatorname{suf}(b))$ lives in Suffix Tree space.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 13.3 (Suffix Tree Dominant Pair Lemma)**, running DSU-on-Tree (`std::set<int>` small-to-large merge) bottom-up on the Min-Cartesian Tree of $H[2..N]$ emits at most $2N \log_2 N$ predecessor/successor triples $(a, b, \ell_u)$ ($a < b$) that dominate all $\binom{N}{2}$ suffix pairs!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Apply **Contract 13.2 (Two-Threshold 2D Sweep)** splitting at $e = b + \ell_u - 1 \le r_q$ (Pass 1: Suffix-Max BIT of $\ell_u$ at index $a$) vs. $e = b + \ell_u - 1 > r_q$ (Pass 2: Suffix-Min BIT of $b$ at index $a$, contributing $r_q - b_{\min} + 1$ when $b_{\min} \le r_q$).
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-35`)"}
+1. **Diagnostic Signal**: $\binom{N}{2}$ pairs $(a, b)$ must be compressed to $O(N \log N)$ dominant triples, and the right-boundary clipping $\min(r_q - b + 1, \ell_u)$ must be decoupled into two linear sweep regimes.
+2. **Combinatorial Word Invariant**:
+   - By Theorem 13.3, at each Cartesian Tree node $u$ with string depth $\ell_u = H[u]$, merging the light child's starting indices $i$ into the heavy child's `std::set<int>` and recording $(i^-, i, \ell_u)$ and $(i, i^+, \ell_u)$ captures a dominant witness for every possible $[l_q, r_q]$.
+   - By Contract 13.2, sorting triples by their right-endpoint completion index $e = b + \ell_u - 1$ separates unclipped triples ($e \le r_q$, value $\ell_u$) from clipped triples ($e > r_q$, value $r_q - b + 1$).
+3. **Algorithmic Compilation**:
+   - Build the Min-Cartesian Tree of $H[2..N]$ in $O(N)$ time.
+   - Run bottom-up DSU-on-Tree (`std::set<int>`) to collect the $\le 2N \log_2 N$ triples $(a, b, \ell_u)$ in $O(N \log^2 N)$ time.
+   - Run Pass 1 and Pass 2 of **Contract 13.2** using two 1D Fenwick Trees in $O(N \log^2 N + Q \log N)$ total time.
+4. **Broken-Invariant Counterexample**: Omitting Pass 2 ($b + \ell_u - 1 > r_q$) misses valid repeats inside $S[l_q..r_q]$ whenever the two suffixes $a, b \in [l_q, r_q]$ continue matching past $r_q$ (e.g., $S = \texttt{ababab}$, query $[1, 4] = \texttt{abab}$: pair $(1, 3)$ has global $\ell = 4$, so $b + \ell - 1 = 6 > 4$, contributing $4 - 3 + 1 = 2$ via Pass 2!).
+:::
+
+---
+
+#### Problem 13.7 (`W2B-22`) — `CF 873F — Forbidden Indices`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ and a binary string $B[1..N] \in \{\texttt{0}, \texttt{1}\}^N$ where $B[i] = \texttt{1}$ marks index $i$ as **forbidden**, define $\operatorname{occ}_{\text{ok}}(P)$ as the number of occurrences of $P$ in $S$ whose **ending** index $e$ (or, after reversing $S$ and $B$, whose **starting** index $i$) satisfies $B[e] = \texttt{0}$. Compute $\max_{P \in \operatorname{Sub}(S)} |P| \cdot \operatorname{occ}_{\text{ok}}(P)$.
+- **Constraints**: $1 \le N \le 2 \times 10^5$, $|\Sigma| = 26$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Reverse $S$ and $B$ so that the condition "$P$'s ending position is allowed" becomes "$P^R$'s starting suffix position is allowed".
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+On the Min-Cartesian Tree of $H[2..N]$ for the reversed string, each node $k$ spanning SA interval $[L'_k - 1, R'_k]$ has string depth $H[k]$ and allowed occurrence count $\operatorname{pref}[R'_k] - \operatorname{pref}[L'_k - 2]$, where $\operatorname{pref}[x] = \sum_{t=1}^x [B[\operatorname{SA}[t]] == \texttt{0}]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Don't forget **Counterexample 13.5**: initialize `ans` to the longest single allowed suffix ($\operatorname{occ}_{\text{ok}} = 1$): $\max_{B[i] == \texttt{0}} (N - i + 1)$, then maximize $H[k] \cdot (\operatorname{pref}[R'_k] - \operatorname{pref}[L'_k - 2])$ over $2 \le k \le N$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-22`)"}
+1. **Diagnostic Signal**: In `CF 873F`, $B[i] = \texttt{1}$ forbids suffixes ending at $i$; reversing $S \leftarrow S^R$ and $B \leftarrow B^R$ maps ending positions to suffix starting positions $\operatorname{suf}(i)$.
+2. **Combinatorial Word Invariant**: Since $(1 - B[i]) \ge 0$ is non-negative, every internal node $k$ of the Min-Cartesian Tree of $H[2..N]$ with interval $[L'_k - 1, R'_k]$ achieves maximum length $H[k]$ and allowed occurrence count $\operatorname{cnt}(k) = \sum_{x = L'_k - 1}^{R'_k} [B[\operatorname{SA}[x]] == \texttt{0}]$. Single-occurrence substrings ($\operatorname{occ}_{\text{ok}} = 1$) achieve $\max_{B[i] == \texttt{0}} (N - i + 1)$.
+3. **Algorithmic Compilation**: Reverse $S$ and $B$, build $\operatorname{SA}$ and $H[2..N]$, compute prefix sums of allowed suffixes in SA order, find $[L'_k, R'_k]$ via monotonic stack, and output $\max\bigl(\max_{B[i]=0}(N-i+1),\, \max_{k=2}^N H[k] (\operatorname{pref}[R'_k] - \operatorname{pref}[L'_k - 2])\bigr)$ in $O(N)$ time.
+4. **Broken-Invariant Counterexample (`Counterexample 13.5`)**: On $S = \texttt{"abcde"}$ with $B = \texttt{"00000"}$, all $H[k] = 0$, so internal Cartesian nodes give $0$ while the leaf $\operatorname{suf}(1)$ gives $5$.
+:::
+
+---
+
+### Tier 4 — Mastery (`W2B-36`, `W2A-40`)
+
+#### Problem 13.8 (`W2B-36`) — `CF 1043G — Speckled Band`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ over $|\Sigma| = 26$ and $Q$ substring queries $[l, r]$, you must partition $S[l..r]$ into $m \ge 2$ contiguous non-empty segments $W_1 W_2 \cdots W_m$ such that the number of **distinct** segment strings $|\{W_1, \dots, W_m\}|$ is strictly less than $m$ (at least one segment string is used $\ge 2$ times). Minimize the number of distinct segment strings $|\{W_1, \dots, W_m\}|$ used, or output `-1` if no valid partition exists.
+- **Constraints**: $1 \le N, Q \le 2 \times 10^5$, $|\Sigma| = 26$, time limit $7.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Why is the answer always in $\{-1, 1, 2, 3, 4\}$?
+
+- If all characters in $S[l..r]$ are distinct (only possible when $r - l + 1 \le 26$), no substring repeats, so the answer is `-1`.
+- Otherwise, some single character $c$ appears at least twice! Cutting out the first two occurrences of $c$ splits $S[l..r] = U \cdot c \cdot V \cdot c \cdot W$ (or similar), which uses at most $4$ distinct strings $\{c, U, V, W\}$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Classify the exact conditions for answers `1`, `2`, and `3`:
+
+- **Answer `1`**: $S[l..r] = A^k$ ($k \ge 2$) is an exact periodic power (test prime divisors $p \mid (r - l + 1)$ via $O(1)$ $\operatorname{LCE}$, [Problem 1.3](ch01-fine-wilf-periodicity-orbits.qmd)).
+- **Answer `2`**: $S[l..r]$ can be written as $A B A$ ($S[l..r]$ has a non-empty proper border!), $A A B$ ($S[l..r]$ starts with a square $AA$), or $B A A$ ($S[l..r]$ ends with a square $AA$).
+- **Answer `3`**: $S[l]$ repeats in $S[l+1..r]$ ($c B c D$), $S[r]$ repeats in $S[l..r-1]$ ($D c B c$), or $S[l..r]$ contains *any* square $AA$ ($U A A V$)!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Precompute the shortest square starting at each $i$ ($\operatorname{sqL}[i]$) and ending at each $j$ ($\operatorname{sqR}[j]$) in $O(N \log N)$ time using harmonic checkpoints ([Chapter 08](ch08-runs-theorem-squares-sweep.qmd)):
+
+- Answer `2` holds iff $\operatorname{sqL}[l] \le r$, or $\operatorname{sqR}[r] \ge l$, or $S[l..r]$ has a border (tested in $O(\sqrt{N})$ via SA-neighborhood + short lengths or $O(\log N)$ via IPM, [Chapter 15](ch15-internal-pattern-matching-borders.qmd)).
+- Answer `3` holds iff character $S[l]$ or $S[r]$ occurs $\ge 2$ times in $S[l..r]$, or $\min_{l \le i \le r} \operatorname{sqL}[i] \le r$ (a 1D RMQ query!).
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2B-36`)"}
+1. **Diagnostic Signal**: Instead of searching over partitions, reduce the minimum color count to a 5-way structural cascade $\{-1, 1, 2, 3, 4\}$ on $S[l..r]$.
+2. **Combinatorial Word Invariant**:
+   - **`-1`**: All characters in $S[l..r]$ occur $\le 1$ time (checked in $O(|\Sigma|)$ via 26 prefix-sum arrays).
+   - **`1`**: $L = r - l + 1$ has a prime divisor $p \mid L$ such that $\operatorname{LCE}_S(l, l + L/p) \ge L - L/p$ (so $S[l..r] = W^p$ partitions into $p \ge 2$ identical copies of a single string $W$, using $1$ distinct segment).
+   - **`2`**: Using $2$ distinct strings $A, B$ requires a pattern of the form $A B A$ (non-empty border), $A A B$ (prefix square), or $B A A$ (suffix square), because any longer alternating pattern $A B A B \dots$ contains one of these three as a prefix/suffix/whole!
+   - **`3`**: Using $3$ distinct strings holds iff $S[l]$ repeats in $S[l+1..r]$ ($S[l] \cdot B \cdot S[l] \cdot C$), $S[r]$ repeats in $S[l..r-1]$, or $S[l..r]$ contains an interior square $U \cdot A \cdot A \cdot V$ ($\min_{i \in [l, r]} \operatorname{sqL}[i] \le r$).
+   - **`4`**: Otherwise, since some character $c$ repeats inside $S[l+1..r-1]$, $U \cdot c \cdot V \cdot c \cdot W$ uses $4$ strings.
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{SA}$ + $O(1)$ $\operatorname{LCE}$ on $S$ and $S^R$.
+   - Enumerate harmonic checkpoints $(d, k d)$ ($1 \le d \le N/2$) to find all square intervals of half-length $d$, updating $\operatorname{sqL}[i] = \min(\operatorname{sqL}[i], i + 2d - 1)$ and $\operatorname{sqR}[j] = \max(\operatorname{sqR}[j], j - 2d + 1)$ via a DSU next-unvisited jumper (or Segment Tree) in $O(N \log N)$ time. Build an RMQ table over $\operatorname{sqL}[1..N]$.
+   - For each query $[l, r]$, test `-1`, `1`, `2`, `3` in order, falling back to `4`.
+4. **Broken-Invariant Counterexample**: Testing only $A B A$ (border) for answer `2` fails on $S[l..r] = \texttt{"aabc"}$ ($A = \texttt{"a"}, B = \texttt{"bc"}$, which has no border yet splits as $A \cdot A \cdot B$ with $2$ colors!).
+:::
+
+---
+
+#### Problem 13.9 (`W2A-40`) — `CF 1098F — Ж-function`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ and $Q$ range queries $[l, r]$, evaluate the sum of the internal Z-array of $S[l..r]$:
+  $$Z_{\text{sum}}(l, r) \;=\; \sum_{i=l}^r \operatorname{LCP}\bigl(S[l..r],\, S[i..r]\bigr) \;=\; \sum_{i=l}^r \min\Bigl(r - i + 1,\;\; \operatorname{LCE}_S(l,\, i)\Bigr).$$
+
+- **Constraints**: $1 \le N, Q \le 2 \times 10^5$, $|\Sigma| = 26$, time limit $6.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Unlike Problem 13.6 (which maximizes over all pairs $(a, b)$), here one endpoint is **pinned at $l$** ($v_l$ on the Suffix Tree $\mathcal{T} = \mathcal{T}_{\text{link}}(\operatorname{SAM}(S^R))$), and we sum $\min(r - i + 1, \operatorname{len}(\operatorname{LCA}(v_l, v_i)))$ over all $i \in [l, r]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+Decompose $\mathcal{T}$ via **Heavy-Light Decomposition (HLD)** or **Centroid Decomposition**. Along the heavy path from $v_l$ to the root (or at each centroid ancestor $c$ of $v_l$), each light subtree hanging off ancestor $u$ has a fixed LCA depth $\ell_u = \operatorname{len}(u)$ with $v_l$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Apply the **Two-Threshold Split** of Section 4.2 to every index $i \in [l, r]$ meeting $v_l$ at ancestor $u$ (depth $\ell_u$):
+
+- **Regime 1 ($i + \ell_u - 1 \le r$)**: contributes $\ell_u$.
+- **Regime 2 ($i \le r < i + \ell_u - 1$)**: contributes $r - i + 1 = (r + 1) - i$.
+Using Centroid Decomposition on $\mathcal{T}$, each node $v_i$ belongs to $O(\log N)$ centroid subtrees, generating $O((N + Q)\log N)$ 2D range sum events answered by two Fenwick Trees in $O((N + Q)\log^2 N)$ time!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W2A-40`)"}
+1. **Diagnostic Signal**: Summing $\min\bigl(r - i + 1,\, \operatorname{len}(\operatorname{LCA}_{\mathcal{T}}(v_l, v_i))\bigr)$ over $i \in [l, r]$ couples tree LCA depth $\ell_u$ with the linear right-clipping threshold $i + \ell_u - 1 \le r$.
+2. **Combinatorial Word Invariant**:
+   - Build $\mathcal{T} = \mathcal{T}_{\text{link}}(\operatorname{SAM}(S^R))$ (or the Contracted Min-Cartesian Tree of $H[2..N]$) where leaf $v_i$ represents $\operatorname{suf}(i)$ and $\operatorname{len}(\operatorname{LCA}(v_l, v_i)) = \operatorname{LCE}_S(l, i)$.
+   - Decompose $\mathcal{T}$ via HLD. When $v_l$ walks up its $O(\log N)$ heavy chains to the root, for any $v_i$ in the subtree of a heavy chain $C$, $\operatorname{LCA}(v_l, v_i)$ is the shallower of $v_l$'s entry point $w_l \in C$ and $v_i$'s entry point $w_i \in C$:
+     $$\operatorname{len}\bigl(\operatorname{LCA}(v_l, v_i)\bigr) \;=\; \min\bigl(\operatorname{len}(w_l),\, \operatorname{len}(w_i)\bigr).$$
+
+   - Splitting each heavy chain $C$ into nodes above $w_l$ ($\operatorname{len}(w_i) \le \operatorname{len}(w_l)$, where $\ell = \operatorname{len}(w_i)$ is determined by $i$) and nodes strictly below $w_l$ ($\operatorname{len}(w_i) > \operatorname{len}(w_l)$, where $\ell = \operatorname{len}(w_l)$ is determined by $l$), every contribution $\min(r - i + 1, \ell)$ splits at $e = i + \ell - 1 \le r$ (contributing $\ell$) vs. $e > r, i \le r$ (contributing $(r + 1) - i$).
+3. **Algorithmic Compilation**:
+   - Build $\mathcal{T}$ and its HLD. Each leaf $v_i$ produces $O(\log N)$ point events $(w_i, i, \ell = \operatorname{len}(w_i))$, and each query $(l, r)$ produces $O(\log N)$ chain prefix/suffix queries on $[l, r]$.
+   - Process each heavy chain independently (walking down the chain for the $\ell = \operatorname{len}(w_i)$ pass and up the chain for the $\ell = \operatorname{len}(w_l)$ pass), maintaining two Fenwick Trees over string index $i \in [1, N]$ and threshold $e = i + \ell - 1 \in [1, 2N]$ to sum $\ell$ for $e \le r$ and $(r + 1) - i$ for $i \le r < e$. Total time: $O((N + Q) \log^2 N)$, space $O((N + Q) \log N)$.
+4. **Broken-Invariant Counterexample**: Remember to exclude the sub-branch of $w_l$ that leads toward $v_l$ itself (otherwise pairs $(v_l, v_i)$ whose true LCA is deeper than $w_l$ on the next heavy chain get double-counted at depth $\operatorname{len}(w_l)$!).
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Decision Checklist: Choosing the Right Suffix Tree Engine
+
+| Contest Signal / Query Structure | Engine to Invoke | Complexity |
+| :--- | :--- | :--- |
+| Sum $f(H[k])$ over all $\binom{N}{2}$ suffix pairs (`[AHOI2013]`, `CF 802I`) | **Engine A**: Asymmetric Monotonic Stack (`>` left, `>=` right) | $O(N)$ |
+| Component extrema $\max_{LCP \ge r} (a_i a_j)$ for all $r$ (`[NOI2015]`) | **Engine B**: Decreasing-`height` Kruskal DSU with $(\operatorname{sz}, \max_1, \min_1)$ | $O(N \alpha(N))$ |
+| Signed leaf weights $c_i \in \mathbb{R}$ (`CF 616F`) | Contract equal-height nodes: require $H[k] > \max(H[L_k], H[R_k+1])$ + leaf edges | $O(N)$ |
+| Query subsets of $k_q$ substrings $U_t = S[l_t..r_t]$ (`CF 1073G`) | **Engine C**: Zero-Tree Virtual Suffix Tree via $h_t = \min(\operatorname{LCE}, |U_{t-1}|, |U_t|)$ (**Theorem 13.2**) | $O(\sum k_q \log k_q)$ |
+| Range $[l, r]$ optimizing $g(\operatorname{LCP}(a, b), a, b)$ over $l \le a < b \le r$ | **Engine D**: DSU-on-Tree $\le 2N\log_2 N$ Dominant Pairs (**Theorem 13.3**) + 2-Threshold Sweep | $O(N\log^2 N + Q\log N)$ |
+| Range $[l, r]$ summing $\min(r-i+1, \operatorname{LCE}(l, i))$ (`CF 1098F`) | Suffix Tree HLD / Centroid Decomp + 2-Threshold Split ($i + \ell - 1 \le r$ vs. $> r$) | $O((N+Q)\log^2 N)$ |
+
+### 6.2 What Comes Next in Part III
+Up to this point, our suffix structures have operated either on a static string $S[1..N]$ or under right-only appends. What happens when we compact unary right-extension chains in $\operatorname{SAM}(S)$ (`CDAWG`), branch online across a tree of persistent versions, or prepend and delete characters at the **front** of $S$ under online encryption? Proceed to **[Chapter 14: Compact, Persistent & Bi-Directional Suffix Structures — `CDAWG`, `SCDAWG`, and Hash-Free Suffix Balanced Trees (`后缀平衡树`)](ch14-cdawg-scdawg-suffix-balanced-trees.qmd)**.

@@ -1,0 +1,624 @@
+---
+title: "Window-Clipped Structural Isomorphism (p-KMP, Order-KMP, Cartesian-KMP), p-SA, and 1/z Weighted Suffix Trees"
+subtitle: "Chapter 20 · Part V: Algebraic, Approximate, Structural-Isomorphism & Grammar-Compressed Matching"
+---
+
+::: {.callout-important title="Prerequisites, Assumed Library & Learning Objectives"}
+
+- **Assumed Library Primitives**: $O(N)$ KMP prefix function ($\pi[1..N]$), $O(N)$ Suffix Array and Kasai's LCP array (`SA-IS` + RMQ), $O(N)$ Cartesian tree construction via monotonic stack, and persistent segment trees. See [Notation & Conventions](../notation.qmd) for 1-based closed indexing $S[1..N]$.
+- **Strict Prerequisite Chapters**: [Chapter 02: Weak Periodicity & Border APs](ch02-weak-periodicity-border-aps.qmd), [Chapter 12: Linear-Time SA-IS & Induced LCP](ch12-sais-induced-sorting-lcp.qmd).
+- **Assigned Technique IDs**: `T-3B-04` (Unified Window-Clipped Structural KMP: Parameterized `p-KMP`, `p-SA`, Order-Preserving `LMax`/`LMin` KMP, Cartesian-Tree `PD` KMP & Abelian Parikh Envelopes), `T-5B-06` (Weighted Strings / Position-Weight Matrices & $1/z$ Heavy-String Suffix Trees).
+- **Learning Objectives**:
+  1. Diagnose why raw backward offsets $\operatorname{prev}_S[i]$ and raw Cartesian parent distances $\operatorname{PD}_S[i]$ are **not hereditary** under substring restriction, and prove that the **Window-Clipping Operator** $\operatorname{clip}(v, q) = (v \le q \text{ ? } v : 0)$ restores KMP border monotonicity in $O(1)$ time per step.
+  2. Prove **Baker's Single-Position Mutation Invariant** for Parameterized Suffix Arrays (`p-SA`) and Suffix Trees (`p-ST`): advancing $S[i..N] \to S[i+1..N]$ zeroes at most one offset at $p = \operatorname{next}_S[i]$, enabling $O(|\Sigma|)$ breakpoint LCE and $O(N \log^2 N)$ persistent rolling-hash `p-SA`.
+  3. Prove **Kubica et al.'s Immediate-Neighbor Rank-Slot Sufficiency Invariant** (`LMax`/`LMin`) for $O(N + M\log M)$ Order-Preserving KMP and **Park et al.'s Parent-Distance Invariant** for $O(N + M)$ Cartesian-Tree KMP.
+  4. Derive the **Binary Abelian Parikh Continuity Theorem** ($[m_{\min}(L), m_{\max}(L)]$) alongside its $|\Sigma| \ge 3$ lattice-skip counterexample, and prove **Barton et al.'s Disjoint-Event Probability Sum Bound** decomposing any Position Weight Matrix (`PWM`) with threshold $1/z$ into $\le \lfloor z \rfloor$ deterministic solid strings of total length $O(Nz)$.
+:::
+
+---
+
+## 1. Parameterized String Matching (`p-KMP` & `p-SA`, `T-3B-04`)
+
+### 1.1 The Diagnostic Signal: Why Raw Backward Offsets Break KMP Monotonicity
+
+In [Chapter 18](ch18-fft-wildcard-involution-matching.qmd), we saw that non-transitive character relations (such as universal wildcards `?`) destroy the transitivity of string matching and require $O(N \log N)$ polynomial convolutions. By contrast, suppose we are given a text $T[1..N]$ and a pattern $P[1..M]$ over an alphabet $\Sigma$ (which may be as large as $N$), and we want to find all starting positions $s \in [1, N - M + 1]$ where $T[s .. s + M - 1]$ is **parameterized-isomorphic** to $P[1..M]$ ($T[s .. s + M - 1] \cong_{\text{param}} P[1..M]$)—meaning there exists a **bijection** $\pi_s : \Sigma \to \Sigma$ such that:
+$$\forall j \in \{1, 2, \dots, M\},\qquad \pi_s\bigl(P[j]\bigr) = T[s + j - 1].$$
+This relation arises when detecting renamed variables in source code clones (Brenda Baker, STOC 1993), isomorphic ciphertexts, or color-permuted sequences.
+
+Unlike wildcard tolerance, parameterized isomorphism $\cong_{\text{param}}$ is a **true equivalence relation** ($\pi^{-1}$ gives symmetry; $\pi_2 \circ \pi_1$ gives transitivity) and is **hereditary on substrings** (if $U \cong_{\text{param}} V$ via $\pi$, then $U[l..r] \cong_{\text{param}} V[l..r]$ via the same $\pi$). Why, then, does running standard KMP on the backward-offset array fail?
+
+Let us define the concrete object. For any string $S[1..L]$, the **backward offset array** $\operatorname{prev}_S[1..L]$ records the distance from each index $x$ to the most recent earlier occurrence of the same character $S[x]$, or $0$ if $S[x]$ is appearing for the first time in $S[1..L]$:
+$$\operatorname{prev}_S[x] = \begin{cases} x - \max\bigl\{k \in \{1, \dots, x - 1\} : S[k] = S[x]\bigr\} & \text{if } S[x] \in \{S[1], \dots, S[x-1]\}, \\ 0 & \text{otherwise.} \end{cases}$$
+
+For two whole strings $U[1..M]$ and $V[1..M]$ of equal length, $U \cong_{\text{param}} V$ if and only if $\operatorname{prev}_U[j] = \operatorname{prev}_V[j]$ for all $1 \le j \le M$, because equality of first-occurrence zeros ($0 = 0$) and repeat distances ($j - k$) enforces well-definedness and injectivity of $U[j] \mapsto V[j]$.
+
+**The Substring Restriction Failure**: When we slide a window $T[s .. i]$ (of current matched prefix length $q = i - s$ before reading $T[i]$) inside $T[1..N]$, the raw global offset $\operatorname{prev}_T[i]$ is measured relative to $T[1..i]$, **not** relative to the active window $T[i-q .. i]$! If the previous occurrence of $T[i]$ occurred at index $k = i - \operatorname{prev}_T[i] < i - q$ (strictly to the left of the current match window), then inside the substring $T[i-q .. i]$, character $T[i]$ is actually a **first occurrence** (local code $0$), even though its raw global offset is $\operatorname{prev}_T[i] > q > 0$!
+
+---
+
+### 1.2 The Combinatorial Word Invariant: Baker's Window-Clipped Offset Invariant ($\operatorname{clip}(\operatorname{prev}_T[i], q)$)
+
+To make the local code at position $i$ depend *only* on the prefix of length $q$ currently matched before $i$ (so the window $T[i-q .. i]$ has length $q + 1$ and maximum internal backward distance $q$), we introduce the **Window-Clipping Operator**:
+$$\boxed{\operatorname{clip}(v, q) = \begin{cases} v & \text{if } v \le q, \\ 0 & \text{if } v > q. \end{cases}}$$
+
+Let us verify on a concrete hand-checkable example why $\operatorname{clip}$ restores exact substring invariance. Take $T = \texttt{a b a c a b}$ ($N = 6$) and $P = \texttt{x y z x}$ ($M = 4$). Notice that $T[3..6] = \texttt{a c a b} \cong_{\text{param}} \texttt{x y x z}$, whereas for $P = \texttt{x y x z}$:
+
+| Index | $T = \texttt{a b a c a b}$ | Raw $\operatorname{prev}_T[i]$ | Window $T[3..6] = \texttt{a c a b}$ ($q = i - 3$) | Clipped $\operatorname{clip}(\operatorname{prev}_T[i], i - 3)$ | $P = \texttt{x y x z}$ | $\operatorname{prev}_P[j]$ |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| $1$ | $\texttt{a}$ | $0$ | — | — | — | — |
+| $2$ | $\texttt{b}$ | $0$ | — | — | — | — |
+| $3$ | $\texttt{a}$ | $2$ | $q = 0$ ($j=1$) | $\operatorname{clip}(2, 0) = 0$ | $\texttt{x}$ | $0$ |
+| $4$ | $\texttt{c}$ | $0$ | $q = 1$ ($j=2$) | $\operatorname{clip}(0, 1) = 0$ | $\texttt{y}$ | $0$ |
+| $5$ | $\texttt{a}$ | $2$ | $q = 2$ ($j=3$) | $\operatorname{clip}(2, 2) = 2$ | $\texttt{x}$ | $2$ |
+| $6$ | $\texttt{b}$ | $4$ | $q = 3$ ($j=4$) | $\operatorname{clip}(4, 3) = 0$ | $\texttt{z}$ | $0$ |
+
+At $i = 3$ ($T[3] = \texttt{a}$) and $i = 6$ ($T[6] = \texttt{b}$), raw $\operatorname{prev}_T$ equals $2$ and $4$ because $\texttt{a}$ and $\texttt{b}$ appeared at indices $1$ and $2$ outside the window $T[3..6]$. Applying $\operatorname{clip}(\operatorname{prev}_T[i], q)$ zeroes out every offset $> q$, reproducing $\operatorname{prev}_P = [0, 0, 2, 0]$ identically!
+
+::: {.callout-important title="Theorem 20.1 (Baker's Window-Clipped KMP Invariant, 1993)"}
+Let $S[1..N]$ be any string and let $\operatorname{prev}_S[1..N]$ be its static global backward-offset array.
+
+1. **Exact Substring Localization**: For any substring $W = S[l..r]$ and any 1-based offset $j \in \{1, \dots, r - l + 1\}$ inside $W$ (corresponding to global index $i = l + j - 1$ after $q = j - 1$ preceding characters of $W$), the backward offset of $W[j]$ inside $W[1..j]$ is given in $O(1)$ time by:
+   $$\boxed{\operatorname{prev}_W[j] = \operatorname{clip}\bigl(\operatorname{prev}_S[l + j - 1],\; j - 1\bigr).}$$
+
+2. **One-Step Extension & Border Monotonicity**: Suppose $T[i - q .. i - 1] \cong_{\text{param}} P[1..q]$. Then the extended suffix $T[i - q .. i]$ of length $q + 1$ satisfies $T[i - q .. i] \cong_{\text{param}} P[1 .. q + 1]$ if and only if:
+   $$\boxed{\operatorname{clip}\bigl(\operatorname{prev}_T[i],\; q\bigr) = \operatorname{prev}_P[q + 1].}$$
+   Consequently, defining $\pi_{\text{param}}[j] = \max\{q < j : P[1..q] \cong_{\text{param}} P[j - q + 1 .. j]\}$ allows both pattern preprocessing and text scanning (`p-KMP`) to run in **strict $O(N + M)$ time** with $O(1)$ comparisons per transition.
+:::
+
+#### Proof of Theorem 20.1
+**(1) Substring Localization**: By definition, the previous occurrence of $S[i]$ ($i = l + j - 1$) in the full string $S[1..i]$ is at index $k = i - \operatorname{prev}_S[i]$ (if $\operatorname{prev}_S[i] > 0$). That occurrence $k$ lies inside the substring window $W[1..j] = S[l .. i]$ if and only if $k \ge l \iff i - \operatorname{prev}_S[i] \ge i - (j - 1) \iff \operatorname{prev}_S[i] \le j - 1$. If $\operatorname{prev}_S[i] \le j - 1$, then $k \in [l, i - 1]$ is still the most recent occurrence of $S[i]$ inside $S[l..i]$ at distance $i - k = \operatorname{prev}_S[i]$. If $\operatorname{prev}_S[i] > j - 1$ (or $\operatorname{prev}_S[i] = 0$), then no occurrence of $S[i]$ exists in $S[l .. i - 1]$, so its local offset in $W[1..j]$ is $0 = \operatorname{clip}(\operatorname{prev}_S[i], j - 1)$.
+
+**(2) Extension & Amortized $O(N + M)$ Complexity**: Let $U = T[i - q .. i]$ and $V = P[1 .. q + 1]$. Since $U[1..q] \cong_{\text{param}} V[1..q]$, their backward offsets already agree on $1 \dots q$: $\operatorname{prev}_U[r] = \operatorname{prev}_V[r]$ for all $1 \le r \le q$. Therefore, $\operatorname{prev}_U[1..q+1] = \operatorname{prev}_V[1..q+1]$ holds if and only if their final entries agree: $\operatorname{prev}_U[q + 1] = \operatorname{prev}_V[q + 1]$. By Part (1), $\operatorname{prev}_U[q + 1] = \operatorname{clip}(\operatorname{prev}_T[i], q)$ and $\operatorname{prev}_V[q + 1] = \operatorname{prev}_P[q + 1]$. Finally, because $\cong_{\text{param}}$ is transitive and hereditary on suffixes, if $T[i - q .. i - 1] \cong_{\text{param}} P[1..q]$, then every proper parameterized border $b$ of $P[1..q + 1]$ must have $b - 1$ as a parameterized border of $P[1..q]$:
+$$P[1 .. b - 1] \cong_{\text{param}} P[q - b + 2 .. q] \cong_{\text{param}} T[i - b + 1 .. i - 1].$$
+Thus the standard KMP potential function $\Phi = q$ increases by at most $+1$ per index $i$ and decreases by at least $-1$ per failure jump $q \leftarrow \pi_{\text{param}}[q]$, bounding the total number of `clip` comparisons by $2N + 2M = O(N + M)$. $\blacksquare$
+
+---
+
+### 1.3 Parameterized Suffix Arrays (`p-SA`) & The Single-Position Mutation Invariant
+
+Now suppose we want to sort **all suffixes** $S[1..N], S[2..N], \dots, S[N..N]$ of a string $S[1..N]$ according to the lexicographical order of their parameterized local-code sequences $\operatorname{prev}_{S[i..N]}$, building the **Parameterized Suffix Array (`p-SA`)** to count distinct parameterized substrings or answer $\operatorname{p-LCE}(i, j)$ queries.
+
+In a classical Suffix Array ([Chapter 12](ch12-sais-induced-sorting-lcp.qmd)), deleting the leading character of $S[i..N]$ yields $S[i+1..N]$ with zero changes to the remaining characters. In a parameterized string, however, deleting $S[i]$ shrinks the active window on the left and can clip positive offsets to $0$! How many positions inside $S[i+1..N]$ actually change their local code when we advance from $S[i..N]$ to $S[i+1..N]$?
+
+::: {.callout-important title="Theorem 20.2 (Baker's $|\Sigma|$-Breakpoint & Single-Position Mutation Invariant, 1993 / Ganguly et al. 2017)"}
+Let $S[1..N]$ be a string over alphabet $\Sigma$, and for each $i \in \{1, \dots, N\}$, let $\operatorname{next}_S[i] = \min\{k > i : S[k] = S[i]\}$ (or $\infty$ if $S[i]$ does not occur after $i$). For each suffix $S[i..N]$, define its global-indexed local code array $C^{(i)}[i..N]$ by $C^{(i)}[p] = \operatorname{clip}(\operatorname{prev}_S[p],\, p - i)$ for $i \le p \le N$.
+
+1. **The $|\Sigma|$-Breakpoint Sparsity Bound**: For any fixed starting index $i$, an index $p \in [i, N]$ satisfies $C^{(i)}[p] \ne \operatorname{prev}_S[p]$ if and only if $p$ is the **first occurrence** of character $S[p]$ in $S[i..N]$ (where $C^{(i)}[p] = 0$ instead of $\operatorname{prev}_S[p]$). Hence $C^{(i)}[i..N]$ differs from the static slice $\operatorname{prev}_S[i..N]$ at **at most $|\Sigma|$ indices**.
+2. **The Single-Position Mutation Invariant ($i \to i + 1$)**: When advancing from suffix $S[i..N]$ to $S[i+1..N]$, for every index $p \in [i + 1, N]$:
+   $$\boxed{C^{(i+1)}[p] = \begin{cases} 0 & \text{if } p = \operatorname{next}_S[i], \\ C^{(i)}[p] & \text{if } p \ne \operatorname{next}_S[i]. \end{cases}}$$
+   That is, deleting $S[i]$ mutates **at most ONE entry** in the entire suffix $S[i+1..N]$—namely $p = \operatorname{next}_S[i]$, whose local code drops from $p - i$ to $0$!
+:::
+
+#### Proof of Theorem 20.2
+For any $p \ge i$, $C^{(i)}[p] = \operatorname{clip}(\operatorname{prev}_S[p], p - i)$ differs from $\operatorname{prev}_S[p]$ if and only if $\operatorname{prev}_S[p] > p - i$, which is equivalent to $p - \operatorname{prev}_S[p] < i$. Since $p - \operatorname{prev}_S[p]$ is the index of the immediately preceding occurrence of character $S[p]$ in $S$, the inequality $p - \operatorname{prev}_S[p] < i$ holds if and only if character $S[p]$ has **no occurrence in $S[i .. p - 1]$**—meaning $p$ is the first occurrence of $S[p]$ in $S[i..N]$. Since there are at most $|\Sigma|$ distinct characters in $S[i..N]$, at most $|\Sigma|$ positions $p \in [i, N]$ are first occurrences, proving (1).
+
+To prove (2), compare the first-occurrence positions in $S[i..N]$ and $S[i+1..N]$. For every character $c \ne S[i]$, its first occurrence in $S[i+1..N]$ is identical to its first occurrence in $S[i..N]$. For the deleted character $c = S[i]$, its first occurrence in $S[i..N]$ was $i$ itself, and its first occurrence in $S[i+1..N]$ becomes $p = \operatorname{next}_S[i]$ (if $\operatorname{next}_S[i] \le N$). At every other index $q \in [i+1, N] \setminus \{\operatorname{next}_S[i]\}$, the preceding occurrence of $S[q]$ either already lay in $[i+1, q-1]$ (unchanged) or lay strictly before $i$ (already clipped to $0$ in both $C^{(i)}$ and $C^{(i+1)}$). Thus $p = \operatorname{next}_S[i]$ is the unique position in $[i+1, N]$ whose code changes, dropping from $p - i$ to $0$. $\blacksquare$
+
+**Two Algorithmic Compilations of Theorem 20.2**:
+
+1. **$O(|\Sigma|)$ Breakpoint $\operatorname{p-LCE}(i, j)$ for Small Alphabets**: Precompute the first-occurrence list of length $\le |\Sigma|$ for each suffix $S[i..N]$ and build a standard $O(1)$ RMQ-LCE structure on the static array $\operatorname{prev}_S[1..N]$. To compute $\operatorname{p-LCE}(i, j)$, merge the $\le |\Sigma|$ relative first-occurrence offsets of $S[i..N]$ and $S[j..N]$ into $\le 2|\Sigma|$ sorted breakpoints $0 = d_1 < d_2 < \dots < d_r$. On each open interval $(d_t, d_{t+1})$ between breakpoints, neither suffix has any clipped entry, so $C^{(i)}$ and $C^{(j)}$ equal the raw static array $\operatorname{prev}_S$ and can be compared in **$O(1)$ time via one static LCE query**! At each breakpoint $d_t$, compare $\operatorname{clip}(\operatorname{prev}_S[i+d_t], d_t)$ against $\operatorname{clip}(\operatorname{prev}_S[j+d_t], d_t)$ directly in $O(1)$ time.
+2. **$O(N \log^2 N)$ Persistent Rolling-Hash `p-SA` for Arbitrary Alphabets ($|\Sigma| \le N$)**: Sweep $i$ backward from $N$ down to $1$, maintaining the array $C^{(i)}[1..N]$ inside a **Persistent Segment Tree** storing polynomial hashes. When stepping from $i + 1$ down to $i$, character $S[i]$ becomes the new first occurrence ($C^{(i)}[i] \leftarrow 0$), and if $p = \operatorname{next}_S[i] \le N$, its code updates from $0$ to $C^{(i)}[p] \leftarrow p - i$. Each step performs at most $2$ point updates ($O(\log N)$ time and space per suffix). Given root $R_i$ and root $R_j$, binary searching down the two persistent segment trees finds $\operatorname{p-LCE}(i, j)$ and the first mismatching code in $O(\log N)$ time, sorting `p-SA` in $O(N \log^2 N)$ time regardless of $|\Sigma|$!
+
+---
+
+## 2. Order-Preserving (`LMax`/`LMin`) & Cartesian-Tree Pattern Matching (`T-3B-04`)
+
+### 2.1 Order-Preserving Matching & Kubica et al.'s `LMax`/`LMin` Invariant
+
+Two numeric strings (or time series) $U[1..M]$ and $V[1..M]$ over an ordered alphabet $(\Sigma, \le)$ are **order-isomorphic** ($U \cong_{\text{ord}} V$) if they have identical relative order at all index pairs:
+$$U \cong_{\text{ord}} V \iff \forall a, b \in \{1, \dots, M\},\quad \bigl(U[a] < U[b] \iff V[a] < V[b]\bigr) \;\land\; \bigl(U[a] = U[b] \iff V[a] = V[b]\bigr).$$
+
+Suppose we have already verified that $T[i - q .. i - 1] \cong_{\text{ord}} P[1..q]$, and we now inspect the next element $T[i]$ against $P[q + 1]$. Checking whether $T[i]$ has the same relative rank among $T[i - q .. i - 1]$ as $P[q + 1]$ has among $P[1..q]$ using a dynamic Fenwick tree or balanced BST costs $O(\log M)$ per step ($O(N \log M)$ total). Can we test this rank condition in **$O(1)$ time** with zero data structures during text scanning?
+
+Imagine sorting the $q$ elements of $P[1..q]$. Because $T[i - q .. i - 1] \cong_{\text{ord}} P[1..q]$, the corresponding elements of $T[i - q .. i - 1]$ appear in the **exact same sorted order**! To verify that $T[i]$ falls into the exact same rank slot among $T[i - q .. i - 1]$ as $P[q + 1]$ falls among $P[1..q]$, we do **not** need to compare $T[i]$ against all $q$ elements—by transitivity of $<$, we only need to compare $T[i]$ against the **two immediate neighbors** of $P[q + 1]$ in the sorted order of $P[1..q]$!
+
+```
+Sorted order of P[1..q]:    ... <= P[LMax[q+1]]  <=  P[q+1]  <=  P[LMin[q+1]] <= ...
+                                        |                |                |
+Iso-preserving map to T:    ... <= T[i-q-1+LMax] <=   T[i]   <= T[i-q-1+LMin] <= ...
+```
+
+Specifically, for each position $k \in \{1, \dots, M\}$ of pattern $P[1..M]$, define its **left predecessor witness** $\operatorname{LMax}_P[k]$ and **left successor witness** $\operatorname{LMin}_P[k]$ inside the prefix $P[1 .. k - 1]$:
+$$\operatorname{LMax}_P[k] = \operatorname{arg\,max}_{\substack{1 \le j < k \\ P[j] \le P[k]}} P[j], \qquad \operatorname{LMin}_P[k] = \operatorname{arg\,min}_{\substack{1 \le j < k \\ P[j] \ge P[k]}} P[j],$$
+setting $\operatorname{LMax}_P[k] = 0$ (or $\operatorname{LMin}_P[k] = 0$) if no such $j < k$ exists, along with equality flags $\operatorname{eq}_{\max}[k] = \mathbf{1}[P[\operatorname{LMax}_P[k]] = P[k]]$ and $\operatorname{eq}_{\min}[k] = \mathbf{1}[P[\operatorname{LMin}_P[k]] = P[k]]$.
+
+::: {.callout-important title="Theorem 20.3 (Immediate-Neighbor Rank-Slot Sufficiency — Kubica, Kulczyński, Radoszewski, Rytter & Waleń 2013)"}
+Assume $U[1..q] \cong_{\text{ord}} P[1..q]$. Then the extended prefixes satisfy $U[1 .. q + 1] \cong_{\text{ord}} P[1 .. q + 1]$ if and only if $U[q + 1]$ satisfies the at most two $O(1)$ boundary comparisons against $u = \operatorname{LMax}_P[q + 1]$ and $v = \operatorname{LMin}_P[q + 1]$:
+
+1. If $u = \operatorname{LMax}_P[q + 1] \ne 0$: $U[u] = U[q + 1]$ when $\operatorname{eq}_{\max}[q + 1] = 1$, and $U[u] < U[q + 1]$ when $\operatorname{eq}_{\max}[q + 1] = 0$.
+2. If $v = \operatorname{LMin}_P[q + 1] \ne 0$: $U[q + 1] = U[v]$ when $\operatorname{eq}_{\min}[q + 1] = 1$, and $U[q + 1] < U[v]$ when $\operatorname{eq}_{\min}[q + 1] = 0$.
+
+Precomputing $\operatorname{LMax}_P, \operatorname{LMin}_P$ in $O(M \log M)$ time via a balanced BST (or $O(M)$ after sorting $P$ with a doubly linked list) yields an **Order-Preserving KMP (`Order-KMP`)** algorithm that scans any text $T[1..N]$ in **strict $O(N)$ time** ($O(N + M \log M)$ total)!
+:::
+
+#### Proof of Theorem 20.3
+Necessity is immediate because $u, v \in \{1, \dots, q\}$ are indices in $P[1..q]$, so order isomorphism on $1 \dots q + 1$ requires $(U[u], U[q+1])$ and $(U[q+1], U[v])$ to have the same order relation as $(P[u], P[q+1])$ and $(P[q+1], P[v])$.
+
+Conversely, assume Conditions (1) and (2) hold, and let $j \in \{1, \dots, q\}$ be any index in the prefix. We must show that $U[j]$ and $U[q + 1]$ have the same order relation as $P[j]$ and $P[q + 1]$:
+
+- **Case A ($P[j] \le P[q + 1]$)**: By definition of $u = \operatorname{LMax}_P[q + 1] = \arg\max_{r \le q, P[r] \le P[q+1]} P[r]$, we have $P[j] \le P[u] \le P[q + 1]$. Since $U[1..q] \cong_{\text{ord}} P[1..q]$ and $j, u \in \{1, \dots, q\}$, the relation between $P[j]$ and $P[u]$ transfers to $U[j]$ and $U[u]$: specifically, $U[j] < U[u]$ if $P[j] < P[u]$, and $U[j] = U[u]$ if $P[j] = P[u]$. Combining this with Condition (1) ($U[u] < U[q+1]$ if $P[u] < P[q+1]$, and $U[u] = U[q+1]$ if $P[u] = P[q+1]$) by transitivity of $<$ and $=$ gives $U[j] < U[q+1]$ iff $P[j] < P[q+1]$, and $U[j] = U[q+1]$ iff $P[j] = P[q+1]$.
+- **Case B ($P[j] \ge P[q + 1]$)**: Symmetrically, $P[q + 1] \le P[v] \le P[j]$ where $v = \operatorname{LMin}_P[q + 1]$, and combining Condition (2) with $U[1..q] \cong_{\text{ord}} P[1..q]$ transfers the exact relation between $P[q + 1]$ and $P[j]$ to $U[q + 1]$ and $U[j]$. $\blacksquare$
+
+---
+
+### 2.2 Cartesian-Tree Pattern Matching & Park et al.'s Parent-Distance (`PD`) KMP
+
+In [Chapter 07](ch07-lyndon-arrays-cartesian-trees.qmd) and [Chapter 12](ch12-sais-induced-sorting-lcp.qmd), we used the **min-heap Cartesian Tree** $\mathcal{CT}(S)$ of an array $S[1..M]$, where the root is the leftmost minimum index $r = \min \arg\min_{k \in [1, M]} S[k]$, the left subtree is $\mathcal{CT}(S[1 .. r - 1])$, and the right subtree is $\mathcal{CT}(S[r + 1 .. M])$.
+
+Two arrays $U[1..M]$ and $V[1..M]$ are **Cartesian-tree isomorphic** ($U \cong_{\text{CT}} V$) if their Cartesian trees $\mathcal{CT}(U)$ and $\mathcal{CT}(V)$ have the exact same binary tree shape. Notice that Cartesian-tree isomorphism is **strictly coarser** than order isomorphism:
+$$[2, 1, 3] \cong_{\text{CT}} [3, 1, 2] \quad \text{(both have root at index } 2\text{ with leaf children } 1 \text{ and } 3\text{)}, \quad \text{yet} \quad [2, 1, 3] \not\cong_{\text{ord}} [3, 1, 2]!$$
+
+How can we encode $\mathcal{CT}(S[1..M])$ so that substring restriction and KMP border transitions run in $O(1)$ time without even the $O(M \log M)$ sorting step of Order-KMP?
+
+Recall how the standard $O(M)$ monotonic stack constructs $\mathcal{CT}(S[1..M])$ left-to-right: at step $x \in \{1, \dots, M\}$, we pop all elements on the right spine of $\mathcal{CT}(S[1 .. x - 1])$ that are **strictly greater** than $S[x]$. The new node $x$ then becomes the right child of the remaining stack top $k = \max\{r < x : S[r] \le S[x]\}$ (or the new root if the stack becomes empty), and the last popped node becomes the left child of $x$.
+
+Crucially, the tree topology of $\mathcal{CT}(S[1..x])$ is 100% determined by which node $k < x$ remains at the top of the stack after popping! We define the **Parent-Distance array** $\operatorname{PD}_S[1..M]$ by:
+$$\boxed{\operatorname{PD}_S[x] = \begin{cases} x - \max\bigl\{k \in \{1, \dots, x - 1\} : S[k] \le S[x]\bigr\} & \text{if } \exists k < x \text{ with } S[k] \le S[x], \\ 0 & \text{otherwise (when } S[x] < \min_{1 \le k < x} S[k]\text{).} \end{cases}}$$
+
+::: {.callout-important title="Theorem 20.4 (Parent-Distance Bijection & Window-Clipped Cartesian KMP — Park, Amir, Landau & Kunisada, SPIRE 2019)"}
+
+1. **Bijection with Cartesian Tree Shape**: Two strings $U[1..M]$ and $V[1..M]$ have isomorphic min-heap Cartesian trees ($U \cong_{\text{CT}} V$) if and only if $\operatorname{PD}_U[x] = \operatorname{PD}_V[x]$ for every $1 \le x \le M$.
+2. **Exact Window-Clipped Substring Hereditarity**: For any substring $W = S[l..r]$ and any 1-based offset $j \in \{1, \dots, r - l + 1\}$ inside $W$ (global index $i = l + j - 1$, preceded by $q = j - 1$ elements of $W$), the Parent-Distance of $W[j]$ inside $W[1..j]$ is given in $O(1)$ time by the **exact same Window-Clipping Operator** as Parameterized KMP:
+   $$\boxed{\operatorname{PD}_W[j] = \operatorname{clip}\bigl(\operatorname{PD}_S[l + j - 1],\; j - 1\bigr).}$$
+   Consequently, precomputing $\operatorname{PD}_P[1..M]$ and $\operatorname{PD}_T[1..N]$ in $O(N + M)$ time via a monotonic stack and running Window-Clipped KMP (`Cartesian-KMP`) solves Cartesian-Tree Pattern Matching in **strict $O(N + M)$ time**!
+:::
+
+#### Proof of Theorem 20.4
+**(1) Tree Shape Bijection**: We induct on $M$. For $M = 1$, both trees are a single node and $\operatorname{PD}[1] = 0$. Suppose the equivalence holds for $M - 1$. In the incremental monotonic-stack construction of $\mathcal{CT}(U[1..M])$ from $\mathcal{CT}(U[1..M-1])$, node $M$ is inserted along the right spine of $\mathcal{CT}(U[1..M-1])$ as the right child of $k = \max\{r < M : U[r] \le U[M]\}$ (or as the new root if no such $k$ exists), with the subtree rooted at $k$'s old right child re-attached as $M$'s left child. Because $U[1..M-1] \cong_{\text{CT}} V[1..M-1]$, their right spines at step $M - 1$ consist of the exact same sequence of array indices $r_1 < r_2 < \dots < r_t = M - 1$. Therefore, $\mathcal{CT}(U[1..M])$ and $\mathcal{CT}(V[1..M])$ have the same shape if and only if node $M$ attaches to the exact same parent index $k$ on the right spine (or both become the root), which holds if and only if $M - k = \operatorname{PD}_U[M] = \operatorname{PD}_V[M]$.
+
+**(2) Why $\operatorname{clip}(\operatorname{PD}_S[i], q)$ Works Without Re-Scanning the Monotonic Stack**: Let $i = l + q$ be the global index corresponding to offset $j = q + 1$ in $W = S[l .. i]$, and let $k = i - \operatorname{PD}_S[i]$ be the nearest index $< i$ in the full string $S[1..i]$ satisfying $S[k] \le S[i]$.
+
+- If $\operatorname{PD}_S[i] \le q$, then $k = i - \operatorname{PD}_S[i] \ge i - q = l$ lies **inside** the window $S[l .. i - 1]$. Since no index in $(k, i - 1]$ was $\le S[i]$ in $S[1..i]$, $k$ is still the largest index in $[l, i - 1]$ with $S[k] \le S[i]$, so $\operatorname{PD}_W[q + 1] = i - k = \operatorname{PD}_S[i] = \operatorname{clip}(\operatorname{PD}_S[i], q)$.
+- If $\operatorname{PD}_S[i] > q$ (or $\operatorname{PD}_S[i] = 0$), then $k < l$, which means **every** element in $S[l .. i - 1]$ is strictly greater than $S[i]$! Hence $S[i]$ is the new strict minimum of $W[1..q+1]$, so $\operatorname{PD}_W[q + 1] = 0 = \operatorname{clip}(\operatorname{PD}_S[i], q)$. $\blacksquare$
+
+---
+
+## 3. Abelian / Jumbled Pattern Matching & $1/z$-Threshold Weighted Suffix Trees (`T-3B-04`, `T-5B-06`)
+
+### 3.1 Binary Parikh Continuity (Discrete IVT), RLE Envelopes & Commutative Hashing
+
+For a string $S[1..N]$ over $\Sigma = \{c_1, \dots, c_\sigma\}$, the **Parikh vector** $\Psi(S) = (|S|_{c_1}, \dots, |S|_{c_\sigma}) \in \mathbb{Z}_{\ge 0}^\sigma$ counts the frequency of each character in $S$. Two strings $U, V$ are **Abelian-equivalent (jumbled-isomorphic / anagrams)**, written $U \cong_{\text{ab}} V$, if $\Psi(U) = \Psi(V)$.
+
+In **Jumbled Indexing**, we are given a static text $S[1..N]$ and $Q \le 10^6$ online queries asking whether $S$ contains any substring $S[i .. i + L - 1]$ matching a query Parikh vector $\mathbf{c} = (c_0, c_1, \dots)$. When the alphabet is **binary** ($\Sigma = \{\texttt{0}, \texttt{1}\}$), the length $L = c_0 + c_1$ and the $\texttt{1}$-count $c_1$ completely determine $\Psi = (L - c_1, c_1)$, and a remarkable discrete continuity theorem collapses all substrings of length $L$ into a single interval $[m_{\min}(L), m_{\max}(L)]$:
+
+::: {.callout-important title="Theorem 20.5 (Binary Parikh Interval Continuity Theorem — Burcsi, Cicalese, Fici & Lipták, 2010)"}
+Let $S \in \{\texttt{0}, \texttt{1}\}^N$ be a binary word, and for each length $L \in \{1, 2, \dots, N\}$, define the minimum and maximum $\texttt{1}$-counts among all length-$L$ substrings of $S$:
+$$m_{\min}(L) = \min_{1 \le i \le N - L + 1} \bigl|S[i .. i + L - 1]\bigr|_1, \qquad m_{\max}(L) = \max_{1 \le i \le N - L + 1} \bigl|S[i .. i + L - 1]\bigr|_1.$$
+Then for every integer $k$ satisfying $m_{\min}(L) \le k \le m_{\max}(L)$, there exists at least one starting index $i \in \{1, \dots, N - L + 1\}$ such that $|S[i .. i + L - 1]|_1 = k$:
+$$\boxed{\bigl\{\,\bigl|S[i .. i + L - 1]\bigr|_1 : 1 \le i \le N - L + 1\,\bigr\} = \bigl[\,m_{\min}(L),\; m_{\max}(L)\,\bigr] \cap \mathbb{Z}.}$$
+Consequently, tabulating $m_{\min}[1..N]$ and $m_{\max}[1..N]$ answers any binary jumbled query $(c_0, c_1)$ in **$O(1)$ time** by testing $c_0 + c_1 \le N$ and $m_{\min}(c_0 + c_1) \le c_1 \le m_{\max}(c_0 + c_1)$.
+:::
+
+#### Proof of Theorem 20.5 & Counterexample for $|\Sigma| \ge 3$
+For fixed $L$, define $f(i) = |S[i .. i + L - 1]|_1$ for $1 \le i \le N - L + 1$. Sliding the window by $+1$ position removes $S[i] \in \{0, 1\}$ and inserts $S[i + L] \in \{0, 1\}$, so the step difference is bounded by $1$:
+$$f(i + 1) - f(i) = S[i + L] - S[i] \in \{-1,\; 0,\; +1\}.$$
+Let $i_{\min}$ and $i_{\max}$ be indices achieving $f(i_{\min}) = m_{\min}(L)$ and $f(i_{\max}) = m_{\max}(L)$. Walking index $i$ step-by-step from $i_{\min}$ to $i_{\max}$ changes $f(i)$ by at most $\pm 1$ at each step, so by the discrete Intermediate Value Theorem, $f(i)$ must hit every integer $k \in [m_{\min}(L), m_{\max}(L)]$ at least once. $\blacksquare$
+
+- **Why Interval Continuity Fails for $|\Sigma| \ge 3$**: On a ternary alphabet $\Sigma = \{\texttt{a}, \texttt{b}, \texttt{c}\}$, fixing length $L$ leaves a **2-dimensional** Parikh projection $(|W|_{\texttt{a}}, |W|_{\texttt{b}})$, where a walk in $\mathbb{Z}^2$ can step around an interior lattice point! For example, on $S = \texttt{a b b c}$ ($N = 4$) at length $L = 2$, the three substrings $\texttt{ab}, \texttt{bb}, \texttt{bc}$ have $\texttt{a}$-counts $\{1, 0, 0\}$ and $\texttt{c}$-counts $\{0, 0, 1\}$, yet no substring of length $2$ has Parikh vector $(1, 0, 1)$ ($\texttt{ac}$) even though its coordinates lie between $(1, 1, 0)$ and $(0, 1, 1)$!
+- **Run-Length Encoded (RLE) Piecewise-Linear Envelopes ($N \le 10^9, R \le 5000$ runs)**: When $S = \texttt{0}^{a_1} \texttt{1}^{b_1} \cdots$ is given in RLE form with $R$ runs and total length $N \le 10^9$, we cannot allocate an array of size $N$. However, because shifting a window $[x, x + L - 1]$ inside the same run changes its $\texttt{1}$-count linearly with slope $\in \{-1, 0, +1\}$, the maximum $m_{\max}(L)$ is always attained by a window whose left endpoint (or right endpoint) coincides with the boundary of a $\texttt{1}$-run! Expanding each of the $O(R^2)$ pairs of run boundaries produces $O(R^2)$ slope-$0$ and slope-$1$ segments whose upper envelope $m_{\max}(L)$ and lower envelope $m_{\min}(L)$ have $O(R^2)$ (or $O(R)$ after pruning) breakpoints, queried in $O(\log R)$ time via binary search.
+- **General Alphabet ($|\Sigma| \le 10^5$) Homomorphic Group Hashing**: To test substring anagram equality $S[l_1..r_1] \cong_{\text{ab}} S[l_2..r_2]$ or palindromic rearrangeability over large alphabets:
+  1. **Exact Anagram Equality**: Assign each character $c \in \Sigma$ an independent 128-bit random integer $R_c \in [1, 2^{128}-1]$ and use **prefix addition** $H_+(l, r) = \sum_{k=l}^r R_{S[k]} \bmod 2^{128}$.
+  2. **Palindromic Rearrangeability ($\le 1$ odd frequency)**: Use **prefix bitwise XOR** $H_\oplus(l, r) = \bigoplus_{k=l}^r R_{S[k]}$, testing whether $H_\oplus(l, r) \in \{0\} \cup \{R_c : c \in \Sigma\}$.
+
+---
+
+### 3.2 Weighted Strings (PWMs) & Barton et al.'s $1/z$ Heavy-String Decomposition (`T-5B-06`)
+
+In computational biology and noisy OCR/speech recognition, an uncertain text of length $N$ is modeled as a **Weighted String** (or **Position Weight Matrix, PWM**) $W[1..N]$, where each position $i \in \{1, \dots, N\}$ is not a single character, but a probability distribution $\pi_i : \Sigma \to [0, 1]$ satisfying $\sum_{c \in \Sigma} \pi_i(c) = 1$.
+
+A deterministic (**solid**) pattern $P[1..M] \in \Sigma^M$ has **occurrence probability** at starting position $i \in \{1, \dots, N - M + 1\}$ equal to the product of its independent character probabilities:
+$$\mathbb{P}\bigl(W[i .. i + M - 1] = P[1..M]\bigr) = \prod_{j=1}^M \pi_{i + j - 1}\bigl(P[j]\bigr).$$
+Given a probability cutoff $1/z \in (0, 1]$ (where $z \ge 1$ is the threshold parameter, e.g. $z = 10$), we say that $P[1..M]$ **$1/z$-occurs** at position $i$ if $\prod_{j=1}^M \pi_{i+j-1}(P[j]) \ge 1/z$.
+
+**The Naive Exponential Branching Trap**: If two choices have probability $0.5$ at each of $N$ positions, there are $2^N$ possible solid strings! How could we possibly build a **Weighted Suffix Tree (`WST`)** that indexes *all* solid substrings with occurrence probability $\ge 1/z$ in $O(Nz)$ time and space?
+
+The secret is a simple probability invariant: **divergent solid continuations from the same starting index $i$ are mutually exclusive events in the sample space $\Sigma^N$**!
+
+```
+Starting at index i:   Total Probability Mass = 1.0
+                       ├── Branch 1: "ab..." (prob >= 1/z)
+                       ├── Branch 2: "ac..." (prob >= 1/z)
+                       └── ... (At most floor(z) maximal heavy branches can have prob >= 1/z!)
+```
+
+::: {.callout-important title="Theorem 20.6 (Disjoint-Event Probability Sum Bound & $O(Nz)$ Heavy-String Decomposition — Barton, Kociumaka, Pissis & Radoszewski, STOC 2016)"}
+Let $W[1..N]$ be a weighted string and let $z \ge 1$ be a real threshold parameter.
+
+1. **At Most $\lfloor z \rfloor$ Maximal $1/z$-Valid Extensions per Suffix**: For any fixed starting index $i \in \{1, \dots, N\}$, consider the trie $\mathcal{T}_i$ of all solid strings $U \in \Sigma^*$ that $1/z$-occur at position $i$ ($\mathbb{P}(W[i .. i + |U| - 1] = U) \ge 1/z$). Since $\pi_k(c) \le 1$, $\mathcal{T}_i$ is prefix-closed, and its leaves $L_1, \dots, L_b$ correspond to pairwise prefix-incomparable strings (diverging at some index $k \ge i$). Because prefix-incomparable strings define **pairwise disjoint cylinder events** in the product probability space $\prod_{k=i}^N (\Sigma, \pi_k)$, the sum of their probabilities is at most $1$:
+   $$\sum_{r=1}^b \mathbb{P}\bigl(W[i .. i + |L_r| - 1] = L_r\bigr) \le 1 \implies b \cdot \frac{1}{z} \le 1 \implies \boxed{b \le \lfloor z \rfloor.}$$
+
+2. **Global Decomposition into $\lfloor z \rfloor$ Solid Strings of Total Length $O(Nz)$**: The entire family of $1/z$-occurring solid substrings across all positions $i \in \{1, \dots, N\}$ is equal to the set of length-qualified prefixes of a collection of $\lfloor z \rfloor$ solid strings (or a trie forest of total edge length $O(Nz)$), allowing the **Weighted Suffix Tree (`WST`)** to be constructed in **$O(Nz)$ time and space** and answering online $1/z$-pattern matching queries $P[1..M]$ in optimal **$O(M + \text{occ})$ time**!
+:::
+
+#### Proof of Theorem 20.6
+Let $L_1, \dots, L_b \in \Sigma^*$ be the leaves of the $1/z$-valid prefix tree $\mathcal{T}_i$ rooted at starting position $i$. Extend each leaf $L_r$ of length $|L_r| \le N - i + 1$ to the full suffix length $L = N - i + 1$ by defining its cylinder set $\mathcal{C}(L_r) = \{S \in \Sigma^L : L_r \text{ is a prefix of } S\}$. Because no $L_r$ is a prefix of $L_s$ for $r \ne s$, the cylinder sets $\mathcal{C}(L_1), \dots, \mathcal{C}(L_b) \subseteq \Sigma^L$ are **pairwise disjoint** ($\mathcal{C}(L_r) \cap \mathcal{C}(L_s) = \emptyset$). Under the product measure $\mu(S) = \prod_{j=1}^L \pi_{i+j-1}(S[j])$ on $\Sigma^L$, the probability of cylinder $\mathcal{C}(L_r)$ is exactly $\mu(\mathcal{C}(L_r)) = \prod_{j=1}^{|L_r|} \pi_{i+j-1}(L_r[j]) \ge 1/z$. By finite additivity of probability on disjoint events:
+$$\frac{b}{z} \le \sum_{r=1}^b \mu\bigl(\mathcal{C}(L_r)\bigr) = \mu\!\left(\bigsqcup_{r=1}^b \mathcal{C}(L_r)\right) \le \mu(\Sigma^L) = 1 \implies b \le \lfloor z \rfloor.$$
+
+To bound the total work when building the Weighted Suffix Tree (or bottom-up heavy-branch trie), observe that any position $i$ where $\max_{c \in \Sigma} \pi_i(c) = 1$ is deterministic ($1$ branch), while any branching position where $\ge 2$ characters have probability $\ge 1/z$ reduces the probability of at least all non-heavy branches by a factor $\le 1/2$. Assigning each of the $\le \lfloor z \rfloor$ probability tokens of size $1/z$ at the root a path down the tree (splitting tokens proportionally at branching nodes and pruning any branch whose probability drops below $1/z$, or constructing the generalized suffix tree over the $\lfloor z \rfloor$ heavy strings with explicit right-extension depths $\ell_{r, i}$) yields $O(Nz)$ total active states and transitions. $\blacksquare$
+
+---
+
+## 4. Reverse-Engineering Scratchpad, Algorithmic Contracts & Boundary Pitfalls (`BP-19` / `BP-20-01`–`BP-20-03`)
+
+### 4.1 Non-Standard Algorithmic Contracts: Unified Window-Clipped KMP & `Order-KMP`
+
+While standard KMP is part of your library, **Window-Clipped KMP** (`p-KMP` and `Cartesian-KMP`) and **Immediate-Neighbor `Order-KMP`** have a subtle dynamic-threshold invariant inside the `while` failure loop that must be written with extreme care:
+
+```cpp
+// Contract 1: Unified Window-Clipped KMP (for both p-KMP and Cartesian-Tree KMP)
+// Input: 1-indexed local code arrays code_P[1..M] and code_T[1..N]:
+//   - For Parameterized KMP (p-KMP):   code_S[x] = prev_S[x] (x - last_occ[S[x]], or 0)
+//   - For Cartesian-Tree KMP:          code_S[x] = PD_S[x]   (x - max{k < x : S[k] <= S[x]}, or 0)
+auto clip = [](int v, int q) -> int { return (v <= q) ? v : 0; };
+
+vector<int> build_clipped_kmp(const vector<int>& code_P, int M) {
+    vector<int> pi(M + 1, 0);
+    for (int i = 2, q = 0; i <= M; ++i) {
+        // CRITICAL INVARIANT: clip(code_P[i], q) depends on q and MUST be re-evaluated
+        // on EVERY iteration of the while loop as q shrinks to pi[q]!
+        while (q > 0 && clip(code_P[i], q) != code_P[q + 1]) q = pi[q];
+        if (clip(code_P[i], q) == code_P[q + 1]) ++q;
+        pi[i] = q;
+    }
+    return pi;
+}
+
+vector<int> match_clipped_kmp(const vector<int>& code_T, int N,
+                              const vector<int>& code_P, int M, const vector<int>& pi) {
+    vector<int> matches;
+    for (int i = 1, q = 0; i <= N; ++i) {
+        while (q > 0 && (q == M || clip(code_T[i], q) != code_P[q + 1])) q = pi[q];
+        if (clip(code_T[i], q) == code_P[q + 1]) ++q;
+        if (q == M) matches.push_back(i - M + 1);
+    }
+    return matches;
+}
+
+// Contract 2: Order-Preserving KMP Step Predicate via LMax / LMin (Kubica et al. 2013)
+// Precomputed on P[1..M]: LMax[k], LMin[k] in [0, k-1], eq_max[k], eq_min[k] in {0, 1}.
+auto order_match_step = [&](const vector<int>& S, int i, int q) -> bool {
+    int u = LMax[q + 1], v = LMin[q + 1];
+    if (u != 0) {
+        int val_u = S[i - q - 1 + u];
+        if (eq_max[q + 1] ? (S[i] != val_u) : !(val_u < S[i])) return false;
+    }
+    if (v != 0) {
+        int val_v = S[i - q - 1 + v];
+        if (eq_min[q + 1] ? (S[i] != val_v) : !(S[i] < val_v)) return false;
+    }
+    return true;
+};
+```
+
+---
+
+### 4.2 Broken-Invariant Counterexamples & Pitfalls
+
+::: {.callout-warning title="Pitfall BP-19 / BP-20-01 / BP-3B-08: Caching `clip(code_T[i], q)` Outside the KMP `while` Loop"}
+
+- **The Bug**: Computing `int c = clip(code_T[i], q);` **once** before `while (q > 0 && c != code_P[q + 1]) q = pi[q];`.
+- **Why It Breaks**: When a mismatch causes $q$ to jump down to $q' = \pi[q] < q$, the active match window $T[i - q' .. i]$ shrinks! An earlier occurrence of $T[i]$ at distance $v = \operatorname{prev}_T[i] \in (q', q]$ lay *inside* the old window of length $q$ (so $\operatorname{clip}(v, q) = v > 0$), but lies *outside* the new shorter window of length $q'$ (so $\operatorname{clip}(v, q') = 0$!).
+- **Exact Counterexample**: Let $P = \texttt{a b a c}$ ($\operatorname{prev}_P = [0, 0, 2, 0]$, $\pi_{\text{param}} = [0, 0, 1, 2]$) and $T = \texttt{x y x y z}$ ($\operatorname{prev}_T = [0, 0, 2, 2, 0]$). At $i = 4$ ($T[4] = \texttt{y}$), before reading $T[4]$ we have $q = 3$ ($T[1..3] = \texttt{x y x} \cong \texttt{a b a}$). At $q = 3$, $\operatorname{clip}(\operatorname{prev}_T[4], 3) = \operatorname{clip}(2, 3) = 2 \ne \operatorname{prev}_P[4] = 0$. So $q$ jumps to $\pi[3] = 1$. At the new $q' = 1$, $\operatorname{clip}(\operatorname{prev}_T[4], 1) = \operatorname{clip}(2, 1) = 0 = \operatorname{prev}_P[2]$, advancing $q$ to $2$ (matching $T[3..4] = \texttt{x y} \cong \texttt{a b}$) and then matching $T[2..5] = \texttt{y x y z} \cong \texttt{a b a c}$ at $i = 5$! Caching `c = 2` outside the loop fails at $q' = 1$ ($2 \ne 0$), drops $q$ to $0$, and **completely misses the valid match at $T[2..5]$**!
+:::
+
+::: {.callout-warning title="Pitfall BP-20-02: Inconsistent Tie-Breaking (`<` vs. `<=`) in Cartesian-Tree Parent Distances"}
+
+- **The Bug**: Defining $\operatorname{PD}_S[x] = x - \max\{k < x : S[k] < S[x]\}$ with strict inequality $<$ on a string with duplicate values, or mixing strict $<$ on the left with non-strict $\le$ on the right.
+- **Exact Counterexample**: In the standard canonical Cartesian tree with duplicate values, ties are broken by index $(S[k], k) < (S[x], x)$, so for $k < x$ we have $(S[k], k) < (S[x], x) \iff S[k] \le S[x]$. Thus when $S[x]$ arrives and equals $S[k]$ ($k < x$), $S[k]$ is **strictly smaller** in tie-broken priority and is **not** popped from the monotonic stack—so $x$ becomes the right child of $k$, requiring $\max\{k < x : S[k] \le S[x]\}$!
+:::
+
+::: {.callout-warning title="Pitfall BP-20-03: Applying Binary Parikh Interval Continuity to $|\Sigma| \ge 3$ or Using XOR for Anagrams"}
+
+- **The Bug**:
+  1. Assuming that for $|\Sigma| = 3$, if each coordinate $c_r$ lies in $[m_{\min, r}(L), m_{\max, r}(L)]$ and $\sum c_r = L$, then a substring with Parikh vector $(c_1, c_2, c_3)$ exists.
+  2. Using bitwise XOR $\bigoplus_{k=l}^r R_{S[k]}$ instead of $128$-bit integer addition $\sum_{k=l}^r R_{S[k]} \bmod 2^{128}$ to test anagram equality.
+- **Exact Counterexample**:
+  1. On $S = \texttt{a b b c}$ at $L = 2$, $\texttt{a},\texttt{b},\texttt{c}$ each have achievable counts in $[0, 1], [1, 2], [0, 1]$, yet $(1, 0, 1)$ ($\texttt{ac}$) does not occur (`§3.1`).
+  2. Under bitwise XOR, any two even-multiplicity strings $U = \texttt{a a}$ and $V = \texttt{b b}$ both evaluate to $R_{\texttt{a}} \oplus R_{\texttt{a}} = 0 = R_{\texttt{b}} \oplus R_{\texttt{b}}$, colliding with probability $1$!
+:::
+
+---
+
+## 5. Curated 4-Tier Smooth Difficulty Problem Ladder (`Ch 20`)
+
+Every problem below includes a self-contained mathematical statement, exact constraints, three progressive hints, and a complete 4-step derivation.
+
+---
+
+### Tier 1 — Stepping Stone (`W3B-06`, `W3B-34`)
+
+#### Problem 20.1 (`W3B-06`) — `BOJ 13545 / ICPC Regional — Parameterized Pattern Matching via Window-Clipped p-KMP`
+
+- **Mathematical Statement**: Given a text $T[1..N]$ and a pattern $P[1..M]$ over an integer alphabet $\Sigma = \{1, 2, \dots, 10^6\}$, find all starting positions $s \in \{1, \dots, N - M + 1\}$ such that $T[s .. s + M - 1]$ is parameterized-isomorphic to $P[1..M]$ (i.e., there exists a bijection $\pi : \Sigma \to \Sigma$ with $\pi(P[j]) = T[s + j - 1]$ for all $1 \le j \le M$).
+- **Constraints**: $1 \le M \le N \le 10^6$, $|\Sigma| \le 10^6$, time limit $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At $|\Sigma| \le 10^6$, computing $O(|\Sigma|)$ character-mask rolling hashes at each shift takes $\Theta(N|\Sigma|)$ time and TLEs immediately. We need an alphabet-independent $O(N + M)$ algorithm.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 20.1 (Baker's Window-Clipped KMP Invariant)**, two strings are parameterized-isomorphic iff their local backward offsets agree at every index, and the local offset at index $i$ inside window $T[i - q .. i]$ is $\operatorname{clip}(\operatorname{prev}_T[i], q) = (\operatorname{prev}_T[i] \le q \text{ ? } \operatorname{prev}_T[i] : 0)$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Precompute $\operatorname{prev}_P[1..M]$ and $\operatorname{prev}_T[1..N]$ in $O(N + M)$ time using a `last_occ[1..1000000]` array, then run `build_clipped_kmp` and `match_clipped_kmp` (`§4.1`), re-evaluating $\operatorname{clip}(\operatorname{prev}_T[i], q)$ inside the `while` loop at every candidate border $q$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-06`)"}
+
+1. **Diagnostic Signal**: $|\Sigma| = 10^6$ rules out any per-letter indicator convolution or per-letter hash sorting (`CF 985F`), requiring $O(1)$ amortized work per character.
+2. **Combinatorial Word Invariant**: For any substring $T[i - q .. i]$ of length $q + 1$, the previous occurrence of $T[i]$ lies inside $T[i - q .. i - 1]$ iff $\operatorname{prev}_T[i] \le q$. Thus $\operatorname{clip}(\operatorname{prev}_T[i], q)$ is the exact local backward offset of $T[i]$ in $T[i - q .. i]$. By Theorem 20.1, $T[i - q .. i] \cong_{\text{param}} P[1 .. q + 1]$ given $T[i - q .. i - 1] \cong_{\text{param}} P[1..q]$ iff $\operatorname{clip}(\operatorname{prev}_T[i], q) = \operatorname{prev}_P[q + 1]$.
+3. **Algorithmic Compilation**:
+   - Maintain `last[c]` initialized to $0$. Scan $P$ to set $\operatorname{prev}_P[j] = (\text{last}[P[j]] == 0 \text{ ? } 0 : j - \text{last}[P[j]])$ and update $\text{last}[P[j]] = j$; reset `last` and repeat on $T$ to build $\operatorname{prev}_T[1..N]$.
+   - Build $\pi_{\text{param}}[1..M]$ on $\operatorname{prev}_P$ and scan $\operatorname{prev}_T$ using Contract 1 (`§4.1`) in $O(N + M)$ time and $O(N + M + |\Sigma|)$ space.
+4. **Broken-Invariant Counterexample (`BP-20-01`)**: Never cache `c = clip(prev_T[i], q)` before the `while (q > 0)` loop—shrinking $q \leftarrow \pi[q]$ reduces the window width and can turn a non-zero offset $v \in (\pi[q], q]$ into $0$!
+:::
+
+---
+
+#### Problem 20.2 (`W3B-34`) — `LOJ 6681 / RLE Binary Abelian (Jumbled) Pattern Matching`
+
+- **Mathematical Statement**:
+  - **Part A (Uncompressed Binary String)**: Given a binary string $S \in \{\texttt{0}, \texttt{1}\}^N$ ($N \le 5 \times 10^5$) and $Q \le 10^6$ queries $(c_0, c_1)$, determine for each query in $O(1)$ time whether $S$ contains a contiguous substring with $c_0$ zeros and $c_1$ ones.
+  - **Part B (Run-Length Compressed Binary String)**: Suppose $S$ has length $N \le 10^9$ given as $R \le 5000$ alternating runs $\texttt{0}^{a_1} \texttt{1}^{b_1} \dots$. Answer $Q \le 10^5$ jumbled queries $(c_0, c_1)$ in $O(\log R)$ time per query after $O(R^2)$ preprocessing.
+- **Constraints**: Part A: $N \le 5 \times 10^5, Q \le 10^6$; Part B: $N \le 10^9, R \le 5000, Q \le 10^5$; time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+In Part A, $Q = 10^6$ forbids $O(\log N)$ per query; in Part B, $N = 10^9$ forbids $O(N)$ memory. Both rely on the structure of the set of achievable $\texttt{1}$-counts at fixed window length $L = c_0 + c_1$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 20.5 (Binary Parikh Interval Continuity)**, for any fixed length $L \in [1, N]$, the set of $\texttt{1}$-counts among all substrings of $S$ of length $L$ is the single contiguous integer interval $[m_{\min}(L), m_{\max}(L)]$. In Part B, where on the RLE blocks can a window $[x, x + L - 1]$ achieve the maximum $m_{\max}(L)$ or minimum $m_{\min}(L)$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+If neither endpoint $x$ nor $x + L - 1$ lies at a run boundary, shifting $[x, x + L - 1]$ left or right changes $|S[x..x+L-1]|_1$ monotonically with constant slope $S[x+L] - S[x] \in \{-1, 0, +1\}$ until one endpoint hits a run boundary! Thus $m_{\max}(L)$ is the upper envelope of $O(R^2)$ piecewise-linear ramps anchored at pairs of run boundaries (with slopes in $\{0, 1\}$), which can be compacted into $O(R)$ hull/envelope segments or $O(R^2)$ sorted events and queried by binary search on $L = c_0 + c_1$.
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-34`)"}
+
+1. **Diagnostic Signal**: Searching over all $N - L + 1$ windows per query is impossible; we must compress the 2D set of achievable Parikh vectors $\{(c_0, c_1)\}$ into two 1D functions of $L = c_0 + c_1$.
+2. **Combinatorial Word Invariant**:
+   - **Part A**: By Theorem 20.5, a substring with Parikh vector $(c_0, c_1)$ exists iff $L = c_0 + c_1 \le N$ and $m_{\min}(L) \le c_1 \le m_{\max}(L)$ (In fact, for uncompressed $N \le 5 \times 10^5$, if $m_{\min}(L), m_{\max}(L)$ are computed via min-plus/max-plus convolution or RLE run pairs, each query is an $O(1)$ array lookup).
+   - **Part B (RLE Extremal Boundary Alignment)**: Let $0 = p_0 < p_1 < \dots < p_R = N$ be the prefix sums of run lengths, and let $w_k = |S[1..p_k]|_1$ be the prefix $\texttt{1}$-counts. Any extremal window $[x, x + L - 1]$ maximizing $m_{\max}(L)$ can be shifted without decreasing its $\texttt{1}$-count until either its left endpoint $x$ equals the start of a $\texttt{1}$-run (or $x = 1$) or its right endpoint equals the end of a $\texttt{1}$-run (or $x + L - 1 = N$). Between run $i$ (a $\texttt{1}$-run) and run $j \ge i$:
+     - As the right endpoint traverses a $\texttt{0}$-run $j$, the window length $L$ increases while the $\texttt{1}$-count stays constant (slope $0$).
+     - As the right endpoint traverses a $\texttt{1}$-run $j$, both $L$ and the $\texttt{1}$-count increase at rate $+1$ (slope $1$).
+3. **Algorithmic Compilation (Part B)**:
+   - Enumerate all pairs of runs $(i, j)$ ($1 \le i \le j \le R$). Each pair defines a length interval $[L_{\text{lo}}, L_{\text{hi}}]$ on which the $\texttt{1}$-count grows with slope $1$ (when expanding inside a $\texttt{1}$-run) or slope $0$ (when expanding inside a $\texttt{0}$-run).
+   - Since all segments have slopes $\in \{0, 1\}$, we can rewrite $m_{\max}(L) = \max\bigl(\text{const}(L),\; L + \text{offset}(L)\bigr)$ and sweep the $O(R^2)$ boundary lengths $L$ in $O(R^2 \log R)$ time to build a sorted table of piecewise-linear intervals covering $[1, N]$.
+   - Each query $(c_0, c_1)$ binary-searches $L = c_0 + c_1$ in the envelope table in $O(\log R)$ time to retrieve $m_{\min}(L)$ and $m_{\max}(L)$ and tests $m_{\min}(L) \le c_1 \le m_{\max}(L)$.
+4. **Broken-Invariant Counterexample (`BP-20-03`)**: Never forget windows contained *entirely inside a single run* ($i = j$): for $L \le \max_{\text{1-run}} b_k$, $m_{\max}(L) = L$, and for $L \le \max_{\text{0-run}} a_k$, $m_{\min}(L) = 0$.
+:::
+
+---
+
+### Tier 2 — Intermediate (`W3B-09`, `W5B-48`)
+
+#### Problem 20.3 (`W3B-09`) — `BOJ 11583 / Luogu P3096 — Order-Preserving Pattern Matching via LMax/LMin KMP`
+
+- **Mathematical Statement**: Given an integer text array $T[1..N]$ and an integer pattern array $P[1..M]$ ($M \le N \le 10^6$), find all starting positions $s \in \{1, \dots, N - M + 1\}$ such that $T[s .. s + M - 1]$ is order-isomorphic to $P[1..M]$: for all $1 \le a, b \le M$, $T[s + a - 1] < T[s + b - 1] \iff P[a] < P[b]$ and $T[s + a - 1] = T[s + b - 1] \iff P[a] = P[b]$.
+- **Constraints**: $1 \le M \le N \le 10^6$, $-10^9 \le T[i], P[j] \le 10^9$, time limit $1.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Maintaining the rank of $T[i]$ in $T[i-q .. i-1]$ via a Fenwick tree during KMP takes $O(N \log M)$ time, which is $20\times$ slower than linear scanning at $N = 10^6$ and requires Rollback Fenwick updates on every failure jump $q \leftarrow \pi[q]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 20.3 (Kubica et al.'s Immediate-Neighbor Sufficiency)**, if $T[i-q .. i-1] \cong_{\text{ord}} P[1..q]$, then $T[i-q .. i] \cong_{\text{ord}} P[1..q+1]$ iff $T[i]$ satisfies the exact comparison (`<` or `==`) against $T[i - q - 1 + \operatorname{LMax}_P[q+1]]$ and $T[i - q - 1 + \operatorname{LMin}_P[q+1]]$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Precompute $\operatorname{LMax}_P[1..M], \operatorname{LMin}_P[1..M]$ and equality flags $\operatorname{eq}_{\max}, \operatorname{eq}_{\min}$ in $O(M \log M)$ time using `std::map<int, int>` (or sorting + doubly linked list), then run KMP with `order_match_step` (`§4.1`) in $O(N + M)$ time!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-09`)"}
+
+1. **Diagnostic Signal**: Fenwick-tree rank KMP must undo/redo range insertions whenever $q$ jumps to $\pi[q]$, costing $O((N+M)\log M)$ with heavy constant factors.
+2. **Combinatorial Word Invariant**: Because $T[i-q .. i-1] \cong_{\text{ord}} P[1..q]$ already orders the first $q$ elements of the window identically to $P[1..q]$, inserting $T[i]$ at the $(q+1)$-th position preserves order isomorphism if and only if $T[i]$ falls into the exact open/closed interval between the predecessor $\operatorname{LMax}_P[q+1]$ and successor $\operatorname{LMin}_P[q+1]$ of $P[q+1]$ in $P[1..q]$ (Theorem 20.3).
+3. **Algorithmic Compilation**:
+   - Scan $k = 1 \dots M$ with a `std::map<int, int> pos` mapping value $v \mapsto$ latest index $j < k$:
+     - `auto it = pos.upper_bound(P[k]);`
+     - If `it != pos.end()`, set $\operatorname{LMin}_P[k] = \text{it}\to\text{second}$ and $\operatorname{eq}_{\min}[k] = 0$.
+     - If `it != pos.begin()`, decrement `it`: set $\operatorname{LMax}_P[k] = \text{it}\to\text{second}$ and $\operatorname{eq}_{\max}[k] = (\text{it}\to\text{first} == P[k])$. If $\operatorname{eq}_{\max}[k] == 1$, we can also set $\operatorname{LMin}_P[k] = \operatorname{LMax}_P[k]$ and $\operatorname{eq}_{\min}[k] = 1$.
+     - Update `pos[P[k]] = k`.
+   - Build $\pi_{\text{ord}}[1..M]$ on $P$ and scan $T[1..N]$ using `order_match_step` (`§4.1`). Total time: $O(M \log M + N)$, space $O(M + N)$.
+4. **Broken-Invariant Counterexample**: Failing to store $\operatorname{eq}_{\max}[k]$ (testing only $T[i - q - 1 + \operatorname{LMax}_P[q+1]] \le T[i]$) allows $T = [1, 2]$ to match $P = [1, 1]$ and $T = [1, 1]$ to match $P = [1, 2]$!
+:::
+
+---
+
+#### Problem 20.4 (`W5B-48`) — `ICPC Asia Seoul Regional 2019 / SPIRE 2019 — Parent-Distance Cartesian-Tree Pattern Matching`
+
+- **Mathematical Statement**: Given an integer text $T[1..N]$ and an integer pattern $P[1..M]$ ($M \le N \le 5 \times 10^5$), find all starting positions $s \in \{1, \dots, N - M + 1\}$ such that the canonical min-heap Cartesian tree of $T[s .. s + M - 1]$ (breaking ties by smaller index) has the exact same binary tree shape as the Cartesian tree of $P[1..M]$.
+- **Constraints**: $1 \le M \le N \le 5 \times 10^5$, $1 \le T[i], P[j] \le 10^9$, time limit $1.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Order-Preserving KMP (`W3B-09`) is too strict here: $P = [2, 1, 3]$ and $T = [3, 1, 2]$ have different relative orders between index $1$ and index $3$, yet both have the same Cartesian tree (root at $2$ with leaf children $1$ and $3$).
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 20.4 (Park et al.'s Parent-Distance Bijection)**, two arrays have the same Cartesian tree shape iff their Parent-Distance arrays $\operatorname{PD}[x] = x - \max\{k < x : S[k] \le S[x]\}$ (or $0$ if none) are identical, and restricting to a substring of length $q + 1$ simply applies $\operatorname{clip}(\operatorname{PD}_T[i], q)$!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Compute $\operatorname{PD}_P[1..M]$ and $\operatorname{PD}_T[1..N]$ in $O(N + M)$ time using a monotonic stack (popping while `S[st.back()] > S[x]`), then pass $\operatorname{PD}_P$ and $\operatorname{PD}_T$ directly into `build_clipped_kmp` and `match_clipped_kmp` (`§4.1`) in $O(N + M)$ time!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5B-48`)"}
+
+1. **Diagnostic Signal**: Constructing Cartesian trees for each of the $N - M + 1$ windows takes $\Theta(NM)$ time, while `Order-KMP` rejects valid matches like $[3, 1, 2] \cong_{\text{CT}} [2, 1, 3]$.
+2. **Combinatorial Word Invariant**: Under canonical index tie-breaking $(S[k], k) < (S[x], x) \iff S[k] \le S[x]$ for $k < x$, the monotonic stack building $\mathcal{CT}(S[l..r])$ pops all elements strictly greater than $S[i]$ and attaches $i$ as the right child of $k = \max\{r \in [l, i-1] : S[r] \le S[i]\}$ (or makes $i$ the new root if no such $r \ge l$ exists). By Theorem 20.4, the local parent distance $i - k$ inside $S[l..i]$ ($q = i - l$) equals $\operatorname{clip}(\operatorname{PD}_S[i], q)$.
+3. **Algorithmic Compilation**:
+   - Build $\operatorname{PD}_S[1..L]$ in $O(L)$ time:
+     ```cpp
+     vector<int> build_pd(const vector<int>& S, int L) {
+         vector<int> pd(L + 1, 0), st;
+         for (int x = 1; x <= L; ++x) {
+             while (!st.empty() && S[st.back()] > S[x]) st.pop_back();
+             pd[x] = st.empty() ? 0 : (x - st.back());
+             st.push_back(x);
+         }
+         return pd;
+     }
+     ```
+
+   - Feed `pd_P` and `pd_T` into Contract 1 (`build_clipped_kmp` and `match_clipped_kmp` in `§4.1`). Total time and space: $O(N + M)$.
+4. **Broken-Invariant Counterexample (`BP-20-02`)**: Using `S[st.back()] >= S[x]` in the stack pop condition breaks canonical tie-breaking whenever duplicate values appear!
+:::
+
+---
+
+### Tier 3 — Advanced (`W3B-32`, `W3B-39`)
+
+#### Problem 20.5 (`W3B-32`) — `POI / Ganguly et al. — Parameterized Suffix Array (p-SA) & Distinct Parameterized Substrings`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ over an integer alphabet $\Sigma = \{1, \dots, N\}$, construct the Parameterized Suffix Array $\operatorname{p-SA}[1..N]$ (sorting the suffixes $S[i..N]$ in lexicographical order of their local backward-offset arrays $\operatorname{prev}_{S[i..N]}$) and compute the number of **distinct parameterized-isomorphic substrings** of $S$.
+- **Constraints**: $1 \le N \le 10^5$, $1 \le S[i] \le N$, time limit $2.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Just as in a classic Suffix Array ([Chapter 12](ch12-sais-induced-sorting-lcp.qmd)), the number of distinct parameterized substrings equals $\binom{N+1}{2} - \sum_{r=2}^N \operatorname{p-LCE}(\operatorname{p-SA}[r-1], \operatorname{p-SA}[r])$. However, standard `SA-IS` on $\operatorname{prev}_S[1..N]$ fails because each suffix $S[i..N]$ clips offsets $> p - i$ to $0$.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 20.2 (Baker's Single-Position Mutation Invariant)**, when sweeping the starting index $i$ backward from $N$ down to $1$, the local-code array $C^{(i)}[i..N]$ of $S[i..N]$ differs from $C^{(i+1)}[i+1..N]$ at **at most one position** inside $[i+1, N]$: namely $p = \operatorname{next}_S[i]$, whose local code changes from $0$ to $p - i$ (plus position $i$ itself, which has local code $0$).
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Maintain $C^{(i)}[1..N]$ in a **Persistent Segment Tree** of polynomial rolling hashes as $i$ goes from $N$ down to $1$ ($1$ point update per step at $p = \operatorname{next}_S[i]$). To compare any two suffixes $S[i..N]$ and $S[j..N]$ (or compute $\operatorname{p-LCE}(i, j)$), binary-search the longest common prefix $\ell$ using substring hash queries on roots $R_i$ and $R_j$ (or walk the two persistent trees if $i = j$ after shifting—note that $S[i..i+\ell-1]$ and $S[j..j+\ell-1]$ lie at different index offsets $i$ and $j$, so query range $[i, i+\ell-1]$ in $R_i$ and $[j, j+\ell-1]$ in $R_j$, normalizing base powers!).
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-32`)"}
+
+1. **Diagnostic Signal**: $|\Sigma| \le N = 10^5$ makes the $O(|\Sigma|)$ breakpoint LCE $\Theta(N^2)$, requiring an $O(\log N)$ or $O(\log^2 N)$ dynamic $\operatorname{p-LCE}(i, j)$ oracle.
+2. **Combinatorial Word Invariant**: Let $C^{(i)}[p] = \operatorname{clip}(\operatorname{prev}_S[p], p - i)$ for $p \in [i, N]$. By Theorem 20.2(2), when stepping backward from $i + 1$ to $i$:
+   - Position $i$ enters with $C^{(i)}[i] = 0$.
+   - If $p = \operatorname{next}_S[i] \le N$ exists, $C^{(i)}[p]$ updates from $0$ to $p - i$.
+   - All other positions $q \in [i+1, N] \setminus \{\operatorname{next}_S[i]\}$ satisfy $C^{(i)}[q] = C^{(i+1)}[q]$.
+   Thus a Persistent Segment Tree storing $\sum_{p=1}^N C^{(i)}[p] B^p \bmod P$ uses at most **one** point update per $i$ ($O(N \log N)$ total nodes)!
+
+3. **Algorithmic Compilation**:
+   - Sweep $i = N \downarrow 1$: set $R_i = \text{update}(R_{i+1},\, \operatorname{next}_S[i],\, \operatorname{next}_S[i] - i)$ if $\operatorname{next}_S[i] \le N$, else $R_i = R_{i+1}$.
+   - Define `hash_sub(i, len)` as $\text{query\_sum}(R_i, i, i + \text{len} - 1) \cdot B^{-i} \bmod P$.
+   - Compute $\operatorname{p-LCE}(i, j)$ in $O(\log^2 N)$ time via binary search on $\text{len} \in [0, N - \max(i, j) + 1]$ using `hash_sub(i, mid) == hash_sub(j, mid)`, and compare the mismatching codes $\operatorname{clip}(\operatorname{prev}_S[i+\ell], \ell)$ vs. $\operatorname{clip}(\operatorname{prev}_S[j+\ell], \ell)$ in $O(1)$ time.
+   - Sort $\operatorname{p-SA}[1..N]$ using `std::sort` with $\operatorname{p-LCE}$ comparator in $O(N \log^3 N)$ (or $O(N \log^2 N)$ by storing shifted hashes $C^{(i)}[p] B^{p-i}$ or suffix balanced tree), and return:
+     $$\sum_{r=1}^N \bigl(N - \operatorname{p-SA}[r] + 1\bigr) - \sum_{r=2}^N \operatorname{p-LCE}\bigl(\operatorname{p-SA}[r-1],\, \operatorname{p-SA}[r]\bigr).$$
+
+4. **Broken-Invariant Counterexample**: When querying $[i, i+\ell-1]$ in $R_i$ and $[j, j+\ell-1]$ in $R_j$, you **must** multiply the two range sums by $B^{N-i}$ and $B^{N-j}$ (or $B^{-i}$ and $B^{-j}$) so that offset $0$ of both suffixes aligns to the same power of $B$!
+:::
+
+---
+
+#### Problem 20.6 (`W3B-39`) — `QOJ / Universal Cup — Longest Common Cartesian-Isomorphic Substring`
+
+- **Mathematical Statement**: Given two integer arrays $A[1..N]$ and $B[1..M]$ ($N, M \le 10^5$), find the maximum length $L$ such that there exist a contiguous subarray $A[i .. i + L - 1]$ and a contiguous subarray $B[j .. j + L - 1]$ with isomorphic min-heap Cartesian trees ($A[i .. i + L - 1] \cong_{\text{CT}} B[j .. j + L - 1]$).
+- **Constraints**: $1 \le N, M \le 10^5$, $1 \le A[i], B[j] \le 10^9$, time limit $2.0\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Unlike `p-SA` (`W3B-32`), when we delete $A[i]$ to move from suffix $A[i..N]$ to $A[i+1..N]$, **how many** positions $p > i$ can have $i$ as their nearest smaller-or-equal element to the left ($i = \max\{k < p : A[k] \le A[p]\}$)? More than one! Why is the total number of mutations across *all* $i = 1 \dots N$ still bounded by $N$?
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+In the full array $A[1..N]$, each position $p \in \{1, \dots, N\}$ has **at most one** left parent $k_p = p - \operatorname{PD}_A[p] < p$! Therefore, as the left boundary $i$ sweeps from $1$ to $N$, each position $p$'s clipped code $\operatorname{clip}(\operatorname{PD}_A[p], p - i)$ transitions from its static value $\operatorname{PD}_A[p]$ to $0$ **at most ONCE**—precisely when $i$ steps past $k_p$ (from $i = k_p$ to $i = k_p + 1$)!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Because $\sum_{k=1}^N |\{p > k : p - \operatorname{PD}_A[p] = k\}| \le N$, the total number of point updates across all $N$ suffixes in a **Persistent Segment Tree** of $\operatorname{PD}$ rolling hashes is **at most $N$**! Binary-search on the answer length $L \in [1, \min(N, M)]$ (or build the combined Cartesian Suffix Array of $A$ and $B$ via persistent-tree $\operatorname{CT-LCE}$), checking whether $A$ and $B$ share a length-$L$ Cartesian-isomorphic substring in $O((N+M)\log^2(N+M))$ time!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-39`)"}
+
+1. **Diagnostic Signal**: For a single $i$, multiple indices $p > i$ can have $p - \operatorname{PD}_A[p] = i$ (e.g. $A = [1, 5, 4, 3, 2]$, where $p = 2, 3, 4, 5$ all have left parent $i = 1$). However, amortizing over all $i \in [1, N]$, each $p$ has at most one left parent $k_p = p - \operatorname{PD}_A[p]$.
+2. **Combinatorial Word Invariant**: Let $C^{(i)}_A[p] = \operatorname{clip}(\operatorname{PD}_A[p], p - i)$ for $p \in [i, N]$. Notice that $C^{(i)}_A[p] = \operatorname{PD}_A[p]$ for all $1 \le i \le p - \operatorname{PD}_A[p]$, and $C^{(i)}_A[p] = 0$ for all $i > p - \operatorname{PD}_A[p]$. Group each $p$ with $\operatorname{PD}_A[p] > 0$ into bucket `bucket[p - PD_A[p]].push_back(p)`. As $i$ advances from $1$ to $N$ (starting from $R_1$ containing static $\operatorname{PD}_A[1..N]$), transitioning from $R_i$ to $R_{i+1}$ simply sets $C[p] \leftarrow 0$ for every $p \in \text{bucket}[i]$. Since each $p \in [1, N]$ belongs to at most one bucket, there are $\le N$ point updates in total!
+3. **Algorithmic Compilation**:
+   - Build persistent segment tree roots $R^{(A)}_1 \dots R^{(A)}_N$ on $A$ and $R^{(B)}_1 \dots R^{(B)}_M$ on $B$ in $O((N + M)\log(N + M))$ time and space.
+   - Binary search on $L \in [1, \min(N, M)]$: for a candidate length $L$, collect the normalized rolling hashes of $C^{(i)}_A[i .. i + L - 1]$ for $1 \le i \le N - L + 1$ in a hash table and check if any $C^{(j)}_B[j .. j + L - 1]$ ($1 \le j \le M - L + 1$) matches.
+   - Total time: $O((N + M) \log^2(\min(N, M)))$ (or sort the combined suffixes via $\operatorname{CT-LCE}$ and take the maximum adjacent LCP between an $A$-suffix and a $B$-suffix).
+4. **Broken-Invariant Counterexample**: Do not assume $|\text{bucket}[i]| \le 1$ per step $i$ (`p-SA` has $|\text{bucket}[i]| \le 1$, whereas `Cartesian-SA` has $|\text{bucket}[i]|$ up to $N - i$ at a single $i$, but $\sum_i |\text{bucket}[i]| \le N$ amortized!).
+:::
+
+---
+
+### Tier 4 — Mastery (`W5B-47`, `W3B-42`)
+
+#### Problem 20.7 (`W5B-47`) — `STOC 2016 / Universal Cup — 1/z Heavy-String Decomposition & Weighted Suffix Tree Indexing`
+
+- **Mathematical Statement**: You are given a Position Weight Matrix (weighted string) $W[1..N]$ over $\Sigma = \{\texttt{A}, \texttt{C}, \texttt{G}, \texttt{T}\}$ where each entry $\pi_i(c) \in [0, 1]$ gives the probability of character $c$ at index $i$ ($\sum_c \pi_i(c) = 1$), together with a threshold parameter $z \ge 1$ ($N \cdot z \le 5 \times 10^5$). Construct an index in $O(Nz \log |\Sigma|)$ time that answers $Q \le 10^5$ online queries ($\sum |P_q| \le 5 \times 10^5$): given a solid pattern $P_q[1..M]$, determine whether $P_q$ occurs in $W$ with probability $\ge 1/z$, and count how many starting positions $i \in [1, N - M + 1]$ satisfy $\prod_{j=1}^M \pi_{i+j-1}(P_q[j]) \ge 1/z$.
+- **Constraints**: $1 \le N \le 10^5$, $1 \le z \le 20$, $N z \le 5 \times 10^5$, $Q \le 10^5$, $\sum |P_q| \le 5 \times 10^5$, time limit $2.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+At each query $P_q$, sliding $P_q$ across $W$ takes $\Theta(N |P_q|)$, while enumerating all solid strings from $W$ without probability pruning explodes exponentially.
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 20.6 (Barton et al.'s Disjoint-Event Probability Sum Bound)**, from any starting index $i$, at most $\lfloor z \rfloor$ prefix-incomparable branches can have probability $\ge 1/z$. Even better, if we sweep $i$ from $N$ down to $1$ maintaining the trie of $1/z$-valid extensions, any deterministic position ($\max_c \pi_i(c) = 1$) simply prepends $c$ to all active branches without branching!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Compress maximal contiguous runs of positions where a single letter has probability $\ge 1 - \frac{1}{2z}$ (or use Barton et al.'s token-allocation decomposition into $k = \lfloor z \rfloor$ heavy solid strings $S_1, \dots, S_k$ paired with maximum valid length arrays $L_r[i]$ at each position $i$). Insert the $k \le \lfloor z \rfloor$ heavy strings (with length caps $L_r[i]$) into a Generalized SAM / Weighted Suffix Tree of total size $O(Nz)$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W5B-47`)"}
+
+1. **Diagnostic Signal**: We must index all pairs $(i, U)$ satisfying $\prod_{j=1}^{|U|} \pi_{i+j-1}(U[j]) \ge 1/z$ in $O(Nz)$ total size.
+2. **Combinatorial Word Invariant**:
+   - Define the **heavy character** at position $i$ as the unique $c^*_i \in \Sigma$ with $\pi_i(c^*_i) > 1/2$ (if one exists). Note that along any $1/z$-valid string starting at $i$, a **light transition** ($\pi_k(c) \le 1/2$) can occur at most $\lfloor \log_2 z \rfloor$ times because each light step halves the cumulative probability!
+   - By Theorem 20.6, the set of $1/z$-valid substrings starting at $i$ is covered by $\le \lfloor z \rfloor$ maximal strings $U_{i,1}, \dots, U_{i, b_i}$ ($b_i \le \lfloor z \rfloor$). Moreover, if we allocate $\lfloor z \rfloor$ global string tracks $S_1[1..N], \dots, S_{\lfloor z \rfloor}[1..N]$ (assigning $\lfloor z \cdot \pi_i(c) \rfloor$ or proportional probability intervals in $[0, 1)$ at each branching step), every $1/z$-valid substring starting at $i$ appears as $S_r[i .. i + \ell - 1]$ for some track $r \in \{1, \dots, \lfloor z \rfloor\}$ with $\ell \le L_r[i]$!
+3. **Algorithmic Compilation**:
+   - **Step 1 (Heavy-String / Trie Construction)**: Build the $\le \lfloor z \rfloor$ solid strings $S_r$ and their valid length bounds $L_r[i]$ (or build the reversed trie of all $1/z$-valid substrings by extending right-to-left from each branching position, where each position with $\max_c \pi_i(c) = 1$ is compressed via RLE/suffix links) in $O(Nz)$ time.
+   - **Step 2 (Length-Capped Generalized SAM / Suffix Tree)**: Build a Generalized Suffix Tree (or GSAM with Link-Tree prefix-length clipping: an occurrence at $(r, i)$ is valid for pattern length $M$ iff $L_r[i] \ge M$, which is a 1D threshold query on the Link Tree subtree!).
+   - **Step 3 (Online Querying)**: For each query $P_q[1..M]$, walk $P_q$ in the index in $O(M)$ time to reach state $u$, and return the precomputed count of pairs $(r, i)$ in $u$'s subtree having $L_r[i] \ge M$ (stored in sorted order or via offline bucket sweep on $M$). Total time: $O(Nz \log |\Sigma| + \sum |P_q|)$.
+4. **Broken-Invariant Counterexample**: Counting all occurrences of $P_q$ in the heavy strings $S_1, \dots, S_{\lfloor z \rfloor}$ *without* enforcing the length cap $M \le L_r[i]$ and deduplicating identical starting indices $i$ across tracks $r_1 \ne r_2$ will overcount positions where $P_q$ is a shared prefix of two heavy branches! Always deduplicate starting positions $i$ at each branching LCA.
+:::
+
+---
+
+#### Problem 20.8 (`W3B-42`) — `Universal Cup / QOJ — Range Parameterized & Order-Isomorphic Periodicity Queries`
+
+- **Mathematical Statement**: Given a string $S[1..N]$ ($N \le 10^5$) over $\Sigma = \{1, \dots, 26\}$ and $Q \le 10^5$ substring queries $[l_q, r_q]$, determine for each query the shortest **parameterized period** $p \in [1, r_q - l_q + 1]$ of $W = S[l_q .. r_q]$—that is, the smallest $p$ such that $W[1 .. |W| - p] \cong_{\text{param}} W[p + 1 .. |W|]$ (equivalently, $|W| - p$ is the longest proper parameterized border of $W$).
+- **Constraints**: $1 \le N, Q \le 10^5$, $|\Sigma| \le 26$, time limit $2.5\text{ s}$.
+
+::: {.callout-note collapse="true" title="Hint 1 — Diagnostic Signal"}
+Careful! Does a "parameterized period" $p$ ($W[1 .. |W| - p] \cong_{\text{param}} W[p + 1 .. |W|]$) obey the same $\gcd(p, q)$ Fine–Wilf Periodicity Lemma as exact periods? In $W[1 .. |W|-p] \cong_{\text{param}} W[p+1 .. |W|]$, the bijection $\pi$ maps $W[j] \mapsto W[j + p]$, so shifting by $p$ applies $\pi$ once, and shifting by $k p$ applies $\pi^k$ (a permutation of $\Sigma$ whose cycle lengths divide $\operatorname{lcm}(1..|\Sigma|)$)!
+:::
+
+::: {.callout-note collapse="true" title="Hint 2 — Combinatorial Word Invariant"}
+By **Theorem 20.1**, $b = |W| - p$ is a parameterized border of $W = S[l..r]$ iff $\operatorname{p-LCE}(l, r - b + 1) \ge b$. Moreover, even for parameterized borders, if $b > \frac{2}{3}|W|$ ($p < \frac{1}{3}|W|$), the two copies of $W[1..b]$ overlap by $> \frac{1}{3}|W|$, which forces the local backward-offset array $\operatorname{prev}_W[p+1 .. |W|]$ (after its first occurrences of the $\le |\Sigma|$ characters!) to be strictly $p$-periodic!
+:::
+
+::: {.callout-note collapse="true" title="Hint 3 — Algorithmic Assembly"}
+Use the `p-SA` (`W3B-32`) + $O(|\Sigma|)$ breakpoint $\operatorname{p-LCE}$ oracle (`§1.3`): just as in $\sqrt{N}$ / dyadic Internal Border queries ([Chapter 15](ch15-internal-pattern-matching-borders.qmd)), any short border $b \le B$ can be tested or bucketed around $l$'s neighborhood in `p-SA`, or we can decompose $W = S[l..r]$ by the first-occurrence breakpoints of $S[l..r]$ ($\le |\Sigma| = 26$ segments where $\operatorname{prev}_W$ equals static $\operatorname{prev}_S$) and apply Internal Pattern Matching (`Ch 15`) on the static array $\operatorname{prev}_S[1..N]$!
+:::
+
+::: {.callout-tip collapse="true" title="Full Derivation & Solution (`W3B-42`)"}
+
+1. **Diagnostic Signal**: Running `p-KMP` on $S[l_q .. r_q]$ for each query takes $\Theta(QN) = 10^{10}$ operations.
+2. **Combinatorial Word Invariant**: Let $L = r - l + 1$. By Theorem 20.2(1), inside $W = S[l..r]$, the local code array $\operatorname{prev}_W[1..L]$ equals the static slice $\operatorname{prev}_S[l..r]$ everywhere **except** at the $\le |\Sigma| \le 26$ first occurrences $f_1 < f_2 < \dots < f_k$ of the distinct characters in $S[l..r]$ (where $\operatorname{prev}_W$ is $0$).
+   - Furthermore, for $W[1..b] \cong_{\text{param}} W[L - b + 1 .. L]$, the $t$-th distinct character to appear in $W[1..b]$ (at offset $f_t - l + 1$) **must** align with the $t$-th distinct character to appear in $W[L - b + 1 .. L]$!
+   - Specifically, if $W[1..b]$ contains $t \in \{1, \dots, k\}$ distinct characters, then $f_t \le l + b - 1 < f_{t+1}$, and in the suffix $W[L - b + 1 .. L]$, the $t$-th distinct character is at some index $g_t$. Aligning the $t$-th first-occurrence in the prefix with the $t$-th first-occurrence in the suffix **uniquely pins the candidate shift $p = g_t - f_t$** unless $g_t > r$ (when both $W[1..b]$ and $W[L-b+1..L]$ have the exact same $t$ first-occurrence offsets inside a periodic run of $\operatorname{prev}_S$)!
+3. **Algorithmic Compilation**:
+   - Build a standard $O(1)$ RMQ-LCE and Internal Pattern Matching (`IPM`, [Chapter 15](ch15-internal-pattern-matching-borders.qmd)) structure on the static array $\operatorname{prev}_S[1..N]$, giving $O(|\Sigma|)$ $\operatorname{p-LCE}(i, j)$ (`§1.3`).
+   - Also build the Parameterized Suffix Array `p-SA` (`W3B-32`) of $S[1..N]$.
+   - For each query $[l, r]$ ($L = r - l + 1$), find the $\le 26$ first occurrences $f_1 < \dots < f_k$ in $S[l..r]$ using $\operatorname{next}[l][c]$.
+   - Any parameterized border $b = L - p$ has some number $t \in [1, k]$ of distinct characters ($b \in [f_t - l + 1, f_{t+1} - l]$). On the open interval $(f_t, f_{t+1})$ of length $D_t = f_{t+1} - f_t - 1$, $\operatorname{prev}_W[f_t - l + 2 .. f_{t+1} - l]$ is an unmodified contiguous substring of $\operatorname{prev}_S$!
+   - Querying the longest substring of $\operatorname{prev}_S$ between the two largest breakpoint gaps (via `IPM` on $\operatorname{prev}_S$ or `p-SA` neighborhood binary search + $O(|\Sigma|)$ $\operatorname{p-LCE}$ verification on the $\le 26$ candidate pinned shifts $p$) finds $\max b$ and outputs $p_{\min} = L - b_{\max}$ in $O(|\Sigma| \log N)$ time per query.
+4. **Broken-Invariant Counterexample**: Do not assume that if $p$ is a parameterized period of $W$, then $W[i] = W[i + p]$—for $W = \texttt{a b a b a}$ ($L = 5$), $p = 1$ is a valid parameterized period ($\texttt{a b a b} \cong_{\text{param}} \texttt{b a b a}$ via $\texttt{a} \leftrightarrow \texttt{b}$) even though $p = 1$ is not an exact period!
+:::
+
+---
+
+## 6. Diagnostic Checklist & Chapter Revision Summary
+
+### 6.1 Quick Decision Checklist: Choosing the Right Isomorphism Engine
+
+| Contest Signal / Equivalence Relation | Local Code / Witness Invariant | Time Complexity |
+| :--- | :--- | :--- |
+| Bijective character renaming $U \cong_{\text{param}} V$ (`p-KMP`) | $\operatorname{clip}(\operatorname{prev}_S[i], q) = (\operatorname{prev}_S[i] \le q \text{ ? } \operatorname{prev}_S[i] : 0)$ (**Theorem 20.1**) | $O(N + M)$ |
+| Parameterized Suffix Array (`p-SA`) & $\operatorname{p-LCE}(i, j)$ | Single-Position Mutation at $p = \operatorname{next}_S[i]$ (**Theorem 20.2**) | $O(N\log^2 N)$ or $O(N|\Sigma|)$ |
+| Relative order isomorphism $U \cong_{\text{ord}} V$ (`Order-KMP`) | Immediate neighbors $\operatorname{LMax}_P[q+1], \operatorname{LMin}_P[q+1]$ + equality flags (**Theorem 20.3**) | $O(N + M\log M)$ |
+| Identical min-heap Cartesian tree $U \cong_{\text{CT}} V$ (`Cartesian-KMP`) | Window-clipped Parent-Distance $\operatorname{clip}(\operatorname{PD}_S[i], q)$ (**Theorem 20.4**) | $O(N + M)$ |
+| Binary Abelian / jumbled queries $(c_0, c_1)$ on $S \in \{0, 1\}^N$ | Discrete IVT Parikh interval $c_1 \in [m_{\min}(c_0+c_1), m_{\max}(c_0+c_1)]$ (**Theorem 20.5**) | $O(1)$/query (or $O(\log R)$ RLE) |
+| General alphabet anagram / palindromic rearrangeability | 128-bit random $R_c$: additive $\sum R_{S[k]}$ for anagrams; XOR $\bigoplus R_{S[k]}$ for parity (`BP-20-03`) | $O(N)$ |
+| Position Weight Matrix (`PWM`) with probability threshold $\ge 1/z$ | Disjoint-event sum $\le 1 \implies \le \lfloor z \rfloor$ heavy strings of total size $O(Nz)$ (**Theorem 20.6**) | $O(Nz \log|\Sigma| + M)$ |
+
+### 6.2 What Comes Next in Part V
+Across Chapters 18–20, our texts $T[1..N]$ and patterns $P[1..M]$ had explicit lengths $N, M \le 10^6$. What happens when strings are generated by dynamic cut/paste/reverse operations or **Straight-Line Programs (`SLPs`)** of exponential length $N \le 10^{18}$, or compressed via **LZ77** into $z$ phrases? In **[Chapter 21: Locally Consistent Parsing, Jeż Recompression SLPs, String Attractors $\gamma(S)$, and LZ77/SLP 2D Indexing](ch21-locally-consistent-parsing-slp-attractors.qmd)**, we construct $O(\log N)$-depth locally consistent parse DAGs that support $O(\log N)$ dynamic split/concat and collision-free LCE, prove Kempa–Prezza's String Attractor duality, and compile compressed pattern matching into 2D orthogonal range queries.
